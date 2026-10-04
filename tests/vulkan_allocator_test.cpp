@@ -127,11 +127,11 @@ TEST_F(AllocatorTest, DeviceOnlyBufferLivesWhereOnlyTheGpuReachesIt) {
 // On a discrete GPU, staging and readback memory is system RAM -- uploads
 // write-combined, readbacks cached -- leaving VRAM and the BAR window to the
 // kernels. On unified memory it is the one pool.
-TEST_F(AllocatorTest, HostVisibleMemoryIsSystemRamOnADiscreteGpu) {
+TEST_F(AllocatorTest, StagingMemoryIsSystemRamOnADiscreteGpu) {
   BufferDesc upload_desc;
   upload_desc.size = 1 << 16;
   upload_desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  upload_desc.memory = MemoryUsage::HostVisible;
+  upload_desc.memory = MemoryUsage::Staging;
   upload_desc.mapped = true;
   upload_desc.host_access = HostAccess::SequentialWrite;
   BufferDesc readback_desc = upload_desc;
@@ -150,15 +150,48 @@ TEST_F(AllocatorTest, HostVisibleMemoryIsSystemRamOnADiscreteGpu) {
     const std::uint32_t system_ram =
         types_with(needs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (!physical().unified_memory() && system_ram != 0) {
+    if (system_ram != 0) {  // a discrete GPU, or an APU's host memory
       EXPECT_EQ(memory->properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0U)
-          << "staging landed in VRAM on a discrete GPU";
+          << "staging landed in device memory beside system RAM";
     }
   }
 }
 
-TEST_F(AllocatorTest, HostVisibleBufferIsMappedAndCoherent) {
-  const Buffer buffer = make(256, kTransfer, MemoryUsage::HostVisible, true);
+// Device-local memory the host writes: VRAM through the BAR window on a
+// discrete GPU, the one pool on unified memory -- never host memory.
+TEST_F(AllocatorTest, DeviceMappedBufferIsDeviceLocalAndMapped) {
+  BufferDesc desc;
+  desc.size = 4096;
+  desc.usage = kStorage | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+  desc.memory = MemoryUsage::DeviceMapped;
+  desc.mapped = true;
+  desc.host_access = HostAccess::SequentialWrite;
+  Result<Buffer> made = allocator().create_buffer(desc);
+  const std::uint32_t mappable =
+      types_with(~0U,
+                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 0);
+  if (mappable == 0) {
+    EXPECT_EQ(made.status().domain(), Status::Code::Unsupported);
+    return;
+  }
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  ASSERT_NE(made->mapped(), nullptr);
+  const std::optional<MemoryInfo> memory = made->memory_info();
+  if (!memory.has_value()) {
+    FAIL() << "no memory info";
+  }
+  const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  EXPECT_EQ(memory->properties & want, want);
+  std::memset(made->mapped(), 0x5A, 4096);  // the host writes it in place
+}
+
+TEST_F(AllocatorTest, StagingBufferIsMappedAndCoherent) {
+  const Buffer buffer = make(256, kTransfer, MemoryUsage::Staging, true);
   ASSERT_NE(buffer.mapped(), nullptr);
   const std::optional<MemoryInfo> memory = buffer.memory_info();
   // An if, not ASSERT_TRUE: clang-tidy's optional-access check follows the
@@ -195,8 +228,27 @@ TEST_F(AllocatorTest, RefusesContradictoryBuffers) {
   mapped_vram.mapped = true;
   EXPECT_EQ(domain(mapped_vram), Status::Code::InvalidArgument);
   BufferDesc unmapped_host = good;
-  unmapped_host.memory = MemoryUsage::HostVisible;
+  unmapped_host.memory = MemoryUsage::Staging;
+  unmapped_host.usage = kTransfer;
   EXPECT_EQ(domain(unmapped_host), Status::Code::InvalidArgument);
+  BufferDesc unmapped_bar = good;
+  unmapped_bar.memory = MemoryUsage::DeviceMapped;
+  EXPECT_EQ(domain(unmapped_bar), Status::Code::InvalidArgument);
+  // Host memory the GPU would read directly: a shader's storage or uniform
+  // buffer, vertices, indirect commands -- each a PCIe read per access on a
+  // discrete GPU.
+  for (const VkBufferUsageFlags direct :
+       {VkBufferUsageFlags{VK_BUFFER_USAGE_STORAGE_BUFFER_BIT},
+        VkBufferUsageFlags{VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT},
+        VkBufferUsageFlags{VK_BUFFER_USAGE_VERTEX_BUFFER_BIT},
+        VkBufferUsageFlags{VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT}}) {
+    BufferDesc host_read = good;
+    host_read.memory = MemoryUsage::Staging;
+    host_read.mapped = true;
+    host_read.usage = kTransfer | direct;
+    EXPECT_EQ(domain(host_read), Status::Code::InvalidArgument)
+        << "usage 0x" << std::hex << direct;
+  }
   // VMA would abort on it: the allocator does not enable device addresses.
   BufferDesc addressed = good;
   addressed.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -250,11 +302,11 @@ TEST_F(AllocatorTest, SharingFollowsTheDistinctFamilies) {
 TEST_F(AllocatorTest, RoundTripsThroughDeviceOnlyMemory) {
   constexpr VkDeviceSize kBytes = 4096;
   const Buffer upload =
-      make(kBytes, kTransfer, MemoryUsage::HostVisible, /*mapped=*/true);
+      make(kBytes, kTransfer, MemoryUsage::Staging, /*mapped=*/true);
   const Buffer resident =
       make(kBytes, kTransfer | kStorage, MemoryUsage::DeviceOnly);
   const Buffer readback =
-      make(kBytes, kTransfer, MemoryUsage::HostVisible, /*mapped=*/true);
+      make(kBytes, kTransfer, MemoryUsage::Staging, /*mapped=*/true);
   ASSERT_TRUE(upload.valid() && resident.valid() && readback.valid());
 
   std::vector<std::uint8_t> data(kBytes);
@@ -357,14 +409,15 @@ TEST_F(AllocatorTest, MakesADeviceOnlyImageWithAView) {
   EXPECT_TRUE(image->is_device_local());
 }
 
-// Auto still requires DEVICE_LOCAL for an image, so a full VRAM fails the
-// allocation rather than place it in host memory.
-TEST_F(AllocatorTest, AnAutoImageIsDeviceLocal) {
-  ImageDesc desc = color_image(16, 16);
-  desc.memory = MemoryUsage::Auto;
-  const Result<Image> image = allocator().create_image(desc);
-  ASSERT_TRUE(image.ok()) << image.status().message();
-  EXPECT_TRUE(image->is_device_local());
+// An image is device-only: no other placement is taken.
+TEST_F(AllocatorTest, AnImageIsDeviceOnly) {
+  for (const MemoryUsage memory :
+       {MemoryUsage::DeviceMapped, MemoryUsage::Staging}) {
+    ImageDesc desc = color_image(16, 16);
+    desc.memory = memory;
+    EXPECT_EQ(allocator().create_image(desc).status().domain(),
+              Status::Code::InvalidArgument);
+  }
 }
 
 TEST_F(AllocatorTest, MakesViewlessCubeVolumeAndMippedImages) {
@@ -444,7 +497,7 @@ TEST_F(AllocatorTest, RefusesContradictoryImages) {
   d.mip_levels = 2;
   EXPECT_TRUE(refused(d));
   d = good;
-  d.memory = MemoryUsage::HostVisible;
+  d.memory = MemoryUsage::Staging;
   EXPECT_TRUE(refused(d));
   d = good;
   d.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;  // and a view
@@ -485,9 +538,9 @@ TEST_F(AllocatorTest, RoundTripsThroughAnImage) {
   const Result<Image> made = allocator().create_image(color_image(kW, kH));
   ASSERT_TRUE(made.ok()) << made.status().message();
   const Buffer upload =
-      make(kBytes, kTransfer, MemoryUsage::HostVisible, /*mapped=*/true);
+      make(kBytes, kTransfer, MemoryUsage::Staging, /*mapped=*/true);
   const Buffer readback =
-      make(kBytes, kTransfer, MemoryUsage::HostVisible, /*mapped=*/true);
+      make(kBytes, kTransfer, MemoryUsage::Staging, /*mapped=*/true);
   std::vector<std::uint8_t> texels(kBytes);
   std::iota(texels.begin(), texels.end(), std::uint8_t{3});
   std::memcpy(upload.mapped(), texels.data(), kBytes);

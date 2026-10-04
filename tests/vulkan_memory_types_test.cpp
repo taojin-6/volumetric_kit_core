@@ -56,6 +56,9 @@ TEST(MemoryTypes, DiscreteNvidiaKeepsDeviceOnlyOutOfTheBar) {
                                            {2, kDL | kHV | kHC}});
   EXPECT_EQ(detail::device_only_types(props), bits({1, 2}));
   EXPECT_EQ(detail::device_local_types(props), bits({1, 2, 5}));
+  // Host-written device data is the BAR window; staging is system RAM.
+  EXPECT_EQ(detail::device_mapped_types(props), bits({5}));
+  EXPECT_EQ(detail::staging_types(props), bits({3, 4}));
   EXPECT_FALSE(
       detail::unified_memory(props, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU));
 }
@@ -69,6 +72,8 @@ TEST(MemoryTypes, DiscreteAmdKeepsDeviceOnlyOutOfTheBar) {
                                            {1, kHV | kHC | kCached}});
   EXPECT_EQ(detail::device_only_types(props), bits({0}));
   EXPECT_EQ(detail::device_private_types(props), bits({0}));
+  EXPECT_EQ(detail::device_mapped_types(props), bits({2}));
+  EXPECT_EQ(detail::staging_types(props), bits({1, 3}));
   EXPECT_FALSE(
       detail::unified_memory(props, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU));
 }
@@ -81,6 +86,8 @@ TEST(MemoryTypes, AppleSiliconUsesPrivateStorage) {
              {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
   EXPECT_EQ(detail::device_only_types(props), bits({0}));
   EXPECT_EQ(detail::device_local_types(props), bits({0, 1}));
+  EXPECT_EQ(detail::device_mapped_types(props), bits({1}));  // shared storage
+  EXPECT_EQ(detail::staging_types(props), bits({1}));
   EXPECT_TRUE(
       detail::unified_memory(props, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU));
 }
@@ -90,6 +97,8 @@ TEST(MemoryTypes, LavapipeHasOnePool) {
   const auto props = layout({kLocalHeap}, {{0, kDL | kHV | kHC | kCached}});
   EXPECT_EQ(detail::device_private_types(props), 0U);
   EXPECT_EQ(detail::device_only_types(props), bits({0}));
+  EXPECT_EQ(detail::device_mapped_types(props), bits({0}));
+  EXPECT_EQ(detail::staging_types(props), bits({0}));
   EXPECT_TRUE(detail::unified_memory(props, VK_PHYSICAL_DEVICE_TYPE_CPU));
 }
 
@@ -120,6 +129,18 @@ TEST(MemoryTypes, AnApuIsUnifiedByItsType) {
       detail::unified_memory(props, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU));
   EXPECT_FALSE(
       detail::unified_memory(props, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU));
+  EXPECT_EQ(detail::staging_types(props), bits({1}));  // GTT, not the carve-out
+}
+
+// A discrete GPU without a host-mappable device-local type has no
+// device-mapped placement: the allocation is refused, never moved to host
+// memory.
+TEST(MemoryTypes, NoBarWindowMeansNoDeviceMappedMemory) {
+  const auto props = layout(
+      {kLocalHeap, 0}, {{0, kDL}, {1, kHV | kHC}, {1, kHV | kHC | kCached}});
+  EXPECT_EQ(detail::device_mapped_types(props), 0U);
+  EXPECT_EQ(detail::device_only_types(props), bits({0}));
+  EXPECT_EQ(detail::staging_types(props), bits({1, 2}));
 }
 
 TEST(MemoryTypes, ProtectedAndLazyMemoryIsNeverChosen) {

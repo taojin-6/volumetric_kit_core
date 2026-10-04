@@ -49,9 +49,11 @@ struct Allocator::Impl {
   // The device's queue-family count, so a sharing list naming a family the
   // device lacks is refused: Vulkan offers no way to ask afterwards.
   std::uint32_t queue_family_count = 0;
-  // The memory types a DeviceOnly resource may use (memory_types.hpp), and
-  // every device-local type, for one no device-only type suits.
+  // The memory types each placement may use (memory_types.hpp), and every
+  // device-local type, for a DeviceOnly resource no private type suits.
   std::uint32_t device_only_types = 0;
+  std::uint32_t device_mapped_types = 0;
+  std::uint32_t staging_types = 0;
   std::uint32_t device_local_types = 0;
 
   Impl() = default;
@@ -86,16 +88,11 @@ bool retry_device_local(VkResult made, MemoryUsage memory,
          info.memoryTypeBits != device_local_types;
 }
 
+// VMA's usage for a placement; the mask and required flags place_* set are
+// what bind it.
 VmaMemoryUsage to_vma_usage(MemoryUsage memory) {
-  switch (memory) {
-    case MemoryUsage::DeviceOnly:
-      return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    case MemoryUsage::HostVisible:
-      return VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-    case MemoryUsage::Auto:
-      break;
-  }
-  return VMA_MEMORY_USAGE_AUTO;
+  return memory == MemoryUsage::Staging ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST
+                                        : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 }
 
 // The sharing a resource gets from its queue-family list: exclusive for none
@@ -244,10 +241,10 @@ Status check_image_desc(const ImageDesc& desc) {
         "create_image: a multisampled image is 2D, optimal-tiling and "
         "single-mip");
   }
-  if (desc.memory == MemoryUsage::HostVisible) {
+  if (desc.memory != MemoryUsage::DeviceOnly) {
     return Status::invalid_argument(
-        "create_image: an image has no host accessor; copy it into a "
-        "host-visible buffer to read it back");
+        "create_image: an image is device-only; it has no host accessor, so "
+        "copy it into a staging buffer to read it back");
   }
   // VUID-VkImageViewCreateInfo-image-04441 allows a view for nearly every
   // usage but the transfers -- video, shading-rate and density-map usages
@@ -320,6 +317,8 @@ Result<Allocator> Allocator::create(VkInstance instance, const Device& device) {
   const VkPhysicalDeviceMemoryProperties& memory =
       device.caps().memory_properties();
   impl->device_only_types = detail::device_only_types(memory);
+  impl->device_mapped_types = detail::device_mapped_types(memory);
+  impl->staging_types = detail::staging_types(memory);
   impl->device_local_types = detail::device_local_types(memory);
 
   Allocator allocator;
@@ -355,13 +354,29 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
   }
   if (desc.mapped && desc.memory == MemoryUsage::DeviceOnly) {
     return Status::invalid_argument(
-        "create_buffer: a device-local buffer is never mapped; stage through "
-        "a host-visible one");
+        "create_buffer: a device-only buffer is never mapped; stage through "
+        "a staging buffer, or make it DeviceMapped");
   }
-  if (desc.memory == MemoryUsage::HostVisible && !desc.mapped) {
+  if (desc.memory != MemoryUsage::DeviceOnly && !desc.mapped) {
     return Status::invalid_argument(
-        "create_buffer: a host-visible buffer must be mapped (there is no "
-        "separate map); set mapped");
+        "create_buffer: a device-mapped or staging buffer must be mapped "
+        "(there is no separate map); set mapped");
+  }
+  // The GPU reaches host memory only by a copy: a shader, vertex fetch or
+  // indirect read of it would cross PCIe on every access on a discrete GPU.
+  constexpr VkBufferUsageFlags kTransfer =
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  if (desc.memory == MemoryUsage::Staging && (desc.usage & ~kTransfer) != 0) {
+    return Status::invalid_argument(
+        "create_buffer: a staging buffer is a copy's source or destination "
+        "only; memory the GPU reads directly is DeviceOnly, or DeviceMapped "
+        "when the host writes it");
+  }
+  if (desc.memory == MemoryUsage::DeviceMapped &&
+      impl_->device_mapped_types == 0) {
+    return Status::unsupported(
+        "create_buffer: the device has no device-local memory the host can "
+        "map; make the buffer DeviceOnly and upload through a CommandBatch");
   }
   VKC_ASSIGN(const Sharing sharing,
              sharing_for(desc.queue_families, desc.queue_family_count,
@@ -379,8 +394,19 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
 
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = to_vma_usage(desc.memory);
-  if (desc.memory == MemoryUsage::DeviceOnly) {
-    place_device_only(alloc_info, impl_->device_only_types);
+  switch (desc.memory) {
+    case MemoryUsage::DeviceOnly:
+      place_device_only(alloc_info, impl_->device_only_types);
+      break;
+    case MemoryUsage::DeviceMapped:
+      alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+      alloc_info.memoryTypeBits = impl_->device_mapped_types;
+      break;
+    case MemoryUsage::Staging:
+      alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+      alloc_info.memoryTypeBits = impl_->staging_types;
+      break;
   }
   if (desc.mapped) {
     alloc_info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
@@ -453,13 +479,7 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
 
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = to_vma_usage(desc.memory);
-  // Required for Auto too (HostVisible is refused above): an image is
-  // device-local, and Auto alone lets VMA place it in host memory once VRAM
-  // is full.
-  alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  if (desc.memory == MemoryUsage::DeviceOnly) {
-    place_device_only(alloc_info, impl_->device_only_types);
-  }
+  place_device_only(alloc_info, impl_->device_only_types);
 
   VkImage image = VK_NULL_HANDLE;
   VmaAllocation allocation = nullptr;

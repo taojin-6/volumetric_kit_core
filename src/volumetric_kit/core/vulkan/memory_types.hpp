@@ -60,6 +60,33 @@ inline std::uint32_t device_only_types(
   return private_types != 0 ? private_types : device_local_types(props);
 }
 
+// The types a MemoryUsage::DeviceMapped resource may use: device-local and
+// mapped coherently -- a discrete GPU's BAR window (all of VRAM under
+// Resizable BAR), the one pool of unified memory. 0 when the device has none;
+// never a type outside device-local memory.
+inline std::uint32_t device_mapped_types(
+    const VkPhysicalDeviceMemoryProperties& props) {
+  return memory_types_with(props,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           0);
+}
+
+// The types a MemoryUsage::Staging buffer may use: host memory the device
+// does not hold -- a discrete GPU's system RAM -- so staging never takes VRAM
+// or the BAR window; on a device with none (unified memory), every coherent
+// host-visible type.
+inline std::uint32_t staging_types(
+    const VkPhysicalDeviceMemoryProperties& props) {
+  constexpr VkMemoryPropertyFlags kMapped =
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  const std::uint32_t host =
+      memory_types_with(props, kMapped, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  return host != 0 ? host : memory_types_with(props, kMapped, 0);
+}
+
 // Whether the GPU and the host share one memory: an integrated or CPU device,
 // or one whose every heap is device-local (Apple silicon, lavapipe). A
 // discrete GPU has a heap of host memory beside its VRAM. An APU whose driver

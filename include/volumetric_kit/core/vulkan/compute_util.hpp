@@ -6,8 +6,8 @@
 /// @file compute_util.hpp
 /// @brief Host-side helpers every compute library repeats: the workgroup
 ///        count, the storage-binding range limit, storage-buffer creation --
-///        device-local for the kernels, host-visible for what the host fills
-///        or reads -- and an input that is either host bytes or a buffer
+///        device-only for the kernels, device-mapped for what the host writes
+///        for them -- and an input that is either host bytes or a buffer
 ///        already on the device.
 ///
 /// The mechanism lives here because every compute library repeats its shape;
@@ -76,17 +76,23 @@ VKC_VULKAN_API Status check_storage_buffer_range(const char* what,
                                                  VkDeviceSize bytes,
                                                  VkDeviceSize max_range);
 
-/// @brief A host-visible, mapped storage buffer of @p bytes, for what the
-///        host produces or consumes: staging, readback, small parameters.
+/// @brief A device-mapped storage buffer of @p bytes
+///        (@ref MemoryUsage::DeviceMapped): device-local memory the host
+///        writes and the kernels read in place -- parameters, small tables,
+///        and on unified memory inputs with no staging copy.
 ///
-/// Memory the kernels read or write is a @ref device_storage_buffer instead,
-/// on every platform.
+/// The kernels reach it at device-local speed on every platform; on a
+/// discrete GPU it is VRAM through the BAR window, which the host writes
+/// across PCIe. Memory only the kernels touch is a @ref device_storage_buffer;
+/// results the host reads come back by @ref CommandBatch::readback, as the
+/// host's reads of the BAR window cross PCIe uncached.
 /// @param allocator           The allocator.
 /// @param bytes               Its size; non-zero.
 /// @param access              How the host touches it:
-///                            @ref HostAccess::Random when it writes and reads
-///                            back, @ref HostAccess::SequentialWrite for an
-///                            input written once.
+///                            @ref HostAccess::SequentialWrite for what it
+///                            writes once, the default; @ref HostAccess::Random
+///                            only on unified memory, where reading it back is
+///                            cheap.
 /// @param extra_usage         Usage beyond `STORAGE_BUFFER`, for a consumer
 ///                            that binds the allocation another way (a
 ///                            renderer reading it as vertices).
@@ -95,20 +101,26 @@ VKC_VULKAN_API Status check_storage_buffer_range(const char* what,
 ///                            exclusive, right for a library's own kernels; a
 ///                            buffer another library reads names both.
 /// @param queue_family_count  The length of @p queue_families.
-/// @return The buffer, or the allocation's failure.
-VKC_VULKAN_API Result<Buffer> storage_buffer(
+/// @return The buffer; @ref Status::Code::Unsupported on a device with no
+///         device-local memory the host can map; or the allocation's
+///         failure.
+VKC_VULKAN_API Result<Buffer> mapped_storage_buffer(
     Allocator& allocator, VkDeviceSize bytes,
-    HostAccess access = HostAccess::Random, VkBufferUsageFlags extra_usage = 0,
+    HostAccess access = HostAccess::SequentialWrite,
+    VkBufferUsageFlags extra_usage = 0,
     const std::uint32_t* queue_families = nullptr,
     std::uint32_t queue_family_count = 0);
 
-/// @brief A @ref storage_buffer of @p bytes, filled from @p src.
+/// @brief A @ref mapped_storage_buffer of @p bytes, filled from @p src: a
+///        device-local input the kernels read in place, with no copy on the
+///        device.
 /// @param allocator  The allocator.
-/// @param src        At least @p bytes to copy in.
+/// @param src        At least @p bytes to copy in; non-null.
 /// @param bytes      Its size; non-zero.
 /// @param access     How the host touches it; an input written once by
 ///                   default.
-/// @return The filled buffer, or the allocation's failure.
+/// @return The filled buffer; @ref Status::Code::InvalidArgument for a null
+///         @p src; or as @ref mapped_storage_buffer.
 VKC_VULKAN_API Result<Buffer> upload_storage_buffer(
     Allocator& allocator, const void* src, VkDeviceSize bytes,
     HostAccess access = HostAccess::SequentialWrite);
@@ -116,8 +128,9 @@ VKC_VULKAN_API Result<Buffer> upload_storage_buffer(
 /// @brief A device-only storage buffer of @p bytes
 ///        (@ref MemoryUsage::DeviceOnly), for memory only the kernels touch.
 ///
-/// On unified memory this and a host-visible buffer cost the same; on a
-/// discrete GPU, memory that is not device-local is reached across PCIe.
+/// On a discrete GPU it is VRAM the host cannot map, so nothing it holds
+/// crosses PCIe but what a @ref CommandBatch copies; memory that is not
+/// device-local would be reached across PCIe at every access.
 /// recon measured a hash table's bucket locks there at 1.97 s to allocate a
 /// 5 000-triangle sheet, against 3.4 ms device-local, and a TSDF integrate at
 /// 14.6 ms against 0.067 ms (RTX 5090). `TRANSFER_SRC` and `TRANSFER_DST`
@@ -125,8 +138,13 @@ VKC_VULKAN_API Result<Buffer> upload_storage_buffer(
 /// back from it.
 /// @param allocator           The allocator.
 /// @param bytes               Its size; non-zero.
-/// @param extra_usage         Usage beyond those, as @ref storage_buffer.
-/// @param queue_families      As @ref storage_buffer.
+/// @param extra_usage         Usage beyond those, for a consumer that binds
+///                            the allocation another way (a renderer reading
+///                            it as vertices).
+/// @param queue_families      The families that access it, as
+///                            @ref BufferDesc::queue_families: null leaves it
+///                            exclusive, right for a library's own kernels; a
+///                            buffer another library reads names both.
 /// @param queue_family_count  The length of @p queue_families.
 /// @return The buffer, unmapped, or the allocation's failure.
 VKC_VULKAN_API Result<Buffer> device_storage_buffer(
@@ -194,8 +212,9 @@ class VKC_VULKAN_API StorageInput {
   /// @param host  Host bytes; null is refused by @ref check.
   explicit StorageInput(const void* host) noexcept : host_(host) {}
   /// @brief An input already on the device, which @ref buffer binds in place.
-  /// @param device  A storage buffer in known device-local memory;
-  ///                host-visible device-local memory is accepted.
+  /// @param device  A storage buffer in known device-local memory, bound in
+  ///                place: device-only, or device-mapped (the zero-copy
+  ///                input of unified memory).
   explicit StorageInput(const Buffer& device) noexcept : device_(&device) {}
   /// A @ref Buffer is passed by reference: through a pointer it would be
   /// taken as host bytes, and the object itself uploaded.

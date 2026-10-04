@@ -37,12 +37,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     and Metal-object capabilities.
 - `vulkan` tier memory and resources (DECISIONS.md, "The vulkan tier", V2):
   - `Allocator` over VMA v3.4.0 (private): `create_buffer`, `create_image`,
-    per-heap `memory_stats`. `MemoryUsage::DeviceOnly` -- the default for
-    images -- places kernel memory in device memory the host cannot map
-    (VRAM, never the BAR window; Apple's private storage) by memory-type
-    mask, and a full heap fails rather than spill; `HostVisible` buffers are
-    mapped and coherent, in system RAM on a discrete GPU; resources may
-    outlive the allocator. A device-address buffer usage is refused for now.
+    per-heap `memory_stats`. Three placements, each a memory-type mask, and a
+    full heap fails rather than spill: `DeviceOnly` -- the default, and the
+    only one for images -- device memory the host cannot map (VRAM, never the
+    BAR window; Apple's private storage); `DeviceMapped`, device-local memory
+    the host writes (the BAR window; unified memory's pool); `Staging`, host
+    memory with copy usage only, so no shader reads host memory. Resources
+    may outlive the allocator. A device-address buffer usage is refused for
+    now.
   - `Buffer` and `Image` (with `MemoryInfo`), made by the allocator or
     adopted with a deleter. `Image` covers 2D, 3D, array, cube, mipmapped and
     multisampled images with a default view, and replaces gfx's `Texture`.
@@ -69,7 +71,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     submit, which refuses a dispatch whose set was rewritten or freed;
     `retain` keeps a buffer its commands use that the caller replaces.
   - `compute_util`: `group_count`, `max_storage_buffer_range` (from the
-    `Device`'s caps), `check_storage_buffer_range`, `storage_buffer`,
+    `Device`'s caps), `check_storage_buffer_range`, `mapped_storage_buffer`,
     `upload_storage_buffer`, `device_storage_buffer`, `ensure_device_scratch`
     and `StorageInput`, whose outgrown buffers go to the batch that used them.
   - `vkc_compile_shaders` and `vkc_embed_shaders`, for every sibling's

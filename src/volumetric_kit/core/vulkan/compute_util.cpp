@@ -33,14 +33,15 @@ Status check_storage_buffer_range(const char* what, VkDeviceSize bytes,
   return {};
 }
 
-Result<Buffer> storage_buffer(Allocator& allocator, VkDeviceSize bytes,
-                              HostAccess access, VkBufferUsageFlags extra_usage,
-                              const std::uint32_t* queue_families,
-                              std::uint32_t queue_family_count) {
+Result<Buffer> mapped_storage_buffer(Allocator& allocator, VkDeviceSize bytes,
+                                     HostAccess access,
+                                     VkBufferUsageFlags extra_usage,
+                                     const std::uint32_t* queue_families,
+                                     std::uint32_t queue_family_count) {
   BufferDesc desc;
   desc.size = bytes;
   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | extra_usage;
-  desc.memory = MemoryUsage::HostVisible;
+  desc.memory = MemoryUsage::DeviceMapped;
   desc.mapped = true;
   desc.host_access = access;
   desc.queue_families = queue_families;
@@ -53,7 +54,7 @@ Result<Buffer> upload_storage_buffer(Allocator& allocator, const void* src,
   if (src == nullptr) {
     return Status::invalid_argument("upload_storage_buffer: src is null");
   }
-  VKC_ASSIGN(Buffer buffer, storage_buffer(allocator, bytes, access));
+  VKC_ASSIGN(Buffer buffer, mapped_storage_buffer(allocator, bytes, access));
   std::memcpy(buffer.mapped(), src, static_cast<std::size_t>(bytes));
   return buffer;
 }

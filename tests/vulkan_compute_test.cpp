@@ -130,7 +130,11 @@ class ComputeTest : public test::VulkanDeviceTest {
 // dispatch, barrier, wait, read -- with no batch in the way.
 TEST_F(ComputeTest, RunsAPipelineBuiltByHand) {
   constexpr std::uint32_t kCount = 1000;
-  Result<Buffer> made = storage_buffer(allocator(), VkDeviceSize{kCount} * 4);
+  // Device-mapped, so the host reads the result in place: cheap on unified
+  // memory, a PCIe read on a discrete GPU, which a library would avoid with a
+  // CommandBatch readback -- here it keeps the chain free of batches.
+  Result<Buffer> made = mapped_storage_buffer(
+      allocator(), VkDeviceSize{kCount} * 4, HostAccess::Random);
   ASSERT_TRUE(made.ok()) << made.status().message();
   const Buffer out = *std::move(made);
 
@@ -425,16 +429,19 @@ TEST_F(ComputeTest, MakesStorageBuffersWhereTheyBelong) {
   EXPECT_EQ(max_storage_buffer_range(device()),
             physical().limits().maxStorageBufferRange);
 
-  Result<Buffer> host = storage_buffer(allocator(), 64, HostAccess::Random,
-                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  Result<Buffer> host =
+      mapped_storage_buffer(allocator(), 64, HostAccess::SequentialWrite,
+                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
   ASSERT_TRUE(host.ok()) << host.status().message();
   EXPECT_NE(host->mapped(), nullptr);
+  EXPECT_TRUE(host->is_device_local());  // the GPU reads it at VRAM speed
   EXPECT_NE(host->usage() & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0U);
   EXPECT_NE(host->usage() & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0U);
 
   const std::uint32_t words[4] = {1, 2, 3, 4};
   Result<Buffer> filled = upload_storage_buffer(allocator(), words, 16);
   ASSERT_TRUE(filled.ok()) << filled.status().message();
+  EXPECT_TRUE(filled->is_device_local());
   EXPECT_EQ(static_cast<const std::uint32_t*>(filled->mapped())[3], 4U);
   EXPECT_TRUE(
       is_invalid(upload_storage_buffer(allocator(), nullptr, 16).status()));
@@ -517,20 +524,31 @@ TEST_F(ComputeTest, ScratchGrownMidBatchStaysTheBatchsUntilItRuns) {
 
 TEST_F(ComputeTest, StorageInputBindsDeviceBuffersAndStagesHostBytes) {
   Result<Buffer> resident = device_storage_buffer(allocator(), 64);
-  Result<Buffer> host = storage_buffer(allocator(), 64);
+  Result<Buffer> mapped = mapped_storage_buffer(allocator(), 64);
   BufferDesc bare_desc;
   bare_desc.size = 64;
   bare_desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   bare_desc.memory = MemoryUsage::DeviceOnly;
   Result<Buffer> bare = allocator().create_buffer(bare_desc);
-  ASSERT_TRUE(resident.ok() && host.ok() && bare.ok());
+  ASSERT_TRUE(resident.ok() && mapped.ok() && bare.ok());
 
   EXPECT_TRUE(StorageInput(*resident).check("t", 64).ok());
+  EXPECT_TRUE(StorageInput(*mapped).check("t", 64).ok());  // zero-copy input
   EXPECT_TRUE(is_invalid(StorageInput(*resident).check("t", 65)));
   EXPECT_TRUE(is_invalid(StorageInput(*bare).check("t", 4)));  // no STORAGE
-  if (!host->is_device_local()) {  // a discrete GPU's host memory
-    EXPECT_TRUE(is_invalid(StorageInput(*host).check("t", 4)));
-  }
+  // A borrowed buffer in host memory, or whose memory nobody recorded, is
+  // refused: a kernel would read it across PCIe on a discrete GPU.
+  const MemoryInfo host_memory{VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               0, 0};
+  const Buffer in_host(resident->handle(), 64,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                       VK_SHARING_MODE_EXCLUSIVE, nullptr, {}, host_memory);
+  const Buffer unknown(resident->handle(), 64,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                       VK_SHARING_MODE_EXCLUSIVE, nullptr, {}, std::nullopt);
+  EXPECT_TRUE(is_invalid(StorageInput(in_host).check("t", 4)));
+  EXPECT_TRUE(is_invalid(StorageInput(unknown).check("t", 4)));
 
   Buffer upload;
   CommandBatch bind(device(), allocator());

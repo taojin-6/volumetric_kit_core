@@ -166,9 +166,9 @@ V2's choices, from the same comparison:
   made by `Allocator::create_image` with gfx's validation (3D, arrays, cubes,
   mips, multisampling, a default view whose type and aspect follow the image),
   or adopted from an `ImageInfo` and a deleter. `handle()`, not gfx's
-  `image()`, as every other wrapper names it. Images are device-local only,
-  `MemoryUsage::Auto` included: they have no host accessor, so a host-visible
-  one would be memory the host cannot use. recon's `BufferMemoryInfo` becomes
+  `image()`, as every other wrapper names it. Images are device-only (see
+  "Where memory lives"): they have no host accessor, so a host-visible one
+  would be memory the host cannot use. recon's `BufferMemoryInfo` becomes
   `MemoryInfo`, shared by both. `ImageInfo` records what Vulkan cannot be
   asked afterwards -- type, samples, create flags and tiling with the rest --
   so a library handed a borrowed image can tell a cube from a six-layer array
@@ -257,34 +257,56 @@ V3's choices, from the same comparison (gfx has no compute):
 
 ### Where memory lives
 
-Data sits where its consumer is, on both memory architectures, and the
-placement is a memory-type mask, not a preference: VMA scores `DEVICE_LOCAL`
-alone and `DEVICE_LOCAL | HOST_VISIBLE` the same for memory the host never
-touches, breaking the tie by the driver's type order, and on a full heap moves
-on to the next acceptable type. Recorded 2026-10-04.
+Everything the GPU reads or writes directly is device-local, on both memory
+architectures, so a discrete GPU (an NVIDIA system) never runs a shader, a
+vertex fetch or an indirect read against host memory across PCIe: host memory
+reaches the GPU only by a copy. Each placement is a memory-type mask, not a
+preference: VMA scores `DEVICE_LOCAL` alone and `DEVICE_LOCAL | HOST_VISIBLE`
+the same for memory the host never touches, breaking the tie by the driver's
+type order, and on a full heap moves on to the next acceptable type. Recorded
+2026-10-04.
 
 | Data | Usage | Discrete GPU (DRAM + VRAM) | Unified memory |
 | --- | --- | --- | --- |
 | Kernel buffers, images, scratch (`device_storage_buffer`, `create_image`) | `DeviceOnly` | VRAM the host cannot map, never the BAR window | GPU-private storage where the device has it (Apple); else the one pool, unmapped |
-| Uploads (`CommandBatch` staging) | `HostVisible`, sequential write | system RAM, write-combined | the one pool |
-| Readbacks, host-produced parameters | `HostVisible`, random | system RAM, cached | the one pool, cached |
+| Data the host writes and shaders read: uniforms, per-frame parameters, tables (`mapped_storage_buffer`) | `DeviceMapped` | VRAM through the BAR window (all of VRAM under Resizable BAR) | the one pool, mapped |
+| Uploads and readbacks (`CommandBatch`) | `Staging`, transfer usage only | system RAM: write-combined uploads, cached readbacks | the one pool |
 
-- **`DeviceOnly` replaces `DeviceLocal`.** It takes only device-local types
-  the host cannot see wherever the device has one the resource allows, and
-  otherwise every device-local type -- the one pool of a device whose every
-  device-local type is host-visible (lavapipe, most integrated and mobile
-  GPUs). A full heap fails the allocation: kernel data never moves to host
-  memory, or into the BAR window that uploads need. Images default to it, so
-  a driver may compress and tile them (Apple's private storage). recon's
-  `DeviceLocal` and gfx's preferred `DeviceLocal` both become `DeviceOnly` at
-  their migrations.
+- **Three placements, no `Auto`.** `DeviceOnly` replaces `DeviceLocal`, and
+  a buffer is device-only unless it says otherwise; `Auto`, which let VMA put
+  a buffer in host memory once VRAM filled, is gone.
+- **`DeviceOnly`** takes device-local types the host cannot see wherever the
+  device has one the resource allows, else every device-local type -- the
+  one pool of a device whose every device-local type is host-visible
+  (lavapipe, most integrated and mobile GPUs). Images take only this, so a
+  driver may compress and tile them (Apple's private storage).
+- **`DeviceMapped`** takes device-local, host-coherent types only: the BAR
+  window on a discrete GPU, the one pool on unified memory. A device without
+  one refuses it (`Unsupported`), and a full BAR window fails the
+  allocation; neither falls back to host memory. The host writes it
+  sequentially: its reads of the BAR window cross PCIe uncached, so results
+  come back by `CommandBatch::readback`.
+- **`Staging`** takes host memory the device does not hold -- system RAM on a
+  discrete GPU, never VRAM or the BAR window -- and copy usage only:
+  `TRANSFER_SRC` and `TRANSFER_DST`. A storage, uniform, vertex, index or
+  indirect usage is refused, so no shader can bind host memory made here.
+- **A full heap fails.** Nothing moves to slower memory behind a caller's
+  back; `VK_ERROR_OUT_OF_DEVICE_MEMORY` reaches it.
+- **Migrations.** recon's `DeviceLocal` and gfx's preferred `DeviceLocal`
+  become `DeviceOnly`; host-visible buffers with copy usage become
+  `Staging`. Two siblings bind host memory directly today and must move:
+  gfx's per-frame uniform buffers (`OwnedDescriptorSet`) become
+  `DeviceMapped`, and recon's marching-cubes block spans, which the kernel
+  writes and the host walks, become a device-only buffer read back by
+  `CommandBatch` (or device-mapped where `unified_memory()` holds).
+  `storage_buffer` becomes `mapped_storage_buffer`.
 - **`PhysicalDeviceInfo::unified_memory`** tells the architectures apart: an
   integrated or CPU device, or one whose every heap is device-local. A
   library may branch on it; the core's own paths do not yet (the open
   "Unified memory" question).
 - **The masks are tested against real drivers' layouts** -- NVIDIA and AMD
-  discrete with a BAR window, Apple, Intel, Mali, lavapipe, an AMD APU --
-  without a device, as no CI runner has a discrete GPU.
+  discrete with a BAR window, one without, Apple, Intel, Mali, lavapipe, an
+  AMD APU -- without a device, as no CI runner has a discrete GPU.
 
 ### Naming
 
@@ -408,8 +430,7 @@ consuming the package.
 - **Unified memory.** `recon` deliberately runs the staged path on Apple too,
   pending a staging measurement on the iPad. The vulkan tier inherits that
   rule until the measurement says otherwise. On unified memory a staged
-  upload costs one GPU copy within the same DRAM; the alternative is a
-  device-local, host-visible placement the host writes in place -- every
-  type on unified memory, the BAR window on a discrete GPU -- for inputs read
-  as a `StorageInput` device buffer. `unified_memory()` is the switch either
-  way.
+  upload costs one GPU copy within the same DRAM; the alternative,
+  `DeviceMapped` memory the host writes in place and a kernel reads as a
+  `StorageInput` device buffer, now exists. Which inputs take it, and on
+  which architecture (`unified_memory()`), is the open part.

@@ -184,12 +184,13 @@ class ResourcesTest : public test::VulkanDeviceTest {
     ASSERT_EQ(device().queue_submit(1, &info, fence), VK_SUCCESS);
   }
 
-  Buffer host_buffer(VkDeviceSize size, VkBufferUsageFlags usage) {
+  Buffer buffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                MemoryUsage memory) {
     BufferDesc desc;
     desc.size = size;
     desc.usage = usage;
-    desc.memory = MemoryUsage::HostVisible;
-    desc.mapped = true;
+    desc.memory = memory;
+    desc.mapped = memory != MemoryUsage::DeviceOnly;
     Result<Buffer> buffer = allocator().create_buffer(desc);
     EXPECT_TRUE(buffer.ok()) << buffer.status().message();
     return buffer.ok() ? *std::move(buffer) : Buffer{};
@@ -225,8 +226,10 @@ TEST_F(ResourcesTest, WritesEveryDescriptorKindIntoASet) {
   const DescriptorSet set = *std::move(allocated);
   ASSERT_TRUE(set.valid());
 
-  const Buffer storage = host_buffer(256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  const Buffer uniform = host_buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+  const Buffer storage =
+      buffer(256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, MemoryUsage::DeviceOnly);
+  const Buffer uniform = buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                MemoryUsage::DeviceMapped);
   ImageDesc sampled_desc;
   sampled_desc.extent = {4, 4};
   sampled_desc.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -352,7 +355,8 @@ TEST_F(ResourcesTest, RecordsSubmitsAndReRecordsACommandBuffer) {
   CommandBuffer cmd = *std::move(allocated);
   ASSERT_TRUE(cmd.valid());
 
-  const Buffer target = host_buffer(64, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+  const Buffer target =
+      buffer(64, VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryUsage::Staging);
   const auto* words = static_cast<const std::uint32_t*>(target.mapped());
   for (const std::uint32_t pattern : {0xC0FFEEu, 0xBADF00Du}) {
     // The pool's RESET_COMMAND_BUFFER flag lets begin() reset it in place.

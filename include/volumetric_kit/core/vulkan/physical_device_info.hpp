@@ -89,10 +89,11 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   ///
   /// True for an integrated or CPU device, and for one whose every heap is
   /// device-local (Apple silicon, lavapipe); false for a discrete GPU, which
-  /// has host memory beside its VRAM. On unified memory a host-visible buffer
-  /// costs a kernel no more than a device-only one, so a library may skip a
-  /// staging copy there; on a discrete GPU, kernel data belongs in
-  /// `MemoryUsage::DeviceOnly` memory, reached from the host only by staging.
+  /// has host memory beside its VRAM. On unified memory a
+  /// `MemoryUsage::DeviceMapped` input costs a kernel no more than a
+  /// device-only one, so a library may skip a staging copy there; on a
+  /// discrete GPU, kernel data belongs in `MemoryUsage::DeviceOnly` memory,
+  /// reached from the host by staging.
   /// @return Whether memory is unified.
   bool unified_memory() const noexcept { return unified_memory_; }
 

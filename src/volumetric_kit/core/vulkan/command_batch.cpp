@@ -182,7 +182,7 @@ Result<const Buffer*> CommandBatch::stage(VkDeviceSize bytes, bool upload) {
   desc.size = bytes;
   desc.usage = upload ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT
                       : VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-  desc.memory = MemoryUsage::HostVisible;
+  desc.memory = MemoryUsage::Staging;
   desc.mapped = true;
   // Write-combined for an upload; cached for a readback, which the host reads.
   desc.host_access = upload ? HostAccess::SequentialWrite : HostAccess::Random;
