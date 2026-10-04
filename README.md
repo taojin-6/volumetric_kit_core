@@ -17,9 +17,12 @@ buffers zero-copy on one shared device.
 
 > **Status:** the `base` tier is implemented and tested: exception-free
 > `Status`/`Result`, the `VKC_CHECK` contract check, the pluggable log sink, and
-> the version API. The `vulkan`, `camera` and `sensor` tiers are planned; see
-> [DECISIONS.md](DECISIONS.md#tiers) for what each holds and the order they
-> land in. No sibling consumes this repository yet.
+> the version API. calib and recon build on it. The `vulkan` tier's foundation
+> is implemented -- the instance, device selection against a library's
+> requirements, and the logical device every sibling creates or adopts -- and
+> its allocator, compute and shared-device pieces follow. The `camera` and
+> `sensor` tiers are planned; see [DECISIONS.md](DECISIONS.md#tiers) for what
+> each holds and the order they land in.
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and
 Claude Code; `CLAUDE.md` imports it.
@@ -29,7 +32,7 @@ Claude Code; `CLAUDE.md` imports it.
 | Tier | Target | Holds | Status |
 | --- | --- | --- | --- |
 | `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, version | implemented |
-| `vulkan` | `volumetric_kit::core_vulkan` | instance, device create/adopt, allocator, buffers, images, compute, external memory, shared-device bootstrap | planned |
+| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission; then allocator, buffers, images, compute, external memory, shared-device bootstrap | foundation implemented |
 | `camera` | `volumetric_kit::core_camera` | camera models (rational first), rig calibration file | planned |
 | `sensor` | `volumetric_kit::core_sensor` | frame types, capture interface, vendor drivers (Orbbec) | planned |
 
@@ -39,7 +42,17 @@ GPU (calib's headless solver) links only the tiers it uses.
 ## Prerequisites
 
 The `base` tier needs only a C++17 compiler and CMake ≥ 3.21. googletest is
-fetched, pinned, when tests are built.
+fetched, pinned, when tests are built. The `vulkan` tier also needs a Vulkan
+SDK's headers and loader (MoltenVK on Apple):
+
+```sh
+brew install vulkan-headers vulkan-loader molten-vk     # macOS
+sudo apt-get install libvulkan-dev mesa-vulkan-drivers  # Ubuntu (+ lavapipe)
+```
+
+`VKC_WITH_VULKAN` builds it. It defaults ON at the top level and OFF in a
+subproject: a sibling that uses the tier sets it before fetching the core, so
+one that does not (calib's headless solver) needs no Vulkan installed.
 
 ## Build and test
 
@@ -55,6 +68,14 @@ the top-level project; `VKC_INSTALL` defaults ON everywhere (see below).
 `VKC_SANITIZE` is a semicolon list, empty by default, e.g.
 `-DVKC_SANITIZE="address;undefined"`; in a subproject build it also reaches
 the consumer's targets that link the core.
+
+The vulkan tier's device tests run on the best device present and skip when
+there is none. Two environment variables tighten them, and CI sets both:
+
+- `VKC_REQUIRE_VULKAN_DEVICE=1` fails a device test that has no device, so a
+  runner cannot pass by skipping;
+- `VKC_TEST_VALIDATION=1` enables the Khronos validation layer and fails any
+  test that triggers a validation error.
 
 ## Use it in your project
 
@@ -73,6 +94,8 @@ target_link_libraries(your_target PRIVATE volumetric_kit::core_base)
 ```
 
 or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`.
+For the vulkan tier, set `VKC_WITH_VULKAN` ON before
+`FetchContent_MakeAvailable` and link `volumetric_kit::core_vulkan`.
 
 A consumer that installs and exports its own targets installs the core beside
 them (the core's install rules stay on in a subproject), and its package config

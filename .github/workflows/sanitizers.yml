@@ -3,10 +3,9 @@ name: sanitizers
 # AddressSanitizer + UndefinedBehaviorSanitizer + LeakSanitizer, Linux-only
 # (LeakSanitizer is not available on macOS). A green normal build is necessary
 # but not sufficient: this is what turns the tests into leak, use-after-free and
-# undefined-behaviour detectors. Invoked by ci.yml.
-#
-# TODO: the vulkan tier adds lavapipe (software Vulkan) and validation layers
-# here, as recon's sanitizer job does, so device code runs sanitized too.
+# undefined-behaviour detectors. The vulkan tier's device tests run here too,
+# on lavapipe with the Khronos validation layer, so device code is sanitized
+# and validated in one pass. Invoked by ci.yml.
 on:
   workflow_call:
 
@@ -15,10 +14,35 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
+      # Absolute path: ctest changes directory per test, so a relative one
+      # would silently fail to load. The suppressions cover only the driver,
+      # loader and layer (tools/lsan.supp).
+      LSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/lsan.supp:print_suppressions=0
       ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      # A validation error fails the test (tests/vulkan_fixture.hpp).
+      VKC_TEST_VALIDATION: '1'
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install Vulkan, lavapipe and the validation layer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang libvulkan-dev vulkan-tools vulkan-validationlayers
+          # lavapipe, Mesa's software Vulkan driver, installed WITH recommends:
+          # without them its runtime libraries (LLVM) are stripped and it loads
+          # as INCOMPATIBLE_DRIVER, which would skip every device test.
+          sudo apt-get install -y mesa-vulkan-drivers
+          icd=""
+          for f in /usr/share/vulkan/icd.d/lvp_icd*.json; do
+            [ -e "$f" ] && { icd="$f"; break; }
+          done
+          [ -n "$icd" ] || { echo "::error::lavapipe ICD not found"; exit 1; }
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          # A device test fails rather than skips without a device.
+          echo "VKC_REQUIRE_VULKAN_DEVICE=1" >> "$GITHUB_ENV"
+          VK_ICD_FILENAMES="$icd" vulkaninfo --summary
 
       # Debug + clang gives the most reliable sanitizer reports.
       - name: Configure
@@ -43,6 +67,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD" \
-            -DVKC_SANITIZE="address;undefined"
+            -DVKC_WITH_VULKAN=ON -DVKC_SANITIZE="address;undefined"
           cmake --build build-consumer-sanitized
           ./build-consumer-sanitized/vkc_package_consumer

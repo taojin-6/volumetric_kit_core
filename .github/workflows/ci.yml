@@ -20,17 +20,17 @@ jobs:
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
-      # The base tier is pure C++17 with no dependencies, so GitHub-hosted
-      # runners cover it. Legs are listed explicitly: a matrix `include` that
-      # matches an existing os/build_type pair would extend that leg rather
-      # than add one.
+      # GitHub-hosted runners: the Linux legs run the vulkan tier's device
+      # tests on lavapipe (Mesa's software Vulkan), required rather than
+      # skipped; macOS runs them on whatever device MoltenVK finds there. Legs
+      # are listed explicitly: a matrix `include` that matches an existing
+      # os/build_type pair would extend that leg rather than add one.
       #
-      # TODO: the vulkan tier adds the GPU legs recon runs today -- Ubuntu
-      # containers on the self-hosted `vk-linux-gpu` box and the self-hosted
-      # `mac` -- once those runners are registered for this repository
-      # (runners on a personal account are per repository). This repository
-      # is public, so those legs must keep recon's guard and run only
-      # same-repository code.
+      # TODO: add the GPU legs recon runs -- Ubuntu containers on the
+      # self-hosted `vk-linux-gpu` box and the self-hosted `mac` -- once those
+      # runners are registered for this repository (runners on a personal
+      # account are per repository). This repository is public, so those legs
+      # must keep recon's guard and run only same-repository code.
       matrix:
         include:
           - name: ubuntu-24.04 Debug
@@ -56,12 +56,19 @@ jobs:
             os: ubuntu-24.04
             build_type: Release
             shared: true
+          # A consumer with no Vulkan installed (calib's headless solver):
+          # the base tier alone, built, installed and consumed.
+          - name: ubuntu-24.04 Release, no Vulkan
+            os: ubuntu-24.04
+            build_type: Release
+            no_vulkan: true
     uses: ./.github/workflows/_build.yml
     with:
       os: ${{ matrix.os }}
       build_type: ${{ matrix.build_type }}
       cxx_flags: ${{ matrix.cxx_flags || '' }}
       shared: ${{ matrix.shared || false }}
+      vulkan: ${{ !matrix.no_vulkan }}
 
   lint:
     uses: ./.github/workflows/lint.yml

@@ -1,0 +1,26 @@
+# LeakSanitizer suppressions for the sanitizer CI job
+# (.github/workflows/sanitizers.yml), the same set as volumetric_kit_recon's.
+#
+# They cover third-party driver and runtime allocations that legitimately
+# persist to process exit (TLS caches, JIT contexts, dlopen'd ICD globals), not
+# bugs we can fix. Each entry names a library or symbol substring, so a
+# first-party leak is still reported: never add a `volumetric_kit::` frame here.
+# Fix a first-party leak instead of suppressing it.
+
+# Mesa / lavapipe, the software Vulkan driver on the GPU-less runner.
+leak:libvulkan_lvp
+leak:lvp_
+leak:libgallium
+leak:swrast
+leak:util_queue
+leak:libLLVM
+
+# Vulkan loader trampolines and driver discovery.
+leak:libvulkan.so
+leak:loader_
+
+# The Khronos validation layer's internal state.
+leak:libVkLayer_khronos_validation
+
+# Globals that stay resident from dlopen'ing the driver and layers.
+leak:__libc_dlopen

@@ -17,6 +17,23 @@ foreach(_vkc_test base_result base_check base_log base_version)
     TIMEOUT 60)
 endforeach()
 
+# vulkan: the VkResult helpers and DeviceRequirements need no device; the device
+# tests skip without one, unless VKC_REQUIRE_VULKAN_DEVICE is set (CI sets it
+# beside lavapipe), and fail on a validation error under VKC_TEST_VALIDATION=1
+# (tests/vulkan_fixture.hpp).
+if(VKC_WITH_VULKAN)
+  foreach(_vkc_test vulkan_result vulkan_requirements vulkan_device)
+    add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
+    target_link_libraries(vkc_${_vkc_test}_test
+                          PRIVATE volumetric_kit::core_vulkan GTest::gtest_main)
+    vkc_target_warnings(vkc_${_vkc_test}_test)
+    gtest_discover_tests(
+      vkc_${_vkc_test}_test
+      PROPERTIES
+      TIMEOUT 120)
+  endforeach()
+endif()
+
 # The one-instance warning (cmake/vkc_single_instance.cmake): configure a
 # consumer that links a static core into a shared library and expect the
 # warning, then the same with the core shared and expect none. Configure only;

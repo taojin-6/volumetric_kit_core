@@ -36,8 +36,20 @@ repos:
       - id: cmake-format
         additional_dependencies: [cmakelang, pyyaml]
 
-# TODO: the vulkan tier adds recon's `vulkan-include-umbrella` hook, so
-# first-party code reaches Vulkan only through the core's vulkan.hpp.
+  # First-party code includes Vulkan through
+  # "volumetric_kit/core/vulkan/vulkan.hpp", never <vulkan/...> directly, so the
+  # loader choice (the link-time loader today, volk later) stays a detail of
+  # that one header; recon, gfx and ios run the same hook. The pattern is
+  # anchored to the start of a line, so it matches real #include directives,
+  # not a path quoted in a comment or a Doxygen @code block.
+  - repo: local
+    hooks:
+      - id: vulkan-include-umbrella
+        name: enforce core/vulkan/vulkan.hpp Vulkan-include umbrella
+        entry: '^\s*#\s*include\s*[<"]vulkan/'
+        language: pygrep
+        files: \.(h|hpp|hxx|inl|ipp|c|cc|cpp|cxx|cu|cuh|mm)$
+        exclude: ^include/volumetric_kit/core/vulkan/vulkan\.hpp$
 
 # pre-commit.ci (https://pre-commit.ci) runs these same hooks on every PR and
 # pushes the auto-fixes back to the branch. The `ci / required` check stays the

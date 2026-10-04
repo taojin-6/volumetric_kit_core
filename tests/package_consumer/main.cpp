@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// Links volumetric_kit::core and uses each piece of the base tier once, so a
-// broken install, export or include path fails here rather than in a sibling.
+// Links volumetric_kit::core and uses each piece of the base tier once -- and
+// of the vulkan tier, when the core has it -- so a broken install, export or
+// include path fails here rather than in a sibling. Nothing here needs a GPU.
 
 #include <cstdio>
 #include <string_view>
@@ -10,6 +11,11 @@
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/version.hpp"
+
+#ifdef VKC_CONSUMER_HAS_VULKAN
+#include "volumetric_kit/core/vulkan/device_requirements.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
+#endif
 
 namespace vkc = volumetric_kit::core;
 
@@ -22,6 +28,18 @@ vkc::Status run() {
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");
   if (parse_positive(-1).ok()) return vkc::Status::numerical("accepted -1");
+#ifdef VKC_CONSUMER_HAS_VULKAN
+  if (vkc::to_string(VK_ERROR_DEVICE_LOST) != "VK_ERROR_DEVICE_LOST") {
+    return vkc::Status::invalid_argument("VkResult names do not resolve");
+  }
+  vkc::DeviceRequirements graphics;
+  graphics.queue_flags = VK_QUEUE_GRAPHICS_BIT;
+  VKC_ASSIGN(const vkc::DeviceRequirements both,
+             vkc::merge(graphics, vkc::DeviceRequirements{}));
+  VKC_CHECK(both.queue_flags == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT),
+            "merged queue flags");
+  std::printf("vulkan tier consumed\n");
+#endif
   return {};
 }
 

@@ -89,7 +89,8 @@ C++17, with no compiler extensions.
 ## Build and validation
 
 Run from the task's worktree. The build requires CMake ≥ 3.21 and a C++17
-compiler.
+compiler; the vulkan tier also needs a Vulkan SDK (MoltenVK on Apple), or
+`-DVKC_WITH_VULKAN=OFF` to build without it.
 
 ```sh
 core_root="$(git rev-parse --show-toplevel)"
@@ -113,6 +114,10 @@ cmake --build "$core_root/build-tidy" --parallel
   regression coverage for changed behavior. A change to an installed header or
   to the CMake package also needs the package-consumer check CI runs
   (`tests/package_consumer/`, both `find_package` and `add_subdirectory`).
+- The vulkan tier's device tests skip without a device. Run them with
+  `VKC_REQUIRE_VULKAN_DEVICE=1` so a skip fails, and `VKC_TEST_VALIDATION=1`
+  so a validation error fails (CONTRIBUTING.md, "GPU tests"); report which
+  device they ran on. Distinguish a skipped device test from a passed one.
 - Documentation-only changes need formatting, link, and consistency checks;
   no build is needed. Hooks can be scoped with `pre-commit run --files`.
 

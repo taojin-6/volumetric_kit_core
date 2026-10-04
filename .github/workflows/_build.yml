@@ -19,6 +19,11 @@ on:
       shared:
         type: boolean
         default: false
+      # Build the vulkan tier: Linux runs its device tests on lavapipe
+      # (required, never skipped), macOS on whatever device MoltenVK finds.
+      vulkan:
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -27,12 +32,40 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install Vulkan (Linux)
+        if: inputs.vulkan && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libvulkan-dev vulkan-tools
+          # lavapipe, Mesa's software Vulkan driver, installed WITH recommends:
+          # without them its runtime libraries (LLVM) are stripped and it loads
+          # as INCOMPATIBLE_DRIVER, which would skip every device test.
+          sudo apt-get install -y mesa-vulkan-drivers
+          icd=""
+          for f in /usr/share/vulkan/icd.d/lvp_icd*.json; do
+            [ -e "$f" ] && { icd="$f"; break; }
+          done
+          [ -n "$icd" ] || { echo "::error::lavapipe ICD not found"; exit 1; }
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          # A device test fails rather than skips without a device.
+          echo "VKC_REQUIRE_VULKAN_DEVICE=1" >> "$GITHUB_ENV"
+          VK_ICD_FILENAMES="$icd" vulkaninfo --summary
+
+      - name: Install Vulkan (macOS)
+        if: inputs.vulkan && runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: brew install vulkan-headers vulkan-loader molten-vk
+
       - name: Configure
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
             -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
-            -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }}
+            -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }} \
+            -DVKC_WITH_VULKAN=${{ inputs.vulkan && 'ON' || 'OFF' }}
 
       - name: Build
         run: cmake --build build --parallel
@@ -59,6 +92,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
             -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
             -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }} \
+            -DVKC_WITH_VULKAN=${{ inputs.vulkan && 'ON' || 'OFF' }} \
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
           cmake --build build-consumer-subdir
           ./build-consumer-subdir/vkc_package_consumer

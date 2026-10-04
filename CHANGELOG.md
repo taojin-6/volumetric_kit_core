@@ -9,6 +9,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- `vulkan` tier foundation (`volumetric_kit::core_vulkan`, built with
+  `VKC_WITH_VULKAN`), merged from recon's and gfx's cores (DECISIONS.md, "The
+  vulkan tier"):
+  - `vulkan.hpp`, the one header first-party code includes Vulkan through
+    (the `vulkan-include-umbrella` hook enforces it); `vk_error`,
+    `VKC_VK_TRY`, `vk_result` and `to_string(VkResult)`; `UniqueHandle`.
+  - `PhysicalDeviceInfo`: a device's properties, queue families, extensions
+    and features, captured once.
+  - `DeviceRequirements`, which replaces recon's and gfx's `DeviceConfig`;
+    `merge` for a device two libraries share; and `check_device_support`, the
+    one check selection, create and adopt share.
+  - `Instance`: Vulkan 1.3 or the loader's lower version, validation routed
+    to the log sink (source `"vulkan"`), debug utils, portability.
+    `select_physical_device(requirements, surface)` says why each device was
+    refused.
+  - `Device`: create or adopt; one queue plus an optional present queue;
+    thread-safe `submit_single_time`, `submit_and_wait`, `queue_present` and
+    `wait_idle`; a never-null `submit_mutex`; debug labels; external-memory
+    and Metal-object capabilities.
+- CI runs the vulkan tier's device tests on lavapipe, with a device required,
+  and in the sanitizer job under the Khronos validation layer; a leg builds
+  with no Vulkan installed.
+
 - Build system: CMake ≥ 3.21, C++17, per-tier targets with an umbrella
   `volumetric_kit::core`, install/export for `find_package(volumetric_kit_core)`
   and FetchContent. Tests and `-Werror` default ON only at the top level;

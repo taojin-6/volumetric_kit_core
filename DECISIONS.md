@@ -36,7 +36,7 @@ uses (`gfx` never pulls in a camera model or a vendor SDK):
 | Tier | Depends on | Holds | Lands |
 | --- | --- | --- | --- |
 | `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, version | now |
-| `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | before `calib` writes GPU code |
+| `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
 | `camera` | `base` | camera models, the rig calibration file | with `calib`'s rational model |
 | `sensor` | `camera`, `vulkan` | frame types, the capture interface, vendor drivers (Orbbec, behind an option) | after `camera` |
 
@@ -52,6 +52,69 @@ uses (`gfx` never pulls in a camera model or a vendor SDK):
   returns unit 3D rays so it can be added without a break.
 - `sensor` moves `recon`'s sensor tier here, so `calib` and `recon` share one
   driver per device.
+
+### The vulkan tier
+
+It lands in five stages, each its own PR, merged before any sibling migrates:
+
+| Stage | Holds |
+| --- | --- |
+| V1 (landed) | `vulkan.hpp`, the `VkResult` helpers, `UniqueHandle`, `PhysicalDeviceInfo`, `DeviceRequirements` with `merge` and `check_device_support`, `Instance`, `Device` |
+| V2 | allocator, buffers, images, descriptors, shader modules, sync primitives, command pools and buffers |
+| V3 | compute pipelines, kernel sets, `CommandBatch`, the compute helpers |
+| V4 | query pools, `GpuTimer`, `StageMetrics` (to `base`), external memory |
+| V5 | the shared-device bootstrap, replacing recon's example copy and ios's `SharedDevice` |
+
+V1's choices, from comparing the two cores on 2026-10-03:
+
+- **One `DeviceRequirements` replaces both `DeviceConfig`s.** Each library
+  states what it needs -- recon a compute queue, timeline semaphores and
+  scalar block layout; gfx a graphics queue, Vulkan 1.3, dynamic rendering and
+  presentation -- and the same struct drives selection, `Device::create` and
+  `Device::adopt`. `merge` combines two libraries' into the one a shared
+  device must meet. Names are owned strings (gfx's borrowed pointers could
+  dangle); `optional_extensions` replaces recon's `external_memory` /
+  `metal_objects` flags and gfx's `needs_external_memory`, and
+  `Device::extension_enabled` reports what was enabled.
+- **One check.** `check_device_support` -- API version, queue family, present
+  family, extensions, core features, the timeline / scalar / dynamic-rendering
+  features -- is what selection and create run, and adopt runs its
+  device-level half, so the three cannot drift as the copies did.
+- **Generic queue accessors.** `queue()`, `queue_family()`, `queue_flags()`,
+  `timestamp_valid_bits()`, plus an optional present queue, replace recon's
+  `compute_*` and gfx's `graphics_*`. The present queue is the primary queue
+  when its family can present.
+- **recon's submit model.** Each submit records on a command pool of its own,
+  so submission is thread-safe, and keeps its fence, as creating one cost an
+  RTX 5090 about 0.3 ms. gfx's single shared `command_pool()` goes; its
+  `submit_and_wait`, `queue_present` and `wait_idle` stay, on the same kept
+  fences. `submit_mutex()` is never null (recon's): a device's own mutex
+  guards an unshared queue, so several threads may submit through one
+  `Device`. A moved-to device locks its own mutex, so gfx's cached
+  `submit_mutex()` pointer must be re-read after a move.
+- **gfx's adopt check.** A requirement must be supported by the physical
+  device *and* declared enabled by the creator; recon trusted the
+  declaration alone. A distinct present queue gets its own mutex
+  (`AdoptedDevice::present_mutex`), as ios's bootstrap hands out one per
+  queue.
+- **The instance asks for 1.3, or the loader's lower version** (gfx's), never
+  below 1.1. MoltenVK caps every device's reported version at the instance's
+  request, so recon's 1.2 request would hide a 1.3 device from gfx.
+  `Device::create(const Instance&, …)` refuses requirements above the
+  instance's version.
+- **Validation messages reach the log sink with source `"vulkan"`.**
+- **Vulkan from the system** (`find_package(Vulkan)`, `Vulkan::Vulkan`
+  PUBLIC), as recon and ios use it; gfx compiles against pinned
+  Vulkan-Headers instead (an open decision below).
+- **`VKC_WITH_VULKAN` is opt-in for a subproject.** ON at the top level, OFF
+  when fetched: recon and gfx set it, and calib, which fetches the core for
+  its error types, then needs no Vulkan installed. An installed core ships the
+  tier's headers only with its library, and re-finds Vulkan only then.
+- **CI without GPUs, but not without devices.** The hosted Linux legs run the
+  device tests on lavapipe with `VKC_REQUIRE_VULKAN_DEVICE=1`, so a missing
+  device fails instead of skipping; the sanitizer job adds the validation
+  layer (`VKC_TEST_VALIDATION=1`), so ASan, UBSan, LSan and validation check
+  the same run.
 
 ### Naming
 
@@ -160,10 +223,16 @@ consuming the package.
 
 ## Open decisions
 
-- **GPU CI for the vulkan tier.** `recon`'s GPU runners (`vk-linux-gpu`,
-  `mac`) are registered per repository, so they must be registered here before
-  the vulkan tier lands. On a public repository those legs must run only
+- **GPU CI for the vulkan tier.** lavapipe covers correctness on hosted
+  runners, but no real GPU runs here yet. `recon`'s GPU runners
+  (`vk-linux-gpu`, `mac`) are registered per repository, so they must be
+  registered here too -- before the allocator (V2), whose memory placement
+  differs on a discrete GPU. On a public repository those legs must run only
   same-repository code, as `recon`'s guard does.
+- **Vulkan headers for gfx.** The tier uses the system's headers; gfx pins
+  Vulkan-Headers 1.4.357 and links the loader privately. Both in one build
+  would mix two header versions. Decide at gfx's migration: gfx adopts the
+  system headers, or the core vendors the same pin.
 - **Unified memory.** `recon` deliberately runs the staged path on Apple too,
   pending a staging measurement on the iPad. The vulkan tier inherits that
   rule until the measurement says otherwise.
