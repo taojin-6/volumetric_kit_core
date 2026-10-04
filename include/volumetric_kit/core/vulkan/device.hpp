@@ -60,6 +60,7 @@ inline std::uint64_t debug_object_handle(Handle handle) noexcept {
 /// @code
 /// AdoptedDevice handoff;
 /// handoff.instance = instance;
+/// handoff.instance_api_version = app_info.apiVersion;
 /// handoff.physical_device = physical;
 /// handoff.device = device;
 /// handoff.queue_family = compute_family;
@@ -69,10 +70,13 @@ inline std::uint64_t debug_object_handle(Handle handle) noexcept {
 /// VKC_ASSIGN(Device borrowed, Device::adopt(handoff, reqs));
 /// @endcode
 struct AdoptedDevice {
-  /// The instance `device` belongs to; it must have negotiated Vulkan 1.1 or
-  /// later, as @ref Device::adopt queries the physical device through
-  /// `vkGetPhysicalDeviceFeatures2`.
+  /// The instance `device` belongs to.
   VkInstance instance = VK_NULL_HANDLE;
+  /// The Vulkan version `instance` was created with
+  /// (`VkApplicationInfo::apiVersion`). It bounds what the device may use,
+  /// whatever the physical device reports, and what @ref Device::adopt may
+  /// query. Required: the default, `0`, fails @ref Device::adopt.
+  std::uint32_t instance_api_version = 0;
   /// The physical device `device` was created on.
   VkPhysicalDevice physical_device = VK_NULL_HANDLE;
   /// The logical device to borrow; @ref Device never destroys it.
@@ -132,7 +136,7 @@ struct AdoptedDevice {
 ///
 /// @code
 /// VKC_ASSIGN(Instance instance, Instance::create({}));
-/// VKC_ASSIGN(VkPhysicalDevice gpu, instance.select_physical_device(reqs));
+/// VKC_ASSIGN(PhysicalDeviceInfo gpu, instance.select_physical_device(reqs));
 /// VKC_ASSIGN(Device device, Device::create(instance, gpu, reqs));
 /// VKC_TRY(device.submit_single_time([&](VkCommandBuffer cmd) {
 ///   vkCmdFillBuffer(cmd, buffer, 0, VK_WHOLE_SIZE, 0);
@@ -150,38 +154,45 @@ class VKC_VULKAN_API Device {
   /// family with every @ref DeviceRequirements::queue_flags bit, and a present
   /// queue, which is that same queue when its family can present.
   /// @param instance  The instance @p physical belongs to; it must outlive the
-  ///                  device. Its negotiated version must reach
-  ///                  @ref DeviceRequirements::api_version, and its debug
-  ///                  utils decide whether the label entry points resolve.
-  /// @param physical  The physical device.
+  ///                  device. Its debug utils decide whether the label entry
+  ///                  points resolve.
+  /// @param physical  The physical device's capabilities, captured on
+  ///                  @p instance: as @ref Instance::select_physical_device
+  ///                  returns them, or from @ref PhysicalDeviceInfo::query
+  ///                  with `instance.api_version()`. Their usable version must
+  ///                  reach @ref DeviceRequirements::api_version.
   /// @param reqs      What the device must provide.
   /// @param surface   The surface to present to; required when
   ///                  @ref DeviceRequirements::needs_present.
-  /// @return The device; @ref Status::Code::InvalidArgument for a null
-  ///         @p physical or a missing @p surface;
-  ///         @ref Status::Code::Unsupported naming the first requirement
-  ///         @p physical or @p instance fails; or a backend @ref Status.
+  /// @return The device; @ref Status::Code::InvalidArgument for an empty
+  ///         @p physical, one captured on a higher-version instance, or a
+  ///         missing @p surface; @ref Status::Code::Unsupported naming the
+  ///         first requirement @p physical fails; or a backend @ref Status.
   static Result<Device> create(const Instance& instance,
-                               VkPhysicalDevice physical,
+                               const PhysicalDeviceInfo& physical,
                                const DeviceRequirements& reqs,
                                VkSurfaceKHR surface = VK_NULL_HANDLE);
 
   /// @brief @ref create on an instance made by someone else.
   /// @param instance  The instance @p physical belongs to; it must outlive the
-  ///                  device and have negotiated
-  ///                  @ref DeviceRequirements::api_version or later.
+  ///                  device.
   /// @param instance_debug_utils_enabled  Whether @p instance enabled
   ///                  `VK_EXT_debug_utils`. Vulkan cannot be asked, and an
   ///                  entry point of an extension not enabled is not portable
   ///                  (a directly linked MoltenVK returns a live pointer that
   ///                  must not be called), so the caller declares it.
-  /// @param physical  The physical device.
+  /// @param physical  The physical device's capabilities, from
+  ///                  @ref PhysicalDeviceInfo::query with the version
+  ///                  @p instance was created with, which bounds what the
+  ///                  device may use.
   /// @param reqs      What the device must provide.
   /// @param surface   The surface to present to, as above.
-  /// @return As the overload above.
+  /// @return The device; @ref Status::Code::InvalidArgument for an empty
+  ///         @p physical or a missing @p surface; otherwise as the overload
+  ///         above.
   static Result<Device> create(VkInstance instance,
                                bool instance_debug_utils_enabled,
-                               VkPhysicalDevice physical,
+                               const PhysicalDeviceInfo& physical,
                                const DeviceRequirements& reqs,
                                VkSurfaceKHR surface = VK_NULL_HANDLE);
 
@@ -195,9 +206,11 @@ class VKC_VULKAN_API Device {
   ///                 what the creator enabled.
   /// @param reqs     What this library needs.
   /// @return The borrowing device; @ref Status::Code::InvalidArgument for a
-  ///         null handle, a queue family out of range, or presentation
-  ///         without a present queue; or @ref Status::Code::Unsupported naming
-  ///         the first requirement not supported or not declared enabled.
+  ///         null handle, an unset instance version, a queue family out of
+  ///         range, or presentation without a present queue; or
+  ///         @ref Status::Code::Unsupported naming the first requirement not
+  ///         supported (within the instance's version) or not declared
+  ///         enabled.
   static Result<Device> adopt(const AdoptedDevice& adopted,
                               const DeviceRequirements& reqs);
 
@@ -214,7 +227,8 @@ class VKC_VULKAN_API Device {
   /// @return Whether this object owns, and will destroy, the `VkDevice`:
   ///         `false` for one from @ref adopt.
   bool owns_device() const noexcept { return state_.owns_device; }
-  /// @return The physical device's capabilities, captured at create or adopt.
+  /// @return The physical device's capabilities, captured at create or adopt;
+  ///         `caps().api_version()` is the version the device may use.
   const PhysicalDeviceInfo& caps() const noexcept { return caps_; }
 
   /// @return The queue this library submits to.
@@ -287,7 +301,9 @@ class VKC_VULKAN_API Device {
   /// @return OK once the work completes; or the failed step's backend
   ///         @ref Status. A failed wait leaves the command buffer and fence
   ///         to a device that may still run them, until the device is
-  ///         destroyed.
+  ///         destroyed; if the work is still unfinished then, a `VkDevice`
+  ///         this object owns is leaked with them rather than destroyed
+  ///         under running work (logged as an error).
   ///
   /// TODO: add the overload that brackets the work with a GPU timestamp span
   /// (recon's GpuTimer) with the tier's timers.
@@ -300,7 +316,8 @@ class VKC_VULKAN_API Device {
   ///             pool of @ref queue_family; it stays the caller's.
   /// @return OK once it completes; or a backend @ref Status. After a failed
   ///         wait the device may still run @p cmd, so whatever it uses must
-  ///         stay alive.
+  ///         stay alive, and the device is then destroyed as
+  ///         @ref submit_single_time says.
   Status submit_and_wait(VkCommandBuffer cmd) const;
 
   /// @brief Present on @ref present_queue, holding its mutex.
@@ -391,16 +408,17 @@ class VKC_VULKAN_API Device {
     bool metal_objects = false;
   };
 
-  // A command buffer on a pool of its own, and the fence its submit
-  // signals. A pool must be externally synchronized, so each submit takes one
-  // no other holds: a free one, or a new one when all are in use. It comes
-  // back once its wait is done; `made_` keeps every one, so destroy() frees
-  // them all, and one left to the device after a failed wait is `pending`
-  // there and waited for first.
+  // The fence a submit signals and, made the first time a submit records
+  // into it, a command buffer on a pool of its own (submit_and_wait records
+  // nothing). A pool must be externally synchronized, so each submit takes
+  // one no other holds: a free one, or a new one when all are in use. It
+  // comes back once its wait is done; `made_` keeps every one, so destroy()
+  // frees them all, and one left to the device after a failed wait is
+  // `pending` there and waited for first. The fence names it.
   struct Command {
+    VkFence fence = VK_NULL_HANDLE;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer buffer = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
     bool pending = false;
   };
 
@@ -411,7 +429,11 @@ class VKC_VULKAN_API Device {
   // metal-objects flag, from enabled_extensions_.
   void resolve_entry_points(bool instance_debug_utils) noexcept;
   std::mutex* present_mutex() const noexcept;
-  Result<Command> take_command() const;
+  // `record`: the submit records, so the command needs its buffer.
+  Result<Command> take_command(bool record) const;
+  // Gives `command` its pool and buffer, in made_ too; called holding
+  // commands_mutex_.
+  Status add_command_buffer(Command* command) const;
   void give_back(const Command& command) const noexcept;
   void leave_to_device(const Command& command) const noexcept;
   // Submits `cmd` signalling `command.fence`, waits, and resets the fence.

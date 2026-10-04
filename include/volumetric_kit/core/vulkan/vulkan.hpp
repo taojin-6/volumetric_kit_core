@@ -12,4 +12,7 @@
 /// loader choice (the link-time loader today, volk later for iOS and Android)
 /// therefore stays a detail of this one line.
 
+// TODO: switch iOS and Android to volk (VK_NO_PROTOTYPES, then volk.h here).
+// UniqueHandle already takes a loaded entry point; Instance and Device must
+// then call volkLoadInstance / volkLoadDevice.
 #include <vulkan/vulkan.h>  // IWYU pragma: export

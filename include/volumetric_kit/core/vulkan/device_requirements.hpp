@@ -47,8 +47,14 @@ namespace volumetric_kit::core {
 ///
 /// Result<DeviceRequirements> shared = merge(renderer, fusion);
 /// @endcode
+///
+/// TODO: give it the instance-level needs (`VK_EXT_debug_utils` for labels, a
+/// window's surface extensions) with the shared-device bootstrap (V5), the
+/// first code to create an instance from requirements.
 struct DeviceRequirements {
-  /// The lowest Vulkan version the device must report.
+  /// The lowest Vulkan version usable on the device: the lower of what it
+  /// reports and what its instance negotiated
+  /// (@ref PhysicalDeviceInfo::api_version).
   std::uint32_t api_version = VK_API_VERSION_1_2;
   /// The capabilities the device's queue must all have. A compute or graphics
   /// queue supports transfer whether or not its family advertises
@@ -73,12 +79,6 @@ struct DeviceRequirements {
   bool scalar_block_layout = false;
   /// `dynamicRendering` (Vulkan 1.3 core): gfx's render targets.
   bool dynamic_rendering = false;
-  /// `VK_EXT_debug_utils` on the **instance**, so the device can name objects
-  /// and label command buffers for a GPU profiler. Optional and diagnostic:
-  /// nothing fails without it. A flag rather than an entry in
-  /// @ref extensions because it is an instance extension, enabled by whoever
-  /// creates the instance.
-  bool debug_utils = false;
   /// Further feature structs to enable (a caller-owned `pNext` chain of
   /// `*Features` structs, each with its `sType` set), appended to the chain
   /// @ref Device::create builds. Query support first; a feature the device
@@ -112,6 +112,15 @@ VKC_VULKAN_API Result<DeviceRequirements> merge(const DeviceRequirements& a,
                                                 const DeviceRequirements& b);
 
 /// @brief The queue families a supported device would use.
+///
+/// @code
+/// VKC_ASSIGN(const DeviceSupport support,
+///            check_device_support(caps, reqs, surface));
+/// if (support.present_family &&
+///     *support.present_family != support.queue_family) {
+///   // ... swapchain images change queue family before each present ...
+/// }
+/// @endcode
 struct DeviceSupport {
   /// The first family whose capabilities include every
   /// @ref DeviceRequirements::queue_flags bit.
@@ -124,11 +133,12 @@ struct DeviceSupport {
 
 /// @brief Whether a physical device meets a set of requirements.
 ///
-/// The check device selection and @ref Device::create share: the API
+/// The check device selection and @ref Device::create share: the usable API
 /// version, a queue family with the capabilities, a present family for the
 /// surface, every required extension (`VK_KHR_swapchain` with presentation),
 /// every core feature, and the timeline / scalar / dynamic-rendering
-/// features. @ref DeviceRequirements::feature_chain is not inspected.
+/// features, each within the usable version that makes it core.
+/// @ref DeviceRequirements::feature_chain is not inspected.
 /// @param caps     The device's captured capabilities.
 /// @param reqs     The requirements.
 /// @param surface  The surface to present to; required when

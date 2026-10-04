@@ -7,6 +7,8 @@
 /// @brief Sole owner of a device-scoped Vulkan handle, freeing it via a
 ///        `vkDestroy*` entry point exactly once.
 
+#include <type_traits>
+
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
@@ -17,23 +19,34 @@ namespace volumetric_kit::core {
 /// Collapses the device-plus-handle move/reset/destroy bookkeeping that every
 /// device-owned wrapper (fences, semaphores, shader modules, descriptor
 /// layouts, pipelines) would otherwise re-derive -- where a forgotten reset
-/// double-frees or leaks -- into one owner. The deleter is a compile-time
-/// `vkDestroy*` pointer, so the owner adds no storage beyond the device and
-/// the handle. recon and gfx carried identical copies of it.
+/// double-frees or leaks -- into one owner. The deleter is a template
+/// argument, so the owner adds no storage beyond the device and the handle.
+/// recon and gfx carried identical copies of it.
+///
+/// @p Destroy binds by reference, so `vkDestroyFence` names whatever the
+/// loader declares: the link-time loader's function today, or, under a
+/// loader that resolves entry points at run time (volk, `VK_NO_PROTOTYPES`),
+/// the global variable holding the loaded pointer, read at each call. Either
+/// way the spelling below compiles, and the loader switch stays inside
+/// `vulkan.hpp`.
 ///
 /// @warning The `VkDevice` the handle was created on must outlive this owner:
 ///          the destructor calls @p Destroy on the stored device.
 ///
 /// @tparam HandleT  The Vulkan handle type (e.g. `VkShaderModule`).
-/// @tparam Destroy  The `vkDestroy*` entry point that frees a @p HandleT.
+/// @tparam Destroy  The `vkDestroy*` entry point that frees a @p HandleT: a
+///                  function, or a variable holding a pointer to one.
 ///
 /// @code
 /// UniqueHandle<VkFence, vkDestroyFence> fence(device, raw_fence);  // adopts
 /// VkFence h = fence.get();
 /// @endcode
-template <class HandleT, void(VKAPI_PTR* Destroy)(VkDevice, HandleT,
-                                                  const VkAllocationCallbacks*)>
+template <class HandleT, auto& Destroy>
 class UniqueHandle {
+  static_assert(std::is_invocable_r_v<void, decltype(Destroy), VkDevice,
+                                      HandleT, const VkAllocationCallbacks*>,
+                "Destroy must be the vkDestroy* entry point for HandleT");
+
  public:
   /// @brief Construct an empty owner (owns nothing; `valid()` is false).
   UniqueHandle() noexcept = default;

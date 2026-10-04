@@ -15,6 +15,7 @@
 
 #include "support.hpp"
 #include "volumetric_kit/core/base/check.hpp"
+#include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
@@ -25,6 +26,7 @@
 namespace volumetric_kit::core {
 namespace {
 
+constexpr const char* kLogSource = "vulkan";
 constexpr const char* kExternalMemoryFd =
     VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
 // Its name macro needs VK_USE_PLATFORM_METAL_EXT, which only Metal code
@@ -155,16 +157,15 @@ struct FeatureChain {
 }  // namespace
 
 Result<Device> Device::create(const Instance& instance,
-                              VkPhysicalDevice physical,
+                              const PhysicalDeviceInfo& physical,
                               const DeviceRequirements& reqs,
                               VkSurfaceKHR surface) {
-  // A device can use no more of Vulkan than its instance negotiated, whatever
-  // the physical device reports.
-  if (instance.api_version() < reqs.api_version) {
-    return Status::unsupported(
-        "Device::create: the instance negotiated Vulkan " +
-        detail::version_text(instance.api_version()) +
-        "; the requirements need " + detail::version_text(reqs.api_version));
+  // The usable version bounds the requirements by the instance's only when
+  // the capabilities were captured on it, or on one of a lower version.
+  if (physical.api_version() > instance.api_version()) {
+    return Status::invalid_argument(
+        "Device::create: the capabilities were captured on an instance of a "
+        "higher Vulkan version than this one; query them on this one");
   }
   return create(instance.handle(), instance.debug_utils_enabled(), physical,
                 reqs, surface);
@@ -172,15 +173,16 @@ Result<Device> Device::create(const Instance& instance,
 
 Result<Device> Device::create(VkInstance instance,
                               bool instance_debug_utils_enabled,
-                              VkPhysicalDevice physical,
+                              const PhysicalDeviceInfo& physical,
                               const DeviceRequirements& reqs,
                               VkSurfaceKHR surface) {
   // `instance` is a lifetime contract: the device stores only handles.
   (void)instance;
-  if (physical == VK_NULL_HANDLE) {
-    return Status::invalid_argument("Device::create: physical device is null");
+  if (physical.handle() == VK_NULL_HANDLE) {
+    return Status::invalid_argument(
+        "Device::create: no physical device captured");
   }
-  PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(physical);
+  const PhysicalDeviceInfo& caps = physical;
   VKC_ASSIGN(const DeviceSupport support,
              check_device_support(caps, reqs, surface));
 
@@ -232,9 +234,13 @@ Result<Device> Device::create(VkInstance instance,
   info.ppEnabledExtensionNames =
       extension_names.empty() ? nullptr : extension_names.data();
 
+  // Created into a local: a failed create leaves the output unspecified, and
+  // the Device must not destroy whatever it holds.
+  VkDevice handle = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &handle));
   Device device;
-  VKC_VK_TRY(vkCreateDevice(physical, &info, nullptr, &device.state_.device));
-  device.state_.physical = physical;
+  device.state_.device = handle;
+  device.state_.physical = caps.handle();
   device.state_.owns_device = true;
   device.state_.queue_family = support.queue_family;
   const VkQueueFamilyProperties& family =
@@ -252,7 +258,7 @@ Result<Device> Device::create(VkInstance instance,
                        &device.state_.present_queue);
     }
   }
-  device.caps_ = std::move(caps);
+  device.caps_ = caps;
   device.enabled_extensions_ = std::move(enabled);
   device.resolve_entry_points(instance_debug_utils_enabled);
   return device;
@@ -267,6 +273,11 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
         "Device::adopt: instance, physical device, device and queue must all "
         "be non-null");
   }
+  if (adopted.instance_api_version == 0) {
+    return Status::invalid_argument(
+        "Device::adopt: instance_api_version is unset; declare the version "
+        "the instance was created with (VkApplicationInfo::apiVersion)");
+  }
   if (adopted.has_present && adopted.present_queue == VK_NULL_HANDLE) {
     return Status::invalid_argument(
         "Device::adopt: has_present is set without a present queue");
@@ -277,7 +288,8 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
         "queue was assigned");
   }
 
-  PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(adopted.physical_device);
+  PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(
+      adopted.physical_device, adopted.instance_api_version);
   const std::vector<VkQueueFamilyProperties>& families = caps.queue_families();
   if (adopted.queue_family >= families.size() ||
       (adopted.has_present && adopted.present_family >= families.size())) {
@@ -292,8 +304,9 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
         "(DeviceRequirements::queue_flags)");
   }
   // Supported by the physical device -- authoritative, and queryable...
-  VKC_TRY(
-      detail::check_physical_support(caps, reqs).with_context("Device::adopt"));
+  const std::vector<std::string> required = detail::required_extensions(reqs);
+  VKC_TRY(detail::check_physical_support(caps, reqs, required)
+              .with_context("Device::adopt"));
   // ...and declared enabled by the creator, as Vulkan cannot be asked what a
   // logical device enabled.
   std::vector<std::string> declared;
@@ -304,7 +317,7 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
       }
     }
   }
-  for (const std::string& name : detail::required_extensions(reqs)) {
+  for (const std::string& name : required) {
     if (std::find(declared.begin(), declared.end(), name) == declared.end()) {
       return Status::unsupported(
           "Device::adopt: the required extension " + name +
@@ -403,6 +416,7 @@ Device& Device::operator=(Device&& other) noexcept {
 Device::~Device() { destroy(); }
 
 void Device::destroy() noexcept {
+  bool unfinished = false;
   for (const Command& command : made_) {
     // One left to the device after a failed wait is waited for first, and
     // leaked if the device may still run it. A lost device's is freed: its
@@ -410,15 +424,29 @@ void Device::destroy() noexcept {
     if (command.pending) {
       const VkResult waited = vkWaitForFences(state_.device, 1, &command.fence,
                                               VK_TRUE, UINT64_MAX);
-      if (waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST) continue;
+      if (waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST) {
+        unfinished = true;
+        continue;
+      }
     }
     vkDestroyFence(state_.device, command.fence, nullptr);
-    vkDestroyCommandPool(state_.device, command.pool, nullptr);  // frees buffer
+    if (command.pool != VK_NULL_HANDLE) {
+      vkDestroyCommandPool(state_.device, command.pool, nullptr);  // + buffer
+    }
   }
   made_.clear();
   free_commands_.clear();
   if (state_.device != VK_NULL_HANDLE && state_.owns_device) {
-    vkDestroyDevice(state_.device, nullptr);
+    if (unfinished) {
+      // Destroying it would destroy a device that may still run that work,
+      // with the work's fence and pool alive (VUID-vkDestroyDevice-device-
+      // 05137): undefined, where a leak is only a leak.
+      log_message(LogLevel::Error, kLogSource,
+                  "Device: a submit whose wait failed may still be running; "
+                  "its VkDevice is leaked rather than destroyed under it");
+    } else {
+      vkDestroyDevice(state_.device, nullptr);
+    }
   }
   state_ = State{};
   caps_ = PhysicalDeviceInfo{};
@@ -462,46 +490,65 @@ Status Device::wait_idle() const {
   return {};
 }
 
-Result<Device::Command> Device::take_command() const {
+Result<Device::Command> Device::take_command(bool record) const {
   const std::scoped_lock lock(commands_mutex_);
-  if (!free_commands_.empty()) {
-    const Command command = free_commands_.back();
-    free_commands_.pop_back();
-    return command;
-  }
-  // Every one is in use, so make another -- only as often as submits overlap.
-  // Both lists grow first, so give_back never allocates. The pool resets its
-  // buffer on the next begin (RESET_COMMAND_BUFFER).
-  made_.reserve(made_.size() + 1);
-  free_commands_.reserve(made_.size() + 1);
   Command command;
+  if (!free_commands_.empty()) {
+    // One that has a buffer if this submit records, and preferably none if
+    // it does not, so the buffers stay with the submits that record.
+    auto fits = std::find_if(
+        free_commands_.begin(), free_commands_.end(),
+        [&](const Command& c) { return (c.pool != VK_NULL_HANDLE) == record; });
+    if (fits == free_commands_.end()) fits = free_commands_.begin();
+    command = *fits;
+    free_commands_.erase(fits);
+  } else {
+    // Every one is in use, so make another -- only as often as submits
+    // overlap. Both lists grow first, so give_back never allocates.
+    made_.reserve(made_.size() + 1);
+    free_commands_.reserve(made_.size() + 1);
+    VkFenceCreateInfo fence_info{};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VKC_VK_TRY(
+        vkCreateFence(state_.device, &fence_info, nullptr, &command.fence));
+    made_.push_back(command);
+  }
+  if (record && command.pool == VK_NULL_HANDLE) {
+    const Status added = add_command_buffer(&command);
+    if (!added) {
+      free_commands_.push_back(command);  // its fence is still good
+      return added;
+    }
+  }
+  return command;
+}
+
+Status Device::add_command_buffer(Command* command) const {
+  // The pool resets its buffer on the next begin (RESET_COMMAND_BUFFER).
   VkCommandPoolCreateInfo pool_info{};
   pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   pool_info.queueFamilyIndex = state_.queue_family;
-  VKC_VK_TRY(
-      vkCreateCommandPool(state_.device, &pool_info, nullptr, &command.pool));
+  VkCommandPool pool = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreateCommandPool(state_.device, &pool_info, nullptr, &pool));
   VkCommandBufferAllocateInfo alloc{};
   alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  alloc.commandPool = command.pool;
+  alloc.commandPool = pool;
   alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   alloc.commandBufferCount = 1;
+  VkCommandBuffer buffer = VK_NULL_HANDLE;
   const VkResult allocated =
-      vkAllocateCommandBuffers(state_.device, &alloc, &command.buffer);
+      vkAllocateCommandBuffers(state_.device, &alloc, &buffer);
   if (allocated != VK_SUCCESS) {
-    vkDestroyCommandPool(state_.device, command.pool, nullptr);
+    vkDestroyCommandPool(state_.device, pool, nullptr);
     return vk_error(allocated, "vkAllocateCommandBuffers");
   }
-  VkFenceCreateInfo fence_info{};
-  fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-  const VkResult fenced =
-      vkCreateFence(state_.device, &fence_info, nullptr, &command.fence);
-  if (fenced != VK_SUCCESS) {
-    vkDestroyCommandPool(state_.device, command.pool, nullptr);
-    return vk_error(fenced, "vkCreateFence");
+  command->pool = pool;
+  command->buffer = buffer;
+  for (Command& made : made_) {
+    if (made.fence == command->fence) made = *command;
   }
-  made_.push_back(command);
-  return command;
+  return {};
 }
 
 // take_command reserved room in free_commands_ for every command made, so the
@@ -515,7 +562,7 @@ void Device::give_back(const Command& command) const noexcept {
 void Device::leave_to_device(const Command& command) const noexcept {
   const std::scoped_lock lock(commands_mutex_);
   for (Command& made : made_) {
-    if (made.pool == command.pool) made.pending = true;
+    if (made.fence == command.fence) made.pending = true;
   }
 }
 
@@ -555,7 +602,7 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
 
 Status Device::submit_single_time(
     const std::function<void(VkCommandBuffer)>& record) const {
-  VKC_ASSIGN(const Command command, take_command());
+  VKC_ASSIGN(const Command command, take_command(/*record=*/true));
   VkCommandBuffer cmd = command.buffer;
   bool recording = false;
   ScopeGuard give_back_command([&] {
@@ -586,9 +633,9 @@ Status Device::submit_and_wait(VkCommandBuffer cmd) const {
         "Device::submit_and_wait: null command "
         "buffer");
   }
-  // Only the command's fence is used; its own buffer waits for the next
-  // submit_single_time.
-  VKC_ASSIGN(const Command command, take_command());
+  // Only the command's fence is used: one without a buffer when one is
+  // free, and never a new buffer.
+  VKC_ASSIGN(const Command command, take_command(/*record=*/false));
   ScopeGuard give_back_command([&] { give_back(command); });
   bool reusable = true;
   Status status = submit_waiting(cmd, command, &reusable);

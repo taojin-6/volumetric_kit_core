@@ -42,7 +42,6 @@ DeviceRequirements renderer() {
 DeviceRequirements fusion() {
   DeviceRequirements reqs;
   reqs.scalar_block_layout = true;
-  reqs.debug_utils = true;
   reqs.optional_extensions = {"VK_KHR_external_memory_fd",
                               "VK_EXT_metal_objects"};
   reqs.features.shaderInt64 = VK_TRUE;
@@ -60,7 +59,6 @@ TEST(DeviceRequirements, MergeTakesTheUnion) {
   EXPECT_TRUE(merged->timeline_semaphore);
   EXPECT_TRUE(merged->scalar_block_layout);
   EXPECT_TRUE(merged->dynamic_rendering);
-  EXPECT_TRUE(merged->debug_utils);
   EXPECT_EQ(merged->features.samplerAnisotropy, VK_TRUE);
   EXPECT_EQ(merged->features.shaderInt64, VK_TRUE);
   EXPECT_EQ(merged->features.geometryShader, VK_FALSE);

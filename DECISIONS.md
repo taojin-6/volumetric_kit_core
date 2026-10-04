@@ -80,6 +80,8 @@ V1's choices, from comparing the two cores on 2026-10-03:
   family, extensions, core features, the timeline / scalar / dynamic-rendering
   features -- is what selection and create run, and adopt runs its
   device-level half, so the three cannot drift as the copies did.
+  `select_physical_device` returns the `PhysicalDeviceInfo` the check read,
+  and `Device::create` takes it, so a device is queried once.
 - **Generic queue accessors.** `queue()`, `queue_family()`, `queue_flags()`,
   `timestamp_valid_bits()`, plus an optional present queue, replace recon's
   `compute_*` and gfx's `graphics_*`. The present queue is the primary queue
@@ -91,7 +93,11 @@ V1's choices, from comparing the two cores on 2026-10-03:
   fences. `submit_mutex()` is never null (recon's): a device's own mutex
   guards an unshared queue, so several threads may submit through one
   `Device`. A moved-to device locks its own mutex, so gfx's cached
-  `submit_mutex()` pointer must be re-read after a move.
+  `submit_mutex()` pointer must be re-read after a move. `submit_and_wait`
+  records nothing, so it takes a kept fence without making a command
+  buffer. A submit whose wait failed and is still running when the device is
+  destroyed leaks an owned `VkDevice`: destroying a device under running
+  work, with that work's fence and pool alive, is undefined.
 - **gfx's adopt check.** A requirement must be supported by the physical
   device *and* declared enabled by the creator; recon trusted the
   declaration alone. A distinct present queue gets its own mutex
@@ -100,9 +106,25 @@ V1's choices, from comparing the two cores on 2026-10-03:
 - **The instance asks for 1.3, or the loader's lower version** (gfx's), never
   below 1.1. MoltenVK caps every device's reported version at the instance's
   request, so recon's 1.2 request would hide a 1.3 device from gfx.
-  `Device::create(const Instance&, …)` refuses requirements above the
-  instance's version.
-- **Validation messages reach the log sink with source `"vulkan"`.**
+- **A device's usable version is the lower of its own and its
+  instance's** -- the spec's rule: a 1.3 device on a 1.2 instance may use
+  only 1.2. `PhysicalDeviceInfo::api_version()` reports that version and its
+  feature queries stop there, so selection, create and adopt all hold
+  requirements to it, and dynamic rendering, 1.3 core, cannot be enabled on
+  1.2. Vulkan cannot be asked an instance's version, so adopt's caller
+  declares it (`AdoptedDevice::instance_api_version`); a 1.0 instance is
+  queried through 1.0 calls only.
+- **Validation messages reach the log sink with source `"vulkan"`.** A layer
+  that is missing, or found but fails to load, is a warning, not a failure,
+  and `Instance::validation_logged()` says whether its messages reach the
+  sink.
+- **`UniqueHandle` binds its deleter by reference** (`auto& Destroy`). The
+  same `UniqueHandle<VkFence, vkDestroyFence>` names the link-time loader's
+  function today, and the global variable volk loads the pointer into
+  later, so the planned switch to volk for iOS and Android stays inside
+  `vulkan.hpp`. A runtime deleter would add storage to every handle, and
+  traits keyed on the handle type cannot tell `VkFence` from `VkSemaphore` on
+  32-bit targets, where both are `uint64_t`.
 - **Vulkan from the system** (`find_package(Vulkan)`, `Vulkan::Vulkan`
   PUBLIC), as recon and ios use it; gfx compiles against pinned
   Vulkan-Headers instead (an open decision below).
@@ -114,7 +136,8 @@ V1's choices, from comparing the two cores on 2026-10-03:
   device tests on lavapipe with `VKC_REQUIRE_VULKAN_DEVICE=1`, so a missing
   device fails instead of skipping; the sanitizer job adds the validation
   layer (`VKC_TEST_VALIDATION=1`), so ASan, UBSan, LSan and validation check
-  the same run.
+  the same run. Under it, a test fails if validation is off or does not reach
+  the log sink, and counts errors the layer reports at `vkDestroyInstance`.
 
 ### Naming
 

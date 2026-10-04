@@ -8,12 +8,21 @@
 #include <string>
 #include <vector>
 
+#include "support.hpp"
+#include "volumetric_kit/core/vulkan/vulkan.hpp"
+
 namespace volumetric_kit::core {
 
-PhysicalDeviceInfo PhysicalDeviceInfo::query(VkPhysicalDevice physical) {
+PhysicalDeviceInfo PhysicalDeviceInfo::query(
+    VkPhysicalDevice physical, std::uint32_t instance_api_version) {
   PhysicalDeviceInfo info;
   info.physical_ = physical;
   vkGetPhysicalDeviceProperties(physical, &info.properties_);
+  // Physical-device functionality of a version needs the device and the
+  // instance both to have it.
+  info.api_version_ =
+      std::min(detail::without_patch(info.properties_.apiVersion),
+               detail::without_patch(instance_api_version));
 
   std::uint32_t family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
@@ -39,9 +48,15 @@ PhysicalDeviceInfo PhysicalDeviceInfo::query(VkPhysicalDevice physical) {
     }
   }
 
-  // The 1.2 and 1.3 feature structs are chained only where the device's
-  // version defines them, so the query names no struct the device cannot
-  // know. The standalone structs, not the version aggregates, because their
+  // vkGetPhysicalDeviceFeatures2 is 1.1: below it, the 1.0 query, and the
+  // newer features stay unsupported.
+  if (info.api_version_ < VK_API_VERSION_1_1) {
+    vkGetPhysicalDeviceFeatures(physical, &info.features_);
+    return info;
+  }
+  // The 1.2 and 1.3 feature structs are chained only where the usable
+  // version defines them, so the query names no struct the device may not
+  // use. The standalone structs, not the version aggregates, because their
   // layout is fixed whatever the header's version.
   VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
   timeline.sType =
@@ -53,12 +68,12 @@ PhysicalDeviceInfo PhysicalDeviceInfo::query(VkPhysicalDevice physical) {
   VkPhysicalDeviceFeatures2 features2{};
   features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
   void** tail = &features2.pNext;
-  if (info.properties_.apiVersion >= VK_API_VERSION_1_2) {
+  if (info.api_version_ >= VK_API_VERSION_1_2) {
     *tail = &timeline;
     timeline.pNext = &scalar;
     tail = &scalar.pNext;
   }
-  if (info.properties_.apiVersion >= VK_API_VERSION_1_3) {
+  if (info.api_version_ >= VK_API_VERSION_1_3) {
     *tail = &dynamic;
   }
   vkGetPhysicalDeviceFeatures2(physical, &features2);

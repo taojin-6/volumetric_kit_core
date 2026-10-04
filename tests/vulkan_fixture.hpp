@@ -11,10 +11,13 @@
 //   skipping every GPU test.
 // - VKC_TEST_VALIDATION=1: the instance enables the Khronos validation layer,
 //   and a validation error, which reaches the log sink with source "vulkan",
-//   fails the test.
+//   fails the test -- one reported as the instance is destroyed included. A
+//   layer that is missing, fails to load, or cannot reach the log sink fails
+//   it too, so a run cannot pass unvalidated.
 
 #include <atomic>
 #include <cstdlib>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,6 +27,7 @@
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
+#include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core::test {
@@ -41,11 +45,18 @@ class VulkanTest : public ::testing::Test {
 
   void SetUp() override {
     validation_errors_ = 0;
+    validation_errors_allowed_ = false;
     set_log_handler([this](LogLevel level, std::string_view source,
                            std::string_view message) {
-      if (source == "vulkan" && level == LogLevel::Error) {
+      if (source == "vulkan" && level == LogLevel::Error &&
+          !validation_errors_allowed_) {
         ++validation_errors_;
         ADD_FAILURE() << "validation: " << message;
+      } else if (level >= LogLevel::Warning) {
+        // As the default sink would: why a test fails may be in one.
+        std::cerr << '[' << source
+                  << (level == LogLevel::Error ? " error] " : " warning] ")
+                  << message << '\n';
       }
     });
     InstanceConfig config;
@@ -57,22 +68,34 @@ class VulkanTest : public ::testing::Test {
       return;
     }
     instance_.emplace(*std::move(instance));
-    Result<VkPhysicalDevice> physical =
+    if (config.enable_validation && !instance_->validation_logged()) {
+      FAIL() << "VKC_TEST_VALIDATION is set, but validation is off or its "
+                "messages do not reach the log sink (see the warning above)";
+    }
+    Result<PhysicalDeviceInfo> physical =
         instance_->select_physical_device(requirements());
     if (!physical) {
       no_device(physical.status().message());
       return;
     }
-    physical_ = *physical;
+    physical_ = *std::move(physical);
   }
 
   void TearDown() override {
+    // The instance goes while the handler still counts: the layer reports
+    // what outlived it -- a VkDevice never destroyed -- at vkDestroyInstance.
+    instance_.reset();
     set_log_handler({});
     EXPECT_EQ(validation_errors_.load(), 0);
   }
 
   const Instance& instance() const { return *instance_; }
-  VkPhysicalDevice physical() const { return physical_; }
+  // The selected device, as select_physical_device captured it.
+  const PhysicalDeviceInfo& physical() const { return physical_; }
+
+  // For a test that commits invalid usage on purpose: the validation errors
+  // it reports from here on fail nothing.
+  void allow_validation_errors() { validation_errors_allowed_ = true; }
 
  private:
   void no_device(const std::string& why) {
@@ -83,8 +106,9 @@ class VulkanTest : public ::testing::Test {
   }
 
   std::atomic<int> validation_errors_{0};
+  std::atomic<bool> validation_errors_allowed_{false};
   std::optional<Instance> instance_;
-  VkPhysicalDevice physical_ = VK_NULL_HANDLE;
+  PhysicalDeviceInfo physical_;
 };
 
 }  // namespace volumetric_kit::core::test

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -37,17 +38,25 @@ bool layer_available(const char* name) {
   });
 }
 
-bool instance_extension_available(const char* name) {
+// The instance extensions the loader and drivers offer; empty when the
+// enumeration fails, so each reads as unavailable.
+std::vector<VkExtensionProperties> instance_extensions() {
   std::uint32_t count = 0;
   if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) !=
       VK_SUCCESS) {
-    return false;
+    return {};
   }
   std::vector<VkExtensionProperties> extensions(count);
   if (vkEnumerateInstanceExtensionProperties(nullptr, &count,
                                              extensions.data()) != VK_SUCCESS) {
-    return false;
+    return {};
   }
+  extensions.resize(count);
+  return extensions;
+}
+
+bool offered(const std::vector<VkExtensionProperties>& extensions,
+             const char* name) {
   return std::any_of(extensions.begin(), extensions.end(), [&](const auto& e) {
     return std::strcmp(e.extensionName, name) == 0;
   });
@@ -106,13 +115,18 @@ int device_type_score(VkPhysicalDeviceType type) {
 Result<Instance> Instance::create(const InstanceConfig& config) {
   // The highest version the loader offers, up to 1.3: MoltenVK caps each
   // device's apiVersion at the instance's request, so asking low would hide
-  // a 1.3 device. vkEnumerateInstanceVersion is 1.1; a 1.0 loader lacks it.
-  std::uint32_t api_version = VK_API_VERSION_1_3;
+  // a 1.3 device. vkEnumerateInstanceVersion is 1.1, so it is resolved, not
+  // linked: a 1.0 loader does not export it.
   std::uint32_t loader_version = VK_API_VERSION_1_0;
-  if (vkEnumerateInstanceVersion(&loader_version) != VK_SUCCESS) {
+  const auto enumerate_version =
+      reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+          vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
+  if (enumerate_version == nullptr ||
+      enumerate_version(&loader_version) != VK_SUCCESS) {
     loader_version = VK_API_VERSION_1_0;
   }
-  api_version = std::min(api_version, loader_version);
+  const std::uint32_t api_version =
+      std::min<std::uint32_t>(VK_API_VERSION_1_3, loader_version);
   if (api_version < VK_API_VERSION_1_1) {
     return Status::unsupported(
         "a Vulkan 1.1 loader is required (vkGetPhysicalDeviceFeatures2 is "
@@ -125,37 +139,39 @@ Result<Instance> Instance::create(const InstanceConfig& config) {
   app.pEngineName = "volumetric_kit_core";
   app.apiVersion = api_version;
 
-  const bool validation =
-      config.enable_validation && layer_available(kValidationLayer);
-  if (config.enable_validation && !validation) {
-    log_message(LogLevel::Warning, kLogSource,
-                "validation requested, but VK_LAYER_KHRONOS_validation is not "
-                "installed; continuing without it");
-  }
+  const std::vector<VkExtensionProperties> extensions_offered =
+      instance_extensions();
+  const bool debug_utils_offered =
+      offered(extensions_offered, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+  // Portability enumeration is checked, not tried: a loader that lacks it
+  // would fail a create, and report that through the chained messenger as an
+  // error. Guarded: headers older than 1.3.216 (Ubuntu 22.04's) do not
+  // define it.
+#ifdef VK_KHR_portability_enumeration
+  const bool portability = offered(
+      extensions_offered, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
+
+  // What the instance enables, given whether the validation layer is on.
   // VK_EXT_debug_utils backs two separate things: the validation messenger
   // and a profiler's labels. Only the first needs validation, so the request
   // stands on its own -- a Release build, the one worth profiling, keeps its
   // labels.
-  const bool debug_utils_offered =
-      instance_extension_available(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-  const bool messenger = validation && debug_utils_offered;
-  if (validation && !debug_utils_offered) {
-    log_message(LogLevel::Warning, kLogSource,
-                "validation is on, but VK_EXT_debug_utils is unavailable; the "
-                "layer's messages go to its own output, not the log sink");
-  }
-  const bool debug_utils =
-      (config.request_debug_utils && debug_utils_offered) || messenger;
-  if (!config.request_debug_utils && messenger) {
-    log_message(LogLevel::Info, kLogSource,
-                "request_debug_utils is false, but the validation messenger "
-                "needs VK_EXT_debug_utils, so it stays enabled");
-  }
+  struct Plan {
+    bool validation = false;
+    bool messenger = false;
+    bool debug_utils = false;
+  };
+  auto plan_for = [&](bool validation) {
+    Plan plan;
+    plan.validation = validation;
+    plan.messenger = validation && debug_utils_offered;
+    plan.debug_utils =
+        (config.request_debug_utils && debug_utils_offered) || plan.messenger;
+    return plan;
+  };
 
-  std::vector<const char*> layers;
-  if (validation) layers.push_back(kValidationLayer);
-
-  auto make = [&](bool portability, VkInstance* out) {
+  auto make = [&](const Plan& plan, VkInstance* out) {
     std::vector<const char*> extensions = config.extensions;
     auto add = [&extensions](const char* name) {
       if (std::none_of(
@@ -164,11 +180,12 @@ Result<Instance> Instance::create(const InstanceConfig& config) {
         extensions.push_back(name);
       }
     };
-    if (debug_utils) add(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    // Guarded: headers older than 1.3.216 (Ubuntu 22.04's) do not define it.
+    if (plan.debug_utils) add(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 #ifdef VK_KHR_portability_enumeration
     if (portability) add(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 #endif
+    std::vector<const char*> layers;
+    if (plan.validation) layers.push_back(kValidationLayer);
 
     VkInstanceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -185,27 +202,51 @@ Result<Instance> Instance::create(const InstanceConfig& config) {
 #endif
     // Chained so the layer also validates instance creation and destruction.
     VkDebugUtilsMessengerCreateInfoEXT chained = messenger_info();
-    if (messenger) info.pNext = &chained;
+    if (plan.messenger) info.pNext = &chained;
     return vkCreateInstance(&info, nullptr, out);
   };
 
-  Instance instance;
-  VkResult created = make(/*portability=*/true, &instance.instance_);
-  // A loader without portability enumeration refuses the extension; retry
-  // without it.
-  if (created == VK_ERROR_EXTENSION_NOT_PRESENT ||
-      created == VK_ERROR_INCOMPATIBLE_DRIVER) {
-    created = make(/*portability=*/false, &instance.instance_);
+  Plan plan =
+      plan_for(config.enable_validation && layer_available(kValidationLayer));
+  if (config.enable_validation && !plan.validation) {
+    log_message(LogLevel::Warning, kLogSource,
+                "validation requested, but VK_LAYER_KHRONOS_validation is not "
+                "installed; continuing without it");
   }
-  if (created != VK_SUCCESS) {
-    instance.instance_ = VK_NULL_HANDLE;
-    return vk_error(created, "vkCreateInstance");
+  // Created into a local, so a failed create leaves nothing to destroy.
+  VkInstance handle = VK_NULL_HANDLE;
+  VkResult created = make(plan, &handle);
+  if (created == VK_ERROR_LAYER_NOT_PRESENT && plan.validation) {
+    // The layer's manifest was found but its library did not load (e.g.
+    // Homebrew's on macOS, outside the loader's search path): as when it is
+    // not installed, continue without it.
+    log_message(LogLevel::Warning, kLogSource,
+                "validation requested, but VK_LAYER_KHRONOS_validation failed "
+                "to load; continuing without it");
+    plan = plan_for(false);
+    handle = VK_NULL_HANDLE;
+    created = make(plan, &handle);
   }
-  instance.api_version_ = api_version;
-  instance.validation_enabled_ = validation;
-  instance.debug_utils_enabled_ = debug_utils;
+  if (created != VK_SUCCESS) return vk_error(created, "vkCreateInstance");
 
-  if (messenger) {
+  if (plan.validation && !plan.messenger) {
+    log_message(LogLevel::Warning, kLogSource,
+                "validation is on, but VK_EXT_debug_utils is unavailable; the "
+                "layer's messages go to its own output, not the log sink");
+  }
+  if (!config.request_debug_utils && plan.messenger) {
+    log_message(LogLevel::Info, kLogSource,
+                "request_debug_utils is false, but the validation messenger "
+                "needs VK_EXT_debug_utils, so it stays enabled");
+  }
+
+  Instance instance;
+  instance.instance_ = handle;
+  instance.api_version_ = api_version;
+  instance.validation_enabled_ = plan.validation;
+  instance.debug_utils_enabled_ = plan.debug_utils;
+
+  if (plan.messenger) {
     auto create_messenger =
         reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
             vkGetInstanceProcAddr(instance.instance_,
@@ -223,7 +264,7 @@ Result<Instance> Instance::create(const InstanceConfig& config) {
   return instance;
 }
 
-Result<VkPhysicalDevice> Instance::select_physical_device(
+Result<PhysicalDeviceInfo> Instance::select_physical_device(
     const DeviceRequirements& reqs, VkSurfaceKHR surface) const {
   if (reqs.needs_present && surface == VK_NULL_HANDLE) {
     return Status::invalid_argument(
@@ -242,11 +283,11 @@ Result<VkPhysicalDevice> Instance::select_physical_device(
     return Status::unsupported("no Vulkan physical device is available");
   }
 
-  VkPhysicalDevice best = VK_NULL_HANDLE;
+  std::optional<PhysicalDeviceInfo> best;
   int best_score = -1;
   std::string refusals;
   for (VkPhysicalDevice device : devices) {
-    const PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(device);
+    PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(device, api_version_);
     const Result<DeviceSupport> support =
         check_device_support(caps, reqs, surface);
     if (!support) {
@@ -257,14 +298,14 @@ Result<VkPhysicalDevice> Instance::select_physical_device(
     const int score = device_type_score(caps.properties().deviceType);
     if (score > best_score) {
       best_score = score;
-      best = device;
+      best = std::move(caps);
     }
   }
-  if (best == VK_NULL_HANDLE) {
+  if (!best) {
     return Status::unsupported("no physical device meets the requirements: " +
                                refusals);
   }
-  return best;
+  return *std::move(best);
 }
 
 Instance::Instance(Instance&& other) noexcept

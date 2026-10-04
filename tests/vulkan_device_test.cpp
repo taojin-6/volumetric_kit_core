@@ -8,7 +8,9 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -21,6 +23,7 @@
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "vulkan_fixture.hpp"
 
 namespace volumetric_kit::core {
@@ -41,6 +44,33 @@ void record_barrier(VkCommandBuffer cmd) {
   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0,
                        nullptr, 0, nullptr);
+}
+
+// A Vulkan 1.1 feature the device lacks, raised in `*wanted`; false when it
+// has them all. Its VkBool32 members follow sType and pNext contiguously.
+bool request_unsupported_feature(VkPhysicalDevice physical,
+                                 VkPhysicalDeviceVulkan11Features* wanted) {
+  VkPhysicalDeviceVulkan11Features have{};
+  have.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+  VkPhysicalDeviceFeatures2 features2{};
+  features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features2.pNext = &have;
+  vkGetPhysicalDeviceFeatures2(physical, &features2);
+  constexpr std::size_t kFirst =
+      offsetof(VkPhysicalDeviceVulkan11Features, storageBuffer16BitAccess);
+  constexpr std::size_t kCount =
+      (sizeof(VkPhysicalDeviceVulkan11Features) - kFirst) / sizeof(VkBool32);
+  const auto* have_bits = reinterpret_cast<const VkBool32*>(
+      reinterpret_cast<const unsigned char*>(&have) + kFirst);
+  auto* want_bits = reinterpret_cast<VkBool32*>(
+      reinterpret_cast<unsigned char*>(wanted) + kFirst);
+  for (std::size_t i = 0; i < kCount; ++i) {
+    if (have_bits[i] != VK_TRUE) {
+      want_bits[i] = VK_TRUE;
+      return true;
+    }
+  }
+  return false;
 }
 
 std::vector<std::string> supported_extensions(VkPhysicalDevice physical) {
@@ -68,7 +98,7 @@ TEST_F(DeviceTest, InstanceReportsWhatItNegotiated) {
 TEST_F(DeviceTest, SelectionSaysWhyNoDeviceQualifies) {
   DeviceRequirements missing;
   missing.extensions = {kNoSuchExtension};
-  const Result<VkPhysicalDevice> none =
+  const Result<PhysicalDeviceInfo> none =
       instance().select_physical_device(missing);
   EXPECT_EQ(none.status().domain(), Status::Code::Unsupported);
   EXPECT_NE(none.status().message().find(kNoSuchExtension), std::string::npos)
@@ -86,9 +116,12 @@ TEST_F(DeviceTest, SelectionSaysWhyNoDeviceQualifies) {
 }
 
 TEST_F(DeviceTest, CapsDescribeTheSelectedDevice) {
-  const PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(physical());
-  EXPECT_EQ(caps.handle(), physical());
+  const PhysicalDeviceInfo& caps = physical();
+  EXPECT_NE(caps.handle(), VK_NULL_HANDLE);
   EXPECT_GE(caps.api_version(), VK_API_VERSION_1_2);
+  // Usable is the lower of the device's version and the instance's.
+  EXPECT_LE(caps.api_version(), instance().api_version());
+  EXPECT_LE(caps.api_version(), caps.properties().apiVersion);
   EXPECT_FALSE(caps.queue_families().empty());
   EXPECT_TRUE(caps.supports_timeline_semaphore());
   EXPECT_FALSE(caps.supports_device_extension(nullptr));
@@ -105,16 +138,54 @@ TEST_F(DeviceTest, CapsDescribeTheSelectedDevice) {
 // --- create
 // ----------------------------------------------------------------------
 
+// The instance bounds the device: on one of a lower version, a device may
+// use only that version's features, whatever it reports.
+TEST_F(DeviceTest, TheInstanceVersionBoundsWhatADeviceMayUse) {
+  const PhysicalDeviceInfo at_1_1 =
+      PhysicalDeviceInfo::query(physical().handle(), VK_API_VERSION_1_1);
+  EXPECT_EQ(at_1_1.api_version(), VK_API_VERSION_1_1);
+  EXPECT_FALSE(at_1_1.supports_timeline_semaphore());
+  EXPECT_FALSE(at_1_1.supports_dynamic_rendering());
+  const Result<DeviceSupport> refused = check_device_support(at_1_1, {});
+  EXPECT_EQ(refused.status().domain(), Status::Code::Unsupported);
+  EXPECT_NE(refused.status().message().find("instance negotiated 1.1"),
+            std::string::npos)
+      << refused.status().message();
+
+  // A 1.0 instance (an embedder's) is queried through 1.0 calls only, which
+  // see the same core features.
+  const PhysicalDeviceInfo at_1_0 =
+      PhysicalDeviceInfo::query(physical().handle(), VK_API_VERSION_1_0);
+  EXPECT_EQ(at_1_0.api_version(), VK_API_VERSION_1_0);
+  EXPECT_EQ(std::memcmp(&at_1_0.features(), &physical().features(),
+                        sizeof(VkPhysicalDeviceFeatures)),
+            0);
+  EXPECT_EQ(at_1_0.queue_families().size(), physical().queue_families().size());
+
+  // dynamicRendering is 1.3 core: refused below it, never linked there.
+  const PhysicalDeviceInfo at_1_2 =
+      PhysicalDeviceInfo::query(physical().handle(), VK_API_VERSION_1_2);
+  DeviceRequirements renderer;
+  renderer.dynamic_rendering = true;
+  const Result<DeviceSupport> no_dynamic =
+      check_device_support(at_1_2, renderer);
+  EXPECT_EQ(no_dynamic.status().domain(), Status::Code::Unsupported);
+  EXPECT_NE(no_dynamic.status().message().find("dynamicRendering"),
+            std::string::npos)
+      << no_dynamic.status().message();
+}
+
 TEST_F(DeviceTest, CreatesAnOwnedDeviceWithAComputeQueue) {
   const Result<Device> made = Device::create(instance(), physical(), {});
   ASSERT_TRUE(made.ok()) << made.status().message();
   const Device& device = *made;
   EXPECT_NE(device.handle(), VK_NULL_HANDLE);
-  EXPECT_EQ(device.physical_device(), physical());
+  EXPECT_EQ(device.physical_device(), physical().handle());
   EXPECT_TRUE(device.owns_device());
   EXPECT_NE(device.queue(), VK_NULL_HANDLE);
   EXPECT_NE(device.queue_flags() & VK_QUEUE_COMPUTE_BIT, 0u);
-  EXPECT_EQ(device.caps().handle(), physical());
+  EXPECT_EQ(device.caps().handle(), physical().handle());
+  EXPECT_EQ(device.caps().api_version(), physical().api_version());
   EXPECT_FALSE(device.has_present());
   EXPECT_NE(device.submit_mutex(), nullptr);
 }
@@ -127,14 +198,41 @@ TEST_F(DeviceTest, RefusesAMissingRequiredExtension) {
   EXPECT_NE(made.status().message().find(kNoSuchExtension), std::string::npos);
 }
 
-TEST_F(DeviceTest, RefusesRequirementsAboveTheInstancesVersion) {
+TEST_F(DeviceTest, RefusesRequirementsAboveTheUsableVersion) {
   DeviceRequirements reqs;
   reqs.api_version = VK_MAKE_API_VERSION(0, 1, 4, 0);  // the instance asks 1.3
   const Result<Device> made = Device::create(instance(), physical(), reqs);
   EXPECT_EQ(made.status().domain(), Status::Code::Unsupported);
-  EXPECT_NE(made.status().message().find("instance negotiated"),
+  EXPECT_NE(made.status().message().find("Vulkan 1.4 is required"),
             std::string::npos)
       << made.status().message();
+}
+
+TEST_F(DeviceTest, RefusesCapsCapturedOnAHigherVersionInstance) {
+  const PhysicalDeviceInfo higher = PhysicalDeviceInfo::query(
+      physical().handle(), VK_MAKE_API_VERSION(0, 1, 9, 0));
+  if (higher.api_version() <= instance().api_version()) {
+    GTEST_SKIP() << "the device reports no version above the instance's";
+  }
+  EXPECT_EQ(Device::create(instance(), higher, {}).status().domain(),
+            Status::Code::InvalidArgument);
+}
+
+// A feature in the caller's chain is not checked first; the driver refuses
+// it. The failed create must leave nothing behind for the Device to destroy.
+TEST_F(DeviceTest, AFailedCreateReturnsTheDriversResult) {
+  VkPhysicalDeviceVulkan11Features v11{};
+  v11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+  if (!request_unsupported_feature(physical().handle(), &v11)) {
+    GTEST_SKIP() << "the device supports every Vulkan 1.1 feature";
+  }
+  allow_validation_errors();  // requesting an unsupported feature is invalid
+  DeviceRequirements reqs;
+  reqs.feature_chain = &v11;
+  const Result<Device> made = Device::create(instance(), physical(), reqs);
+  ASSERT_FALSE(made.ok());
+  EXPECT_EQ(made.status().domain(), Status::Code::Backend);
+  EXPECT_TRUE(vk_result(made.status()).has_value());
 }
 
 TEST_F(DeviceTest, EnablesOptionalExtensionsOnlyWhereOffered) {
@@ -153,7 +251,7 @@ TEST_F(DeviceTest, RaisesFeatureBitsInTheCallersChain) {
   if (instance().api_version() < VK_API_VERSION_1_2) {
     GTEST_SKIP() << "VkPhysicalDeviceVulkan12Features needs a 1.2 instance";
   }
-  const PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(physical());
+  const PhysicalDeviceInfo& caps = physical();
   VkPhysicalDeviceVulkan12Features v12{};
   v12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
   DeviceRequirements reqs;
@@ -249,6 +347,11 @@ TEST_F(DeviceTest, SubmitsACallersCommandBuffer) {
   EXPECT_TRUE(made->submit_and_wait(cmd).ok());  // not ONE_TIME_SUBMIT
   EXPECT_EQ(made->submit_and_wait(VK_NULL_HANDLE).domain(),
             Status::Code::InvalidArgument);
+  // Interleaved: a recording submit reuses the fence submit_and_wait made,
+  // giving it a buffer, and submit_and_wait then reuses that command too.
+  EXPECT_TRUE(made->submit_single_time(record_barrier).ok());
+  EXPECT_TRUE(made->submit_and_wait(cmd).ok());
+  EXPECT_TRUE(made->submit_single_time(record_barrier).ok());
   vkDestroyCommandPool(made->handle(), pool, nullptr);
 }
 
@@ -324,8 +427,7 @@ struct RawDevice {
   }
 };
 
-void make_raw_device(VkPhysicalDevice physical, RawDevice* raw) {
-  const PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(physical);
+void make_raw_device(const PhysicalDeviceInfo& caps, RawDevice* raw) {
   const Result<DeviceSupport> support = check_device_support(caps, {});
   ASSERT_TRUE(support.ok()) << support.status().message();
   raw->family = support->queue_family;
@@ -359,15 +461,18 @@ void make_raw_device(VkPhysicalDevice physical, RawDevice* raw) {
       static_cast<std::uint32_t>(raw->extensions.size());
   info.ppEnabledExtensionNames =
       raw->extensions.empty() ? nullptr : raw->extensions.data();
-  ASSERT_EQ(vkCreateDevice(physical, &info, nullptr, &raw->device), VK_SUCCESS);
+  ASSERT_EQ(vkCreateDevice(caps.handle(), &info, nullptr, &raw->device),
+            VK_SUCCESS);
   vkGetDeviceQueue(raw->device, raw->family, 0, &raw->queue);
 }
 
-AdoptedDevice handoff(const Instance& instance, VkPhysicalDevice physical,
+AdoptedDevice handoff(const Instance& instance,
+                      const PhysicalDeviceInfo& physical,
                       const RawDevice& raw) {
   AdoptedDevice adopted;
   adopted.instance = instance.handle();
-  adopted.physical_device = physical;
+  adopted.instance_api_version = instance.api_version();
+  adopted.physical_device = physical.handle();
   adopted.device = raw.device;
   adopted.queue_family = raw.family;
   adopted.queue = raw.queue;
@@ -421,7 +526,7 @@ TEST_F(DeviceTest, AdoptRefusesWhatWasNotDeclared) {
 
   // Supported by the physical device, but not enabled on this one.
   std::string undeclared;
-  for (const std::string& name : supported_extensions(physical())) {
+  for (const std::string& name : supported_extensions(physical().handle())) {
     if (name != kPortabilitySubset) {
       undeclared = name;
       break;
@@ -443,6 +548,15 @@ TEST_F(DeviceTest, AdoptRefusesWhatWasNotDeclared) {
   AdoptedDevice no_scalar = handoff(instance(), physical(), raw);
   no_scalar.enabled_scalar_block_layout = false;
   EXPECT_FALSE(Device::adopt(no_scalar, wants_scalar).ok());
+
+  // Supported and declared, but the instance is too old to use it.
+  AdoptedDevice old_instance = handoff(instance(), physical(), raw);
+  old_instance.instance_api_version = VK_API_VERSION_1_1;
+  const Result<Device> too_old = Device::adopt(old_instance, {});
+  EXPECT_EQ(too_old.status().domain(), Status::Code::Unsupported);
+  EXPECT_NE(too_old.status().message().find("instance negotiated 1.1"),
+            std::string::npos)
+      << too_old.status().message();
 }
 
 TEST_F(DeviceTest, AdoptRefusesMalformedHandoffs) {
@@ -453,6 +567,11 @@ TEST_F(DeviceTest, AdoptRefusesMalformedHandoffs) {
   AdoptedDevice no_device = good;
   no_device.device = VK_NULL_HANDLE;
   EXPECT_EQ(Device::adopt(no_device, {}).status().domain(),
+            Status::Code::InvalidArgument);
+
+  AdoptedDevice no_version = good;
+  no_version.instance_api_version = 0;
+  EXPECT_EQ(Device::adopt(no_version, {}).status().domain(),
             Status::Code::InvalidArgument);
 
   AdoptedDevice far_family = good;

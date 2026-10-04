@@ -68,10 +68,11 @@ VKC_REQUIRE_VULKAN_DEVICE=1 VKC_TEST_VALIDATION=1 \
 
 `VKC_REQUIRE_VULKAN_DEVICE=1` turns a skip into a failure, and
 `VKC_TEST_VALIDATION=1` enables the Khronos validation layer and fails any test
-that triggers a validation error. On macOS with Homebrew's
-`vulkan-validationlayers`, the loader finds the layer's manifest but not its
-library; add `DYLD_LIBRARY_PATH=/opt/homebrew/lib`, or every test fails with
-"Requested layer ... failed to load".
+that triggers a validation error -- or that runs without validation. On macOS
+with Homebrew's `vulkan-validationlayers`, the loader finds the layer's
+manifest but not its library; add `DYLD_LIBRARY_PATH=/opt/homebrew/lib`, or
+every device test fails with "VKC_TEST_VALIDATION is set, but validation is
+off".
 
 ## Changing a public API
 

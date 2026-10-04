@@ -14,16 +14,26 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
+#include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 
 /// @brief Parameters for @ref Instance::create.
+///
+/// @code
+/// InstanceConfig config;
+/// config.app_name = "scanner";
+/// config.enable_validation = true;  // a debug build
+/// config.extensions = {VK_KHR_SURFACE_EXTENSION_NAME};
+/// VKC_ASSIGN(Instance instance, Instance::create(config));
+/// @endcode
 struct InstanceConfig {
   /// The application name reported to the driver in `VkApplicationInfo`.
   std::string app_name = "volumetric_kit";
-  /// Enable the Khronos validation layer when it is installed (a logged
-  /// warning, not a failure, when it is not). Its messages reach the log sink
+  /// Enable the Khronos validation layer when it is installed and loads (a
+  /// logged warning, not a failure, when it does not; ask
+  /// @ref Instance::validation_enabled). Its messages reach the log sink
   /// with source `"vulkan"`.
   bool enable_validation = false;
   /// Enable `VK_EXT_debug_utils` whenever the loader offers it, independently
@@ -59,7 +69,8 @@ struct InstanceConfig {
 /// VKC_ASSIGN(Instance instance, Instance::create({}));
 /// DeviceRequirements reqs;
 /// reqs.scalar_block_layout = true;
-/// VKC_ASSIGN(VkPhysicalDevice gpu, instance.select_physical_device(reqs));
+/// VKC_ASSIGN(PhysicalDeviceInfo gpu, instance.select_physical_device(reqs));
+/// log_message(LogLevel::Info, "app", gpu.properties().deviceName);
 /// @endcode
 class VKC_VULKAN_API Instance {
  public:
@@ -83,19 +94,28 @@ class VKC_VULKAN_API Instance {
   std::uint32_t api_version() const noexcept { return api_version_; }
   /// @return Whether the Khronos validation layer is enabled.
   bool validation_enabled() const noexcept { return validation_enabled_; }
+  /// @return Whether the validation layer's messages reach the log sink: it
+  ///         is enabled, and its messenger was created. An enabled layer
+  ///         without one prints to its own output, which no handler sees.
+  bool validation_logged() const noexcept {
+    return messenger_ != VK_NULL_HANDLE;
+  }
   /// @return Whether `VK_EXT_debug_utils` is enabled, which a @ref Device
   ///         needs to resolve its label entry points.
   bool debug_utils_enabled() const noexcept { return debug_utils_enabled_; }
 
   /// @brief Pick the best physical device that meets @p reqs: a discrete GPU
   ///        over an integrated one, over a virtual one, over a CPU (lavapipe).
-  /// @param reqs     The requirements, checked with @ref check_device_support.
+  /// @param reqs     The requirements, checked with @ref check_device_support
+  ///                 against each device's capabilities on this instance.
   /// @param surface  The surface to present to; required when
   ///                 @ref DeviceRequirements::needs_present.
-  /// @return The device; @ref Status::Code::Unsupported, naming why each
-  ///         device was refused, when none qualifies; or
+  /// @return The device's capabilities as the check saw them, which
+  ///         @ref Device::create takes, so it need not query them again;
+  ///         @ref Status::Code::Unsupported, naming why each device was
+  ///         refused, when none qualifies; or
   ///         @ref Status::Code::InvalidArgument for a missing @p surface.
-  Result<VkPhysicalDevice> select_physical_device(
+  Result<PhysicalDeviceInfo> select_physical_device(
       const DeviceRequirements& reqs = {},
       VkSurfaceKHR surface = VK_NULL_HANDLE) const;
 
@@ -104,7 +124,8 @@ class VKC_VULKAN_API Instance {
   void destroy() noexcept;
 
   VkInstance instance_ = VK_NULL_HANDLE;
-  // The validation messenger; destroyed before the instance.
+  // The validation messenger, when validation is on and
+  // VK_EXT_debug_utils offered; destroyed before the instance.
   VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
   std::uint32_t api_version_ = 0;
   bool validation_enabled_ = false;

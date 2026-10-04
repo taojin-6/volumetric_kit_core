@@ -75,7 +75,7 @@ there is none. Two environment variables tighten them, and CI sets both:
 - `VKC_REQUIRE_VULKAN_DEVICE=1` fails a device test that has no device, so a
   runner cannot pass by skipping;
 - `VKC_TEST_VALIDATION=1` enables the Khronos validation layer and fails any
-  test that triggers a validation error.
+  test that triggers a validation error, or that runs without validation.
 
 ## Use it in your project
 

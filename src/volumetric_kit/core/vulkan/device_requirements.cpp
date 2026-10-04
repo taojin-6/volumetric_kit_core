@@ -34,50 +34,97 @@ std::vector<std::string> required_extensions(const DeviceRequirements& reqs) {
   return out;
 }
 
+namespace {
+
+constexpr std::size_t kFeatureCount =
+    sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
+
+const VkBool32* feature_bits(const VkPhysicalDeviceFeatures& features) {
+  return reinterpret_cast<const VkBool32*>(&features);
+}
+
+// "<device> is a Vulkan 1.2 device", or, when the instance is what limits
+// it, "<device> reports Vulkan 1.3, but the instance negotiated 1.2".
+std::string usable_version_text(const PhysicalDeviceInfo& caps) {
+  const std::string name = caps.properties().deviceName;
+  const std::uint32_t reported = caps.properties().apiVersion;
+  if (without_patch(reported) > caps.api_version()) {
+    return name + " reports Vulkan " + version_text(reported) +
+           ", but the instance negotiated " + version_text(caps.api_version());
+  }
+  return name + " is a Vulkan " + version_text(caps.api_version()) + " device";
+}
+
+}  // namespace
+
 bool features_subset(const VkPhysicalDeviceFeatures& wanted,
                      const VkPhysicalDeviceFeatures& have) {
-  constexpr std::size_t kCount =
-      sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
-  const auto* want = reinterpret_cast<const VkBool32*>(&wanted);
-  const auto* got = reinterpret_cast<const VkBool32*>(&have);
-  for (std::size_t i = 0; i < kCount; ++i) {
+  const VkBool32* want = feature_bits(wanted);
+  const VkBool32* got = feature_bits(have);
+  for (std::size_t i = 0; i < kFeatureCount; ++i) {
     if (want[i] == VK_TRUE && got[i] != VK_TRUE) return false;
   }
   return true;
 }
 
-Status check_physical_support(const PhysicalDeviceInfo& caps,
-                              const DeviceRequirements& reqs) {
-  if (caps.api_version() < reqs.api_version) {
-    return Status::unsupported(
-        std::string(caps.properties().deviceName) + " is a Vulkan " +
-        version_text(caps.api_version()) + " device; Vulkan " +
-        version_text(reqs.api_version) + " is required");
+VkPhysicalDeviceFeatures features_union(const VkPhysicalDeviceFeatures& a,
+                                        const VkPhysicalDeviceFeatures& b) {
+  VkPhysicalDeviceFeatures out{};
+  const VkBool32* fa = feature_bits(a);
+  const VkBool32* fb = feature_bits(b);
+  auto* fo = reinterpret_cast<VkBool32*>(&out);
+  for (std::size_t i = 0; i < kFeatureCount; ++i) {
+    fo[i] = (fa[i] == VK_TRUE || fb[i] == VK_TRUE) ? VK_TRUE : VK_FALSE;
   }
-  for (const std::string& name : required_extensions(reqs)) {
-    if (!caps.supports_device_extension(name.c_str())) {
+  return out;
+}
+
+Status check_physical_support(const PhysicalDeviceInfo& caps,
+                              const DeviceRequirements& reqs,
+                              const std::vector<std::string>& required) {
+  const std::string name = caps.properties().deviceName;
+  if (caps.api_version() < reqs.api_version) {
+    return Status::unsupported(usable_version_text(caps) + "; Vulkan " +
+                               version_text(reqs.api_version) + " is required");
+  }
+  for (const std::string& extension : required) {
+    if (!caps.supports_device_extension(extension.c_str())) {
       return Status::unsupported(std::string(caps.properties().deviceName) +
                                  " does not support the required extension " +
-                                 name);
+                                 extension);
     }
   }
   if (!features_subset(reqs.features, caps.features())) {
     return Status::unsupported(
-        std::string(caps.properties().deviceName) +
+        name +
         " does not support a required core feature (DeviceRequirements::"
         "features)");
   }
-  if (reqs.timeline_semaphore && !caps.supports_timeline_semaphore()) {
-    return Status::unsupported(std::string(caps.properties().deviceName) +
-                               " does not support timelineSemaphore");
-  }
-  if (reqs.scalar_block_layout && !caps.supports_scalar_block_layout()) {
-    return Status::unsupported(std::string(caps.properties().deviceName) +
-                               " does not support scalarBlockLayout");
-  }
-  if (reqs.dynamic_rendering && !caps.supports_dynamic_rendering()) {
-    return Status::unsupported(std::string(caps.properties().deviceName) +
-                               " does not support dynamicRendering");
+  // Each is core from a version on, and enabled as core, never through its
+  // extension: below that usable version the device may not enable it,
+  // whatever it reports.
+  struct Flag {
+    bool wanted;
+    bool supported;
+    std::uint32_t core_in;
+    const char* feature;
+  };
+  for (const Flag& flag :
+       {Flag{reqs.timeline_semaphore, caps.supports_timeline_semaphore(),
+             VK_API_VERSION_1_2, "timelineSemaphore"},
+        Flag{reqs.scalar_block_layout, caps.supports_scalar_block_layout(),
+             VK_API_VERSION_1_2, "scalarBlockLayout"},
+        Flag{reqs.dynamic_rendering, caps.supports_dynamic_rendering(),
+             VK_API_VERSION_1_3, "dynamicRendering"}}) {
+    if (!flag.wanted) continue;
+    if (caps.api_version() < flag.core_in) {
+      return Status::unsupported(usable_version_text(caps) + "; " +
+                                 flag.feature + " needs Vulkan " +
+                                 version_text(flag.core_in));
+    }
+    if (!flag.supported) {
+      return Status::unsupported(name + " does not support " + flag.feature);
+    }
   }
   return {};
 }
@@ -115,19 +162,10 @@ Result<DeviceRequirements> merge(const DeviceRequirements& a,
     }
   }
 
-  constexpr std::size_t kCount =
-      sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
-  const auto* fa = reinterpret_cast<const VkBool32*>(&a.features);
-  const auto* fb = reinterpret_cast<const VkBool32*>(&b.features);
-  auto* fo = reinterpret_cast<VkBool32*>(&out.features);
-  for (std::size_t i = 0; i < kCount; ++i) {
-    fo[i] = (fa[i] == VK_TRUE || fb[i] == VK_TRUE) ? VK_TRUE : VK_FALSE;
-  }
-
+  out.features = detail::features_union(a.features, b.features);
   out.timeline_semaphore = a.timeline_semaphore || b.timeline_semaphore;
   out.scalar_block_layout = a.scalar_block_layout || b.scalar_block_layout;
   out.dynamic_rendering = a.dynamic_rendering || b.dynamic_rendering;
-  out.debug_utils = a.debug_utils || b.debug_utils;
   out.feature_chain =
       a.feature_chain != nullptr ? a.feature_chain : b.feature_chain;
   return out;
@@ -144,7 +182,8 @@ Result<DeviceSupport> check_device_support(const PhysicalDeviceInfo& caps,
     return Status::invalid_argument(
         "check_device_support: needs_present requires a surface");
   }
-  VKC_TRY(detail::check_physical_support(caps, reqs));
+  VKC_TRY(detail::check_physical_support(caps, reqs,
+                                         detail::required_extensions(reqs)));
 
   const std::vector<VkQueueFamilyProperties>& families = caps.queue_families();
   std::optional<std::uint32_t> family;
