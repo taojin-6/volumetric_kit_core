@@ -60,7 +60,7 @@ It lands in five stages, each its own PR, merged before any sibling migrates:
 | Stage | Holds |
 | --- | --- |
 | V1 (landed) | `vulkan.hpp`, the `VkResult` helpers, `UniqueHandle`, `PhysicalDeviceInfo`, `DeviceRequirements` with `merge` and `check_device_support`, `Instance`, `Device` |
-| V2 | allocator, buffers, images, descriptors, shader modules, sync primitives, command pools and buffers |
+| V2 (landed) | `Allocator`, `Buffer`, `Image`, descriptor layouts, pools and sets, `ShaderModule`, fences and semaphores, command pools and buffers |
 | V3 | compute pipelines, kernel sets, `CommandBatch`, the compute helpers |
 | V4 | query pools, `GpuTimer`, `StageMetrics` (to `base`), external memory |
 | V5 | the shared-device bootstrap, replacing recon's example copy and ios's `SharedDevice` |
@@ -138,6 +138,64 @@ V1's choices, from comparing the two cores on 2026-10-03:
   layer (`VKC_TEST_VALIDATION=1`), so ASan, UBSan, LSan and validation check
   the same run. Under it, a test fails if validation is off or does not reach
   the log sink, and counts errors the layer reports at `vkDestroyInstance`.
+
+V2's choices, from the same comparison:
+
+- **recon's memory rules.** `MemoryUsage::DeviceLocal` *requires*
+  `DEVICE_LOCAL`, so an allocation fails rather than spill bulk kernel data
+  into host memory across PCIe (recon measured a TSDF kernel at 14.6 ms there
+  against 0.067 ms in VRAM); gfx only preferred it. A host-visible buffer is
+  mapped persistently and coherent, so `mapped()` is a plain pointer. A
+  device-address usage is refused, as recon's `MarchingCubes` refused it:
+  VMA aborts on one unless its allocator enables buffer device addresses,
+  which needs a feature `DeviceRequirements` cannot ask for yet.
+- **Sharing from the queue families a resource names.** Two or more distinct
+  families give `CONCURRENT`, one or none `EXCLUSIVE`; duplicates count once,
+  and a family the device lacks is refused. recon's rule, now for images too:
+  gfx's were always exclusive, which is undefined when another family -- on
+  Apple, a compute library's -- reads them. `BufferDesc::kMaxQueueFamilies`
+  and `check_queue_family_count` stay for recon's configs.
+- **Resources outlive their allocator safely.** Each buffer and image holds a
+  reference to the VMA state, freed with the last of them (recon's); a
+  documented destruction order cannot express `a = std::move(b)`.
+- **One allocator per library per device**, separate from `Device`: VMA
+  allocators are independent bookkeeping over one `VkDevice`, so a library
+  sharing an adopted device still reports only its own memory.
+- **One `Image` type** replaces gfx's `Texture` and recon's adopted `Image`:
+  made by `Allocator::create_image` with gfx's validation (3D, arrays, cubes,
+  mips, multisampling, a default view whose type and aspect follow the image),
+  or adopted from an `ImageInfo` and a deleter. `handle()`, not gfx's
+  `image()`, as every other wrapper names it. Images are device-local only,
+  `MemoryUsage::Auto` included: they have no host accessor, so a host-visible
+  one would be memory the host cannot use. recon's `BufferMemoryInfo` becomes
+  `MemoryInfo`, shared by both. `ImageInfo` records what Vulkan cannot be
+  asked afterwards -- type, samples, create flags and tiling with the rest --
+  so a library handed a borrowed image can tell a cube from a six-layer array
+  or a multisampled image from a single-sample one. It also records the
+  layout the contents are in, which the owner updates with `set_layout` after
+  each transition it submits: Vulkan cannot be asked that either, and a copy
+  recorded against a stale layout is invalid. The default view is refused
+  only where it cannot be right: a transfer-only usage, or a multi-planar or
+  4:2:2 format, whose view needs a sampler Y'CbCr conversion.
+- **VMA v3.4.0, private**, under the FetchContent name recon and gfx use, so
+  one build resolves one copy. Static Vulkan functions against the linked
+  loader, and Vulkan 1.1 as VMA's ceiling, as both did. It never reaches a
+  public header. Its implementation is compiled into the allocator's own
+  object, so a static link that also pulls in another VMA implementation --
+  recon's or gfx's own, until each moves to this allocator and drops it --
+  fails on duplicate symbols, instead of running the allocator on a copy
+  built against other Vulkan headers. A shared core hides VMA's symbols.
+- **Descriptor sets write all four kinds** the family uses: storage buffers
+  (recon), uniform buffers and combined image samplers (gfx), and storage
+  images, new, for compute kernels that write images. Copies share a write
+  count (recon's), so a recorded batch can refuse a set rewritten through an
+  alias.
+- **`ShaderModule` without reflection** (recon's): pipelines declare their
+  layouts, so the core needs no SPIR-V parser. gfx keeps its spirv-cross
+  reflection over this module.
+- **gfx's fences, semaphores, command pools and command buffers**, with one
+  change: an empty fence or timeline semaphore returns `InvalidArgument`
+  instead of passing a null device to Vulkan.
 
 ### Naming
 
@@ -249,8 +307,10 @@ consuming the package.
 - **GPU CI for the vulkan tier.** lavapipe covers correctness on hosted
   runners, but no real GPU runs here yet. `recon`'s GPU runners
   (`vk-linux-gpu`, `mac`) are registered per repository, so they must be
-  registered here too -- before the allocator (V2), whose memory placement
-  differs on a discrete GPU. On a public repository those legs must run only
+  registered here too. They were to come before the allocator (V2), whose
+  memory placement differs on a discrete GPU; V2 landed without them, so the
+  discrete-GPU path -- `DeviceLocal` in VRAM, apart from host-visible memory
+  -- is still untested here. On a public repository those legs must run only
   same-repository code, as `recon`'s guard does.
 - **Vulkan headers for gfx.** The tier uses the system's headers; gfx pins
   Vulkan-Headers 1.4.357 and links the loader privately. Both in one build

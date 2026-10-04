@@ -34,6 +34,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     thread-safe `submit_single_time`, `submit_and_wait`, `queue_present` and
     `wait_idle`; a never-null `submit_mutex`; debug labels; external-memory
     and Metal-object capabilities.
+- `vulkan` tier memory and resources (DECISIONS.md, "The vulkan tier", V2):
+  - `Allocator` over VMA v3.4.0 (private): `create_buffer`, `create_image`,
+    per-heap `memory_stats`. Device-local memory is required, not preferred,
+    and every image is device-local; host-visible buffers are mapped and
+    coherent; resources may outlive the allocator. A device-address buffer
+    usage is refused for now.
+  - `Buffer` and `Image` (with `MemoryInfo`), made by the allocator or
+    adopted with a deleter. `Image` covers 2D, 3D, array, cube, mipmapped and
+    multisampled images with a default view, and replaces gfx's `Texture`.
+    `ImageInfo` records the type, samples, create flags and tiling, and the
+    layout the owner last recorded with `Image::set_layout`.
+  - Queue-family sharing for buffers and images: two or more distinct
+    families give `VK_SHARING_MODE_CONCURRENT`; `check_queue_family_count`.
+  - `DescriptorSetLayout`, `DescriptorPool`, and `DescriptorSet` with storage
+    buffer, uniform buffer, combined image sampler and storage image writes;
+    a write naming a null buffer or view aborts via `VKC_CHECK`.
+  - `ShaderModule`; `Fence`, `Semaphore`, `TimelineSemaphore`; `CommandPool`
+    and `CommandBuffer`.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
   on and reach the log sink; a leg builds with no Vulkan installed.

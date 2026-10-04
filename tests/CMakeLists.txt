@@ -17,13 +17,20 @@ foreach(_vkc_test base_result base_check base_log base_version)
     TIMEOUT 60)
 endforeach()
 
-# vulkan: the VkResult helpers, UniqueHandle and DeviceRequirements need no
-# device; the device tests skip without one, unless VKC_REQUIRE_VULKAN_DEVICE is
-# set (CI sets it beside lavapipe), and fail on a validation error under
-# VKC_TEST_VALIDATION=1 (tests/vulkan_fixture.hpp).
+# vulkan: the VkResult helpers, UniqueHandle, DeviceRequirements and the
+# queue-family reduction need no device; the device tests skip without one,
+# unless VKC_REQUIRE_VULKAN_DEVICE is set (CI sets it beside lavapipe), and fail
+# on a validation error under VKC_TEST_VALIDATION=1 (tests/vulkan_fixture.hpp).
 if(VKC_WITH_VULKAN)
-  foreach(_vkc_test vulkan_result vulkan_unique_handle vulkan_requirements
-                    vulkan_device)
+  foreach(
+    _vkc_test
+    vulkan_result
+    vulkan_unique_handle
+    vulkan_requirements
+    vulkan_queue_families
+    vulkan_device
+    vulkan_allocator
+    vulkan_resources)
     add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
     target_link_libraries(vkc_${_vkc_test}_test
                           PRIVATE volumetric_kit::core_vulkan GTest::gtest_main)
@@ -33,6 +40,12 @@ if(VKC_WITH_VULKAN)
       PROPERTIES
       TIMEOUT 120)
   endforeach()
+
+  # The queue-family reduction is internal to core_vulkan, so its test reaches
+  # into the source directory for it.
+  target_include_directories(
+    vkc_vulkan_queue_families_test
+    PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")
 endif()
 
 # The one-instance warning (cmake/vkc_single_instance.cmake): configure a

@@ -25,8 +25,37 @@ add_library(core_vulkan)
 add_library(volumetric_kit::core_vulkan ALIAS core_vulkan)
 
 target_sources(
-  core_vulkan PRIVATE device.cpp device_requirements.cpp instance.cpp
-                      physical_device_info.cpp support.hpp vk_result.cpp)
+  core_vulkan
+  PRIVATE allocator.cpp
+          buffer.cpp
+          command_buffer.cpp
+          command_pool.cpp
+          descriptor.cpp
+          device.cpp
+          device_requirements.cpp
+          image.cpp
+          instance.cpp
+          physical_device_info.cpp
+          queue_families.hpp
+          shader.cpp
+          support.hpp
+          sync.cpp
+          vk_result.cpp)
+
+# VMA is private: only allocator.cpp includes it, never a public header. Its
+# include directory is read from the target VMA's own build defines, whether
+# FetchContent built it or a dependency provider found it (third_party/), and
+# SYSTEM keeps its warnings out of the -Werror surface. It is read, not linked,
+# so VMA never enters core_vulkan's exported interface.
+if(NOT TARGET GPUOpen::VulkanMemoryAllocator)
+  message(FATAL_ERROR "core_vulkan: no GPUOpen::VulkanMemoryAllocator target "
+                      "-- third_party/ must make VMA available before src/")
+endif()
+target_include_directories(
+  core_vulkan SYSTEM
+  PRIVATE
+    "$<TARGET_PROPERTY:GPUOpen::VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>"
+)
 
 generate_export_header(
   core_vulkan
