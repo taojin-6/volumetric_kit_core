@@ -42,6 +42,12 @@ target_link_libraries(vkc_package_consumer_lib PUBLIC volumetric_kit::core)
 
 add_executable(vkc_package_consumer main.cpp)
 target_link_libraries(vkc_package_consumer PRIVATE vkc_package_consumer_lib)
+# The vulkan tier, when the core has it: an installed core built with it, or a
+# subproject configured -DVKC_WITH_VULKAN=ON, as recon and gfx will.
+if(TARGET volumetric_kit::core_vulkan)
+  target_compile_definitions(vkc_package_consumer
+                             PRIVATE VKC_CONSUMER_HAS_VULKAN)
+endif()
 
 install(TARGETS vkc_package_consumer_lib EXPORT vkc_package_consumerTargets)
 install(

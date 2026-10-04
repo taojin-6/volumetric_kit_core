@@ -9,6 +9,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- `vulkan` tier foundation (`volumetric_kit::core_vulkan`, built with
+  `VKC_WITH_VULKAN`), merged from recon's and gfx's cores (DECISIONS.md, "The
+  vulkan tier"):
+  - `vulkan.hpp`, the one header first-party code includes Vulkan through
+    (the `vulkan-include-umbrella` hook enforces it); `vk_error`,
+    `VKC_VK_TRY`, `vk_result` and `to_string(VkResult)`; `UniqueHandle`,
+    whose deleter may also be a loaded entry point, so a switch to volk
+    changes no spelling.
+  - `PhysicalDeviceInfo`: a device's properties, queue families, extensions
+    and features, captured once, and the version usable on it -- the lower of
+    the device's and its instance's.
+  - `DeviceRequirements`, which replaces recon's and gfx's `DeviceConfig`;
+    `merge` for a device two libraries share; and `check_device_support`, the
+    one check selection, create and adopt share.
+  - `Instance`: Vulkan 1.3 or the loader's lower version, validation routed
+    to the log sink (source `"vulkan"`) -- or dropped with a warning when the
+    layer is missing or fails to load, as `validation_logged()` tells --
+    debug utils, portability. `select_physical_device(requirements, surface)`
+    returns the chosen device's `PhysicalDeviceInfo`, and says why each
+    device was refused.
+  - `Device`: create from that `PhysicalDeviceInfo`, or adopt, which takes
+    the instance's version too; one queue plus an optional present queue;
+    thread-safe `submit_single_time`, `submit_and_wait`, `queue_present` and
+    `wait_idle`; a never-null `submit_mutex`; debug labels; external-memory
+    and Metal-object capabilities.
+- CI runs the vulkan tier's device tests on lavapipe, with a device required,
+  and in the sanitizer job under the Khronos validation layer, which must be
+  on and reach the log sink; a leg builds with no Vulkan installed.
+
 - Build system: CMake ≥ 3.21, C++17, per-tier targets with an umbrella
   `volumetric_kit::core`, install/export for `find_package(volumetric_kit_core)`
   and FetchContent. Tests and `-Werror` default ON only at the top level;

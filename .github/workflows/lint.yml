@@ -39,6 +39,10 @@ jobs:
           python-version: '3.12'
       # The same release as the pinned clang-format (.pre-commit-config.yaml).
       - run: python -m pip install clang-tidy==22.1.8
+      # The vulkan tier's headers and loader, so it is linted too.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvulkan-dev
       # clang++ so the compile commands clang-tidy replays are a clang's.
       - name: Configure
         run: |

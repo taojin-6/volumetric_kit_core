@@ -8,7 +8,10 @@
 include(GNUInstallDirs)
 
 add_subdirectory(volumetric_kit/core/base)
-# TODO: add_subdirectory() for vulkan / camera / sensor as those tiers land (see
+if(VKC_WITH_VULKAN)
+  add_subdirectory(volumetric_kit/core/vulkan)
+endif()
+# TODO: add_subdirectory() for camera / sensor as those tiers land (see
 # DECISIONS.md "Tiers").
 
 # --- volumetric_kit::core: umbrella ------------------------------------------
@@ -20,16 +23,25 @@ add_library(volumetric_kit_core INTERFACE)
 add_library(volumetric_kit::core ALIAS volumetric_kit_core)
 set_target_properties(volumetric_kit_core PROPERTIES EXPORT_NAME core)
 target_link_libraries(volumetric_kit_core INTERFACE core_base)
+if(VKC_WITH_VULKAN)
+  target_link_libraries(volumetric_kit_core INTERFACE core_vulkan)
+endif()
 
 # --- Install / export --------------------------------------------------------
 if(VKC_INSTALL)
   install(TARGETS volumetric_kit_core EXPORT volumetric_kit_coreTargets)
 
+  # A tier's headers install only when the tier is built, so an installed
+  # package never ships a header whose library it lacks.
+  set(_vkc_header_excludes)
+  if(NOT VKC_WITH_VULKAN)
+    list(APPEND _vkc_header_excludes PATTERN "vulkan" EXCLUDE)
+  endif()
   install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     FILES_MATCHING
-    PATTERN "*.hpp")
+    PATTERN "*.hpp" ${_vkc_header_excludes})
 
   install(
     EXPORT volumetric_kit_coreTargets

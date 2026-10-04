@@ -55,6 +55,25 @@ cmake --build "$core_root/build" --parallel
 ctest --test-dir "$core_root/build" --output-on-failure
 ```
 
+### GPU tests
+
+The vulkan tier's device tests run on the best device present -- a GPU, or
+lavapipe, Mesa's software Vulkan -- and skip without one. CTest reports a
+skipped test as passed, so check them as CI does:
+
+```sh
+VKC_REQUIRE_VULKAN_DEVICE=1 VKC_TEST_VALIDATION=1 \
+  ctest --test-dir "$core_root/build" --output-on-failure
+```
+
+`VKC_REQUIRE_VULKAN_DEVICE=1` turns a skip into a failure, and
+`VKC_TEST_VALIDATION=1` enables the Khronos validation layer and fails any test
+that triggers a validation error -- or that runs without validation. On macOS
+with Homebrew's `vulkan-validationlayers`, the loader finds the layer's
+manifest but not its library; add `DYLD_LIBRARY_PATH=/opt/homebrew/lib`, or
+every device test fails with "VKC_TEST_VALIDATION is set, but validation is
+off".
+
 ## Changing a public API
 
 Four repositories build on this one. A change to an installed header or to the

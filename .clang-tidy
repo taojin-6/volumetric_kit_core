@@ -38,3 +38,9 @@ WarningsAsErrors: '*'
 # ones (googletest).
 HeaderFilterRegex: '.*/include/volumetric_kit/core/.*'
 SystemHeaders: false
+CheckOptions:
+  # First-party code reaches Vulkan only through
+  # volumetric_kit/core/vulkan/vulkan.hpp (the vulkan-include-umbrella hook
+  # enforces it), so include-cleaner must not ask for Vulkan's own headers.
+  - key: misc-include-cleaner.IgnoreHeaders
+    value: 'vulkan/.*;vk_video/.*'

@@ -30,6 +30,12 @@ option(VKC_WARNINGS_AS_ERRORS "Treat first-party compiler warnings as errors"
 # own, and the sibling's installed package needs the core installed beside it. A
 # consumer that installs nothing never runs these rules.
 option(VKC_INSTALL "Generate install/export rules" ON)
+# The vulkan tier needs a Vulkan SDK (headers and loader; MoltenVK on Apple). ON
+# by default only at the top level: a sibling that uses it (recon, gfx) sets it
+# ON before fetching the core, and one that does not (calib's headless solver)
+# then needs no Vulkan installed to build.
+option(VKC_WITH_VULKAN "Build the vulkan tier (needs a Vulkan SDK)"
+       ${PROJECT_IS_TOP_LEVEL})
 # Lint first-party targets with clang-tidy as they compile (.clang-tidy); see
 # cmake/vkc_clang_tidy.cmake. Off by default: it slows the build.
 option(VKC_CLANG_TIDY "Run clang-tidy on first-party targets" OFF)
