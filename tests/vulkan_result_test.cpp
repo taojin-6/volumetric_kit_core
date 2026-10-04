@@ -36,17 +36,23 @@ TEST(VkResult, OnlyABackendStatusCarriesAResult) {
 }
 
 // A backend detail wider than 32 bits is no VkResult; converting it to the
-// enum would be undefined (UBSan's enum check).
+// enum would be undefined (UBSan's enum check). Each bound is checked one past
+// it, and the top one at VK_RESULT_MAX_ENUM (INT32_MAX) as well: the cases use
+// only values VkResult declares, as clang-tidy's EnumCastOutOfRange check
+// would flag a cast of any other value -- here or inside vk_result.
 TEST(VkResult, ADetailWiderThan32BitsCarriesNoResult) {
+  constexpr std::int64_t kMin = std::numeric_limits<std::int32_t>::min();
+  constexpr std::int64_t kMax = std::numeric_limits<std::int32_t>::max();
+  EXPECT_EQ(vk_result(Status::backend_error(kMax + 1, "wide")), std::nullopt);
+  EXPECT_EQ(vk_result(Status::backend_error(kMin - 1, "wide")), std::nullopt);
   EXPECT_EQ(vk_result(Status::backend_error(std::int64_t{1} << 40, "wide")),
             std::nullopt);
   EXPECT_EQ(vk_result(Status::backend_error(
                 std::numeric_limits<std::int64_t>::min(), "wide")),
             std::nullopt);
-  EXPECT_EQ(vk_result(Status::backend_error(
-                std::numeric_limits<std::int32_t>::min(), "narrow")),
-            std::optional<VkResult>(static_cast<VkResult>(
-                std::numeric_limits<std::int32_t>::min())));
+  static_assert(VK_RESULT_MAX_ENUM == kMax);
+  EXPECT_EQ(vk_result(Status::backend_error(kMax, "narrow")),
+            std::optional<VkResult>(VK_RESULT_MAX_ENUM));
 }
 
 Status pass_through(VkResult result) {
