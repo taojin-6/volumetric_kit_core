@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Tao Jin
+
+// Links volumetric_kit::core and uses each piece of the base tier once, so a
+// broken install, export or include path fails here rather than in a sibling.
+
+#include <cstdio>
+#include <string>
+
+#include "volumetric_kit/core/base/log.hpp"
+#include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/version.hpp"
+
+namespace vkc = volumetric_kit::core;
+
+namespace {
+
+vkc::Result<int> parse_positive(int x) {
+  if (x <= 0) return vkc::Status::invalid_argument("not positive");
+  return x;
+}
+
+vkc::Status run() {
+  VKC_ASSIGN(const int n, parse_positive(3));
+  VKC_CHECK(n == 3, "parsed what it was given");
+  if (parse_positive(-1).ok()) return vkc::Status::numerical("accepted -1");
+  return {};
+}
+
+}  // namespace
+
+int main() {
+  int logged = 0;
+  vkc::set_log_handler([&](vkc::LogLevel, std::string_view) { ++logged; });
+  vkc::log_message(vkc::LogLevel::Info, "consumer");
+  const vkc::Status status = run();
+  if (!status || logged != 1) {
+    std::fprintf(stderr, "package consumer failed: %s\n",
+                 status.message().c_str());
+    return 1;
+  }
+  std::printf("volumetric_kit_core %s consumed\n", vkc::version_string());
+  return 0;
+}

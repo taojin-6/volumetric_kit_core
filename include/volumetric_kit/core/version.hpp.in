@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Tao Jin
+
+#pragma once
+
+/// @file version.hpp
+/// @brief Compile-time and runtime accessors for the library version. Generated
+///        from version.hpp.in by CMake -- do not edit the generated copy.
+///
+/// The macros give the version a consumer was compiled against; the functions
+/// give the version of the library it linked. They differ only when a stale
+/// build links a library other than the headers it saw.
+
+#include "volumetric_kit/core/base/export.hpp"
+
+#define VKC_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define VKC_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define VKC_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define VKC_VERSION_STRING "@PROJECT_VERSION@"
+
+namespace volumetric_kit::core {
+
+/// @return The linked library's version as "MAJOR.MINOR.PATCH".
+VKC_BASE_API const char* version_string() noexcept;
+
+/// @return The linked library's major version component.
+VKC_BASE_API int version_major() noexcept;
+/// @return The linked library's minor version component.
+VKC_BASE_API int version_minor() noexcept;
+/// @return The linked library's patch version component.
+VKC_BASE_API int version_patch() noexcept;
+
+}  // namespace volumetric_kit::core

@@ -1,0 +1,92 @@
+name: ci
+
+# Umbrella CI. Every build leg, lint and sanitizers fan out from here, and the
+# single `required` job at the bottom succeeds only if all of them did. Branch
+# protection requires just that one check ("ci / required"), so the required
+# list stays stable as legs are added or renamed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      # The base tier is pure C++17 with no dependencies, so GitHub-hosted
+      # runners cover it. Legs are listed explicitly: a matrix `include` that
+      # matches an existing os/build_type pair would extend that leg rather
+      # than add one.
+      #
+      # TODO: the vulkan tier adds the GPU legs recon runs today -- Ubuntu
+      # containers on the self-hosted `vk-linux-gpu` box and the self-hosted
+      # `mac` -- once those runners are registered for this repository
+      # (runners on a personal account are per repository). This repository
+      # is public, so those legs must keep recon's guard and run only
+      # same-repository code.
+      matrix:
+        include:
+          - name: ubuntu-24.04 Debug
+            os: ubuntu-24.04
+            build_type: Debug
+          - name: ubuntu-24.04 Release
+            os: ubuntu-24.04
+            build_type: Release
+          - name: macos Debug
+            os: macos-latest
+            build_type: Debug
+          - name: macos Release
+            os: macos-latest
+            build_type: Release
+          # Mobile consumers build with -fno-exceptions (AGENTS.md).
+          - name: ubuntu-24.04 Release -fno-exceptions
+            os: ubuntu-24.04
+            build_type: Release
+            cxx_flags: -fno-exceptions
+          # Siblings may link the core into shared libraries; the export
+          # macros must hold under hidden visibility.
+          - name: ubuntu-24.04 Release shared
+            os: ubuntu-24.04
+            build_type: Release
+            shared: true
+    uses: ./.github/workflows/_build.yml
+    with:
+      os: ${{ matrix.os }}
+      build_type: ${{ matrix.build_type }}
+      cxx_flags: ${{ matrix.cxx_flags || '' }}
+      shared: ${{ matrix.shared || false }}
+
+  lint:
+    uses: ./.github/workflows/lint.yml
+
+  sanitizers:
+    uses: ./.github/workflows/sanitizers.yml
+
+  required:
+    # The one status check branch protection requires. It passes only when
+    # every build leg, lint and sanitizers succeeded, and FAILS (never skips)
+    # on any other outcome: a skipped required check never reports and would
+    # block every merge.
+    needs: [build, lint, sanitizers]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Assert every required job succeeded
+        run: |
+          echo "build=${{ needs.build.result }}" \
+               "lint=${{ needs.lint.result }}" \
+               "sanitizers=${{ needs.sanitizers.result }}"
+          if [ "${{ needs.build.result }}" = success ] \
+             && [ "${{ needs.lint.result }}" = success ] \
+             && [ "${{ needs.sanitizers.result }}" = success ]; then
+            echo "All required CI jobs passed."
+          else
+            echo "::error::one or more required CI jobs did not succeed (see results above)"
+            exit 1
+          fi
