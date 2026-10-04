@@ -39,11 +39,11 @@
 /// @endcode
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <variant>
 
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/export.hpp"
@@ -225,23 +225,6 @@ struct SourceLocation {
                                                  const Status& status,
                                                  SourceLocation where);
 
-/// @return The success status an OK @ref Result reports. Never destroyed, so
-///         a Result read during static destruction still has one.
-inline const Status& ok_status() noexcept {
-  // A union member is destroyed only by its union's destructor, and this one
-  // does nothing: no heap allocation, and no destructor at exit.
-  static const union NeverDestroyed {
-    NeverDestroyed() : status() {}
-    ~NeverDestroyed() {}
-    NeverDestroyed(const NeverDestroyed&) = delete;
-    NeverDestroyed& operator=(const NeverDestroyed&) = delete;
-    NeverDestroyed(NeverDestroyed&&) = delete;
-    NeverDestroyed& operator=(NeverDestroyed&&) = delete;
-    Status status;
-  } ok;
-  return ok.status;
-}
-
 /// @brief Conversions to `T` that compile but are almost never a success
 ///        value, so @ref Result's converting constructor refuses them: a
 ///        pointer turning into `bool` (`return "config missing";` from a
@@ -305,7 +288,7 @@ class [[nodiscard]] Result {
                              int> = 0>
   Result(U&& value)  // NOLINT(google-explicit-constructor): ergonomic success
                      // return
-      : storage_(std::in_place_type<T>, std::forward<U>(value)) {}
+      : value_(std::in_place, std::forward<U>(value)) {}
 
   /// @brief Construct a failure Result.
   /// @param err  The failure; it must be non-OK (checked by @ref VKC_CHECK).
@@ -313,7 +296,7 @@ class [[nodiscard]] Result {
                        // return
 
   /// @return `true` if this holds a value rather than an error.
-  bool ok() const noexcept { return std::holds_alternative<T>(storage_); }
+  bool ok() const noexcept { return value_.has_value(); }
   /// @return `true` if this holds a value (same as @ref ok).
   explicit operator bool() const noexcept { return ok(); }
   /// @return The status; non-OK exactly when this is an error Result.
@@ -365,9 +348,14 @@ class [[nodiscard]] Result {
   static auto* checked_value(Self& self, const char* accessor,
                              detail::SourceLocation where);
 
-  // One discriminator: which alternative is held *is* whether this is OK, so
-  // there is no separate flag to keep in step with the status.
-  std::variant<T, Status> storage_;
+  // One discriminator: whether this is OK *is* whether it holds a value, and
+  // ok() reads nothing else. status_ stays the default (OK) Status unless the
+  // failure constructor set it, to a non-OK status it checks, so the two can
+  // never disagree. (Not a std::variant<T, Status>: GCC 13 at -O2 reports a
+  // false -Wmaybe-uninitialized for the Status string in its destructor, and
+  // a consumer building with -Werror would inherit that.)
+  std::optional<T> value_;
+  Status status_;
 };
 
 }  // namespace volumetric_kit::core

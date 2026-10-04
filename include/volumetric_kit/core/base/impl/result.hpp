@@ -8,42 +8,37 @@
 ///        @ref volumetric_kit::core::Result. Included at the end of result.hpp
 ///        -- not a standalone header; do not include it directly.
 
+#include <memory>
 #include <utility>
-#include <variant>
 
 #include "volumetric_kit/core/base/check.hpp"
 
 namespace volumetric_kit::core {
 
 template <class T>
-Result<T>::Result(Status err)
-    : storage_(std::in_place_type<Status>, std::move(err)) {
-  VKC_CHECK(!status().ok(), "Result(Status) requires a non-OK status");
+Result<T>::Result(Status err) : status_(std::move(err)) {
+  VKC_CHECK(!status_.ok(), "Result(Status) requires a non-OK status");
 }
 
 template <class T>
 const Status& Result<T>::status() const& noexcept {
-  if (const Status* err = std::get_if<Status>(&storage_)) return *err;
-  return detail::ok_status();
+  return status_;
 }
 
 template <class T>
 Status Result<T>::status() && {
-  if (Status* err = std::get_if<Status>(&storage_)) return std::move(*err);
-  return {};
+  return std::move(status_);
 }
 
 template <class T>
 template <class Self>
 auto* Result<T>::checked_value(Self& self, const char* accessor,
                                detail::SourceLocation where) {
-  // std::get_if returns the real address, even for a T that overloads unary
-  // operator&.
-  auto* value = std::get_if<T>(&self.storage_);
-  if (value == nullptr) {
-    detail::bad_result_access(accessor, self.status(), where);
+  if (!self.value_.has_value()) {
+    detail::bad_result_access(accessor, self.status_, where);
   }
-  return value;
+  // addressof: the real address, even for a T that overloads unary operator&.
+  return std::addressof(*self.value_);
 }
 
 template <class T>

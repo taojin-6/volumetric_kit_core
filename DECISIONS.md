@@ -96,8 +96,12 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
   all three copies, which returned `T&&`. A reference into a temporary
   `Result` dangles once the full expression ends (`for (auto& p :
   load().value())` before C++23); the price is one move.
-- **One discriminator.** `Result` holds a `std::variant<T, Status>`, so
-  whether it is OK and which alternative it holds cannot disagree.
+- **One discriminator.** A `Result` is OK exactly when it holds a value, and
+  `ok()` reads nothing else; its `Status` is set only by the failure
+  constructor, which checks it is non-OK. It is not a
+  `std::variant<T, Status>`: GCC 13 at `-O2` reports a false
+  `-Wmaybe-uninitialized` in that variant's destructor, which a consumer
+  building with `-Werror` would inherit.
 - **`VKC_CHECK` logs through the sink, then aborts** (`recon` and `gfx`), so an
   application that routes logs to a crash reporter sees why it stopped.
   `calib`'s check printed to stderr directly. A check that fails inside the
