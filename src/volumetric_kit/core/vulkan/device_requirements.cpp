@@ -43,8 +43,8 @@ const VkBool32* feature_bits(const VkPhysicalDeviceFeatures& features) {
   return reinterpret_cast<const VkBool32*>(&features);
 }
 
-// "<device> is a Vulkan 1.2 device", or, when the instance is what limits
-// it, "<device> reports Vulkan 1.3, but the instance negotiated 1.2".
+}  // namespace
+
 std::string usable_version_text(const PhysicalDeviceInfo& caps) {
   const std::string name = caps.properties().deviceName;
   const std::uint32_t reported = caps.properties().apiVersion;
@@ -54,8 +54,6 @@ std::string usable_version_text(const PhysicalDeviceInfo& caps) {
   }
   return name + " is a Vulkan " + version_text(caps.api_version()) + " device";
 }
-
-}  // namespace
 
 bool features_subset(const VkPhysicalDeviceFeatures& wanted,
                      const VkPhysicalDeviceFeatures& have) {

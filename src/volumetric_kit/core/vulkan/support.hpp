@@ -28,6 +28,10 @@ inline constexpr const char* kPortabilitySubset = "VK_KHR_portability_subset";
 // "1.3" for a packed API version.
 std::string version_text(std::uint32_t version);
 
+// "<device> is a Vulkan 1.2 device", or, when the instance is what limits
+// it, "<device> reports Vulkan 1.3, but the instance negotiated 1.2".
+std::string usable_version_text(const PhysicalDeviceInfo& caps);
+
 // `version` with its patch zeroed, so versions compare as major.minor.
 inline std::uint32_t without_patch(std::uint32_t version) {
   return VK_MAKE_API_VERSION(VK_API_VERSION_VARIANT(version),
@@ -76,17 +80,28 @@ struct QueueRequest {
   std::uint32_t count = 1;
 };
 
+// What a device enabled of the features DeviceRequirements names: the
+// requirements' own, and any of the three flags the caller's feature chain
+// set itself.
+struct EnabledFeatures {
+  VkPhysicalDeviceFeatures features{};
+  bool timeline_semaphore = false;
+  bool scalar_block_layout = false;
+  bool dynamic_rendering = false;
+};
+
 // The one vkCreateDevice path Device::create and SharedDevice share: on
 // `caps`, for `reqs` -- its core features, timeline semaphores, scalar block
 // layout and dynamic rendering, then its feature chain, whose structs may be
 // written (DeviceRequirements::feature_chain) -- enabling `extensions`
 // (enabled_extensions(caps, reqs)) and the queues `queues` asks for: one
 // create info per distinct family, with the most queues any request asks of
-// it.
+// it. `*enabled` receives the features it enabled.
 Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
                                const DeviceRequirements& reqs,
                                const std::vector<std::string>& extensions,
-                               const std::vector<QueueRequest>& queues);
+                               const std::vector<QueueRequest>& queues,
+                               EnabledFeatures* enabled);
 
 // Instance::select_physical_device, with `accept` asked of each device that
 // meets `reqs` too: one it refuses is passed over, and its reason joins the

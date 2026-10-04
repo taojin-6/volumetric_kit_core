@@ -43,6 +43,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- `Device::check_enabled(reqs)`: whether a device enabled everything `reqs`
+  requires -- the usable version, the queue's capabilities, presentation,
+  the required extensions, and the core, timeline, scalar and
+  dynamic-rendering features. A device records those features when created,
+  including the three flags its feature chain sets, or as its adopter
+  declares them. A library handed a device it did not make calls this before
+  building kernels that need a feature.
 - `vulkan` tier foundation (`volumetric_kit::core_vulkan`, built with
   `VKC_WITH_VULKAN`), merged from recon's and gfx's cores (DECISIONS.md, "The
   vulkan tier"):
@@ -205,6 +212,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
+- `Device::adopt` checks the declaration through `check_enabled`, so a
+  refusal now reads "... is not enabled on the device" rather than "... is
+  not declared enabled". `SharedDevice`'s payloads declare the features its
+  device was created with, including any its feature chain enabled.
 - `HeapStats` gains this allocator's own share beside the heap's figures:
   `reserved_bytes`, its blocks and dedicated memory with their free space,
   and `allocation_bytes`, its live allocations. `usage_bytes` and

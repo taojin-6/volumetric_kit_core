@@ -119,20 +119,22 @@ Result<std::unique_ptr<SharedDevice>> SharedDevice::create(
   for (const std::string& name : shared->extension_storage_) {
     shared->extensions_.push_back(name.c_str());
   }
-  shared->enabled_features_ = merged.features;
-  shared->enabled_timeline_semaphore_ = merged.timeline_semaphore;
-  shared->enabled_scalar_block_layout_ = merged.scalar_block_layout;
-  shared->enabled_dynamic_rendering_ = merged.dynamic_rendering;
   shared->presents_ = presents;
 
   // Two queues from the renderer's family only under the first plan, where
   // the compute library's is its second.
   const bool two_queues = shared->plan_ == QueuePlan::TwoQueuesOneFamily;
+  detail::EnabledFeatures features;
   VKC_ASSIGN(
       shared->device_,
       detail::create_device(caps, merged, shared->extension_storage_,
                             {{shared->graphics_family_, two_queues ? 2U : 1U},
-                             {shared->compute_family_, 1}}));
+                             {shared->compute_family_, 1}},
+                            &features));
+  shared->enabled_features_ = features.features;
+  shared->enabled_timeline_semaphore_ = features.timeline_semaphore;
+  shared->enabled_scalar_block_layout_ = features.scalar_block_layout;
+  shared->enabled_dynamic_rendering_ = features.dynamic_rendering;
   vkGetDeviceQueue(shared->device_, shared->graphics_family_, 0,
                    &shared->graphics_queue_);
   vkGetDeviceQueue(shared->device_, shared->compute_family_, two_queues ? 1 : 0,

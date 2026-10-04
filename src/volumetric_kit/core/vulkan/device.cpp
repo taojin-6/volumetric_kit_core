@@ -57,12 +57,14 @@ class ScopeGuard {
 // The VkDeviceCreateInfo feature chain create_device builds: the
 // requirements' core features, timeline semaphores, scalar block layout and
 // dynamic rendering, then the caller's chain. Built in place -- its nodes point
-// at one another -- so it is never copied or moved once built.
+// at one another -- so it is never copied or moved once built. `enabled` is
+// what it enables, the caller's chain included.
 struct FeatureChain {
   VkPhysicalDeviceFeatures2 features2{};
   VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
   VkPhysicalDeviceScalarBlockLayoutFeatures scalar{};
   VkPhysicalDeviceDynamicRenderingFeatures dynamic{};
+  detail::EnabledFeatures enabled;
 
   FeatureChain() = default;
   FeatureChain(const FeatureChain&) = delete;
@@ -118,6 +120,22 @@ struct FeatureChain {
           break;
       }
     }
+
+    enabled.features = reqs.features;
+    enabled.timeline_semaphore =
+        reqs.timeline_semaphore ||
+        (v12 != nullptr && v12->timelineSemaphore == VK_TRUE) ||
+        (their_timeline != nullptr &&
+         their_timeline->timelineSemaphore == VK_TRUE);
+    enabled.scalar_block_layout =
+        reqs.scalar_block_layout ||
+        (v12 != nullptr && v12->scalarBlockLayout == VK_TRUE) ||
+        (their_scalar != nullptr && their_scalar->scalarBlockLayout == VK_TRUE);
+    enabled.dynamic_rendering =
+        reqs.dynamic_rendering ||
+        (v13 != nullptr && v13->dynamicRendering == VK_TRUE) ||
+        (their_dynamic != nullptr &&
+         their_dynamic->dynamicRendering == VK_TRUE);
 
     auto* tail = reinterpret_cast<VkBaseOutStructure*>(&features2);
     auto link = [&tail](void* feature) {
@@ -183,7 +201,8 @@ std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
 Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
                                const DeviceRequirements& reqs,
                                const std::vector<std::string>& extensions,
-                               const std::vector<QueueRequest>& queues) {
+                               const std::vector<QueueRequest>& queues,
+                               EnabledFeatures* enabled) {
   std::vector<const char*> extension_names;
   extension_names.reserve(extensions.size());
   for (const std::string& name : extensions) {
@@ -233,6 +252,7 @@ Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
   // the caller must not destroy whatever it holds.
   VkDevice device = VK_NULL_HANDLE;
   VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &device));
+  *enabled = chain.enabled;
   return device;
 }
 
@@ -271,10 +291,15 @@ Result<Device> Device::create(VkInstance instance,
   std::vector<std::string> enabled = detail::enabled_extensions(caps, reqs);
   std::vector<detail::QueueRequest> queues = {{support.queue_family, 1}};
   if (support.present_family) queues.push_back({*support.present_family, 1});
+  detail::EnabledFeatures features;
   VKC_ASSIGN(VkDevice handle,
-             detail::create_device(caps, reqs, enabled, queues));
+             detail::create_device(caps, reqs, enabled, queues, &features));
   Device device;
   device.state_.device = handle;
+  device.state_.features = features.features;
+  device.state_.timeline_semaphore = features.timeline_semaphore;
+  device.state_.scalar_block_layout = features.scalar_block_layout;
+  device.state_.dynamic_rendering = features.dynamic_rendering;
   device.state_.physical = caps.handle();
   device.state_.owns_device = true;
   device.state_.queue_family = support.queue_family;
@@ -343,7 +368,8 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
   VKC_TRY(detail::check_physical_support(caps, reqs, required)
               .with_context("Device::adopt"));
   // ...and declared enabled by the creator, as Vulkan cannot be asked what a
-  // logical device enabled.
+  // logical device enabled: recorded below, and checked like a created
+  // device's.
   std::vector<std::string> declared;
   if (adopted.enabled_extensions != nullptr) {
     for (std::uint32_t i = 0; i < adopted.enabled_extension_count; ++i) {
@@ -351,33 +377,6 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
         declared.emplace_back(adopted.enabled_extensions[i]);
       }
     }
-  }
-  for (const std::string& name : required) {
-    if (std::find(declared.begin(), declared.end(), name) == declared.end()) {
-      return Status::unsupported(
-          "Device::adopt: the required extension " + name +
-          " is not declared enabled (AdoptedDevice::enabled_extensions)");
-    }
-  }
-  if (!detail::features_subset(reqs.features, adopted.enabled_features)) {
-    return Status::unsupported(
-        "Device::adopt: a required core feature is not declared enabled "
-        "(AdoptedDevice::enabled_features)");
-  }
-  if (reqs.timeline_semaphore && !adopted.enabled_timeline_semaphore) {
-    return Status::unsupported(
-        "Device::adopt: timelineSemaphore is not declared enabled "
-        "(AdoptedDevice::enabled_timeline_semaphore)");
-  }
-  if (reqs.scalar_block_layout && !adopted.enabled_scalar_block_layout) {
-    return Status::unsupported(
-        "Device::adopt: scalarBlockLayout is not declared enabled "
-        "(AdoptedDevice::enabled_scalar_block_layout)");
-  }
-  if (reqs.dynamic_rendering && !adopted.enabled_dynamic_rendering) {
-    return Status::unsupported(
-        "Device::adopt: dynamicRendering is not declared enabled "
-        "(AdoptedDevice::enabled_dynamic_rendering)");
   }
 
   Device device;
@@ -396,10 +395,64 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
     device.state_.present_family = adopted.present_family;
     device.state_.present_mutex = adopted.present_mutex;
   }
+  device.state_.features = adopted.enabled_features;
+  device.state_.timeline_semaphore = adopted.enabled_timeline_semaphore;
+  device.state_.scalar_block_layout = adopted.enabled_scalar_block_layout;
+  device.state_.dynamic_rendering = adopted.enabled_dynamic_rendering;
   device.caps_ = std::move(caps);
   device.enabled_extensions_ = std::move(declared);
+  VKC_TRY(device.check_enabled(reqs).with_context(
+      "Device::adopt (as AdoptedDevice declares it)"));
   device.resolve_entry_points(adopted.enabled_debug_utils);
   return device;
+}
+
+Status Device::check_enabled(const DeviceRequirements& reqs) const {
+  if (state_.device == VK_NULL_HANDLE) {
+    return Status::invalid_argument("Device::check_enabled: an empty device");
+  }
+  if (caps_.api_version() < reqs.api_version) {
+    return Status::unsupported(
+        detail::usable_version_text(caps_) + "; Vulkan " +
+        detail::version_text(reqs.api_version) + " is required");
+  }
+  if ((state_.queue_flags & reqs.queue_flags) != reqs.queue_flags) {
+    return Status::unsupported(
+        "the device's queue family lacks a required capability "
+        "(DeviceRequirements::queue_flags)");
+  }
+  if (reqs.needs_present && !has_present()) {
+    return Status::unsupported("the device has no present queue");
+  }
+  for (const std::string& name : detail::required_extensions(reqs)) {
+    if (!extension_enabled(name.c_str())) {
+      return Status::unsupported("the required extension " + name +
+                                 " is not enabled on the device");
+    }
+  }
+  if (!detail::features_subset(reqs.features, state_.features)) {
+    return Status::unsupported(
+        "a required core feature is not enabled on the device "
+        "(DeviceRequirements::features)");
+  }
+  struct Flag {
+    bool wanted;
+    bool enabled;
+    const char* feature;
+  };
+  for (const Flag& flag :
+       {Flag{reqs.timeline_semaphore, state_.timeline_semaphore,
+             "timelineSemaphore"},
+        Flag{reqs.scalar_block_layout, state_.scalar_block_layout,
+             "scalarBlockLayout"},
+        Flag{reqs.dynamic_rendering, state_.dynamic_rendering,
+             "dynamicRendering"}}) {
+    if (flag.wanted && !flag.enabled) {
+      return Status::unsupported(std::string(flag.feature) +
+                                 " is not enabled on the device");
+    }
+  }
+  return {};
 }
 
 void Device::resolve_entry_points(bool instance_debug_utils) noexcept {

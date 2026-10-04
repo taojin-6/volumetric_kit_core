@@ -271,6 +271,69 @@ TEST_F(DeviceTest, RaisesFeatureBitsInTheCallersChain) {
             reqs.scalar_block_layout ? VK_TRUE : VK_FALSE);
 }
 
+TEST_F(DeviceTest, ChecksWhatTheDeviceEnabled) {
+  const Result<Device> made = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  EXPECT_TRUE(made->check_enabled({}).ok());
+
+  // Perhaps supported, but not asked for, so not enabled.
+  DeviceRequirements wants_scalar;
+  wants_scalar.scalar_block_layout = true;
+  const Status no_scalar = made->check_enabled(wants_scalar);
+  EXPECT_EQ(no_scalar.domain(), Status::Code::Unsupported);
+  EXPECT_NE(no_scalar.message().find("scalarBlockLayout"), std::string::npos)
+      << no_scalar.message();
+
+  DeviceRequirements wants_extension;
+  wants_extension.extensions = {kNoSuchExtension};
+  const Status no_extension = made->check_enabled(wants_extension);
+  EXPECT_EQ(no_extension.domain(), Status::Code::Unsupported);
+  EXPECT_NE(no_extension.message().find(kNoSuchExtension), std::string::npos);
+
+  DeviceRequirements wants_present;
+  wants_present.needs_present = true;
+  EXPECT_EQ(made->check_enabled(wants_present).domain(),
+            Status::Code::Unsupported);
+
+  DeviceRequirements wants_newer;
+  wants_newer.api_version = VK_MAKE_API_VERSION(0, 1, 9, 0);
+  EXPECT_EQ(made->check_enabled(wants_newer).domain(),
+            Status::Code::Unsupported);
+
+  if (physical().supports_scalar_block_layout()) {
+    const Result<Device> scalar =
+        Device::create(instance(), physical(), wants_scalar);
+    ASSERT_TRUE(scalar.ok()) << scalar.status().message();
+    EXPECT_TRUE(scalar->check_enabled(wants_scalar).ok());
+  }
+}
+
+TEST_F(DeviceTest, ChecksFeaturesTheCallersChainEnabled) {
+  if (!physical().supports_scalar_block_layout()) {
+    GTEST_SKIP() << "the device has no scalarBlockLayout";
+  }
+  VkPhysicalDeviceScalarBlockLayoutFeatures scalar{};
+  scalar.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+  scalar.scalarBlockLayout = VK_TRUE;
+  DeviceRequirements reqs;  // scalar_block_layout stays false
+  reqs.feature_chain = &scalar;
+  const Result<Device> made = Device::create(instance(), physical(), reqs);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  DeviceRequirements wants_scalar;
+  wants_scalar.scalar_block_layout = true;
+  EXPECT_TRUE(made->check_enabled(wants_scalar).ok());
+}
+
+TEST_F(DeviceTest, AMovedFromDeviceChecksNothing) {
+  Result<Device> made = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  Device first = *std::move(made);
+  const Device second = std::move(first);
+  EXPECT_TRUE(second.check_enabled({}).ok());
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(first.check_enabled({}).domain(), Status::Code::InvalidArgument);
+}
+
 // --- submit
 // ----------------------------------------------------------------------
 
@@ -554,7 +617,7 @@ TEST_F(DeviceTest, AdoptRefusesWhatWasNotDeclared) {
     const Result<Device> missing =
         Device::adopt(handoff(instance(), physical(), raw), reqs);
     EXPECT_EQ(missing.status().domain(), Status::Code::Unsupported);
-    EXPECT_NE(missing.status().message().find("not declared enabled"),
+    EXPECT_NE(missing.status().message().find("is not enabled"),
               std::string::npos)
         << missing.status().message();
   }
@@ -564,6 +627,11 @@ TEST_F(DeviceTest, AdoptRefusesWhatWasNotDeclared) {
   AdoptedDevice no_scalar = handoff(instance(), physical(), raw);
   no_scalar.enabled_scalar_block_layout = false;
   EXPECT_FALSE(Device::adopt(no_scalar, wants_scalar).ok());
+  // What was declared is what a library handed the device checks later.
+  const Result<Device> without_scalar = Device::adopt(no_scalar, {});
+  ASSERT_TRUE(without_scalar.ok()) << without_scalar.status().message();
+  EXPECT_EQ(without_scalar->check_enabled(wants_scalar).domain(),
+            Status::Code::Unsupported);
 
   // Supported and declared, but the instance is too old to use it.
   AdoptedDevice old_instance = handoff(instance(), physical(), raw);

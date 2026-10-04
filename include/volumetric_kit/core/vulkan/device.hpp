@@ -275,6 +275,29 @@ class VKC_VULKAN_API Device {
   ///         adopted one, what its creator declared.
   bool extension_enabled(const char* name) const;
 
+  /// @brief Whether the device enabled everything @p reqs requires.
+  ///
+  /// For a library handed a device it did not make: a device created for
+  /// another library's requirements, or with the defaults, may lack a
+  /// feature this one's shaders use, and using a feature that was not
+  /// enabled is invalid usage a driver need not report. Checks the usable
+  /// API version, the queue's capabilities, a present queue, every required
+  /// extension, and the core, timeline, scalar and dynamic-rendering
+  /// features as the device enabled them: for a created device, its
+  /// requirements and any of the three its feature chain set; for an adopted
+  /// one, what its creator declared. Optional extensions and
+  /// @ref DeviceRequirements::feature_chain are not checked.
+  ///
+  /// @code
+  /// // Before building a kernel on a device someone else made.
+  /// VKC_TRY(device.check_enabled(reqs).with_context("Kernels::create"));
+  /// @endcode
+  /// @param reqs  The requirements.
+  /// @return OK; @ref Status::Code::Unsupported naming the first requirement
+  ///         the device does not meet; or @ref Status::Code::InvalidArgument
+  ///         for a moved-from device.
+  Status check_enabled(const DeviceRequirements& reqs) const;
+
   /// @return The mutex every operation on @ref queue holds: the embedder's on
   ///         a queue shared with another library, else this device's own.
   ///         Never null. Hold it around a `vkQueueSubmit` or
@@ -450,6 +473,12 @@ class VKC_VULKAN_API Device {
     PFN_vkCmdEndDebugUtilsLabelEXT end_label = nullptr;
     PFN_vkGetMemoryFdKHR get_memory_fd = nullptr;
     bool metal_objects = false;
+    // What the device enabled of the features DeviceRequirements names, for
+    // check_enabled.
+    VkPhysicalDeviceFeatures features{};
+    bool timeline_semaphore = false;
+    bool scalar_block_layout = false;
+    bool dynamic_rendering = false;
   };
 
   // The fence a submit signals and, made the first time a submit records

@@ -103,6 +103,17 @@ V1's choices, from comparing the two cores on 2026-10-03:
   declaration alone. A distinct present queue gets its own mutex
   (`AdoptedDevice::present_mutex`), as ios's bootstrap hands out one per
   queue.
+- **A device records what it enabled, and a library checks it.** A library
+  handed a `Device` it did not make cannot ask Vulkan what was enabled, and
+  using a feature that was not enabled is invalid usage a driver need not
+  report: recon's `layout(scalar)` kernels ran without error on a device made
+  with the default requirements, which leave `scalarBlockLayout` off. So a
+  device keeps its enabled features -- what `create` enabled, its
+  requirements' and the three flags its feature chain set, or what `adopt`'s
+  creator declared -- and `Device::check_enabled(reqs)` holds them, with the
+  usable version, the queue, presentation and the required extensions, to a
+  library's requirements. `adopt` runs the same check on the declaration,
+  and `SharedDevice`'s payloads declare what its create actually enabled.
 - **The instance asks for 1.3, or the loader's lower version** (gfx's), never
   below 1.1. MoltenVK caps every device's reported version at the instance's
   request, so recon's 1.2 request would hide a 1.3 device from gfx.
