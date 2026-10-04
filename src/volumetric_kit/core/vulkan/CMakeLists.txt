@@ -25,8 +25,31 @@ add_library(core_vulkan)
 add_library(volumetric_kit::core_vulkan ALIAS core_vulkan)
 
 target_sources(
-  core_vulkan PRIVATE device.cpp device_requirements.cpp instance.cpp
-                      physical_device_info.cpp support.hpp vk_result.cpp)
+  core_vulkan
+  PRIVATE allocator.cpp
+          buffer.cpp
+          command_buffer.cpp
+          command_pool.cpp
+          descriptor.cpp
+          device.cpp
+          device_requirements.cpp
+          image.cpp
+          instance.cpp
+          physical_device_info.cpp
+          queue_families.hpp
+          shader.cpp
+          support.hpp
+          sync.cpp
+          vk_result.cpp
+          vma_impl.cpp)
+
+# VMA is private: only allocator.cpp and vma_impl.cpp include it, never a public
+# header. SYSTEM keeps its own warnings out of the -Werror surface.
+if(NOT VKC_VMA_INCLUDE_DIR)
+  message(FATAL_ERROR "core_vulkan: VKC_VMA_INCLUDE_DIR is unset -- "
+                      "third_party/ must fetch VMA before src/")
+endif()
+target_include_directories(core_vulkan SYSTEM PRIVATE "${VKC_VMA_INCLUDE_DIR}")
 
 generate_export_header(
   core_vulkan

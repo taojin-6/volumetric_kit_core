@@ -18,9 +18,11 @@ buffers zero-copy on one shared device.
 > **Status:** the `base` tier is implemented and tested: exception-free
 > `Status`/`Result`, the `VKC_CHECK` contract check, the pluggable log sink, and
 > the version API. calib and recon build on it. The `vulkan` tier's foundation
-> is implemented -- the instance, device selection against a library's
-> requirements, and the logical device every sibling creates or adopts -- and
-> its allocator, compute and shared-device pieces follow. The `camera` and
+> and memory are implemented -- the instance, device selection against a
+> library's requirements, the logical device every sibling creates or adopts,
+> the VMA allocator with its buffers and images, descriptors, shader modules,
+> synchronization and command buffers -- and its compute and shared-device
+> pieces follow. The `camera` and
 > `sensor` tiers are planned; see [DECISIONS.md](DECISIONS.md#tiers) for what
 > each holds and the order they land in.
 
@@ -32,7 +34,7 @@ Claude Code; `CLAUDE.md` imports it.
 | Tier | Target | Holds | Status |
 | --- | --- | --- | --- |
 | `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, version | implemented |
-| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission; then allocator, buffers, images, compute, external memory, shared-device bootstrap | foundation implemented |
+| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers; then compute, external memory, shared-device bootstrap | foundation and memory implemented |
 | `camera` | `volumetric_kit::core_camera` | camera models (rational first), rig calibration file | planned |
 | `sensor` | `volumetric_kit::core_sensor` | frame types, capture interface, vendor drivers (Orbbec) | planned |
 
