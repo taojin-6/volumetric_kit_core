@@ -18,11 +18,19 @@
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 namespace {
+
+// What a submit's work uses past the batch: the staging it copies through,
+// and the query pools its spans write.
+struct Retained {
+  std::vector<Buffer> staging;
+  std::vector<std::shared_ptr<void>> queries;
+};
 
 // `bytes` at `offset` lie inside `buffer`, written so neither sum can wrap.
 Status in_range(const Buffer& buffer, VkDeviceSize offset, VkDeviceSize bytes,
@@ -194,14 +202,15 @@ Result<const Buffer*> CommandBatch::stage(VkDeviceSize bytes, bool upload) {
 }
 
 Status CommandBatch::upload(const Buffer& dst, VkDeviceSize offset,
-                            const void* src, VkDeviceSize bytes) {
+                            const void* src, VkDeviceSize bytes,
+                            GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   if (bytes == 0) return {};
   if (src == nullptr) {
     return check(Status::invalid_argument("CommandBatch::upload: src is null"));
   }
   if (bytes > kMaxInlineUpload || offset % 4 != 0 || bytes % 4 != 0) {
-    VKC_ASSIGN(void* staging, reserve_upload(dst, offset, bytes));
+    VKC_ASSIGN(void* staging, reserve_upload(dst, offset, bytes, stage));
     std::memcpy(staging, src, static_cast<std::size_t>(bytes));
     return {};
   }
@@ -216,13 +225,15 @@ Status CommandBatch::upload(const Buffer& dst, VkDeviceSize offset,
   op.bytes = bytes;
   const auto* from = static_cast<const unsigned char*>(src);
   op.data.assign(from, from + bytes);
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
 
 Result<void*> CommandBatch::reserve_upload(const Buffer& dst,
                                            VkDeviceSize offset,
-                                           VkDeviceSize bytes) {
+                                           VkDeviceSize bytes,
+                                           GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   if (bytes == 0) {
     return check(
@@ -231,7 +242,7 @@ Result<void*> CommandBatch::reserve_upload(const Buffer& dst,
   VKC_TRY(check(in_range(dst, offset, bytes, "upload")));
   VKC_TRY(check(has_usage(dst, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                           "upload needs a TRANSFER_DST buffer")));
-  Result<const Buffer*> staged = stage(bytes, /*upload=*/true);
+  Result<const Buffer*> staged = this->stage(bytes, /*upload=*/true);
   if (!staged) return check(staged.status());
   Op op;
   op.kind = Kind::Copy;
@@ -240,6 +251,7 @@ Result<void*> CommandBatch::reserve_upload(const Buffer& dst,
   op.dst_offset = offset;
   op.bytes = bytes;
   op.staged = true;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return (*staged)->mapped();
 }
@@ -306,7 +318,7 @@ Status CommandBatch::zero_edge(const Buffer& dst, VkDeviceSize offset,
 
 Status CommandBatch::copy(const Buffer& src, VkDeviceSize src_offset,
                           const Buffer& dst, VkDeviceSize dst_offset,
-                          VkDeviceSize bytes) {
+                          VkDeviceSize bytes, GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   if (bytes == 0) return {};
   VKC_TRY(check(in_range(src, src_offset, bytes, "copy source")));
@@ -328,13 +340,14 @@ Status CommandBatch::copy(const Buffer& src, VkDeviceSize src_offset,
   op.dst = dst.handle();
   op.dst_offset = dst_offset;
   op.bytes = bytes;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
 
 Status CommandBatch::copy(const Image& src, std::uint32_t width,
                           std::uint32_t height, const Buffer& dst,
-                          VkDeviceSize dst_offset) {
+                          VkDeviceSize dst_offset, GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   if (!src.valid()) {
     return check(
@@ -388,6 +401,7 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
   op.dst = dst.handle();
   op.dst_offset = dst_offset;
   op.bytes = bytes;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
@@ -461,14 +475,15 @@ CommandBatch::Op CommandBatch::dispatch_op(Kind kind,
 
 Status CommandBatch::dispatch(const ComputeKernel& kernel, const void* push,
                               std::uint32_t push_size, std::uint32_t groups,
-                              std::uint32_t max_groups) {
-  return dispatch(kernel, kernel.set, push, push_size, groups, max_groups);
+                              std::uint32_t max_groups, GpuStageScope* stage) {
+  return dispatch(kernel, kernel.set, push, push_size, groups, max_groups,
+                  stage);
 }
 
 Status CommandBatch::dispatch(const ComputeKernel& kernel,
                               const DescriptorSet& set, const void* push,
                               std::uint32_t push_size, std::uint32_t groups,
-                              std::uint32_t max_groups) {
+                              std::uint32_t max_groups, GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   VKC_TRY(check(check_dispatch(kernel, push, push_size)));
   if (!set.valid()) {
@@ -482,6 +497,7 @@ Status CommandBatch::dispatch(const ComputeKernel& kernel,
   }
   Op op = dispatch_op(Kind::Dispatch, kernel, set, push, push_size);
   op.value = groups;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
@@ -489,8 +505,8 @@ Status CommandBatch::dispatch(const ComputeKernel& kernel,
 Status CommandBatch::dispatch_indirect(const ComputeKernel& kernel,
                                        const void* push,
                                        std::uint32_t push_size,
-                                       const Buffer& args,
-                                       VkDeviceSize offset) {
+                                       const Buffer& args, VkDeviceSize offset,
+                                       GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   VKC_TRY(check(check_dispatch(kernel, push, push_size)));
   if (offset % 4 != 0) {
@@ -505,6 +521,7 @@ Status CommandBatch::dispatch_indirect(const ComputeKernel& kernel,
       dispatch_op(Kind::DispatchIndirect, kernel, kernel.set, push, push_size);
   op.src = args.handle();
   op.src_offset = offset;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
@@ -592,7 +609,8 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
   return false;
 }
 
-void CommandBatch::record(VkCommandBuffer cmd) const {
+void CommandBatch::record(VkCommandBuffer cmd,
+                          std::vector<TimerRun>& runs) const {
   constexpr VkPipelineStageFlags kInnerStages =
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
       VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
@@ -601,6 +619,12 @@ void CommandBatch::record(VkCommandBuffer cmd) const {
       VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
       VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
 
+  // Each timer's queries reset once, ahead of every span it opens here, not
+  // once between every two commands.
+  for (TimerRun& run : runs) {
+    run.first = static_cast<std::uint32_t>(run.timer->count());
+    run.timer->cmd_reset_ahead(cmd, run.ahead);
+  }
   std::size_t first = 0;  // the first command since the last barrier
   for (std::size_t i = 0; i < ops_.size(); ++i) {
     const Op& op = ops_[i];
@@ -610,8 +634,16 @@ void CommandBatch::record(VkCommandBuffer cmd) const {
       barrier(cmd, kInnerStages, kInnerAccess);
       first = i;
     }
-    // Only a dispatch is named, so the others open no region.
+    // Only a dispatch is named, so the others open no region. The region
+    // sits outside the span: a label may cost an encoder boundary (MoltenVK's
+    // push/popDebugGroup), which a span must not measure.
     device_->begin_debug_label(cmd, op.name);
+    const auto run = std::find_if(
+        runs.begin(), runs.end(),
+        [&op](const TimerRun& r) { return r.timer == op.timing.timer; });
+    const std::uint32_t span =
+        run != runs.end() ? run->timer->begin(cmd, op.timing, /*reset=*/false)
+                          : GpuTimer::kNoSpan;
     switch (op.kind) {
       case Kind::Update:
         vkCmdUpdateBuffer(cmd, op.dst, op.dst_offset, op.bytes, op.data.data());
@@ -669,6 +701,10 @@ void CommandBatch::record(VkCommandBuffer cmd) const {
         }
         break;
       }
+    }
+    if (span != GpuTimer::kNoSpan) {
+      run->timer->end(cmd, span);
+      ++run->count;
     }
     device_->end_debug_label(cmd, op.name);
   }
@@ -729,13 +765,34 @@ Status CommandBatch::submit() {
     }
   }
 
+  // Each timer the commands name, counted now: recording then allocates
+  // nothing, so no exception leaves a span its command buffer never ran.
+  std::vector<TimerRun> runs;
+  for (const Op& op : ops_) {
+    GpuTimer* timer = op.timing.timer;
+    if (timer == nullptr || !timer->available()) continue;
+    auto run =
+        std::find_if(runs.begin(), runs.end(),
+                     [timer](const TimerRun& r) { return r.timer == timer; });
+    if (run == runs.end()) run = runs.insert(runs.end(), TimerRun{timer});
+    ++run->ahead;
+  }
+
   // Shared with the device, which keeps it past a failed wait, with the
   // command buffer it may still run, until it has waited for that. Moving the
   // vector leaves its buffers in place, so `readbacks` still points at one.
-  const auto staging =
-      std::make_shared<std::vector<Buffer>>(std::exchange(staging_, {}));
-  VKC_TRY(device_->submit_single_time([&](VkCommandBuffer cmd) { record(cmd); },
-                                      staging));
+  const auto retained = std::make_shared<Retained>();
+  retained->staging = std::exchange(staging_, {});
+  for (const TimerRun& run : runs) {
+    retained->queries.push_back(run.timer->keep_alive());
+  }
+  bool in_flight = false;
+  const Status submitted = device_->submit_single_time(
+      [&](VkCommandBuffer cmd) { record(cmd, runs); }, retained, &in_flight);
+  for (const TimerRun& run : runs) {
+    run.timer->settle(run.first, run.count, submitted, in_flight);
+  }
+  VKC_TRY(submitted);
 
   if (readbacks != nullptr) {
     const auto* base = static_cast<const unsigned char*>(readbacks->mapped());

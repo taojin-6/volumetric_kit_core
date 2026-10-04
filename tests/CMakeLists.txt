@@ -6,7 +6,8 @@ include(GoogleTest)
 # base: Status / Result / VKC_TRY / VKC_ASSIGN, VKC_CHECK, the log sink, and the
 # version API. Pure CPU, so these run on every machine. The timeout turns a
 # deadlock in the log sink's locking into a failure instead of a hung job.
-foreach(_vkc_test base_result base_check base_log base_version)
+foreach(_vkc_test base_result base_check base_log base_version
+                  base_stage_metrics)
   add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
   target_link_libraries(vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_base
                                                       GTest::gtest_main)
@@ -34,7 +35,8 @@ if(VKC_WITH_VULKAN)
     vulkan_allocator
     vulkan_resources
     vulkan_compute
-    vulkan_command_batch)
+    vulkan_command_batch
+    vulkan_timer)
     add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
     target_link_libraries(vkc_${_vkc_test}_test
                           PRIVATE volumetric_kit::core_vulkan GTest::gtest_main)
@@ -61,7 +63,7 @@ if(VKC_WITH_VULKAN)
   add_library(vkc_test_shaders INTERFACE)
   vkc_embed_shaders(vkc_test_shaders SYMBOL_PREFIX vkc_test_ SHADERS
                     shaders/add.comp shaders/fill.comp)
-  foreach(_vkc_test vulkan_compute vulkan_command_batch)
+  foreach(_vkc_test vulkan_compute vulkan_command_batch vulkan_timer)
     target_link_libraries(vkc_${_vkc_test}_test PRIVATE vkc_test_shaders)
   endforeach()
 endif()
