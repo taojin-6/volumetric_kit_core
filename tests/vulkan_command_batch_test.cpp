@@ -7,8 +7,9 @@
 // device-mapped buffer, as a buffer's memory type must not change what a batch
 // does. Uploads inline, staged and packed by the caller, several readbacks in
 // one batch, transfers left unordered (fills, uploads and copies rising
-// through one buffer among them), image copies, acquires, indirect dispatch,
-// rewritten sets, the refusals, the moves, and several threads at once.
+// through one buffer among them), image copies, acquires and releases,
+// indirect dispatch, rewritten sets, the refusals, the moves, and several
+// threads at once.
 
 #include <atomic>
 #include <cstdint>
@@ -713,6 +714,65 @@ TEST_F(BatchTest, AcquiresABufferBeforeWhatReadsIt) {
       refused([&](CommandBatch& c) { return c.acquire(Buffer(), own); }));
   EXPECT_TRUE(
       refused([&](CommandBatch& c) { return c.acquire(a_, family_count); }));
+}
+
+TEST_F(BatchTest, ReleasesABufferAfterEverythingThatUsesIt) {
+  // To outside Vulkan it records the transfer after every command, so a
+  // kernel and a readback recorded after the release still run first, on the
+  // buffer the batch owns; the next batch takes it back from there -- a frame
+  // of CUDA's decoder loop -- for an EXCLUSIVE buffer and a CONCURRENT one.
+  // To this device's family, to none, or a CONCURRENT buffer to another
+  // family, it records nothing. The layer stays silent throughout.
+  const std::vector<std::uint32_t> p = pattern(1);
+  const std::uint32_t own = device().queue_family();
+  const auto family_count =
+      static_cast<std::uint32_t>(physical().queue_families().size());
+  const auto handed_back = [&](const Buffer& buffer, std::uint32_t to) {
+    upload(buffer, p);
+    std::vector<std::uint32_t> back(kCount, 0);
+    CommandBatch batch(device(), allocator());
+    if (!(batch.release(buffer, to).ok() && add_to(batch, buffer, 2).ok() &&
+          batch.readback(buffer, 0, kBytes, back.data()).ok() &&
+          batch.submit().ok() && back == plus(p, 2))) {
+      return false;
+    }
+    CommandBatch next(device(), allocator());
+    return next.acquire(buffer, to).ok() && add_to(next, buffer, 3).ok() &&
+           next.readback(buffer, 0, kBytes, back.data()).ok() &&
+           next.submit().ok() && back == plus(p, 5);
+  };
+  EXPECT_TRUE(handed_back(a_, VK_QUEUE_FAMILY_EXTERNAL));
+  EXPECT_TRUE(handed_back(a_, VK_QUEUE_FAMILY_IGNORED));
+  EXPECT_TRUE(handed_back(a_, own));
+  if (family_count > 1) {
+    const std::uint32_t other = own == 0 ? 1 : 0;
+    const std::uint32_t both[2] = {own, other};
+    Result<Buffer> shared =
+        device_storage_buffer(allocator(), kBytes, 0, both, 2);
+    ASSERT_TRUE(shared.ok());
+    EXPECT_TRUE(handed_back(*shared, VK_QUEUE_FAMILY_EXTERNAL));
+    EXPECT_TRUE(handed_back(*shared, other));
+  }
+
+  // A batch that only hands a buffer back still submits it.
+  {
+    CommandBatch batch(device(), allocator());
+    ASSERT_TRUE(batch.release(a_, VK_QUEUE_FAMILY_EXTERNAL).ok());
+    ASSERT_TRUE(batch.submit().ok());
+    std::vector<std::uint32_t> back(kCount, 0);
+    CommandBatch next(device(), allocator());
+    ASSERT_TRUE(next.acquire(a_, VK_QUEUE_FAMILY_EXTERNAL).ok());
+    ASSERT_TRUE(next.readback(a_, 0, kBytes, back.data()).ok());
+    ASSERT_TRUE(next.submit().ok());
+    EXPECT_EQ(back, plus(p, 5));
+  }
+
+  // Refused, poisoning the batch: an empty buffer, and a family the device
+  // does not have.
+  EXPECT_TRUE(
+      refused([&](CommandBatch& c) { return c.release(Buffer(), own); }));
+  EXPECT_TRUE(
+      refused([&](CommandBatch& c) { return c.release(a_, family_count); }));
 }
 
 // --- image copies ------------------------------------------------------------

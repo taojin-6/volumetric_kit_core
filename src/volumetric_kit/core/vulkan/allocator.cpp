@@ -539,6 +539,58 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
   });
 }
 
+Result<Buffer> Allocator::bind_exported(VkBuffer buffer, VkDeviceSize size,
+                                        VkBufferUsageFlags usage,
+                                        void* export_info,
+                                        VkDeviceMemory* memory,
+                                        VkDeviceSize* memory_size) {
+  VkMemoryRequirements needs{};
+  vkGetBufferMemoryRequirements(impl_->device, buffer, &needs);
+  // The host access is ignored for device-only memory.
+  const std::uint32_t types = detail::placement_types(
+      impl_->memory, MemoryUsage::DeviceOnly, HostAccess::SequentialWrite,
+      needs.memoryTypeBits);
+  if (types == 0) {
+    vkDestroyBuffer(impl_->device, buffer, nullptr);
+    return unsuited("create_exported_buffer", MemoryUsage::DeviceOnly);
+  }
+  // Dedicated, as an importer of an opaque descriptor maps the whole
+  // allocation as one resource. VMA names the buffer only for one it creates
+  // itself, so the chain does.
+  VkMemoryDedicatedAllocateInfo dedicated{};
+  dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+  dedicated.pNext = export_info;
+  dedicated.buffer = buffer;
+  VmaAllocationCreateInfo alloc_info{};
+  VmaAllocation allocation = nullptr;
+  VmaAllocationInfo out{};
+  const char* step =
+      "create_exported_buffer: past every candidate heap's budget";
+  VkResult made = allocation_info(*this, impl_->memory, needs, types,
+                                  /*mapped=*/false, alloc_info);
+  if (made == VK_SUCCESS) {
+    step = "vmaAllocateDedicatedMemory";
+    made = vmaAllocateDedicatedMemory(impl_->allocator, &needs, &alloc_info,
+                                      &dedicated, &allocation, &out);
+  }
+  if (made == VK_SUCCESS) {
+    step = "vmaBindBufferMemory";
+    made = vmaBindBufferMemory(impl_->allocator, allocation, buffer);
+  }
+  if (made != VK_SUCCESS) {
+    vmaDestroyBuffer(impl_->allocator, buffer, allocation);
+    return vk_error(made, step);
+  }
+  *memory = out.deviceMemory;
+  *memory_size = out.size;
+  return Buffer(
+      buffer, size, usage, VK_SHARING_MODE_EXCLUSIVE, nullptr,
+      [impl = impl_, buffer, allocation] {
+        vmaDestroyBuffer(impl->allocator, buffer, allocation);
+      },
+      memory_info_of(impl_->allocator, out.memoryType));
+}
+
 MemoryStats Allocator::memory_stats() const {
   MemoryStats stats;
   if (impl_ == nullptr) return stats;
