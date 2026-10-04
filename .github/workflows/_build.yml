@@ -1,0 +1,66 @@
+name: build
+
+# One build leg: configure, build and test, then install and consume the
+# package the two ways the sibling repos do (find_package against the install,
+# add_subdirectory against the checkout). Invoked by ci.yml, which owns the
+# triggers and the matrix.
+on:
+  workflow_call:
+    inputs:
+      os:
+        type: string
+        required: true
+      build_type:
+        type: string
+        required: true
+      cxx_flags:
+        type: string
+        default: ''
+      shared:
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
+            -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install
+        run: cmake --install build --prefix "$PWD/stage"
+
+      - name: Consume via find_package
+        run: |
+          cmake -S tests/package_consumer -B build-consumer-package \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
+            -DVKC_CONSUME=find_package -DCMAKE_PREFIX_PATH="$PWD/stage"
+          cmake --build build-consumer-package
+          env LD_LIBRARY_PATH="$PWD/stage/lib" \
+            ./build-consumer-package/vkc_package_consumer
+
+      - name: Consume via add_subdirectory
+        run: |
+          cmake -S tests/package_consumer -B build-consumer-subdir \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
+            -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }} \
+            -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
+          cmake --build build-consumer-subdir
+          ./build-consumer-subdir/vkc_package_consumer
+          # Like a sibling's install: its exported library plus the core.
+          cmake --install build-consumer-subdir --prefix "$PWD/stage-consumer"

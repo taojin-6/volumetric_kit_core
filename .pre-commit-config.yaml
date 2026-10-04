@@ -1,0 +1,49 @@
+# Formatting + hygiene hooks; the formatters fix files in place. Run once after
+# cloning:
+#   pre-commit install
+# clang-tidy needs a compile database, so it runs through the build instead
+# (-DVKC_CLANG_TIDY=ON; see CONTRIBUTING.md), locally and in CI.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-yaml
+        # .clang-format is a multi-document file (a Cpp section and an ObjC
+        # section separated by `---`), which the single-document default
+        # rejects; ios configures the hook the same way.
+        args: [--allow-multiple-documents]
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/pocc/pre-commit-hooks
+    rev: v1.3.5
+    hooks:
+      - id: clang-format
+        args: [-i, --style=file]
+        types_or: [c, c++, cuda, objective-c++]
+        # Pin the clang-format binary so formatting is identical locally, in
+        # CI and in recon, gfx and ios, which pin the same release;
+        # pre-commit installs it.
+        additional_dependencies: ['clang-format==22.1.8']
+
+  - repo: https://github.com/cheshirekow/cmake-format-precommit
+    rev: v0.6.13
+    hooks:
+      - id: cmake-format
+        additional_dependencies: [cmakelang, pyyaml]
+
+# TODO: the vulkan tier adds recon's `vulkan-include-umbrella` hook, so
+# first-party code reaches Vulkan only through the core's vulkan.hpp.
+
+# pre-commit.ci (https://pre-commit.ci) runs these same hooks on every PR and
+# pushes the auto-fixes back to the branch. The `ci / required` check stays the
+# merge gate; this just removes the manual step.
+ci:
+  autofix_prs: true
+  autofix_commit_msg: "style: auto-fixes from pre-commit.ci hooks"
+  autoupdate_schedule: monthly
+  autoupdate_commit_msg: "chore: pre-commit autoupdate"

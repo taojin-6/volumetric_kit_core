@@ -1,0 +1,50 @@
+name: lint
+
+# Lint gate: the pre-commit hooks (formatting + hygiene), and clang-tidy through
+# the build. Linux-only: the formatters' output is deterministic across operating
+# systems, so one runner is enough. Invoked by ci.yml; its `lint` result covers
+# both jobs.
+on:
+  workflow_call:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      # Cache pre-commit's hook environments (incl. the pinned clang-format),
+      # keyed on the config so they are rebuilt only when it changes.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            pre-commit-
+      # Pin the runner so a new pre-commit release cannot change the gate's
+      # behavior without a commit here.
+      - run: python -m pip install pre-commit==4.6.2
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+  clang-tidy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      # The same release as the pinned clang-format (.pre-commit-config.yaml).
+      - run: python -m pip install clang-tidy==22.1.8
+      # clang++ so the compile commands clang-tidy replays are a clang's.
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DVKC_CLANG_TIDY=ON
+      - name: Build (clang-tidy runs on every first-party file)
+        run: cmake --build build --parallel
