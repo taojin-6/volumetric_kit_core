@@ -36,6 +36,7 @@ compiles, and any finding fails the build.
 
 ```sh
 pipx install clang-tidy==22.1.8   # or: pip install --user clang-tidy==22.1.8
+core_root="$(git rev-parse --show-toplevel)"
 cmake -S "$core_root" -B "$core_root/build-tidy" \
   -DCMAKE_BUILD_TYPE=Debug -DVKC_CLANG_TIDY=ON
 cmake --build "$core_root/build-tidy" --parallel

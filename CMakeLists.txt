@@ -18,13 +18,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # --- Options -----------------------------------------------------------------
-# The extras default ON only when this is the top-level project, so a consumer
-# that pulls it in via FetchContent builds the library tiers alone: no tests, no
-# install rules, and no -Werror from warnings its newer compiler adds.
+# Tests and -Werror default ON only when this is the top-level project, so a
+# consumer that pulls it in via FetchContent builds the library tiers alone,
+# with no warnings-as-errors from its newer compiler.
 option(VKC_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
-option(VKC_INSTALL "Generate install/export rules" ${PROJECT_IS_TOP_LEVEL})
 option(VKC_WARNINGS_AS_ERRORS "Treat first-party compiler warnings as errors"
        ${PROJECT_IS_TOP_LEVEL})
+# Install rules default ON everywhere. A sibling that installs and exports its
+# own targets links the core PUBLIC, so its export references the core's
+# targets: CMake refuses to generate unless they are in an export set of their
+# own, and the sibling's installed package needs the core installed beside it. A
+# consumer that installs nothing never runs these rules.
+option(VKC_INSTALL "Generate install/export rules" ON)
 # Lint first-party targets with clang-tidy as they compile (.clang-tidy); see
 # cmake/vkc_clang_tidy.cmake. Off by default: it slows the build.
 option(VKC_CLANG_TIDY "Run clang-tidy on first-party targets" OFF)
@@ -38,6 +43,7 @@ set(VKC_SANITIZE
 include(vkc_warnings)
 include(vkc_sanitizers)
 include(vkc_clang_tidy)
+include(vkc_single_instance)
 
 # --- Dependencies + library tiers --------------------------------------------
 add_subdirectory(third_party)

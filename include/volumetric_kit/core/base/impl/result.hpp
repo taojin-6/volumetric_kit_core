@@ -7,65 +7,88 @@
 /// @brief Out-of-line template definitions for
 ///        @ref volumetric_kit::core::Result. Included at the end of result.hpp
 ///        -- not a standalone header; do not include it directly.
-///
-/// A Result holds a value exactly when it is OK, so the accessors check the
-/// optional itself: the same contract as `ok()`, stated where clang-tidy's
-/// optional-access analysis can see it.
 
 #include <utility>
+#include <variant>
 
 #include "volumetric_kit/core/base/check.hpp"
 
 namespace volumetric_kit::core {
 
 template <class T>
-Result<T>::Result(Status err) : status_(std::move(err)) {
-  VKC_CHECK(!status_.ok(), "Result(Status) requires a non-OK status");
+Result<T>::Result(Status err)
+    : storage_(std::in_place_type<Status>, std::move(err)) {
+  VKC_CHECK(!status().ok(), "Result(Status) requires a non-OK status");
 }
 
 template <class T>
-T& Result<T>::value() & {
-  VKC_CHECK(value_.has_value(), "Result::value() on an error Result");
-  return *value_;
+const Status& Result<T>::status() const& noexcept {
+  if (const Status* err = std::get_if<Status>(&storage_)) return *err;
+  return detail::ok_status();
 }
 
 template <class T>
-const T& Result<T>::value() const& {
-  VKC_CHECK(value_.has_value(), "Result::value() on an error Result");
-  return *value_;
+Status Result<T>::status() && {
+  if (Status* err = std::get_if<Status>(&storage_)) return std::move(*err);
+  return {};
 }
 
 template <class T>
-T&& Result<T>::value() && {
-  VKC_CHECK(value_.has_value(), "Result::value() on an error Result");
-  return std::move(*value_);
+template <class Self>
+auto* Result<T>::checked_value(Self& self, const char* accessor,
+                               detail::SourceLocation where) {
+  // std::get_if returns the real address, even for a T that overloads unary
+  // operator&.
+  auto* value = std::get_if<T>(&self.storage_);
+  if (value == nullptr) {
+    detail::bad_result_access(accessor, self.status(), where);
+  }
+  return value;
+}
+
+template <class T>
+T& Result<T>::value(detail::SourceLocation caller) & {
+  return *checked_value(*this, "Result::value()", caller);
+}
+
+template <class T>
+const T& Result<T>::value(detail::SourceLocation caller) const& {
+  return *checked_value(*this, "Result::value()", caller);
+}
+
+template <class T>
+T Result<T>::value(detail::SourceLocation caller) && {
+  return std::move(*checked_value(*this, "Result::value()", caller));
 }
 
 template <class T>
 T* Result<T>::operator->() {
-  VKC_CHECK(value_.has_value(), "Result::operator-> on an error Result");
-  return &*value_;
+  return checked_value(*this, "Result::operator->",
+                       detail::SourceLocation::current());
 }
 
 template <class T>
 const T* Result<T>::operator->() const {
-  VKC_CHECK(value_.has_value(), "Result::operator-> on an error Result");
-  return &*value_;
+  return checked_value(*this, "Result::operator->",
+                       detail::SourceLocation::current());
 }
 
 template <class T>
 T& Result<T>::operator*() & {
-  return value();
+  return *checked_value(*this, "Result::operator*",
+                        detail::SourceLocation::current());
 }
 
 template <class T>
 const T& Result<T>::operator*() const& {
-  return value();
+  return *checked_value(*this, "Result::operator*",
+                        detail::SourceLocation::current());
 }
 
 template <class T>
-T&& Result<T>::operator*() && {
-  return std::move(*this).value();
+T Result<T>::operator*() && {
+  return std::move(*checked_value(*this, "Result::operator*",
+                                  detail::SourceLocation::current()));
 }
 
 }  // namespace volumetric_kit::core

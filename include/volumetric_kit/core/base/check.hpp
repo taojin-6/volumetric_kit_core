@@ -10,8 +10,13 @@
 /// the value of an error @ref volumetric_kit::core::Result -- not a runtime
 /// condition a caller could recover from; those flow through `Status` /
 /// `Result`. On failure it logs at @ref volumetric_kit::core::LogLevel::Error
-/// through the log sink (see log.hpp), then calls `std::abort()`. It is active
-/// in every build, not only debug ones.
+/// through the log sink (see log.hpp), with source `"core"`, then calls
+/// `std::abort()`. It is active in every build, not only debug ones.
+///
+/// A check that fails inside the installed log handler -- or while that
+/// handler is reporting an earlier failure -- skips the handler and writes to
+/// stderr directly (the earlier failure first), so a broken handler cannot
+/// recurse until the stack overflows and hide the message.
 ///
 /// Mobile consumers build with `-fno-exceptions`, so abort -- not `throw` -- is
 /// the portable way to stop on a bug: it raises SIGABRT, which crash reporters

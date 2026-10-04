@@ -39,11 +39,11 @@
 /// @endcode
 
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/export.hpp"
@@ -57,7 +57,9 @@ namespace volumetric_kit::core {
 /// factory (@ref invalid_argument, @ref not_found, @ref unsupported,
 /// @ref out_of_memory, @ref io_error, @ref numerical) or, for a failed
 /// GPU-backend call, @ref backend_error, which also carries the backend's own
-/// code. Convertible to `bool` (true == success) for terse checks.
+/// code. Convertible to `bool` (true == success) for terse checks. To add
+/// context on the way up, use @ref with_context, which keeps the domain and
+/// detail.
 ///
 /// @code
 /// Status s = integrate(frame);
@@ -95,8 +97,15 @@ class [[nodiscard]] Status {
   ///                 `cudaError_t`), widened to `int64_t` so this tier stays
   ///                 free of GPU APIs.
   /// @param message  Human-readable context, e.g. the failing call.
+  /// @pre @p detail is not `0`, which is success in both backends
+  ///      (`VK_SUCCESS`, `cudaSuccess`): test the call's result before
+  ///      building a failure from it. Violating this aborts via
+  ///      @ref VKC_CHECK.
   /// @return A non-OK `Status` carrying @p detail and @p message.
   static Status backend_error(std::int64_t detail, std::string message) {
+    VKC_CHECK(detail != 0,
+              "Status::backend_error needs a failing backend code; 0 is "
+              "success (VK_SUCCESS, cudaSuccess)");
     return Status{Code::Backend, detail, std::move(message)};
   }
 
@@ -126,6 +135,30 @@ class [[nodiscard]] Status {
   /// @copydoc invalid_argument
   static Status numerical(std::string message) {
     return Status{Code::Numerical, std::move(message)};
+  }
+
+  /// @brief Prefix the message with what failed at the caller's level,
+  ///        keeping the domain and the backend detail.
+  /// @param context  What was being done, e.g. the kernel being built.
+  /// @return For an error, the same domain and @ref detail with the message
+  ///         `"<context>: <message>"`; for success, success.
+  ///
+  /// @code
+  /// if (!s) return std::move(s).with_context(kernel_name);
+  /// @endcode
+  Status with_context(std::string_view context) const& {
+    Status copy = *this;
+    return std::move(copy).with_context(context);
+  }
+  /// @copydoc with_context
+  Status with_context(std::string_view context) && {
+    if (!ok()) {
+      std::string prefixed(context);
+      prefixed += ": ";
+      prefixed += message_;
+      message_ = std::move(prefixed);
+    }
+    return std::move(*this);
   }
 
   /// @return `true` if this is a success status.
@@ -160,6 +193,71 @@ class [[nodiscard]] Status {
 /// @return A static, never-empty `string_view`.
 VKC_BASE_API std::string_view to_string(Status::Code code) noexcept;
 
+namespace detail {
+
+/// @brief A call site, captured by a defaulted argument -- C++17's stand-in
+///        for C++20's `std::source_location`.
+struct SourceLocation {
+  const char* file;  ///< Source file of the call.
+  int line;          ///< Source line of the call.
+
+#if defined(__GNUC__) || defined(__clang__) || \
+    (defined(_MSC_VER) && _MSC_VER >= 1929)
+  /// @return Where the call that defaulted this argument was made: the
+  ///         builtins evaluate at the caller, as `source_location` does.
+  static constexpr SourceLocation current(
+      const char* file_name = __builtin_FILE(),
+      int line_number = __builtin_LINE()) noexcept {
+    return {file_name, line_number};
+  }
+#else
+  /// @return An unknown location; this compiler has no call-site builtins.
+  static constexpr SourceLocation current() noexcept { return {"unknown", 0}; }
+#endif
+};
+
+/// @brief Abort for reading the value of an error @ref Result: names the
+///        accessor and the held error, then fails like @ref VKC_CHECK.
+/// @param accessor  The accessor misused, e.g. `"Result::value()"`.
+/// @param status    The error the Result holds.
+/// @param where     The call site to report.
+[[noreturn]] VKC_BASE_API void bad_result_access(const char* accessor,
+                                                 const Status& status,
+                                                 SourceLocation where);
+
+/// @return The success status an OK @ref Result reports. Never destroyed, so
+///         a Result read during static destruction still has one.
+inline const Status& ok_status() noexcept {
+  // A union member is destroyed only by its union's destructor, and this one
+  // does nothing: no heap allocation, and no destructor at exit.
+  static const union NeverDestroyed {
+    NeverDestroyed() : status() {}
+    ~NeverDestroyed() {}
+    NeverDestroyed(const NeverDestroyed&) = delete;
+    NeverDestroyed& operator=(const NeverDestroyed&) = delete;
+    NeverDestroyed(NeverDestroyed&&) = delete;
+    NeverDestroyed& operator=(NeverDestroyed&&) = delete;
+    Status status;
+  } ok;
+  return ok.status;
+}
+
+/// @brief Conversions to `T` that compile but are almost never a success
+///        value, so @ref Result's converting constructor refuses them: a
+///        pointer turning into `bool` (`return "config missing";` from a
+///        `Result<bool>` function, meant as an error), and a null pointer
+///        turning into a string-like `T` (`std::string(nullptr)` is undefined
+///        behaviour).
+template <class U, class T>
+inline constexpr bool is_error_prone_conversion_v =
+    (std::is_same_v<std::remove_cv_t<T>, bool> &&
+     (std::is_pointer_v<std::decay_t<U>> ||
+      std::is_member_pointer_v<std::decay_t<U>>)) ||
+    (std::is_null_pointer_v<std::decay_t<U>> &&
+     std::is_convertible_v<const char*, T>);
+
+}  // namespace detail
+
 /// @brief A value of type `T` on success, or a non-OK @ref Status on failure.
 /// @tparam T  The success value type; movable, and not `Status` itself.
 ///
@@ -167,6 +265,11 @@ VKC_BASE_API std::string_view to_string(Status::Code code) noexcept;
 /// `Status` (failure), so a function can `return value;` or
 /// `return some_error;` directly. Always check @ref ok (or the `bool`
 /// conversion) before reading the value.
+///
+/// Reading the value of an error Result aborts with a message naming the
+/// accessor and the held error; @ref value also names its caller's file and
+/// line. The operators cannot -- C++ forbids default arguments on them -- so
+/// they report this header's line instead.
 ///
 /// @code
 /// Result<std::size_t> parse_count(std::string_view text) {
@@ -189,17 +292,20 @@ class [[nodiscard]] Result {
   ///               `Result<std::optional<U>>`.
   ///
   /// A template rather than `Result(T)`, so the conversion to `T` does not use
-  /// up the one user-defined conversion an implicit `return` allows. Defined
-  /// here because its constraint would otherwise have to be restated
-  /// out-of-line.
+  /// up the one user-defined conversion an implicit `return` allows. Two
+  /// conversions that compile but are almost always bugs are refused (see
+  /// `detail::is_error_prone_conversion_v`): a pointer to `bool`, and a null
+  /// pointer to a string. Defined here because its constraint would otherwise
+  /// have to be restated out-of-line.
   template <class U = T,
             std::enable_if_t<std::is_convertible_v<U&&, T> &&
                                  !std::is_same_v<std::decay_t<U>, Result> &&
-                                 !std::is_same_v<std::decay_t<U>, Status>,
+                                 !std::is_same_v<std::decay_t<U>, Status> &&
+                                 !detail::is_error_prone_conversion_v<U, T>,
                              int> = 0>
   Result(U&& value)  // NOLINT(google-explicit-constructor): ergonomic success
                      // return
-      : value_(std::in_place, std::forward<U>(value)) {}
+      : storage_(std::in_place_type<T>, std::forward<U>(value)) {}
 
   /// @brief Construct a failure Result.
   /// @param err  The failure; it must be non-OK (checked by @ref VKC_CHECK).
@@ -207,22 +313,33 @@ class [[nodiscard]] Result {
                        // return
 
   /// @return `true` if this holds a value rather than an error.
-  bool ok() const noexcept { return status_.ok(); }
+  bool ok() const noexcept { return std::holds_alternative<T>(storage_); }
   /// @return `true` if this holds a value (same as @ref ok).
   explicit operator bool() const noexcept { return ok(); }
   /// @return The status; non-OK exactly when this is an error Result.
-  const Status& status() const noexcept { return status_; }
+  const Status& status() const& noexcept;
+  /// @return The status, moved out of this expiring Result.
+  Status status() &&;
 
   /// @brief Access the held value.
   /// @pre @ref ok is true. Calling this on an error Result is a programmer
   ///      error: it aborts via @ref VKC_CHECK (it never throws), so guard with
   ///      @ref ok first.
+  /// @param caller  Where the call is made, reported if it aborts; leave it
+  ///                defaulted.
   /// @return Reference to the held value.
-  T& value() &;
+  T& value(detail::SourceLocation caller = detail::SourceLocation::current()) &;
   /// @copydoc value()
-  const T& value() const&;
-  /// @copydoc value()
-  T&& value() &&;
+  const T& value(
+      detail::SourceLocation caller = detail::SourceLocation::current()) const&;
+  /// @brief Move the held value out of an expiring Result.
+  /// @pre @ref ok is true; otherwise aborts, as in @ref value.
+  /// @param caller  Where the call is made, reported if it aborts; leave it
+  ///                defaulted.
+  /// @return The value, by value: a reference into an expiring Result would
+  ///         dangle once a temporary Result is destroyed, as in
+  ///         `for (auto& p : load().value())`.
+  T value(detail::SourceLocation caller = detail::SourceLocation::current()) &&;
 
   /// @brief Pointer and reference access to the held value.
   /// @pre @ref ok is true; otherwise aborts, as in @ref value.
@@ -236,12 +353,21 @@ class [[nodiscard]] Result {
   T& operator*() &;
   /// @copydoc operator*()
   const T& operator*() const&;
-  /// @copydoc operator*()
-  T&& operator*() &&;
+  /// @brief Move the held value out of an expiring Result.
+  /// @pre @ref ok is true; otherwise aborts, as in @ref value.
+  /// @return The value, by value, for the reason given at `value() &&`.
+  T operator*() &&;
 
  private:
-  Status status_;
-  std::optional<T> value_;
+  // The value, or else the failure, aborting (as `accessor`, at `where`) if
+  // there is none. A template so the const and non-const accessors share it.
+  template <class Self>
+  static auto* checked_value(Self& self, const char* accessor,
+                             detail::SourceLocation where);
+
+  // One discriminator: which alternative is held *is* whether this is OK, so
+  // there is no separate flag to keep in step with the status.
+  std::variant<T, Status> storage_;
 };
 
 }  // namespace volumetric_kit::core
@@ -278,7 +404,8 @@ class [[nodiscard]] Result {
 /// `__COUNTER__` (not `__LINE__`), so several `VKC_ASSIGN`s in one scope, even
 /// on one line, never collide. @p decl is a single macro argument, so a type
 /// with a top-level comma needs an alias first (e.g.
-/// `using Pair = std::pair<int, int>;`).
+/// `using Pair = std::pair<int, int>;`). On failure the status is moved out,
+/// not copied, so propagating through several levels copies no message.
 ///
 /// @code
 /// Result<Report> analyze(const std::string& path) {
@@ -290,9 +417,9 @@ class [[nodiscard]] Result {
 #define VKC_ASSIGN_(decl, expr, id) VKC_ASSIGN_IMPL_(decl, expr, id)
 // `decl` is a declaration (`const int n`), which parentheses would break.
 // NOLINTBEGIN(bugprone-macro-parentheses)
-#define VKC_ASSIGN_IMPL_(decl, expr, id)                        \
-  auto _vkc_result_##id = (expr);                               \
-  if (!_vkc_result_##id.ok()) return _vkc_result_##id.status(); \
+#define VKC_ASSIGN_IMPL_(decl, expr, id)                                   \
+  auto _vkc_result_##id = (expr);                                          \
+  if (!_vkc_result_##id.ok()) return std::move(_vkc_result_##id).status(); \
   decl = std::move(_vkc_result_##id).value()
 // NOLINTEND(bugprone-macro-parentheses)
 

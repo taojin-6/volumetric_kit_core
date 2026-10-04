@@ -33,3 +33,16 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      # A consumer that builds the core as a subproject with VKC_SANITIZE: its
+      # own targets must get the flags too, or linking the sanitized static
+      # core fails (cmake/vkc_sanitizers.cmake).
+      - name: Consume via add_subdirectory, sanitized
+        run: |
+          cmake -S tests/package_consumer -B build-consumer-sanitized \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD" \
+            -DVKC_SANITIZE="address;undefined"
+          cmake --build build-consumer-sanitized
+          ./build-consumer-sanitized/vkc_package_consumer

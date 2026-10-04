@@ -50,9 +50,11 @@ cmake --build "$core_root/build" --parallel
 ctest --test-dir "$core_root/build" --output-on-failure
 ```
 
-`VKC_BUILD_TESTS`, `VKC_INSTALL` and `VKC_WARNINGS_AS_ERRORS` default ON only
-when this is the top-level project. `VKC_SANITIZE` is a semicolon list, empty
-by default, e.g. `-DVKC_SANITIZE="address;undefined"`.
+`VKC_BUILD_TESTS` and `VKC_WARNINGS_AS_ERRORS` default ON only when this is
+the top-level project; `VKC_INSTALL` defaults ON everywhere (see below).
+`VKC_SANITIZE` is a semicolon list, empty by default, e.g.
+`-DVKC_SANITIZE="address;undefined"`; in a subproject build it also reaches
+the consumer's targets that link the core.
 
 ## Use it in your project
 
@@ -71,6 +73,13 @@ target_link_libraries(your_target PRIVATE volumetric_kit::core_base)
 ```
 
 or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`.
+
+A consumer that installs and exports its own targets installs the core beside
+them (the core's install rules stay on in a subproject), and its package config
+must `find_dependency(volumetric_kit_core)`. One that links the core into a
+shared library or framework builds the core shared too
+(`BUILD_SHARED_LIBS=ON`): the log handler is process-global, and each binary
+linking a static core gets its own (DECISIONS.md, "One instance per process").
 
 An application that fetches several siblings (as `ios` fetches `recon` and
 `gfx`) declares `volumetric_kit_core` **first**. FetchContent keeps the first
@@ -97,10 +106,12 @@ vkc::Status run() {
 ## Development
 
 ```sh
+core_root="$(git rev-parse --show-toplevel)"
 pre-commit install          # format + hygiene hooks on every commit
 pre-commit run --all-files  # format everything, as CI checks it
-cmake -S . -B build-tidy -DCMAKE_BUILD_TYPE=Debug -DVKC_CLANG_TIDY=ON
-cmake --build build-tidy    # lint: clang-tidy on every first-party file
+cmake -S "$core_root" -B "$core_root/build-tidy" \
+  -DCMAKE_BUILD_TYPE=Debug -DVKC_CLANG_TIDY=ON
+cmake --build "$core_root/build-tidy"  # lint: clang-tidy on first-party code
 ```
 
 The formatters are pinned in `.pre-commit-config.yaml` (clang-format 22.1.8,

@@ -3,10 +3,13 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -52,6 +55,33 @@ TEST(Status, BackendErrorCarriesItsDetail) {
   EXPECT_EQ(s.domain(), Status::Code::Backend);
   EXPECT_EQ(s.detail(), -4);
   EXPECT_EQ(s.message(), "vkQueueSubmit");
+}
+
+TEST(StatusDeathTest, BackendErrorRefusesTheSuccessCode) {
+  // 0 is VK_SUCCESS and cudaSuccess: a failure built from it is a caller that
+  // forgot to test the call's result.
+  EXPECT_DEATH((void)Status::backend_error(0, "vkQueueSubmit"),
+               "backend_error needs a failing backend code");
+}
+
+TEST(Status, WithContextKeepsDomainAndDetail) {
+  const Status s = Status::backend_error(-4, "vkQueueSubmit");
+  const Status named = s.with_context("integrate");
+  EXPECT_EQ(named.domain(), Status::Code::Backend);
+  EXPECT_EQ(named.detail(), -4);
+  EXPECT_EQ(named.message(), "integrate: vkQueueSubmit");
+  EXPECT_EQ(s.message(), "vkQueueSubmit");  // the const& overload copies
+
+  const Status moved = Status::numerical("singular").with_context("solve");
+  EXPECT_EQ(moved.domain(), Status::Code::Numerical);
+  EXPECT_EQ(moved.detail(), 0);
+  EXPECT_EQ(moved.message(), "solve: singular");
+}
+
+TEST(Status, WithContextLeavesSuccessAlone) {
+  const Status s = Status{}.with_context("anything");
+  EXPECT_TRUE(s.ok());
+  EXPECT_TRUE(s.message().empty());
 }
 
 TEST(Status, ToStringNamesEveryDomain) {
@@ -112,6 +142,67 @@ TEST(Result, ReturnsNulloptForAnOptionalValue) {
   ASSERT_TRUE(some.ok());
   ASSERT_TRUE(some->has_value());
   EXPECT_EQ(some->value_or(-1), 7);
+}
+
+// A pointer is not a bool success value, and a null pointer is not a string:
+// both conversions compile, so the converting constructor refuses them.
+static_assert(!std::is_convertible_v<const char (&)[15], Result<bool>>);
+static_assert(!std::is_convertible_v<const char*, Result<bool>>);
+static_assert(!std::is_convertible_v<std::nullptr_t, Result<std::string>>);
+static_assert(
+    !std::is_convertible_v<std::nullptr_t, Result<std::optional<std::string>>>);
+// The intended conversions still work.
+static_assert(std::is_convertible_v<bool, Result<bool>>);
+static_assert(std::is_convertible_v<std::true_type, Result<bool>>);
+static_assert(std::is_convertible_v<const char (&)[3], Result<std::string>>);
+static_assert(std::is_convertible_v<std::nullptr_t, Result<int*>>);
+static_assert(
+    std::is_convertible_v<std::nullptr_t, Result<std::unique_ptr<int>>>);
+
+// The rvalue accessors return the value itself, so a temporary Result never
+// leaves a dangling reference behind.
+static_assert(
+    std::is_same_v<decltype(std::declval<Result<int>>().value()), int>);
+static_assert(std::is_same_v<decltype(*std::declval<Result<int>>()), int>);
+static_assert(
+    std::is_same_v<decltype(std::declval<Result<int>>().status()), Status>);
+static_assert(std::is_same_v<decltype(std::declval<Result<int>&>().status()),
+                             const Status&>);
+
+Result<std::vector<int>> load_list() { return std::vector<int>{1, 2, 3}; }
+
+TEST(Result, RangeForOverATemporarysValueIsSafe) {
+  // Before C++23 a range-for does not extend a temporary Result's lifetime,
+  // so this would read a destroyed vector if value() && returned a reference.
+  int sum = 0;
+  for (const int v : load_list().value()) sum += v;
+  EXPECT_EQ(sum, 6);
+}
+
+// A type whose unary operator& does not return its address, as some handle
+// wrappers' does.
+struct AddressOfOverloaded {
+  int v = 4;
+  const AddressOfOverloaded* operator&() const { return nullptr; }
+};
+
+TEST(Result, ArrowReachesATypeThatOverloadsAddressOf) {
+  const Result<AddressOfOverloaded> r = AddressOfOverloaded{};
+  ASSERT_TRUE(r.ok());
+  EXPECT_EQ(r->v, 4);
+}
+
+TEST(Result, StatusOfAnOkResultIsOk) {
+  const Result<int> r = 1;
+  EXPECT_TRUE(r.status().ok());
+  EXPECT_TRUE(Result<int>(1).status().ok());
+}
+
+TEST(Result, StatusMovesOutOfAnExpiringResult) {
+  Result<int> r = Status::io_error("short read");
+  const Status s = std::move(r).status();
+  EXPECT_EQ(s.domain(), Status::Code::IoError);
+  EXPECT_EQ(s.message(), "short read");
 }
 
 TEST(Result, ArrowAndConstAccessReachTheValue) {
@@ -197,8 +288,20 @@ TEST(Macros, AssignMovesAMoveOnlyValue) { EXPECT_TRUE(take_box().ok()); }
 TEST(ResultDeathTest, ValueOfAnErrorResultAborts) {
   Result<int> r = Status::numerical("singular");
   EXPECT_DEATH((void)r.value(), "Result::value\\(\\) on an error Result");
-  EXPECT_DEATH((void)*r, "contract check failed");
+  EXPECT_DEATH((void)*r, "Result::operator\\* on an error Result");
   EXPECT_DEATH((void)r.operator->(), "Result::operator-> on an error Result");
+  EXPECT_DEATH((void)std::move(r).value(),
+               "Result::value\\(\\) on an error Result");
+}
+
+// The abort names the held error, and value() names its caller's line rather
+// than the header's, so two misuses do not look alike in a crash report.
+TEST(ResultDeathTest, MisuseNamesTheErrorAndTheCaller) {
+  const Result<int> r = Status::backend_error(-4, "vkQueueSubmit");
+  EXPECT_DEATH((void)r.value(),
+               "Result::value\\(\\) on an error Result \\(Backend -4: "
+               "vkQueueSubmit\\) \\[ok\\(\\)\\] at "
+               ".*base_result_test.cpp:[0-9]+");
 }
 
 TEST(ResultDeathTest, FailureFromAnOkStatusAborts) {

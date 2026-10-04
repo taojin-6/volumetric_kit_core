@@ -62,3 +62,5 @@ jobs:
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
           cmake --build build-consumer-subdir
           ./build-consumer-subdir/vkc_package_consumer
+          # Like a sibling's install: its exported library plus the core.
+          cmake --install build-consumer-subdir --prefix "$PWD/stage-consumer"

@@ -5,7 +5,7 @@
 // broken install, export or include path fails here rather than in a sibling.
 
 #include <cstdio>
-#include <string>
+#include <string_view>
 
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -13,12 +13,10 @@
 
 namespace vkc = volumetric_kit::core;
 
-namespace {
+// From the consumer's own library (parse.cpp).
+vkc::Result<int> parse_positive(int x);
 
-vkc::Result<int> parse_positive(int x) {
-  if (x <= 0) return vkc::Status::invalid_argument("not positive");
-  return x;
-}
+namespace {
 
 vkc::Status run() {
   VKC_ASSIGN(const int n, parse_positive(3));
@@ -31,8 +29,9 @@ vkc::Status run() {
 
 int main() {
   int logged = 0;
-  vkc::set_log_handler([&](vkc::LogLevel, std::string_view) { ++logged; });
-  vkc::log_message(vkc::LogLevel::Info, "consumer");
+  vkc::set_log_handler(
+      [&](vkc::LogLevel, std::string_view, std::string_view) { ++logged; });
+  vkc::log_message(vkc::LogLevel::Info, "consumer", "consumed");
   const vkc::Status status = run();
   if (!status || logged != 1) {
     std::fprintf(stderr, "package consumer failed: %s\n",

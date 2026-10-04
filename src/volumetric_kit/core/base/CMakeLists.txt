@@ -14,7 +14,8 @@ set(_vkc_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(core_base)
 add_library(volumetric_kit::core_base ALIAS core_base)
 
-target_sources(core_base PRIVATE check.cpp log.cpp result.cpp version.cpp)
+target_sources(core_base PRIVATE check.cpp log.cpp log_internal.hpp result.cpp
+                                 version.cpp)
 
 # Generated headers: the per-tier VKC_BASE_API export macro (each tier generates
 # its own, so their macros and guards never collide) and the configured version
@@ -32,10 +33,17 @@ configure_file(
   "${_vkc_generated_inc}/volumetric_kit/core/version.hpp" @ONLY)
 
 # OUTPUT_NAME: the file lands in a shared lib directory, where a bare
-# `libcore_base` would say nothing about whose it is.
+# `libcore_base` would say nothing about whose it is. SOVERSION: before 1.0 a
+# minor release may break the ABI (the package version file accepts only the
+# same minor), so the soname carries MAJOR.MINOR and two releases installed to
+# one prefix are told apart by the loader rather than by a crash.
+#
+# TODO: from 1.0, SOVERSION ${PROJECT_VERSION_MAJOR} alone.
 set_target_properties(
   core_base
   PROPERTIES OUTPUT_NAME volumetric_kit_core_base
+             VERSION ${PROJECT_VERSION}
+             SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
              CXX_VISIBILITY_PRESET hidden
              VISIBILITY_INLINES_HIDDEN ON
              POSITION_INDEPENDENT_CODE ON)
@@ -55,6 +63,7 @@ target_include_directories(
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 
 vkc_target_warnings(core_base)
+vkc_propagate_sanitizers(core_base)
 
 if(VKC_INSTALL)
   install(
