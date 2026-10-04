@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -442,6 +443,28 @@ TEST_F(ComputeTest, MakesStorageBuffersWhereTheyBelong) {
   ASSERT_TRUE(resident.ok()) << resident.status().message();
   EXPECT_EQ(resident->mapped(), nullptr);
   EXPECT_TRUE(resident->is_device_local());
+  // Kernel memory is private wherever the device has private memory for it.
+  VkMemoryRequirements needs{};
+  vkGetBufferMemoryRequirements(device().handle(), resident->handle(), &needs);
+  const VkPhysicalDeviceMemoryProperties& memory =
+      physical().memory_properties();
+  bool has_private = false;
+  for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
+    const VkMemoryPropertyFlags flags = memory.memoryTypes[i].propertyFlags;
+    has_private =
+        has_private || ((needs.memoryTypeBits & (1U << i)) != 0 &&
+                        (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0 &&
+                        (flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT |
+                                  VK_MEMORY_PROPERTY_PROTECTED_BIT)) == 0);
+  }
+  const std::optional<MemoryInfo> placed = resident->memory_info();
+  if (!placed.has_value()) {
+    FAIL() << "no memory info";
+  }
+  if (has_private) {
+    EXPECT_EQ(placed->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0U);
+  }
   const VkBufferUsageFlags transfer =
       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   EXPECT_EQ(resident->usage() & transfer, transfer);
@@ -498,7 +521,7 @@ TEST_F(ComputeTest, StorageInputBindsDeviceBuffersAndStagesHostBytes) {
   BufferDesc bare_desc;
   bare_desc.size = 64;
   bare_desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  bare_desc.memory = MemoryUsage::DeviceLocal;
+  bare_desc.memory = MemoryUsage::DeviceOnly;
   Result<Buffer> bare = allocator().create_buffer(bare_desc);
   ASSERT_TRUE(resident.ok() && host.ok() && bare.ok());
 

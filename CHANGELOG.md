@@ -17,9 +17,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     `VKC_VK_TRY`, `vk_result` and `to_string(VkResult)`; `UniqueHandle`,
     whose deleter may also be a loaded entry point, so a switch to volk
     changes no spelling.
-  - `PhysicalDeviceInfo`: a device's properties, queue families, extensions
-    and features, captured once, and the version usable on it -- the lower of
-    the device's and its instance's.
+  - `PhysicalDeviceInfo`: a device's properties, memory heaps and types,
+    queue families, extensions and features, captured once; the version
+    usable on it -- the lower of the device's and its instance's; and
+    `unified_memory()`, which tells unified memory from a discrete GPU.
   - `DeviceRequirements`, which replaces recon's and gfx's `DeviceConfig`;
     `merge` for a device two libraries share; and `check_device_support`, the
     one check selection, create and adopt share.
@@ -36,10 +37,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     and Metal-object capabilities.
 - `vulkan` tier memory and resources (DECISIONS.md, "The vulkan tier", V2):
   - `Allocator` over VMA v3.4.0 (private): `create_buffer`, `create_image`,
-    per-heap `memory_stats`. Device-local memory is required, not preferred,
-    and every image is device-local; host-visible buffers are mapped and
-    coherent; resources may outlive the allocator. A device-address buffer
-    usage is refused for now.
+    per-heap `memory_stats`. `MemoryUsage::DeviceOnly` -- the default for
+    images -- places kernel memory in device memory the host cannot map
+    (VRAM, never the BAR window; Apple's private storage) by memory-type
+    mask, and a full heap fails rather than spill; `HostVisible` buffers are
+    mapped and coherent, in system RAM on a discrete GPU; resources may
+    outlive the allocator. A device-address buffer usage is refused for now.
   - `Buffer` and `Image` (with `MemoryInfo`), made by the allocator or
     adopted with a deleter. `Image` covers 2D, 3D, array, cube, mipmapped and
     multisampled images with a default view, and replaces gfx's `Texture`.

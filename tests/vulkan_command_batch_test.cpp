@@ -860,7 +860,7 @@ TEST_F(BatchTest, RefusesBadArguments) {
   BufferDesc desc;
   desc.size = kBytes;
   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  desc.memory = MemoryUsage::DeviceLocal;
+  desc.memory = MemoryUsage::DeviceOnly;
   Result<Buffer> bare_made = allocator().create_buffer(desc);
   ASSERT_TRUE(bare_made.ok());
   const Buffer bare = *std::move(bare_made);

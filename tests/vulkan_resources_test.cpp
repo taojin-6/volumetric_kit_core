@@ -158,8 +158,7 @@ TEST(VulkanObjectsDeathTest, WritesRefuseANullResource) {
   EXPECT_EQ(set.writes(), 0u);
 }
 
-// --- on a device
-// --------------------------------------------------------------
+// --- on a device -------------------------------------------------------------
 
 class ResourcesTest : public test::VulkanDeviceTest {
  protected:
@@ -197,7 +196,7 @@ class ResourcesTest : public test::VulkanDeviceTest {
   }
 };
 
-// --- descriptors
+// --- descriptors -------------------------------------------------------------
 
 TEST_F(ResourcesTest, WritesEveryDescriptorKindIntoASet) {
   constexpr VkShaderStageFlags kCompute = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -283,7 +282,7 @@ TEST_F(ResourcesTest, DescriptorObjectsMove) {
   EXPECT_TRUE(moved.allocate(b.handle()).ok());
 }
 
-// --- shader modules
+// --- shader modules ----------------------------------------------------------
 
 TEST_F(ResourcesTest, BuildsAShaderModuleFromSpirv) {
   Result<ShaderModule> shader =
@@ -294,7 +293,7 @@ TEST_F(ResourcesTest, BuildsAShaderModuleFromSpirv) {
   EXPECT_NE(moved.handle(), VK_NULL_HANDLE);
 }
 
-// --- fences and semaphores
+// --- fences and semaphores ---------------------------------------------------
 
 TEST_F(ResourcesTest, FenceSignalsWaitsTimesOutAndResets) {
   Result<Fence> unsignaled = Fence::create(vk());
@@ -341,7 +340,7 @@ TEST_F(ResourcesTest, TimelineCountsUpFromTheHostAndTheQueue) {
   EXPECT_EQ(counter(timeline), 10u);
 }
 
-// --- command pools and buffers
+// --- command pools and buffers -----------------------------------------------
 
 TEST_F(ResourcesTest, RecordsSubmitsAndReRecordsACommandBuffer) {
   Result<CommandPool> made = CommandPool::create(vk(), device().queue_family());

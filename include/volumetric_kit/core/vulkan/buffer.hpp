@@ -42,7 +42,7 @@ struct MemoryInfo {
 /// allocation. The allocation lives inside a type-erased deleter, so VMA never
 /// reaches this header. A buffer made `BufferDesc::mapped` exposes a
 /// persistent, host-coherent pointer through @ref mapped; one made
-/// `MemoryUsage::DeviceLocal` is never mapped.
+/// `MemoryUsage::DeviceOnly` is never mapped.
 ///
 /// The buffer records what Vulkan cannot be asked afterwards -- its usage,
 /// sharing mode and memory type -- so a library handed a borrowed buffer can
@@ -57,7 +57,7 @@ struct MemoryInfo {
 /// BufferDesc desc;
 /// desc.size = 1 << 20;
 /// desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-/// desc.memory = MemoryUsage::DeviceLocal;
+/// desc.memory = MemoryUsage::DeviceOnly;
 /// VKC_ASSIGN(Buffer voxels, allocator.create_buffer(desc));
 /// @endcode
 class VKC_VULKAN_API Buffer {

@@ -17,10 +17,11 @@ foreach(_vkc_test base_result base_check base_log base_version)
     TIMEOUT 60)
 endforeach()
 
-# vulkan: the VkResult helpers, UniqueHandle, DeviceRequirements and the
-# queue-family reduction need no device; the device tests skip without one,
-# unless VKC_REQUIRE_VULKAN_DEVICE is set (CI sets it beside lavapipe), and fail
-# on a validation error under VKC_TEST_VALIDATION=1 (tests/vulkan_fixture.hpp).
+# vulkan: the VkResult helpers, UniqueHandle, DeviceRequirements, the
+# queue-family reduction and the memory-type masks need no device; the device
+# tests skip without one, unless VKC_REQUIRE_VULKAN_DEVICE is set (CI sets it
+# beside lavapipe), and fail on a validation error under VKC_TEST_VALIDATION=1
+# (tests/vulkan_fixture.hpp).
 if(VKC_WITH_VULKAN)
   foreach(
     _vkc_test
@@ -28,6 +29,7 @@ if(VKC_WITH_VULKAN)
     vulkan_unique_handle
     vulkan_requirements
     vulkan_queue_families
+    vulkan_memory_types
     vulkan_device
     vulkan_allocator
     vulkan_resources
@@ -43,11 +45,13 @@ if(VKC_WITH_VULKAN)
       TIMEOUT 120)
   endforeach()
 
-  # The queue-family reduction is internal to core_vulkan, so its test reaches
-  # into the source directory for it.
-  target_include_directories(
-    vkc_vulkan_queue_families_test
-    PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")
+  # The queue-family reduction and the memory-type masks are internal to
+  # core_vulkan, so their tests reach into the source directory for them.
+  foreach(_vkc_test vulkan_queue_families vulkan_memory_types)
+    target_include_directories(
+      vkc_${_vkc_test}_test
+      PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")
+  endforeach()
 
   # The compute tests' kernels, compiled and embedded once as a consumer would
   # (cmake/vkc_shaders.cmake), into an INTERFACE library both tests link, so a

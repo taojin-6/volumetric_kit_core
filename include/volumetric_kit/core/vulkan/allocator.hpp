@@ -23,18 +23,37 @@ class Device;
 
 /// @brief Where a resource's memory lives.
 ///
-/// Memory the kernels read or write is `DeviceLocal`, and the host reaches it
-/// through staging copies, never a mapping: on a discrete GPU, host-visible
-/// memory sits across PCIe, and recon measured a TSDF kernel at 14.6 ms with
-/// its buffers there against 0.067 ms in VRAM (RTX 5090). `HostVisible` is
-/// for what the host produces or consumes -- staging, readback, small
-/// parameters. On unified memory both land in the same pool, and a
-/// device-local type may also be host-visible.
+/// Memory the kernels read or write is `DeviceOnly`, and the host reaches it
+/// through staging copies, never a mapping: on a discrete GPU, host memory
+/// sits across PCIe, and recon measured a TSDF kernel at 14.6 ms with its
+/// buffers there against 0.067 ms in VRAM (RTX 5090). `HostVisible` is for
+/// what the host produces or consumes -- staging, readback, small parameters.
+///
+/// - `DeviceOnly`: on a discrete GPU (DRAM + VRAM), VRAM the host cannot
+///   map; on unified memory, GPU-private memory where the device has it
+///   (Apple), else the one pool, unmapped.
+/// - `HostVisible`: on a discrete GPU, system RAM, mapped; on unified memory,
+///   the one pool, mapped.
+///
+/// The placement is a memory-type mask, not a preference, so it does not
+/// depend on the order a driver lists its types, and a full heap fails the
+/// allocation rather than move the resource somewhere slower.
+/// @ref PhysicalDeviceInfo::unified_memory tells the two architectures apart.
 enum class MemoryUsage {
-  Auto,         ///< VMA chooses from the usage (`VMA_MEMORY_USAGE_AUTO`).
-  DeviceLocal,  ///< `DEVICE_LOCAL` memory, required: the allocation fails
-                ///< rather than spill to another heap.
-  HostVisible,  ///< Mappable memory, preferred in system RAM.
+  /// VMA chooses from the resource's usage (`VMA_MEMORY_USAGE_AUTO`); an
+  /// image still requires `DEVICE_LOCAL`.
+  Auto,
+  /// GPU memory the host never maps: `DEVICE_LOCAL` and not `HOST_VISIBLE`
+  /// wherever the device has such a type for the resource -- a discrete
+  /// GPU's VRAM outside its BAR window, Apple silicon's private storage. A
+  /// device whose every device-local type is host-visible (lavapipe, most
+  /// integrated and mobile GPUs) has one pool, and the resource lands there,
+  /// unmapped. Never host memory, and never the BAR window, which uploads
+  /// need.
+  DeviceOnly,
+  /// Mapped, coherent memory, preferred in system RAM: write-combined for
+  /// @ref HostAccess::SequentialWrite, cached for @ref HostAccess::Random.
+  HostVisible,
 };
 
 /// @brief How the host touches a mapped buffer, which steers the memory type.
@@ -156,10 +175,11 @@ struct ImageDesc {
   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
   /// Tiling.
   VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
-  /// Where the memory lives: `DEVICE_LOCAL`, required, for `DeviceLocal` and
-  /// `Auto` alike. `HostVisible` is refused, as an image has no host accessor
-  /// -- read one back by copying it into a host-visible buffer.
-  MemoryUsage memory = MemoryUsage::DeviceLocal;
+  /// Where the memory lives: device-only by default, which lets a driver
+  /// compress and tile it (Apple's private storage); `Auto` requires
+  /// `DEVICE_LOCAL` only. `HostVisible` is refused, as an image has no host
+  /// accessor -- read one back by copying it into a host-visible buffer.
+  MemoryUsage memory = MemoryUsage::DeviceOnly;
   /// Create a default view over every mip and layer. Clear it for a
   /// transfer-only image, and for a multi-planar or 4:2:2 format (a
   /// decoder's picture), whose view needs a sampler Y'CbCr conversion.
@@ -220,7 +240,7 @@ class VKC_VULKAN_API Allocator {
   /// @brief Allocate a buffer and its memory.
   /// @param desc  Size, usage, memory, mapping and sharing.
   /// @return The buffer; @ref Status::Code::InvalidArgument for a zero size
-  ///         or usage, a device-address usage, a mapped device-local buffer,
+  ///         or usage, a device-address usage, a mapped device-only buffer,
   ///         an unmapped host-visible one (there is no separate map), more
   ///         than @ref BufferDesc::kMaxQueueFamilies distinct families, or a
   ///         family the device does not have; or a backend @ref Status.
@@ -235,7 +255,8 @@ class VKC_VULKAN_API Allocator {
   ///         a malformed cube, a multisampled image that is not single-mip
   ///         optimal 2D, a view of a transfer-only image or of a format that
   ///         needs a Y'CbCr conversion, host-visible memory, or a bad sharing
-  ///         list; or a backend @ref Status. The image is device-local. The
+  ///         list; or a backend @ref Status. The image is device-local --
+  ///         device-only unless `Auto` was asked for. The
   ///         view spans every mip and layer; its type follows the image (the
   ///         `_ARRAY` variant when arrayed, `CUBE` for a cube), and its aspect
   ///         the format (depth, stencil, or color).

@@ -141,10 +141,11 @@ V1's choices, from comparing the two cores on 2026-10-03:
 
 V2's choices, from the same comparison:
 
-- **recon's memory rules.** `MemoryUsage::DeviceLocal` *requires*
-  `DEVICE_LOCAL`, so an allocation fails rather than spill bulk kernel data
-  into host memory across PCIe (recon measured a TSDF kernel at 14.6 ms there
-  against 0.067 ms in VRAM); gfx only preferred it. A host-visible buffer is
+- **recon's memory rules**, tightened since (see "Where memory lives"):
+  kernel memory *requires* `DEVICE_LOCAL`, so an allocation fails rather
+  than spill bulk kernel data into host memory across PCIe (recon measured a
+  TSDF kernel at 14.6 ms there against 0.067 ms in VRAM); gfx only preferred
+  it. A host-visible buffer is
   mapped persistently and coherent, so `mapped()` is a plain pointer. A
   device-address usage is refused, as recon's `MarchingCubes` refused it:
   VMA aborts on one unless its allocator enables buffer device addresses,
@@ -253,6 +254,37 @@ V3's choices, from the same comparison (gfx has no compute):
   that link it. A shader that fails `spirv-val` fails every build until
   fixed: Make deletes a failed command's output, and Ninja and Xcode rerun
   it.
+
+### Where memory lives
+
+Data sits where its consumer is, on both memory architectures, and the
+placement is a memory-type mask, not a preference: VMA scores `DEVICE_LOCAL`
+alone and `DEVICE_LOCAL | HOST_VISIBLE` the same for memory the host never
+touches, breaking the tie by the driver's type order, and on a full heap moves
+on to the next acceptable type. Recorded 2026-10-04.
+
+| Data | Usage | Discrete GPU (DRAM + VRAM) | Unified memory |
+| --- | --- | --- | --- |
+| Kernel buffers, images, scratch (`device_storage_buffer`, `create_image`) | `DeviceOnly` | VRAM the host cannot map, never the BAR window | GPU-private storage where the device has it (Apple); else the one pool, unmapped |
+| Uploads (`CommandBatch` staging) | `HostVisible`, sequential write | system RAM, write-combined | the one pool |
+| Readbacks, host-produced parameters | `HostVisible`, random | system RAM, cached | the one pool, cached |
+
+- **`DeviceOnly` replaces `DeviceLocal`.** It takes only device-local types
+  the host cannot see wherever the device has one the resource allows, and
+  otherwise every device-local type -- the one pool of a device whose every
+  device-local type is host-visible (lavapipe, most integrated and mobile
+  GPUs). A full heap fails the allocation: kernel data never moves to host
+  memory, or into the BAR window that uploads need. Images default to it, so
+  a driver may compress and tile them (Apple's private storage). recon's
+  `DeviceLocal` and gfx's preferred `DeviceLocal` both become `DeviceOnly` at
+  their migrations.
+- **`PhysicalDeviceInfo::unified_memory`** tells the architectures apart: an
+  integrated or CPU device, or one whose every heap is device-local. A
+  library may branch on it; the core's own paths do not yet (the open
+  "Unified memory" question).
+- **The masks are tested against real drivers' layouts** -- NVIDIA and AMD
+  discrete with a BAR window, Apple, Intel, Mali, lavapipe, an AMD APU --
+  without a device, as no CI runner has a discrete GPU.
 
 ### Naming
 
@@ -366,8 +398,8 @@ consuming the package.
   (`vk-linux-gpu`, `mac`) are registered per repository, so they must be
   registered here too. They were to come before the allocator (V2), whose
   memory placement differs on a discrete GPU; V2 landed without them, so the
-  discrete-GPU path -- `DeviceLocal` in VRAM, apart from host-visible memory
-  -- is still untested here. On a public repository those legs must run only
+  discrete-GPU path -- `DeviceOnly` in VRAM, staging in system RAM -- is
+  tested only through the memory-type masks, against recorded layouts. On a public repository those legs must run only
   same-repository code, as `recon`'s guard does.
 - **Vulkan headers for gfx.** The tier uses the system's headers; gfx pins
   Vulkan-Headers 1.4.357 and links the loader privately. Both in one build
@@ -375,4 +407,9 @@ consuming the package.
   system headers, or the core vendors the same pin.
 - **Unified memory.** `recon` deliberately runs the staged path on Apple too,
   pending a staging measurement on the iPad. The vulkan tier inherits that
-  rule until the measurement says otherwise.
+  rule until the measurement says otherwise. On unified memory a staged
+  upload costs one GPU copy within the same DRAM; the alternative is a
+  device-local, host-visible placement the host writes in place -- every
+  type on unified memory, the BAR window on a discrete GPU -- for inputs read
+  as a `StorageInput` device buffer. `unified_memory()` is the switch either
+  way.

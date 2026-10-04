@@ -113,8 +113,8 @@ VKC_VULKAN_API Result<Buffer> upload_storage_buffer(
     Allocator& allocator, const void* src, VkDeviceSize bytes,
     HostAccess access = HostAccess::SequentialWrite);
 
-/// @brief A device-local storage buffer of @p bytes, for memory only the
-///        kernels touch.
+/// @brief A device-only storage buffer of @p bytes
+///        (@ref MemoryUsage::DeviceOnly), for memory only the kernels touch.
 ///
 /// On unified memory this and a host-visible buffer cost the same; on a
 /// discrete GPU, memory that is not device-local is reached across PCIe.

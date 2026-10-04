@@ -8,9 +8,9 @@
 ///        recorded into one command buffer and submitted with one fence wait.
 ///
 /// The host reaches device memory through this and nothing else: kernel
-/// memory is device-local and unmapped on every platform, so the host only
-/// records commands, and unified memory runs the same path a discrete GPU
-/// does.
+/// memory is @ref MemoryUsage::DeviceOnly and unmapped on every platform, so
+/// the host only records commands, and unified memory runs the same path a
+/// discrete GPU does.
 
 #include <cstddef>
 #include <cstdint>

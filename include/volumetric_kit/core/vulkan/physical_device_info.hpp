@@ -17,8 +17,9 @@ namespace volumetric_kit::core {
 
 /// @brief Cached, read-only capabilities of one `VkPhysicalDevice`.
 ///
-/// @ref query captures the properties and limits, the supported device
-/// extensions, the queue families, the core (1.0) features, and the three
+/// @ref query captures the properties and limits, the memory heaps and types,
+/// the supported device extensions, the queue families, the core (1.0)
+/// features, and the three
 /// newer features the family's libraries require -- timeline semaphores and
 /// scalar block layout (Vulkan 1.2) and dynamic rendering (1.3). Format
 /// queries go to the driver live: they are cheap, and there are hundreds of
@@ -79,6 +80,22 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   ///         must not be used.
   std::uint32_t api_version() const noexcept { return api_version_; }
 
+  /// @return The memory heaps and types, which decide where an
+  ///         @ref Allocator places each @ref MemoryUsage.
+  const VkPhysicalDeviceMemoryProperties& memory_properties() const noexcept {
+    return memory_properties_;
+  }
+  /// @brief Whether the GPU and the host share one memory.
+  ///
+  /// True for an integrated or CPU device, and for one whose every heap is
+  /// device-local (Apple silicon, lavapipe); false for a discrete GPU, which
+  /// has host memory beside its VRAM. On unified memory a host-visible buffer
+  /// costs a kernel no more than a device-only one, so a library may skip a
+  /// staging copy there; on a discrete GPU, kernel data belongs in
+  /// `MemoryUsage::DeviceOnly` memory, reached from the host only by staging.
+  /// @return Whether memory is unified.
+  bool unified_memory() const noexcept { return unified_memory_; }
+
   /// @return The queue families, indexed by family.
   const std::vector<VkQueueFamilyProperties>& queue_families() const noexcept {
     return queue_families_;
@@ -126,6 +143,8 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
  private:
   VkPhysicalDevice physical_ = VK_NULL_HANDLE;
   VkPhysicalDeviceProperties properties_{};
+  VkPhysicalDeviceMemoryProperties memory_properties_{};
+  bool unified_memory_ = false;
   std::uint32_t api_version_ = 0;
   std::vector<VkQueueFamilyProperties> queue_families_;
   // Owned names, not VkExtensionProperties, so the info is self-contained and

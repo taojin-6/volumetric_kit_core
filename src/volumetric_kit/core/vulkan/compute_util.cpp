@@ -67,7 +67,7 @@ Result<Buffer> device_storage_buffer(Allocator& allocator, VkDeviceSize bytes,
   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                VK_BUFFER_USAGE_TRANSFER_DST_BIT | extra_usage;
-  desc.memory = MemoryUsage::DeviceLocal;
+  desc.memory = MemoryUsage::DeviceOnly;
   desc.queue_families = queue_families;
   desc.queue_family_count = queue_family_count;
   return allocator.create_buffer(desc);

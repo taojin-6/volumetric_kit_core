@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "memory_types.hpp"
 #include "support.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
@@ -23,6 +24,9 @@ PhysicalDeviceInfo PhysicalDeviceInfo::query(
   info.api_version_ =
       std::min(detail::without_patch(info.properties_.apiVersion),
                detail::without_patch(instance_api_version));
+  vkGetPhysicalDeviceMemoryProperties(physical, &info.memory_properties_);
+  info.unified_memory_ = detail::unified_memory(info.memory_properties_,
+                                                info.properties_.deviceType);
 
   std::uint32_t family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);

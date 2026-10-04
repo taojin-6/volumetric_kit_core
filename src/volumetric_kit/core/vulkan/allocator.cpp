@@ -28,6 +28,7 @@
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
+#include "memory_types.hpp"
 #include "queue_families.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -48,6 +49,10 @@ struct Allocator::Impl {
   // The device's queue-family count, so a sharing list naming a family the
   // device lacks is refused: Vulkan offers no way to ask afterwards.
   std::uint32_t queue_family_count = 0;
+  // The memory types a DeviceOnly resource may use (memory_types.hpp), and
+  // every device-local type, for one no device-only type suits.
+  std::uint32_t device_only_types = 0;
+  std::uint32_t device_local_types = 0;
 
   Impl() = default;
   Impl(const Impl&) = delete;
@@ -59,9 +64,31 @@ struct Allocator::Impl {
 
 namespace {
 
+// A DeviceOnly placement: DEVICE_LOCAL required, and the device-only types
+// the only candidates. A mask, not a preference: VMA scores DEVICE_LOCAL
+// alone and DEVICE_LOCAL | HOST_VISIBLE the same for memory the host never
+// touches, breaking the tie by the driver's type order, and on a full heap
+// moves on to the next acceptable type -- the BAR window on a discrete GPU,
+// shared storage on Apple.
+void place_device_only(VmaAllocationCreateInfo& info, std::uint32_t types) {
+  info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  info.memoryTypeBits = types;  // never 0: every device has device-local memory
+}
+
+// Whether a DeviceOnly allocation that found no compatible type should retry
+// on every device-local type: the device has private types, but none the
+// resource's requirements allow.
+bool retry_device_local(VkResult made, MemoryUsage memory,
+                        const VmaAllocationCreateInfo& info,
+                        std::uint32_t device_local_types) {
+  return made == VK_ERROR_FEATURE_NOT_PRESENT &&
+         memory == MemoryUsage::DeviceOnly &&
+         info.memoryTypeBits != device_local_types;
+}
+
 VmaMemoryUsage to_vma_usage(MemoryUsage memory) {
   switch (memory) {
-    case MemoryUsage::DeviceLocal:
+    case MemoryUsage::DeviceOnly:
       return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     case MemoryUsage::HostVisible:
       return VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
@@ -290,6 +317,10 @@ Result<Allocator> Allocator::create(VkInstance instance, const Device& device) {
   impl->device = device.handle();
   impl->queue_family_count =
       static_cast<std::uint32_t>(device.caps().queue_families().size());
+  const VkPhysicalDeviceMemoryProperties& memory =
+      device.caps().memory_properties();
+  impl->device_only_types = detail::device_only_types(memory);
+  impl->device_local_types = detail::device_local_types(memory);
 
   Allocator allocator;
   allocator.impl_ = std::move(impl);
@@ -322,7 +353,7 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
         "create_buffer: VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT is not "
         "supported -- the allocator does not enable buffer device addresses");
   }
-  if (desc.mapped && desc.memory == MemoryUsage::DeviceLocal) {
+  if (desc.mapped && desc.memory == MemoryUsage::DeviceOnly) {
     return Status::invalid_argument(
         "create_buffer: a device-local buffer is never mapped; stage through "
         "a host-visible one");
@@ -348,11 +379,8 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
 
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = to_vma_usage(desc.memory);
-  if (desc.memory == MemoryUsage::DeviceLocal) {
-    // A preference alone lets VMA spill bulk kernel data into a non-local
-    // heap; require residency. On unified memory the chosen type may also be
-    // host-visible.
-    alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  if (desc.memory == MemoryUsage::DeviceOnly) {
+    place_device_only(alloc_info, impl_->device_only_types);
   }
   if (desc.mapped) {
     alloc_info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
@@ -367,8 +395,16 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
   VkBuffer buffer = VK_NULL_HANDLE;
   VmaAllocation allocation = nullptr;
   VmaAllocationInfo out{};
-  VKC_VK_TRY(vmaCreateBuffer(impl_->allocator, &buffer_info, &alloc_info,
-                             &buffer, &allocation, &out));
+  VkResult made = vmaCreateBuffer(impl_->allocator, &buffer_info, &alloc_info,
+                                  &buffer, &allocation, &out);
+  if (retry_device_local(made, desc.memory, alloc_info,
+                         impl_->device_local_types)) {
+    // No device-only type suits this buffer: device-local memory, unmapped.
+    alloc_info.memoryTypeBits = impl_->device_local_types;
+    made = vmaCreateBuffer(impl_->allocator, &buffer_info, &alloc_info, &buffer,
+                           &allocation, &out);
+  }
+  if (made != VK_SUCCESS) return vk_error(made, "vmaCreateBuffer");
   if (desc.mapped && out.pMappedData == nullptr) {
     vmaDestroyBuffer(impl_->allocator, buffer, allocation);
     return vk_error(VK_ERROR_MEMORY_MAP_FAILED,
@@ -421,12 +457,24 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
   // device-local, and Auto alone lets VMA place it in host memory once VRAM
   // is full.
   alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  if (desc.memory == MemoryUsage::DeviceOnly) {
+    place_device_only(alloc_info, impl_->device_only_types);
+  }
 
   VkImage image = VK_NULL_HANDLE;
   VmaAllocation allocation = nullptr;
   VmaAllocationInfo out{};
-  VKC_VK_TRY(vmaCreateImage(impl_->allocator, &image_info, &alloc_info, &image,
-                            &allocation, &out));
+  VkResult made = vmaCreateImage(impl_->allocator, &image_info, &alloc_info,
+                                 &image, &allocation, &out);
+  if (retry_device_local(made, desc.memory, alloc_info,
+                         impl_->device_local_types)) {
+    // No device-only type suits this image (a format a driver keeps in
+    // host-visible memory): device-local memory, which it still is.
+    alloc_info.memoryTypeBits = impl_->device_local_types;
+    made = vmaCreateImage(impl_->allocator, &image_info, &alloc_info, &image,
+                          &allocation, &out);
+  }
+  if (made != VK_SUCCESS) return vk_error(made, "vmaCreateImage");
 
   VkImageView view = VK_NULL_HANDLE;
   if (desc.with_view) {
