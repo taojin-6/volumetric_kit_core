@@ -531,7 +531,8 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
 - **Backend detail is a neutral `int64_t`** (`recon`'s design). `gfx`'s
   `Vulkan` domain with a `VkResult`-typed `code()` becomes `Backend` with the
   `VkResult` in `detail()`; the vulkan tier supplies `vk_error`, `VKC_VK_TRY`
-  and the `VkResult` name lookup. The base tier includes no GPU API.
+  and the `VkResult` name lookup. The base tier includes no GPU API. Which
+  backend set the detail is not recorded (an open decision below).
   `backend_error` keeps `gfx`'s guard against a success code: a detail of `0`
   (`VK_SUCCESS`, `cudaSuccess`) aborts via `VKC_CHECK`.
 - **`with_context` adds context without losing the domain** (new). `recon`
@@ -655,3 +656,12 @@ decision, landing with its CI leg.
   `DeviceMapped` memory the host writes in place and a kernel reads as a
   `StorageInput` device buffer, now exists. Which inputs take it, and on
   which architecture (`unified_memory()`), is the open part.
+- **Which backend a `Backend` status came from.** `Status` records the domain
+  and an `int64_t` detail, not the backend that set it, so `vk_result` reads a
+  CUDA status's `cudaError_t` as an unrelated `VkResult`:
+  `cudaErrorMemoryAllocation` (2) as `VK_TIMEOUT`, which a caller that retries
+  on `VK_TIMEOUT` would retry. Until then, `vk_result` is asked only of a
+  status from a Vulkan call. Recording it changes the base tier's API: a
+  backend tag set by `backend_error`, or a domain per backend (`Vulkan`,
+  `Cuda`); either lets `vk_result` return empty for a CUDA status. Decide at
+  `recon`'s migration, whose CUDA interop returns both kinds.
