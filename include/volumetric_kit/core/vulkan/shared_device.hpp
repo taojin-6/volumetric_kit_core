@@ -41,7 +41,7 @@ enum class QueuePlan {
   TwoQueuesOneFamily,
   /// Two families, a queue each: independent submission, but a shared buffer
   /// names both families (`VK_SHARING_MODE_CONCURRENT`) or is transferred.
-  /// MoltenVK lands here: it reports several families of one queue each.
+  /// A driver that reports several families of one queue each lands here.
   TwoFamilies,
   /// One family, one queue shared under one mutex. The last resort: the two
   /// libraries' submits serialize, and neither may submit a GPU-side wait on
@@ -118,7 +118,7 @@ struct SharedDeviceConfig {
 /// VKC_ASSIGN(Device renderer,
 ///            Device::adopt(shared->graphics_payload(), config.graphics));
 /// log(shared->summary());
-/// // "Apple M5 Max: TwoFamilies, graphics family 0, compute family 1,
+/// // "<device name>: TwoFamilies, graphics family 0, compute family 1,
 /// // a queue each"
 /// @endcode
 class VKC_VULKAN_API SharedDevice {

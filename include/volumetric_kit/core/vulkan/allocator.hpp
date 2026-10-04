@@ -28,12 +28,12 @@ class Device;
 /// construction: kernel data is `DeviceOnly`, data the host writes for shaders
 /// to read is `DeviceMapped`, and host memory -- `Staging` -- takes copy usage
 /// alone, so the GPU reaches it only by a copy, never from a shader. On a
-/// discrete GPU host memory sits across PCIe: recon measured a TSDF kernel at
-/// 14.6 ms with its buffers there against 0.067 ms in VRAM (RTX 5090).
+/// discrete GPU host memory sits across PCIe, so repeatedly accessing it
+/// directly can make a kernel depend on interconnect bandwidth.
 ///
 /// - `DeviceOnly`: on a discrete GPU (DRAM + VRAM), VRAM the host cannot
-///   map; on unified memory, GPU-private memory where the device has it
-///   (Apple), else the one pool, unmapped.
+///   map; on unified memory, GPU-private memory where available, else the
+///   one pool, unmapped.
 /// - `DeviceMapped`: on a discrete GPU, VRAM the host maps through the BAR
 ///   window; on unified memory, the one pool, mapped.
 /// - `Staging`: on a discrete GPU, system RAM, mapped; on unified memory, the
@@ -41,32 +41,30 @@ class Device;
 ///
 /// Each placement is a memory-type mask, not a preference, cut to the types
 /// each resource's memory requirements allow, so it does not depend on the
-/// order a driver lists its types. A full heap fails the allocation rather
-/// than move the resource somewhere slower, and so does one past its budget:
-/// every allocation is made within the heap's budget, the driver's own figure
-/// where the device has `VK_EXT_memory_budget` (which @ref Device::create
-/// enables where offered), so an allocation that would have a driver page
-/// VRAM out to system memory (Windows) is refused instead.
+/// order a driver lists its types. New device-memory allocations are refused
+/// when they exceed the heap's budget, using the driver's estimate where
+/// `VK_EXT_memory_budget` is enabled (@ref Device::create enables it where
+/// offered). Existing blocks may still be reused at the budget limit: their
+/// unused space is already counted. Budgets are estimates, not a
+/// guarantee of residency or future availability.
 /// @ref PhysicalDeviceInfo::unified_memory tells the two architectures apart.
 enum class MemoryUsage {
   /// GPU memory the host never maps: `DEVICE_LOCAL` and not `HOST_VISIBLE`
   /// wherever the device has such a type -- a discrete GPU's VRAM outside its
-  /// BAR window, Apple silicon's private storage. A device whose every
-  /// device-local type is host-visible (lavapipe, most integrated and mobile
-  /// GPUs) has one pool, and the resource lands there, unmapped; so does one
-  /// on unified memory that no private type suits (a linear image on Apple).
-  /// Without unified memory, a resource no private type suits is refused
-  /// (`Unsupported`): the rest of a discrete GPU's device-local memory is
-  /// the BAR window. Never host memory, and never the BAR window. Kernel
-  /// data, and every image.
+  /// BAR window, or private storage on unified memory. A device whose every
+  /// device-local type is host-visible uses those types, unmapped; so does
+  /// a resource on unified memory that no private type suits, such as a
+  /// linear image whose requirements allow only host-visible types.
+  /// On a non-unified device that has private types, a resource none of those
+  /// types suits is refused (`Unsupported`) instead of using the mapped
+  /// window. Never falls back to host memory. For kernel data and every image.
   DeviceOnly,
   /// Device-local memory the host maps, coherently: a discrete GPU's BAR
-  /// window -- all of VRAM under Resizable BAR, 256 MiB without it -- or the
+  /// window, whose capacity depends on the device configuration, or the
   /// one pool of unified memory. For data the host writes and shaders read
   /// directly, as uniforms and per-frame parameters, and on unified memory
-  /// for inputs with no staging copy. Small, on a discrete GPU: without
-  /// Resizable BAR every device-mapped buffer of every library shares
-  /// 256 MiB, so bulk inputs go up by staging into `DeviceOnly` memory.
+  /// for inputs with no staging copy. The host-visible device heap can be
+  /// limited, so bulk inputs go up by staging into `DeviceOnly` memory.
   /// Write it with @ref HostAccess::SequentialWrite: on a discrete GPU the
   /// host's reads cross PCIe uncached, so results come back by copy. Never
   /// host memory: a device with no such type
@@ -86,9 +84,9 @@ enum class MemoryUsage {
 enum class HostAccess {
   /// Reads and writes in any order: cached memory. A staging buffer prefers
   /// it, and takes uncached memory on a device with none; a device-mapped
-  /// buffer requires it, which unified memory has and a discrete GPU's BAR
-  /// window never does, so there it is refused (`Unsupported`) rather than
-  /// read across PCIe uncached. For a buffer the host reads: a readback.
+  /// buffer requires it and refuses uncached types (`Unsupported`), avoiding
+  /// uncached host reads across an interconnect. For a buffer the host reads:
+  /// a readback.
   Random,
   /// Writes only, front to back, never reads: write-combined (uncached)
   /// memory where the placement has it, which streams uploads faster on a
@@ -97,27 +95,52 @@ enum class HostAccess {
   SequentialWrite,
 };
 
-/// @brief One memory heap's usage and budget, in bytes.
+/// @brief One heap's usage against its budget, and this allocator's share of
+///        it, in bytes.
 ///
-/// The driver's figures where the device has `VK_EXT_memory_budget`, which
-/// count every allocator and process on the heap; otherwise VMA's estimate,
-/// which counts only this allocator and puts the budget at 80% of the heap.
+/// `usage_bytes` and `budget_bytes` describe the heap. Where
+/// `VK_EXT_memory_budget` is enabled they are the driver's estimates for the
+/// current process -- every allocator and library in it -- and the budget
+/// moves as other processes allocate; otherwise the usage counts this
+/// allocator alone, against 80% of the heap's size. `reserved_bytes` and
+/// `allocation_bytes` are this allocator's own, whatever the device.
+///
+/// @code
+/// const HeapStats& heap = allocator.memory_stats().heaps[0];
+/// const std::uint64_t headroom =
+///     heap.budget_bytes > heap.usage_bytes
+///         ? heap.budget_bytes - heap.usage_bytes : 0;
+/// report(headroom, heap.reserved_bytes, heap.allocation_bytes);
+/// @endcode
 struct HeapStats {
-  std::uint64_t usage_bytes = 0;   ///< Bytes VMA has allocated from the heap.
-  std::uint64_t budget_bytes = 0;  ///< Bytes VMA estimates are usable.
+  /// The heap's usage, which new allocations are admitted against. With
+  /// `VK_EXT_memory_budget` it includes other allocators' memory, so it is
+  /// never summed across libraries sharing a device.
+  std::uint64_t usage_bytes = 0;
+  /// The heap's budget: the driver's estimate for the current process, or
+  /// 80% of the heap's size.
+  std::uint64_t budget_bytes = 0;
+  /// Bytes in this allocator's device-memory blocks and dedicated
+  /// allocations, unused block space included. Summed across allocators, it
+  /// is the memory they hold together.
+  std::uint64_t reserved_bytes = 0;
+  /// Bytes of this allocator's live allocations, within
+  /// @ref reserved_bytes.
+  std::uint64_t allocation_bytes = 0;
 };
 
 /// @brief Per-heap usage and budget across a device's memory heaps.
 ///
 /// A fixed array with a live count, so it is filled and returned without
-/// touching the host heap. A unified-memory device (Apple silicon) typically
+/// touching the host heap. A unified-memory device typically
 /// reports one heap where a discrete GPU reports separate device-local and
 /// host heaps.
 ///
 /// @code
 /// const MemoryStats stats = allocator.memory_stats();
 /// for (std::uint32_t h = 0; h < stats.heap_count; ++h) {
-///   report(h, stats.heaps[h].usage_bytes, stats.heaps[h].budget_bytes);
+///   report(h, stats.heaps[h].usage_bytes, stats.heaps[h].budget_bytes,
+///          stats.heaps[h].reserved_bytes);
 /// }
 /// @endcode
 struct MemoryStats {
@@ -130,6 +153,18 @@ struct MemoryStats {
 /// Memory another API imports is not made here but by
 /// @ref create_exported_buffer, which allocates it through an allocator too,
 /// dedicated to its buffer.
+///
+/// @code
+/// // A storage buffer a compute library writes and a renderer reads.
+/// const std::uint32_t families[] = {compute_family, render_family};
+/// BufferDesc desc;
+/// desc.size = points * sizeof(Point);
+/// desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+///              VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+/// desc.queue_families = families;
+/// desc.queue_family_count = 2;
+/// VKC_ASSIGN(Buffer points_buffer, allocator.create_buffer(desc));
+/// @endcode
 struct BufferDesc {
   /// Size in bytes; non-zero.
   VkDeviceSize size = 0;
@@ -149,7 +184,7 @@ struct BufferDesc {
   ///
   /// Null gives `VK_SHARING_MODE_EXCLUSIVE`, owned by whichever family uses it
   /// first -- right for a library's own buffers, wrong for one another library
-  /// reads directly: on Apple a compute library and a renderer are handed
+  /// reads directly: a compute library and a renderer can be handed
   /// queues from different families, and reading an exclusive buffer from a
   /// family that does not own it is undefined, often with no symptom. List the
   /// families that touch it: two or more distinct indices give
@@ -180,11 +215,22 @@ VKC_VULKAN_API Status check_queue_family_count(std::uint32_t count,
 ///
 /// The defaults describe a single-mip, single-layer, single-sample 2D image
 /// with a default view. Every image is `MemoryUsage::DeviceOnly`, which also
-/// lets a driver compress and tile it (Apple's private storage); an image has
+/// lets a driver use its private image-storage optimizations; an image has
 /// no host accessor, so read one back by copying it into a staging buffer.
 /// Set `type` and `depth` for a 3D (volume) image, `array_layers` for an
 /// array, `cube` for a cubemap, `mip_levels` for a mip chain, `samples` for
 /// multisampling.
+///
+/// @code
+/// // A 128^3 volume a kernel writes and a renderer samples.
+/// ImageDesc desc;
+/// desc.type = VK_IMAGE_TYPE_3D;
+/// desc.extent = {128, 128};
+/// desc.depth = 128;
+/// desc.format = VK_FORMAT_R16_SFLOAT;
+/// desc.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+/// VKC_ASSIGN(Image volume, allocator.create_image(desc));
+/// @endcode
 struct ImageDesc {
   /// Width and height in texels; non-zero.
   VkExtent2D extent{};
@@ -294,10 +340,13 @@ class VKC_VULKAN_API Allocator {
   ///         format (depth, stencil, or color).
   Result<Image> create_image(const ImageDesc& desc);
 
-  /// @brief Per-heap usage and budget, for what this allocator allocated.
+  /// @brief Each heap's usage and budget, and this allocator's share of it.
   ///
-  /// A device shared between libraries gives each its own allocator, so each
-  /// reports only its own share.
+  /// `reserved_bytes` and `allocation_bytes` report only this allocator's
+  /// share. `usage_bytes` and `budget_bytes` describe the heap -- the
+  /// driver's process-level estimates where `VK_EXT_memory_budget` is
+  /// enabled -- so another allocator on the device reports the same figures.
+  /// Every figure can change immediately after the query.
   /// @return The figures; `heap_count == 0` for a moved-from allocator.
   MemoryStats memory_stats() const;
 
@@ -310,6 +359,10 @@ class VKC_VULKAN_API Allocator {
                                                        VkDeviceSize bytes);
 
   Allocator() = default;
+
+  // The device this allocates on, for create_exported_buffer to refuse a
+  // buffer of another; VK_NULL_HANDLE when moved-from.
+  VkDevice device_handle() const noexcept;
 
   // What create_exported_buffer needs of VMA, which this class's source alone
   // includes: `buffer` -- the caller's, destroyed here on a failure -- bound

@@ -19,8 +19,9 @@ on:
       shared:
         type: boolean
         default: false
-      # Build the vulkan tier: Linux runs its device tests on lavapipe
-      # (required, never skipped), macOS on whatever device MoltenVK finds.
+      # Build the vulkan tier and run its device tests, required and
+      # validated on every leg: Linux on lavapipe, macOS on the runner's
+      # device through MoltenVK.
       vulkan:
         type: boolean
         default: true
@@ -29,6 +30,14 @@ jobs:
   build:
     runs-on: ${{ inputs.os }}
     timeout-minutes: 30
+    env:
+      VKC_REQUIRE_VULKAN_DEVICE: '1'
+      VKC_TEST_VALIDATION: '1'
+      # The enables spelling also works with the older layer on Ubuntu 24.04.
+      VK_LAYER_ENABLES: VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+      VK_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC: '1'
+      # A test checks the variable above took effect (tests/vulkan_fixture.hpp).
+      VKC_TEST_SYNC_VALIDATION: '1'
     steps:
       - uses: actions/checkout@v7
 
@@ -38,7 +47,7 @@ jobs:
           sudo apt-get update
           # glslc and spirv-val compile and validate the compute tests' shaders.
           sudo apt-get install -y --no-install-recommends \
-            libvulkan-dev vulkan-tools glslc spirv-tools
+            libvulkan-dev vulkan-tools vulkan-validationlayers glslc spirv-tools
           # lavapipe, Mesa's software Vulkan driver, installed WITH recommends:
           # without them its runtime libraries (LLVM) are stripped and it loads
           # as INCOMPATIBLE_DRIVER, which would skip every device test.
@@ -49,8 +58,6 @@ jobs:
           done
           [ -n "$icd" ] || { echo "::error::lavapipe ICD not found"; exit 1; }
           echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
-          # A device test fails rather than skips without a device.
-          echo "VKC_REQUIRE_VULKAN_DEVICE=1" >> "$GITHUB_ENV"
           VK_ICD_FILENAMES="$icd" vulkaninfo --summary
 
       - name: Install Vulkan (macOS)
@@ -60,7 +67,13 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: '1'
         run: |
           brew install vulkan-headers vulkan-loader molten-vk shaderc \
-            spirv-tools
+            spirv-tools vulkan-validationlayers vulkan-tools
+          # The layer's manifest names its library without a path; the Test
+          # step alone searches Homebrew's lib for it, as job-wide its
+          # libraries would shadow those of every later tool.
+          echo "VKC_LAYER_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
+          echo "VK_LAYER_PATH=$(brew --prefix)/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
+          DYLD_LIBRARY_PATH="$(brew --prefix)/lib" vulkaninfo --summary
 
       - name: Configure
         run: |
@@ -74,6 +87,8 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test
+        env:
+          DYLD_LIBRARY_PATH: ${{ env.VKC_LAYER_LIBRARY_PATH }}
         run: ctest --test-dir build --output-on-failure
 
       - name: Install

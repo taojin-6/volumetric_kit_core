@@ -133,7 +133,7 @@ struct AdoptedDevice {
 /// Submission is thread-safe: each submit records on a command pool no other
 /// submit is using, and only the `vkQueueSubmit` is serialized, under
 /// @ref submit_mutex. The fence each submit waits on is kept for the next, as
-/// creating one per submit cost an RTX 5090 about 0.3 ms.
+/// avoiding the driver overhead of creating one per submit.
 ///
 /// @warning The instance, and an adopted device's handles and mutexes, must
 ///          outlive this object; it stores only borrowed handles.
@@ -250,8 +250,8 @@ class VKC_VULKAN_API Device {
   /// @return The family's `queueFlags`.
   VkQueueFlags queue_flags() const noexcept { return state_.queue_flags; }
   /// @return The family's `timestampValidBits`, `0` when the queue writes no
-  ///         timestamps (MoltenVK may say so). Gate GPU timing on a non-zero
-  ///         value; convert ticks to nanoseconds with
+  ///         timestamps, as some implementations report. Gate GPU timing on a
+  ///         non-zero value; convert ticks to nanoseconds with
   ///         `caps().limits().timestampPeriod`.
   std::uint32_t timestamp_valid_bits() const noexcept {
     return state_.timestamp_valid_bits;

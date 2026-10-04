@@ -25,6 +25,19 @@ class ShaderModule;
 /// `layout(set =, binding =)` and `push_constant` declarations: a mismatch is
 /// undefined at dispatch, which the validation layer reports, not a create
 /// error.
+///
+/// @code
+/// // layout(set = 0, ...) buffers, and a push_constant block of Params.
+/// const VkDescriptorSetLayout layouts[] = {layout.handle()};
+/// const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+///                                sizeof(Params)};
+/// ComputePipelineDesc desc;
+/// desc.shader = &shader;
+/// desc.set_layouts = layouts;
+/// desc.set_layout_count = 1;
+/// desc.push_ranges = &push;
+/// desc.push_range_count = 1;
+/// @endcode
 struct ComputePipelineDesc {
   /// The compute stage; non-null and valid.
   const ShaderModule* shader = nullptr;

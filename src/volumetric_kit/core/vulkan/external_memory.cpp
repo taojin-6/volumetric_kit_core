@@ -28,27 +28,27 @@ std::optional<std::uint32_t> find_memory_type(const Device& device,
                                               std::uint32_t type_bits,
                                               VkMemoryPropertyFlags required,
                                               VkMemoryPropertyFlags excluded) {
-  const VkPhysicalDeviceMemoryProperties& memory =
-      device.caps().memory_properties();
-  const std::uint32_t allowed =
-      detail::memory_types_with(memory, required, excluded) & type_bits;
-  for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-    if ((allowed & (1U << i)) != 0) return i;
-  }
-  return std::nullopt;
+  return detail::first_memory_type(device.caps().memory_properties(), type_bits,
+                                   required, excluded);
 }
 
 Result<ExportedBuffer> create_exported_buffer(const Device& device,
                                               Allocator& allocator,
                                               VkDeviceSize bytes) {
+  if (!allocator.valid()) {
+    return Status::invalid_argument(
+        "create_exported_buffer: allocator is moved-from");
+  }
+  // Checked before the buffer exists: memory from another device's allocator
+  // cannot be bound to it, nor the buffer destroyed through that allocator.
+  if (allocator.device_handle() != device.handle()) {
+    return Status::invalid_argument(
+        "create_exported_buffer: the allocator was made for another device");
+  }
   if (!device.exports_memory()) {
     return Status::unsupported(
         "create_exported_buffer: the device does not export memory "
         "(VK_KHR_external_memory_fd)");
-  }
-  if (!allocator.valid()) {
-    return Status::invalid_argument(
-        "create_exported_buffer: allocator is moved-from");
   }
   if (bytes == 0) {
     return Status::invalid_argument("create_exported_buffer: size is zero");

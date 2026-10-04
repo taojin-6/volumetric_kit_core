@@ -27,8 +27,10 @@ add_library(volumetric_kit::core_vulkan ALIAS core_vulkan)
 target_sources(
   core_vulkan
   PRIVATE allocator.cpp
+          allocation_budget.hpp
           buffer.cpp
           command_batch.cpp
+          command_batch_barriers.hpp
           command_buffer.cpp
           command_pool.cpp
           compute_kernel.cpp

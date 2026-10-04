@@ -20,11 +20,12 @@ jobs:
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
-      # GitHub-hosted runners: the Linux legs run the vulkan tier's device
-      # tests on lavapipe (Mesa's software Vulkan), required rather than
-      # skipped; macOS runs them on whatever device MoltenVK finds there. Legs
-      # are listed explicitly: a matrix `include` that matches an existing
-      # os/build_type pair would extend that leg rather than add one.
+      # GitHub-hosted runners: the vulkan tier's device tests are required
+      # rather than skipped, and validated, on every leg -- Linux on lavapipe
+      # (Mesa's software Vulkan), macOS on the runner's device through
+      # MoltenVK. Legs are listed explicitly: a matrix `include` that matches
+      # an existing os/build_type pair would extend that leg rather than add
+      # one.
       #
       # TODO: add the GPU legs recon runs -- Ubuntu containers on the
       # self-hosted `vk-linux-gpu` box and the self-hosted `mac` -- once those

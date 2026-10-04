@@ -87,8 +87,7 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   }
   /// @brief Whether the GPU and the host share one memory.
   ///
-  /// True when every heap is device-local (Apple silicon, Intel and mobile
-  /// integrated GPUs, lavapipe); false for a discrete GPU, which has host
+  /// True when every heap is device-local; false for a discrete GPU with host
   /// memory beside its VRAM, and for an APU whose driver reports a VRAM
   /// carve-out beside host memory, whose device-local memory is the
   /// carve-out. On unified memory a `MemoryUsage::DeviceMapped` input costs a
@@ -101,9 +100,9 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   /// @brief Whether the device has device-local memory the host maps
   ///        coherently, which `MemoryUsage::DeviceMapped` takes.
   ///
-  /// True on unified memory and on a discrete GPU that exposes its BAR
-  /// window coherently (NVIDIA, AMD); false where it does not (MoltenVK on an
-  /// Intel Mac's AMD GPU), where an allocator refuses `DeviceMapped` with
+  /// True when a device-local memory type is host-visible and host-coherent,
+  /// including a coherently mapped BAR window. Otherwise an allocator refuses
+  /// `DeviceMapped` with
   /// `Unsupported`. Without it, data the host writes for shaders goes up by
   /// staging -- a `CommandBatch` upload into `DeviceOnly` memory.
   /// @return Whether `DeviceMapped` memory exists.

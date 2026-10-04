@@ -7,6 +7,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Fixed
+
+- At a heap's budget, buffer and image allocations still take free space in
+  the allocator's existing VMA blocks, so a falling budget no longer rejects
+  a suballocation that needs no additional device memory. With budget room,
+  VMA allocates as before -- honoring the driver's preference for dedicated
+  memory and growing the first candidate type before another. Resources that
+  require dedicated memory are never suballocated. A budget refusal's message
+  now says so instead of naming a VMA call.
+- `CommandBatch` makes completed writes visible to graphics shader uniform
+  and storage-buffer accesses, as well as vertex/index input. Barrier scopes
+  follow the queue's capabilities, and compute dispatches on a queue without
+  compute support are refused.
+- Replacing the log handler from inside a callback no longer deadlocks when
+  another thread finishes a callback on the old handler. Nested callbacks keep
+  the same guarantee.
+- `Allocator::memory_stats()` documents `usage_bytes` as what it always
+  was, the heap's usage paired with `budget_bytes` -- process-wide where
+  `VK_EXT_memory_budget` is enabled, not this allocator's share -- and reports
+  that share in new fields (below).
+- `create_exported_buffer` refuses (`InvalidArgument`) an allocator made for
+  another device, before creating anything, instead of binding that device's
+  memory to its buffer.
+- `find_memory_type` places device-local memory asked for without
+  `HOST_VISIBLE` as `MemoryUsage::DeviceOnly` does: a resource limited to a
+  discrete GPU's BAR window now gets no type rather than the window. Ask for
+  `DEVICE_LOCAL | HOST_VISIBLE` to accept it.
+- Hardware examples and synthetic memory fixtures describe capabilities and
+  layouts without specific device models or vendor examples.
+- Both Linux and macOS Vulkan CI jobs require a device and a loaded validation
+  layer, with synchronization checks enabled -- and a test that fails unless
+  they report a deliberate hazard (`VKC_TEST_SYNC_VALIDATION`) -- and
+  shader-access checks requested where the layer supports them.
+
 ### Added
 
 - `vulkan` tier foundation (`volumetric_kit::core_vulkan`, built with
@@ -45,8 +79,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     budget, the driver's where `VK_EXT_memory_budget` is enabled -- fails
     rather than spill: `DeviceOnly` -- the default, and the only one for
     images -- device memory the host cannot map (VRAM, never the BAR window;
-    Apple's private storage); `DeviceMapped`, device-local memory the host
-    writes (the BAR window; unified memory's pool); `Staging`, host memory
+    private storage on unified memory); `DeviceMapped`, device-local memory
+    the host writes (the BAR window; unified memory's pool); `Staging`, host memory
     with copy usage only, so no shader reads host memory. The placement
     decides whether a buffer is mapped; `HostAccess` (`SequentialWrite` by
     default) narrows a mapped one's type. Resources may outlive the
@@ -112,7 +146,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     exported as an opaque file descriptor for CUDA to import (as dedicated,
     `cudaExternalMemoryDedicated`). `UniqueFd` owns the descriptor until an
     import takes it. `find_memory_type`, for a resource bound outside the
-    allocator, never chooses a protected, lazily allocated or AMD
+    allocator, never chooses a protected, lazily allocated or feature-gated
     device-coherent or device-uncached type.
   - `CommandBatch::release`, the releasing half of a queue-family ownership
     transfer, recorded after every command of the batch: an exported buffer
@@ -170,6 +204,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   22.1.8) run through the build with `-DVKC_CLANG_TIDY=ON`, locally and in CI.
 
 ### Changed
+
+- `HeapStats` gains this allocator's own share beside the heap's figures:
+  `reserved_bytes`, its blocks and dedicated memory with their free space,
+  and `allocation_bytes`, its live allocations. `usage_bytes` and
+  `budget_bytes` keep their values and meaning -- the heap's usage and
+  budget, as recon's and gfx's `HeapStats` had them -- so headroom computed
+  as `budget_bytes - usage_bytes` needs no change. Code that read
+  `usage_bytes` as this allocator's own memory, or summed it across
+  allocators, switches to `reserved_bytes`. Rebuild consumers after bumping
+  their pin: `HeapStats` changes size.
 
 For a consumer pinned at a commit of V2's or V3's first API, which this
 section's entries replace (DECISIONS.md, "Where memory lives"):

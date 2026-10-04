@@ -31,7 +31,8 @@ struct Slot {
 // could lock an already-destroyed mutex (static destruction-order UB).
 struct LogState {
   std::mutex mutex;
-  // Notified when the last in-flight call to a replaced Slot returns.
+  // Notified whenever a call to a replaced Slot returns: a setter inside
+  // that handler waits for the other threads, not for its own calls.
   std::condition_variable replaced_idle;
   std::shared_ptr<Slot> slot;  // null => fall back to the default stderr sink
 };
@@ -69,7 +70,8 @@ class InFlightCall {
   ~InFlightCall() {
     t_innermost_call = frame_.outer;
     const std::scoped_lock lock(state_.mutex);
-    if (--slot_.calls == 0 && state_.slot.get() != &slot_) {
+    --slot_.calls;
+    if (state_.slot.get() != &slot_) {
       state_.replaced_idle.notify_all();
     }
   }

@@ -105,7 +105,8 @@ class VKC_VULKAN_API Instance {
   bool debug_utils_enabled() const noexcept { return debug_utils_enabled_; }
 
   /// @brief Pick the best physical device that meets @p reqs: a discrete GPU
-  ///        over an integrated one, over a virtual one, over a CPU (lavapipe).
+  ///        over an integrated one, over a virtual one, over a CPU
+  ///        implementation.
   /// @param reqs     The requirements, checked with @ref check_device_support
   ///                 against each device's capabilities on this instance.
   /// @param surface  The surface to present to; required when

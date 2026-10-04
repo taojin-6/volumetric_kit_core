@@ -38,8 +38,11 @@ struct ComputeKernel;
 /// before it: a barrier precedes any command that could see an earlier one's
 /// writes -- always around a dispatch, and between two transfers when they
 /// share a buffer one of them writes -- and the last makes everything visible
-/// to the host and to a renderer drawing the result, as far as the queue
-/// family allows. Fills, uploads and copies into one buffer at rising,
+/// to the host and to later commands on the same queue. On a graphics queue
+/// this includes shader uniforms and storage buffers, as well as vertex,
+/// index and indirect reads. A reader on another queue needs its own memory
+/// dependency, such as a semaphore wait, even within the same queue family.
+/// Fills, uploads and copies into one buffer at rising,
 /// disjoint offsets touch no byte twice, so a run of them needs none, once no
 /// command in the run writes a copy's source. Each dispatch sits in a
 /// debug-utils region named for its kernel.
@@ -295,8 +298,9 @@ class VKC_VULKAN_API CommandBatch {
   ///                    the span; the scope need not.
   /// @return OK; @ref Status::Code::InvalidArgument for @p groups past
   ///         @p max_groups, a null @p push with a size, a push size the
-  ///         kernel does not take, or an unbuilt kernel; or a poisoned
-  ///         batch's first refusal.
+  ///         kernel does not take, or an unbuilt kernel;
+  ///         @ref Status::Code::Unsupported when the queue cannot compute;
+  ///         or a poisoned batch's first refusal.
   Status dispatch(const ComputeKernel& kernel, const void* push,
                   std::uint32_t push_size, std::uint32_t groups,
                   std::uint32_t max_groups, GpuStageScope* stage = nullptr);
@@ -339,7 +343,8 @@ class VKC_VULKAN_API CommandBatch {
   /// @param stage      As @ref dispatch.
   /// @return OK; @ref Status::Code::InvalidArgument for a misaligned or
   ///         out-of-range command, a missing usage bit, or a push or kernel
-  ///         @ref dispatch refuses; or a poisoned batch's first refusal.
+  ///         @ref dispatch refuses; @ref Status::Code::Unsupported when the
+  ///         queue cannot compute; or a poisoned batch's first refusal.
   Status dispatch_indirect(const ComputeKernel& kernel, const void* push,
                            std::uint32_t push_size, const Buffer& args,
                            VkDeviceSize offset, GpuStageScope* stage = nullptr);

@@ -94,8 +94,8 @@ struct GpuSpanTag {
 /// frames ahead keeps its own ring (gfx's profiler) on a @ref QueryPool.
 ///
 /// **Unavailable is not an error.** A queue family may have no timestamps
-/// (`timestampValidBits` 0: MoltenVK on some configurations, a compute-only
-/// family on some discrete GPUs), and a pool may fail to allocate. @ref create
+/// (`timestampValidBits` 0, as some implementations and some compute-only
+/// families report), and a pool may fail to allocate. @ref create
 /// still succeeds and @ref available is false: @ref begin returns
 /// @ref kNoSpan, and nothing publishes a device row, so a caller writes the
 /// same code either way. A diagnostic must not be able to fail the work it
@@ -137,10 +137,11 @@ class VKC_VULKAN_API GpuTimer {
   static constexpr std::uint32_t kNoSpan = 0xFFFFFFFFU;
 
   /// The ceiling on @ref create's `max_spans`: 4096 queries, two a span.
-  /// MoltenVK backs a timestamp pool with a Metal counter sample buffer of at
-  /// most 32 KiB -- 4096 timestamps -- and silently emulates timing for a
-  /// larger one. Far above a window's real need (recon records a span a
-  /// dispatch), and it also keeps the doubled count from wrapping.
+  /// An implementation layered on Metal backs a timestamp pool with a counter
+  /// sample buffer of at most 32 KiB -- 4096 timestamps -- and silently
+  /// emulates timing for a larger one. Far above a window's real need (recon
+  /// records a span a dispatch), and it also keeps the doubled count from
+  /// wrapping.
   static constexpr std::uint32_t kMaxSpans = 2048U;
 
   /// @brief Construct an empty timer; @ref valid is false.

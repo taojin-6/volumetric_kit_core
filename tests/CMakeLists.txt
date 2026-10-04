@@ -33,6 +33,7 @@ if(VKC_WITH_VULKAN)
     vulkan_memory_types
     vulkan_device
     vulkan_allocator
+    vulkan_allocation_budget
     vulkan_resources
     vulkan_compute
     vulkan_command_batch
@@ -53,19 +54,49 @@ if(VKC_WITH_VULKAN)
   # are internal to core_vulkan, so their tests -- and the device tests that
   # check a resource landed in its placement's types -- reach into the source
   # directory for them.
-  foreach(_vkc_test vulkan_queue_families vulkan_memory_types vulkan_allocator
-                    vulkan_compute vulkan_shared_device)
+  foreach(
+    _vkc_test
+    vulkan_queue_families
+    vulkan_memory_types
+    vulkan_allocator
+    vulkan_allocation_budget
+    vulkan_compute
+    vulkan_shared_device
+    vulkan_command_batch)
     target_include_directories(
       vkc_${_vkc_test}_test
       PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")
   endforeach()
 
+  # Exercise budget admission against real VMA suballocations with controlled
+  # budget figures, through a VMA allocator of the test's own; no public
+  # allocator internals or production budget overrides are exposed to tests. One
+  # VMA implementation per link: a static core's comes from its archive, and
+  # only a shared core, which hides its own, leaves the test to instantiate one.
+  target_include_directories(
+    vkc_vulkan_allocation_budget_test SYSTEM
+    PRIVATE
+      "$<TARGET_PROPERTY:GPUOpen::VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>"
+  )
+  get_target_property(_vkc_vulkan_type core_vulkan TYPE)
+  if(_vkc_vulkan_type STREQUAL "SHARED_LIBRARY")
+    target_compile_definitions(vkc_vulkan_allocation_budget_test
+                               PRIVATE VKC_TEST_PRIVATE_VMA)
+  endif()
+
   # The compute tests' kernels, compiled and embedded once as a consumer would
   # (cmake/vkc_shaders.cmake), into an INTERFACE library both tests link, so a
   # build with tests needs glslc.
   add_library(vkc_test_shaders INTERFACE)
-  vkc_embed_shaders(vkc_test_shaders SYMBOL_PREFIX vkc_test_ SHADERS
-                    shaders/add.comp shaders/fill.comp)
+  vkc_embed_shaders(
+    vkc_test_shaders
+    SYMBOL_PREFIX
+    vkc_test_
+    SHADERS
+    shaders/add.comp
+    shaders/fill.comp
+    shaders/batch_visibility.vert
+    shaders/batch_visibility.frag)
   foreach(_vkc_test vulkan_compute vulkan_command_batch vulkan_timer)
     target_link_libraries(vkc_${_vkc_test}_test PRIVATE vkc_test_shaders)
   endforeach()

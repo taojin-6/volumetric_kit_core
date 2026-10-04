@@ -63,6 +63,8 @@ skipped test as passed, so check them as CI does:
 
 ```sh
 VKC_REQUIRE_VULKAN_DEVICE=1 VKC_TEST_VALIDATION=1 \
+  VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
+  VK_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC=1 VKC_TEST_SYNC_VALIDATION=1 \
   ctest --test-dir "$core_root/build" --output-on-failure
 ```
 
@@ -73,6 +75,15 @@ with Homebrew's `vulkan-validationlayers`, the loader finds the layer's
 manifest but not its library; add `DYLD_LIBRARY_PATH=/opt/homebrew/lib`, or
 every device test fails with "VKC_TEST_VALIDATION is set, but validation is
 off".
+
+CI enables synchronization validation and, on layers exposing the setting,
+shader-access checks as above. The latter detects uniform and storage-buffer
+visibility hazards that ordinary API validation cannot find.
+`VKC_TEST_SYNC_VALIDATION=1` makes a test commit a deliberate hazard and fail
+unless the layer reports it, so a run cannot pass with synchronization
+validation silently off. Capability skips, such as unsupported
+external-memory handles, remain distinct from tests that executed
+successfully.
 
 ## Changing a public API
 

@@ -29,7 +29,7 @@ struct QueueCarving {
 // `graphics_flags` bit and presents (`presents[i]`, every entry true without
 // a surface), the compute library's has every `compute_flags` bit, and a
 // family with no queues is never taken. Every plan is searched in turn, best
-// first: a device whose families hold a queue each (MoltenVK) has no first
+// first: a device whose families hold a queue each has no first
 // plan, and stopping at the first family that does both would take the last
 // plan and lose independent submission. Empty when no family can serve the
 // renderer beside one that serves the compute library.

@@ -4,8 +4,8 @@
 // find_memory_type, UniqueFd and create_exported_buffer, ported from recon's
 // core_external_memory_test, plus a round trip recon could not make without
 // CUDA: the exported descriptor imported back into Vulkan, reading the bytes
-// written through the export. Export needs VK_KHR_external_memory_fd, which
-// MoltenVK lacks; there the refusal is what is checked.
+// written through the export. Export needs VK_KHR_external_memory_fd; where
+// the device lacks it, the refusal is what is checked.
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
@@ -79,9 +79,9 @@ TEST_F(MemoryTypeTest, FindsThePlainestTypeThatFits) {
   for (std::uint32_t i = 0; i < *local; ++i) {
     EXPECT_TRUE((flags(i) & kLocal) == 0 || !general(i)) << "type " << i;
   }
-  // The spec's order is what keeps a device-local resource out of the BAR,
-  // wherever a general type the host cannot map exists: a mobile GPU's only
-  // one may be lazily allocated, which is never chosen.
+  // A device-local resource stays out of the BAR wherever a general type the
+  // host cannot map exists; a device whose only such type is lazily
+  // allocated, which is never chosen, has none.
   bool unmapped_local = false;
   for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
     unmapped_local =
@@ -114,6 +114,17 @@ TEST_F(MemoryTypeTest, ADeviceWithoutExportRefusesIt) {
   EXPECT_EQ(
       create_exported_buffer(device(), allocator(), 256).status().domain(),
       Status::Code::Unsupported);
+}
+
+// An allocator of another device is refused before anything is made on
+// either: its memory could not be bound to this device's buffer.
+TEST_F(MemoryTypeTest, RefusesAnAllocatorOfAnotherDevice) {
+  Result<Device> other = Device::create(instance(), physical(), requirements());
+  ASSERT_TRUE(other.ok()) << other.status().message();
+  Result<Allocator> foreign = Allocator::create(instance().handle(), *other);
+  ASSERT_TRUE(foreign.ok()) << foreign.status().message();
+  EXPECT_EQ(create_exported_buffer(device(), *foreign, 256).status().domain(),
+            Status::Code::InvalidArgument);
 }
 
 // Whether `fd` names an open descriptor: only an open one duplicates.
@@ -216,10 +227,13 @@ TEST_F(ExportTest, ExportsADeviceOnlyStorageBuffer) {
       !physical().unified_memory()) {
     EXPECT_EQ(memory->properties & kMapped, 0U);
   }
-  // Allocated through the allocator, so its heap's usage counts it, and the
-  // allocator's next allocation is budgeted with it.
+  // Allocated through the allocator, so it holds the memory, its heap's
+  // usage counts it, and the allocator's next allocation is budgeted with it.
   const MemoryStats after = allocator().memory_stats();
   ASSERT_LT(memory->heap_index, after.heap_count);
+  EXPECT_EQ(
+      after.heaps[memory->heap_index].reserved_bytes,
+      before.heaps[memory->heap_index].reserved_bytes + exported.memory_size);
   EXPECT_GE(
       after.heaps[memory->heap_index].usage_bytes,
       before.heaps[memory->heap_index].usage_bytes + exported.memory_size);
