@@ -40,6 +40,20 @@
 
 namespace volumetric_kit::core {
 
+namespace {
+
+// What place() needs of an allocator: its Impl, which free functions cannot
+// name, and the allocator itself for its memory_stats().
+struct AllocatorView {
+  const Allocator& owner;
+  VkDevice device = VK_NULL_HANDLE;
+  VmaAllocator vma = nullptr;
+  const VkPhysicalDeviceMemoryProperties& memory;
+  bool dedicated_queries = false;
+};
+
+}  // namespace
+
 // The handles allocator.hpp keeps out. Freed in ~Impl, not ~Allocator, so the
 // Allocator's moves default correctly; shared, because every buffer and image
 // holds a reference and frees through it. The cost is one atomic per resource
@@ -54,6 +68,10 @@ struct Allocator::Impl {
   VkPhysicalDeviceMemoryProperties memory{};
   bool dedicated_queries = false;
 
+  AllocatorView view(const Allocator& owner) const {
+    return AllocatorView{owner, device, allocator, memory, dedicated_queries};
+  }
+
   Impl() = default;
   Impl(const Impl&) = delete;
   Impl& operator=(const Impl&) = delete;
@@ -64,20 +82,34 @@ struct Allocator::Impl {
 
 namespace {
 
-// Core 1.1 exposes mandatory dedicated-allocation requirements. The legacy
-// query remains valid for an adopted 1.0 device, on which VMA enables neither
-// dedicated-allocation extension. A required dedicated allocation must skip
-// the attempt to reuse a block, which VMA would reject as contradictory.
+// A resource to give memory: a buffer or an image (the other null) and, for
+// an exported buffer, the dedicated-allocation chain its memory is made with.
+// Not overloads on the two handle types, which are one integer type on a
+// 32-bit target.
+struct Resource {
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VkImage image = VK_NULL_HANDLE;
+  VkMemoryDedicatedAllocateInfo* exported = nullptr;  // VMA takes it non-const
+};
+
+// A resource's memory requirements, and whether the driver requires memory
+// dedicated to it -- core 1.1's query. The legacy query remains for an
+// adopted 1.0 device, on which VMA enables neither dedicated-allocation
+// extension.
 struct ResourceRequirements {
   VkMemoryRequirements memory{};
   bool dedicated = false;
 };
 
-ResourceRequirements buffer_requirements(VkDevice device, VkBuffer buffer,
-                                         bool dedicated_queries) {
+ResourceRequirements requirements_of(VkDevice device, const Resource& resource,
+                                     bool dedicated_queries) {
   ResourceRequirements result;
   if (!dedicated_queries) {
-    vkGetBufferMemoryRequirements(device, buffer, &result.memory);
+    if (resource.buffer != VK_NULL_HANDLE) {
+      vkGetBufferMemoryRequirements(device, resource.buffer, &result.memory);
+    } else {
+      vkGetImageMemoryRequirements(device, resource.image, &result.memory);
+    }
     return result;
   }
   VkMemoryDedicatedRequirements dedicated{};
@@ -85,31 +117,17 @@ ResourceRequirements buffer_requirements(VkDevice device, VkBuffer buffer,
   VkMemoryRequirements2 requirements{};
   requirements.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
   requirements.pNext = &dedicated;
-  VkBufferMemoryRequirementsInfo2 info{};
-  info.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2;
-  info.buffer = buffer;
-  vkGetBufferMemoryRequirements2(device, &info, &requirements);
-  result.memory = requirements.memoryRequirements;
-  result.dedicated = dedicated.requiresDedicatedAllocation == VK_TRUE;
-  return result;
-}
-
-ResourceRequirements image_requirements(VkDevice device, VkImage image,
-                                        bool dedicated_queries) {
-  ResourceRequirements result;
-  if (!dedicated_queries) {
-    vkGetImageMemoryRequirements(device, image, &result.memory);
-    return result;
+  if (resource.buffer != VK_NULL_HANDLE) {
+    VkBufferMemoryRequirementsInfo2 info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2;
+    info.buffer = resource.buffer;
+    vkGetBufferMemoryRequirements2(device, &info, &requirements);
+  } else {
+    VkImageMemoryRequirementsInfo2 info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
+    info.image = resource.image;
+    vkGetImageMemoryRequirements2(device, &info, &requirements);
   }
-  VkMemoryDedicatedRequirements dedicated{};
-  dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
-  VkMemoryRequirements2 requirements{};
-  requirements.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-  requirements.pNext = &dedicated;
-  VkImageMemoryRequirementsInfo2 info{};
-  info.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
-  info.image = image;
-  vkGetImageMemoryRequirements2(device, &info, &requirements);
   result.memory = requirements.memoryRequirements;
   result.dedicated = dedicated.requiresDedicatedAllocation == VK_TRUE;
   return result;
@@ -184,6 +202,94 @@ MemoryInfo memory_info_of(VmaAllocator allocator, std::uint32_t type_index) {
   vmaGetMemoryProperties(allocator, &props);
   const VkMemoryType& type = props->memoryTypes[type_index];
   return MemoryInfo{type.propertyFlags, type_index, type.heapIndex};
+}
+
+// A resource's memory: its allocation, and where it landed.
+struct Placed {
+  VmaAllocation allocation = nullptr;
+  VmaAllocationInfo info{};
+};
+
+// Gives `resource` memory of placement `usage`: cut to the types its
+// requirements allow (memory_types.hpp), allocated within budget
+// (allocation_budget.hpp), bound, and mapped unless it is DeviceOnly. On any
+// failure the resource is destroyed with whatever memory it got, and the
+// error names the step that failed; `caller` prefixes refusals of its own.
+Result<Placed> place(const AllocatorView& allocator, const Resource& resource,
+                     MemoryUsage usage, HostAccess access, const char* caller) {
+  const bool is_buffer = resource.buffer != VK_NULL_HANDLE;
+  // vmaDestroy* also destroys a resource with no allocation.
+  const auto destroy = [&](VmaAllocation allocation) {
+    if (is_buffer) {
+      vmaDestroyBuffer(allocator.vma, resource.buffer, allocation);
+    } else {
+      vmaDestroyImage(allocator.vma, resource.image, allocation);
+    }
+  };
+  const ResourceRequirements requirements =
+      requirements_of(allocator.device, resource, allocator.dedicated_queries);
+  const std::uint32_t types = detail::placement_types(
+      allocator.memory, usage, access, requirements.memory.memoryTypeBits);
+  if (types == 0) {
+    destroy(nullptr);
+    return unsuited(caller, usage);
+  }
+  // A device-mapped or staging buffer is mapped persistently, and its types
+  // are coherent, so mapped() is a plain pointer: writes need no flush.
+  const bool mapped = usage != MemoryUsage::DeviceOnly;
+  const char* vma_call = "vmaAllocateDedicatedMemory";
+  if (resource.exported == nullptr) {
+    vma_call =
+        is_buffer ? "vmaAllocateMemoryForBuffer" : "vmaAllocateMemoryForImage";
+  }
+  Placed placed;
+  const detail::BudgetedAllocation made = detail::allocate_with_budget(
+      allocator.memory, requirements.memory, types, mapped,
+      requirements.dedicated || resource.exported != nullptr,
+      [&](const VmaAllocationCreateInfo& info) {
+        // An exported buffer's memory is dedicated, as an importer of an
+        // opaque descriptor maps the whole allocation as one resource. VMA
+        // names the buffer only for one it creates itself, so the chain does.
+        if (resource.exported != nullptr) {
+          return vmaAllocateDedicatedMemory(allocator.vma, &requirements.memory,
+                                            &info, resource.exported,
+                                            &placed.allocation, &placed.info);
+        }
+        if (is_buffer) {
+          return vmaAllocateMemoryForBuffer(allocator.vma, resource.buffer,
+                                            &info, &placed.allocation,
+                                            &placed.info);
+        }
+        return vmaAllocateMemoryForImage(allocator.vma, resource.image, &info,
+                                         &placed.allocation, &placed.info);
+      },
+      [&] { return allocator.owner.memory_stats(); });
+  if (made.result != VK_SUCCESS) {
+    destroy(nullptr);
+    if (made.over_budget) {
+      return vk_error(made.result, std::string(caller) +
+                                       ": past every candidate heap's budget");
+    }
+    return vk_error(made.result, vma_call);
+  }
+  const VkResult bound =
+      is_buffer ? vmaBindBufferMemory(allocator.vma, placed.allocation,
+                                      resource.buffer)
+                : vmaBindImageMemory(allocator.vma, placed.allocation,
+                                     resource.image);
+  if (bound != VK_SUCCESS) {
+    destroy(placed.allocation);
+    return vk_error(bound,
+                    is_buffer ? "vmaBindBufferMemory" : "vmaBindImageMemory");
+  }
+  if (mapped && placed.info.pMappedData == nullptr) {
+    destroy(placed.allocation);
+    return vk_error(VK_ERROR_MEMORY_MAP_FAILED,
+                    std::string(caller) +
+                        ": mapping requested, and VMA returned no mapped "
+                        "pointer");
+  }
+  return placed;
 }
 
 VkImageViewType view_type_for(VkImageType type, std::uint32_t layers,
@@ -420,50 +526,19 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
   // requirements allow, rather than found wanting by an allocation.
   VkBuffer buffer = VK_NULL_HANDLE;
   VKC_VK_TRY(vkCreateBuffer(impl_->device, &buffer_info, nullptr, &buffer));
-  const ResourceRequirements requirements =
-      buffer_requirements(impl_->device, buffer, impl_->dedicated_queries);
-  const VkMemoryRequirements& needs = requirements.memory;
-  const std::uint32_t types = detail::placement_types(
-      impl_->memory, desc.memory, desc.host_access, needs.memoryTypeBits);
-  if (types == 0) {
-    vkDestroyBuffer(impl_->device, buffer, nullptr);
-    return unsuited("create_buffer", desc.memory);
-  }
-  // A device-mapped or staging buffer is mapped persistently, and its types
-  // are coherent, so mapped() is a plain pointer: writes need no flush.
-  const bool mapped = desc.memory != MemoryUsage::DeviceOnly;
-  VmaAllocation allocation = nullptr;
-  VmaAllocationInfo out{};
-  const char* step = "vmaAllocateMemoryForBuffer";
-  VkResult made = detail::allocate_with_budget(
-      impl_->memory, needs, types, mapped, requirements.dedicated,
-      [&](const VmaAllocationCreateInfo& info) {
-        return vmaAllocateMemoryForBuffer(impl_->allocator, buffer, &info,
-                                          &allocation, &out);
-      },
-      [&] { return memory_stats(); });
-  if (made == VK_SUCCESS) {
-    step = "vmaBindBufferMemory";
-    made = vmaBindBufferMemory(impl_->allocator, allocation, buffer);
-  }
-  if (made != VK_SUCCESS) {
-    vmaDestroyBuffer(impl_->allocator, buffer, allocation);
-    return vk_error(made, step);
-  }
-  if (mapped && out.pMappedData == nullptr) {
-    vmaDestroyBuffer(impl_->allocator, buffer, allocation);
-    return vk_error(VK_ERROR_MEMORY_MAP_FAILED,
-                    "create_buffer: mapping requested, and VMA returned no "
-                    "mapped pointer");
-  }
+  Resource resource;
+  resource.buffer = buffer;
+  VKC_ASSIGN(const Placed placed,
+             place(impl_->view(*this), resource, desc.memory, desc.host_access,
+                   "create_buffer"));
   // The deleter holds the Impl, which keeps the VmaAllocator alive for as
   // long as this buffer can free through it.
   return Buffer(
-      buffer, desc.size, desc.usage, sharing.mode, out.pMappedData,
-      [impl = impl_, buffer, allocation] {
+      buffer, desc.size, desc.usage, sharing.mode, placed.info.pMappedData,
+      [impl = impl_, buffer, allocation = placed.allocation] {
         vmaDestroyBuffer(impl->allocator, buffer, allocation);
       },
-      memory_info_of(impl_->allocator, out.memoryType));
+      memory_info_of(impl_->allocator, placed.info.memoryType));
 }
 
 Result<Image> Allocator::create_image(const ImageDesc& desc) {
@@ -498,35 +573,13 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
 
   VkImage image = VK_NULL_HANDLE;
   VKC_VK_TRY(vkCreateImage(impl_->device, &image_info, nullptr, &image));
-  const ResourceRequirements requirements =
-      image_requirements(impl_->device, image, impl_->dedicated_queries);
-  const VkMemoryRequirements& needs = requirements.memory;
+  Resource resource;
+  resource.image = image;
   // The host access is ignored for device-only memory.
-  const std::uint32_t types = detail::placement_types(
-      impl_->memory, MemoryUsage::DeviceOnly, HostAccess::SequentialWrite,
-      needs.memoryTypeBits);
-  if (types == 0) {
-    vkDestroyImage(impl_->device, image, nullptr);
-    return unsuited("create_image", MemoryUsage::DeviceOnly);
-  }
-  VmaAllocation allocation = nullptr;
-  VmaAllocationInfo out{};
-  const char* step = "vmaAllocateMemoryForImage";
-  VkResult made = detail::allocate_with_budget(
-      impl_->memory, needs, types, /*mapped=*/false, requirements.dedicated,
-      [&](const VmaAllocationCreateInfo& info) {
-        return vmaAllocateMemoryForImage(impl_->allocator, image, &info,
-                                         &allocation, &out);
-      },
-      [&] { return memory_stats(); });
-  if (made == VK_SUCCESS) {
-    step = "vmaBindImageMemory";
-    made = vmaBindImageMemory(impl_->allocator, allocation, image);
-  }
-  if (made != VK_SUCCESS) {
-    vmaDestroyImage(impl_->allocator, image, allocation);
-    return vk_error(made, step);
-  }
+  VKC_ASSIGN(const Placed placed,
+             place(impl_->view(*this), resource, MemoryUsage::DeviceOnly,
+                   HostAccess::SequentialWrite, "create_image"));
+  VmaAllocation allocation = placed.allocation;
 
   VkImageView view = VK_NULL_HANDLE;
   if (desc.with_view) {
@@ -560,7 +613,7 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
   info.usage = desc.usage;
   info.layout = VK_IMAGE_LAYOUT_UNDEFINED;
   info.sharing = sharing.mode;
-  info.memory = memory_info_of(impl_->allocator, out.memoryType);
+  info.memory = memory_info_of(impl_->allocator, placed.info.memoryType);
   // The view goes first: it references the image.
   return Image(info, [impl = impl_, view, image, allocation] {
     if (view != VK_NULL_HANDLE) {
@@ -575,50 +628,25 @@ Result<Buffer> Allocator::bind_exported(VkBuffer buffer, VkDeviceSize size,
                                         void* export_info,
                                         VkDeviceMemory* memory,
                                         VkDeviceSize* memory_size) {
-  VkMemoryRequirements needs{};
-  vkGetBufferMemoryRequirements(impl_->device, buffer, &needs);
-  // The host access is ignored for device-only memory.
-  const std::uint32_t types = detail::placement_types(
-      impl_->memory, MemoryUsage::DeviceOnly, HostAccess::SequentialWrite,
-      needs.memoryTypeBits);
-  if (types == 0) {
-    vkDestroyBuffer(impl_->device, buffer, nullptr);
-    return unsuited("create_exported_buffer", MemoryUsage::DeviceOnly);
-  }
-  // Dedicated, as an importer of an opaque descriptor maps the whole
-  // allocation as one resource. VMA names the buffer only for one it creates
-  // itself, so the chain does.
   VkMemoryDedicatedAllocateInfo dedicated{};
   dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
   dedicated.pNext = export_info;
   dedicated.buffer = buffer;
-  VmaAllocation allocation = nullptr;
-  VmaAllocationInfo out{};
-  const char* step = "vmaAllocateDedicatedMemory";
-  VkResult made = detail::allocate_with_budget(
-      impl_->memory, needs, types, /*mapped=*/false,
-      /*dedicated_required=*/true,
-      [&](const VmaAllocationCreateInfo& info) {
-        return vmaAllocateDedicatedMemory(impl_->allocator, &needs, &info,
-                                          &dedicated, &allocation, &out);
-      },
-      [&] { return memory_stats(); });
-  if (made == VK_SUCCESS) {
-    step = "vmaBindBufferMemory";
-    made = vmaBindBufferMemory(impl_->allocator, allocation, buffer);
-  }
-  if (made != VK_SUCCESS) {
-    vmaDestroyBuffer(impl_->allocator, buffer, allocation);
-    return vk_error(made, step);
-  }
-  *memory = out.deviceMemory;
-  *memory_size = out.size;
+  Resource resource;
+  resource.buffer = buffer;
+  resource.exported = &dedicated;
+  // The host access is ignored for device-only memory.
+  VKC_ASSIGN(const Placed placed,
+             place(impl_->view(*this), resource, MemoryUsage::DeviceOnly,
+                   HostAccess::SequentialWrite, "create_exported_buffer"));
+  *memory = placed.info.deviceMemory;
+  *memory_size = placed.info.size;
   return Buffer(
       buffer, size, usage, VK_SHARING_MODE_EXCLUSIVE, nullptr,
-      [impl = impl_, buffer, allocation] {
+      [impl = impl_, buffer, allocation = placed.allocation] {
         vmaDestroyBuffer(impl->allocator, buffer, allocation);
       },
-      memory_info_of(impl_->allocator, out.memoryType));
+      memory_info_of(impl_->allocator, placed.info.memoryType));
 }
 
 MemoryStats Allocator::memory_stats() const {
@@ -629,15 +657,11 @@ MemoryStats Allocator::memory_stats() const {
   if (props == nullptr) return stats;
   VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
   vmaGetHeapBudgets(impl_->allocator, budgets);
-  stats.heap_count = props->memoryHeapCount;
-  for (std::uint32_t heap = 0; heap < stats.heap_count; ++heap) {
-    stats.heaps[heap].usage_bytes = budgets[heap].statistics.blockBytes;
-    stats.heaps[heap].allocation_bytes =
-        budgets[heap].statistics.allocationBytes;
-    stats.heaps[heap].heap_usage_bytes = budgets[heap].usage;
-    stats.heaps[heap].budget_bytes = budgets[heap].budget;
-  }
-  return stats;
+  return detail::memory_stats_of(budgets, props->memoryHeapCount);
+}
+
+VkDevice Allocator::device_handle() const noexcept {
+  return impl_ != nullptr ? impl_->device : VK_NULL_HANDLE;
 }
 
 }  // namespace volumetric_kit::core

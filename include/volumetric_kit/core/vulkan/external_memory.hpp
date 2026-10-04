@@ -105,12 +105,15 @@ struct ExportedBuffer {
 /// Protected, lazily allocated, and feature-gated device-coherent and
 /// device-uncached types are never chosen: the features they need are not
 /// enabled. Of the rest, Vulkan orders a type ahead of any whose flags strictly
-/// contain its own, so the first match is the plainest: asked for device-local
-/// alone, it is one the host cannot map wherever @p type_bits allows such a
-/// type outside those, keeping the resource out of a discrete GPU's BAR window.
-/// Where the only unmapped device-local type is one of those -- a mobile
-/// GPU's lazily allocated memory -- it is a host-visible one; exclude
-/// `HOST_VISIBLE` to refuse that instead.
+/// contain its own, so the first match is the plainest.
+///
+/// Device-local memory asked for without `HOST_VISIBLE` is placed as
+/// @ref MemoryUsage::DeviceOnly is: a type the host cannot map where the
+/// device has one. On a discrete GPU, a resource that @p type_bits limits to
+/// host-visible device-local types -- the BAR window -- gets none. On
+/// unified memory with no such type, or none the resource allows, it is a
+/// host-visible one of the one pool; exclude `HOST_VISIBLE` to refuse that
+/// instead.
 ///
 /// @code
 /// VkMemoryRequirements needs{};
@@ -122,7 +125,9 @@ struct ExportedBuffer {
 /// @param type_bits  `VkMemoryRequirements::memoryTypeBits` of the resource.
 /// @param required   Flags the type must have; 0 for any.
 /// @param excluded   Flags the type must not have; 0 for none.
-/// @return The type's index, or empty when no allowed type fits.
+/// @return The type's index, or empty when no allowed type fits -- or, for
+///         device-local memory without `HOST_VISIBLE`, when only a discrete
+///         GPU's BAR window would.
 VKC_VULKAN_API std::optional<std::uint32_t> find_memory_type(
     const Device& device, std::uint32_t type_bits,
     VkMemoryPropertyFlags required, VkMemoryPropertyFlags excluded = 0);
@@ -167,8 +172,9 @@ VKC_VULKAN_API std::optional<std::uint32_t> find_memory_type(
 /// @return The buffer and its descriptor; @ref Status::Code::Unsupported
 ///         where @p device does not export memory or cannot export such a
 ///         buffer, or no device-only memory type suits the buffer;
-///         @ref Status::Code::InvalidArgument for 0 bytes or a moved-from
-///         @p allocator; or a backend @ref Status
+///         @ref Status::Code::InvalidArgument for 0 bytes, or a moved-from
+///         @p allocator or one made for another device; or a backend
+///         @ref Status
 ///         (`VK_ERROR_OUT_OF_DEVICE_MEMORY` when the heap is full or past
 ///         its budget).
 VKC_VULKAN_API Result<ExportedBuffer> create_exported_buffer(

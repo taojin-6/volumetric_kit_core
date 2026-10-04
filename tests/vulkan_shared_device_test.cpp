@@ -3,8 +3,9 @@
 
 // SharedDevice: one device for a compute library and a renderer, each adopting
 // it. Windowless, so it runs where the other device tests do; the plan it
-// takes depends on the device (MoltenVK: TwoFamilies; a single-queue driver:
-// SharedQueue), and the validation layer checks the queues' locking.
+// takes depends on the device (several one-queue families: TwoFamilies; a
+// single queue: SharedQueue), and the validation layer checks the queues'
+// locking.
 
 #include "volumetric_kit/core/vulkan/shared_device.hpp"
 
@@ -113,7 +114,7 @@ TEST(QueuePlanChoice, TwoQueuesInOneFamilyComeFirst) {
 }
 
 TEST(QueuePlanChoice, OneQueueFamiliesGetTwoFamilies) {
-  // MoltenVK's: several families that do everything, a queue each.
+  // Several families that do everything, a queue each.
   const VkQueueFlags all = kGraphics | kCompute | kTransfer;
   const std::optional<detail::QueueCarving> carving = plan_for(
       {family(all, 1), family(all, 1), family(all, 1), family(all, 1)});

@@ -19,8 +19,9 @@ on:
       shared:
         type: boolean
         default: false
-      # Build the vulkan tier: Linux runs its device tests on lavapipe
-      # (required, never skipped), macOS on whatever device MoltenVK finds.
+      # Build the vulkan tier and run its device tests, required and
+      # validated on every leg: Linux on lavapipe, macOS on the runner's
+      # device through MoltenVK.
       vulkan:
         type: boolean
         default: true
@@ -35,6 +36,8 @@ jobs:
       # The enables spelling also works with the older layer on Ubuntu 24.04.
       VK_LAYER_ENABLES: VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
       VK_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC: '1'
+      # A test checks the variable above took effect (tests/vulkan_fixture.hpp).
+      VKC_TEST_SYNC_VALIDATION: '1'
     steps:
       - uses: actions/checkout@v7
 
@@ -65,7 +68,10 @@ jobs:
         run: |
           brew install vulkan-headers vulkan-loader molten-vk shaderc \
             spirv-tools vulkan-validationlayers vulkan-tools
-          echo "DYLD_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
+          # The layer's manifest names its library without a path; the Test
+          # step alone searches Homebrew's lib for it, as job-wide its
+          # libraries would shadow those of every later tool.
+          echo "VKC_LAYER_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
           echo "VK_LAYER_PATH=$(brew --prefix)/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
           DYLD_LIBRARY_PATH="$(brew --prefix)/lib" vulkaninfo --summary
 
@@ -81,6 +87,8 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test
+        env:
+          DYLD_LIBRARY_PATH: ${{ env.VKC_LAYER_LIBRARY_PATH }}
         run: ctest --test-dir build --output-on-failure
 
       - name: Install

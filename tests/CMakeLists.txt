@@ -69,13 +69,20 @@ if(VKC_WITH_VULKAN)
   endforeach()
 
   # Exercise budget admission against real VMA suballocations with controlled
-  # budget figures. This target owns a private VMA instance; no public allocator
-  # internals or production budget overrides are exposed to tests.
+  # budget figures, through a VMA allocator of the test's own; no public
+  # allocator internals or production budget overrides are exposed to tests. One
+  # VMA implementation per link: a static core's comes from its archive, and
+  # only a shared core, which hides its own, leaves the test to instantiate one.
   target_include_directories(
     vkc_vulkan_allocation_budget_test SYSTEM
     PRIVATE
       "$<TARGET_PROPERTY:GPUOpen::VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>"
   )
+  get_target_property(_vkc_vulkan_type core_vulkan TYPE)
+  if(_vkc_vulkan_type STREQUAL "SHARED_LIBRARY")
+    target_compile_definitions(vkc_vulkan_allocation_budget_test
+                               PRIVATE VKC_TEST_PRIVATE_VMA)
+  endif()
 
   # The compute tests' kernels, compiled and embedded once as a consumer would
   # (cmake/vkc_shaders.cmake), into an INTERFACE library both tests link, so a

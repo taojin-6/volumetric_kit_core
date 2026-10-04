@@ -396,8 +396,8 @@ TEST_F(AllocatorTest, ReportsMemoryPerHeap) {
   }
   const MemoryStats after = allocator().memory_stats();
   const std::uint32_t heap = memory->heap_index;
-  EXPECT_GE(after.heaps[heap].usage_bytes,
-            before.heaps[heap].usage_bytes + (1 << 20));
+  EXPECT_GE(after.heaps[heap].reserved_bytes,
+            before.heaps[heap].reserved_bytes + (1 << 20));
   const Allocator moved = std::move(allocator());
   // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(allocator().memory_stats().heap_count, 0u);
@@ -412,10 +412,10 @@ TEST_F(AllocatorTest, AllocatorAccountingDoesNotCountAnotherAllocatorsMemory) {
   }
   const std::uint32_t heap = memory->heap_index;
   const MemoryStats allocated = allocator().memory_stats();
-  EXPECT_GE(allocated.heaps[heap].usage_bytes, 256U);
+  EXPECT_GE(allocated.heaps[heap].reserved_bytes, 256U);
   EXPECT_GE(allocated.heaps[heap].allocation_bytes, 256U);
   EXPECT_LE(allocated.heaps[heap].allocation_bytes,
-            allocated.heaps[heap].usage_bytes);
+            allocated.heaps[heap].reserved_bytes);
 
   // Created after the allocation, so an enabled driver-budget extension sees
   // its process-wide usage in the second allocator's first query as well.
@@ -425,7 +425,7 @@ TEST_F(AllocatorTest, AllocatorAccountingDoesNotCountAnotherAllocatorsMemory) {
   const MemoryStats unallocated = empty.memory_stats();
   ASSERT_EQ(unallocated.heap_count, allocated.heap_count);
   for (std::uint32_t i = 0; i < unallocated.heap_count; ++i) {
-    EXPECT_EQ(unallocated.heaps[i].usage_bytes, 0U);
+    EXPECT_EQ(unallocated.heaps[i].reserved_bytes, 0U);
     EXPECT_EQ(unallocated.heaps[i].allocation_bytes, 0U);
   }
 }

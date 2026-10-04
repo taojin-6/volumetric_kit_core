@@ -95,30 +95,37 @@ enum class HostAccess {
   SequentialWrite,
 };
 
-/// @brief Allocator accounting and heap budget estimates, in bytes.
+/// @brief One heap's usage against its budget, and this allocator's share of
+///        it, in bytes.
 ///
-/// Allocator usage includes reserved block space; live allocations can occupy
-/// less. The heap's budget and usage are driver estimates for the current
-/// process when `VK_EXT_memory_budget` is enabled. Otherwise the heap usage
-/// counts only this allocator and the estimated budget is 80% of heap size.
-/// Other processes can change the budget, but their allocations are not part
-/// of the reported process usage.
+/// `usage_bytes` and `budget_bytes` describe the heap. Where
+/// `VK_EXT_memory_budget` is enabled they are the driver's estimates for the
+/// current process -- every allocator and library in it -- and the budget
+/// moves as other processes allocate; otherwise the usage counts this
+/// allocator alone, against 80% of the heap's size. `reserved_bytes` and
+/// `allocation_bytes` are this allocator's own, whatever the device.
 ///
 /// @code
 /// const HeapStats& heap = allocator.memory_stats().heaps[0];
-/// report_allocator(heap.usage_bytes, heap.allocation_bytes);
-/// report_budget(heap.heap_usage_bytes, heap.budget_bytes);
+/// const std::uint64_t headroom =
+///     heap.budget_bytes > heap.usage_bytes
+///         ? heap.budget_bytes - heap.usage_bytes : 0;
+/// report(headroom, heap.reserved_bytes, heap.allocation_bytes);
 /// @endcode
 struct HeapStats {
-  /// Bytes reserved in this allocator's device-memory blocks, including
-  /// unused space. Sum this across allocators to count their reserved memory.
+  /// The heap's usage, which new allocations are admitted against. With
+  /// `VK_EXT_memory_budget` it includes other allocators' memory, so it is
+  /// never summed across libraries sharing a device.
   std::uint64_t usage_bytes = 0;
-  /// Estimated heap budget for the current process, or the fallback estimate.
+  /// The heap's budget: the driver's estimate for the current process, or
+  /// 80% of the heap's size.
   std::uint64_t budget_bytes = 0;
-  /// Estimated heap usage used for budget admission, as described above.
-  /// This can overlap across allocators; do not sum it across libraries.
-  std::uint64_t heap_usage_bytes = 0;
-  /// Bytes occupied by this allocator's live allocations within its blocks.
+  /// Bytes in this allocator's device-memory blocks and dedicated
+  /// allocations, unused block space included. Summed across allocators, it
+  /// is the memory they hold together.
+  std::uint64_t reserved_bytes = 0;
+  /// Bytes of this allocator's live allocations, within
+  /// @ref reserved_bytes.
   std::uint64_t allocation_bytes = 0;
 };
 
@@ -132,7 +139,8 @@ struct HeapStats {
 /// @code
 /// const MemoryStats stats = allocator.memory_stats();
 /// for (std::uint32_t h = 0; h < stats.heap_count; ++h) {
-///   report(h, stats.heaps[h].usage_bytes, stats.heaps[h].budget_bytes);
+///   report(h, stats.heaps[h].usage_bytes, stats.heaps[h].budget_bytes,
+///          stats.heaps[h].reserved_bytes);
 /// }
 /// @endcode
 struct MemoryStats {
@@ -145,6 +153,18 @@ struct MemoryStats {
 /// Memory another API imports is not made here but by
 /// @ref create_exported_buffer, which allocates it through an allocator too,
 /// dedicated to its buffer.
+///
+/// @code
+/// // A storage buffer a compute library writes and a renderer reads.
+/// const std::uint32_t families[] = {compute_family, render_family};
+/// BufferDesc desc;
+/// desc.size = points * sizeof(Point);
+/// desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+///              VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+/// desc.queue_families = families;
+/// desc.queue_family_count = 2;
+/// VKC_ASSIGN(Buffer points_buffer, allocator.create_buffer(desc));
+/// @endcode
 struct BufferDesc {
   /// Size in bytes; non-zero.
   VkDeviceSize size = 0;
@@ -200,6 +220,17 @@ VKC_VULKAN_API Status check_queue_family_count(std::uint32_t count,
 /// Set `type` and `depth` for a 3D (volume) image, `array_layers` for an
 /// array, `cube` for a cubemap, `mip_levels` for a mip chain, `samples` for
 /// multisampling.
+///
+/// @code
+/// // A 128^3 volume a kernel writes and a renderer samples.
+/// ImageDesc desc;
+/// desc.type = VK_IMAGE_TYPE_3D;
+/// desc.extent = {128, 128};
+/// desc.depth = 128;
+/// desc.format = VK_FORMAT_R16_SFLOAT;
+/// desc.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+/// VKC_ASSIGN(Image volume, allocator.create_image(desc));
+/// @endcode
 struct ImageDesc {
   /// Width and height in texels; non-zero.
   VkExtent2D extent{};
@@ -309,12 +340,13 @@ class VKC_VULKAN_API Allocator {
   ///         format (depth, stencil, or color).
   Result<Image> create_image(const ImageDesc& desc);
 
-  /// @brief This allocator's per-heap accounting and heap budget estimates.
+  /// @brief Each heap's usage and budget, and this allocator's share of it.
   ///
-  /// `usage_bytes` and `allocation_bytes` report only this allocator's share.
-  /// `heap_usage_bytes` and `budget_bytes` describe the driver's process-level
-  /// budget where available, and may overlap with another allocator's report.
-  /// These estimates can change immediately after the query.
+  /// `reserved_bytes` and `allocation_bytes` report only this allocator's
+  /// share. `usage_bytes` and `budget_bytes` describe the heap -- the
+  /// driver's process-level estimates where `VK_EXT_memory_budget` is
+  /// enabled -- so another allocator on the device reports the same figures.
+  /// Every figure can change immediately after the query.
   /// @return The figures; `heap_count == 0` for a moved-from allocator.
   MemoryStats memory_stats() const;
 
@@ -327,6 +359,10 @@ class VKC_VULKAN_API Allocator {
                                                        VkDeviceSize bytes);
 
   Allocator() = default;
+
+  // The device this allocates on, for create_exported_buffer to refuse a
+  // buffer of another; VK_NULL_HANDLE when moved-from.
+  VkDevice device_handle() const noexcept;
 
   // What create_exported_buffer needs of VMA, which this class's source alone
   // includes: `buffer` -- the caller's, destroyed here on a failure -- bound

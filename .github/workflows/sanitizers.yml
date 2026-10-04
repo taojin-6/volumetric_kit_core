@@ -23,6 +23,7 @@ jobs:
       VKC_TEST_VALIDATION: '1'
       VK_LAYER_ENABLES: VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
       VK_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC: '1'
+      VKC_TEST_SYNC_VALIDATION: '1'
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
     steps:
       - uses: actions/checkout@v7

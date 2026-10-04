@@ -60,6 +60,9 @@ inline BatchScope batch_consumers(VkQueueFlags queues) {
     // A renderer may read an upload through descriptors as well as vertex,
     // index and indirect bindings. ALL_GRAPHICS includes only the enabled
     // graphics stages, so optional shader stages need no feature guesses.
+    // The attachment accesses are for images: a dispatch can write a storage
+    // image (DescriptorSet::write_storage_image) that the renderer then loads,
+    // blends into or overwrites as an attachment.
     destination.stages |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
     destination.access |=
         VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT |

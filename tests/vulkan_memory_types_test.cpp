@@ -116,7 +116,7 @@ TEST(MemoryTypes, OneHostVisibleDeviceLocalTypeIsUnified) {
 
 // Unified layouts may expose private types or only host-visible ones.
 // Memoryless types remain excluded in either case.
-TEST(MemoryTypes, IntegratedAndMobileGpus) {
+TEST(MemoryTypes, UnifiedLayoutsWithAndWithoutPrivateTypes) {
   const auto private_and_mapped =
       layout({kLocalHeap},
              {{0, kDL}, {0, kDL | kHV | kHC}, {0, kDL | kHV | kHC | kCached}});
@@ -245,22 +245,32 @@ TEST(MemoryTypes, HostAccessNarrowsTheMappedTypes) {
   EXPECT_EQ(placed(cached_only, MemoryUsage::DeviceMapped), bits({0}));
 }
 
-// New device memory uses the process-level budget figures, not the allocator
-// block count. Existing blocks are reused before applying this filter.
-TEST(MemoryTypes, NewMemoryUsesHeapUsageRatherThanAllocatorUsage) {
+// A heap's figures: its usage and budget, and this allocator's blocks in it.
+HeapStats heap(std::uint64_t usage, std::uint64_t budget,
+               std::uint64_t reserved = 0) {
+  HeapStats figures;
+  figures.usage_bytes = usage;
+  figures.budget_bytes = budget;
+  figures.reserved_bytes = reserved;
+  return figures;
+}
+
+// New device memory is admitted against the heap's usage, which can include
+// other allocators' memory, never against this allocator's blocks alone.
+TEST(MemoryTypes, NewMemoryIsAdmittedAgainstTheHeapUsage) {
   const auto props = discrete_layout();  // types 1, 2 on heap 0; 3, 4 on heap 1
   MemoryStats heaps;
   heaps.heap_count = 3;
-  heaps.heaps[0] = {50, 1000, 900};  // 100 bytes left
-  heaps.heaps[1] = {0, 1000, 0};
-  heaps.heaps[2] = {0, 1000, 0};
+  heaps.heaps[0] = heap(900, 1000, 50);  // 100 bytes left
+  heaps.heaps[1] = heap(0, 1000);
+  heaps.heaps[2] = heap(0, 1000);
   EXPECT_EQ(detail::types_within_budget(props, bits({1, 2}), 100, heaps),
             bits({1, 2}));
   EXPECT_EQ(detail::types_within_budget(props, bits({1, 2}), 101, heaps), 0U);
   EXPECT_EQ(detail::types_within_budget(props, bits({2, 3}), 101, heaps),
             bits({3}));
   // Past the budget already, or asking for more than it: never wraps.
-  heaps.heaps[0] = {50, 1000, 1200};
+  heaps.heaps[0] = heap(1200, 1000, 50);
   EXPECT_EQ(detail::types_within_budget(props, bits({1}), 1, heaps), 0U);
   EXPECT_EQ(
       detail::types_within_budget(props, bits({3}), ~VkDeviceSize{0}, heaps),
@@ -268,6 +278,22 @@ TEST(MemoryTypes, NewMemoryUsesHeapUsageRatherThanAllocatorUsage) {
   // A heap the figures do not cover (a moved-from allocator's) has no room.
   heaps.heap_count = 0;
   EXPECT_EQ(detail::types_within_budget(props, bits({1, 3}), 1, heaps), 0U);
+}
+
+// The search for a resource bound outside the allocator places device-local
+// memory as DeviceOnly does, unless the caller asks to map it.
+TEST(MemoryTypes, DeviceLocalSearchStaysOutOfTheBarWindow) {
+  const auto props = discrete_layout();
+  EXPECT_EQ(detail::first_memory_type(props, kAny, kDL, 0), 1U);
+  EXPECT_EQ(detail::first_memory_type(props, bits({2, 5}), kDL, 0), 2U);
+  EXPECT_FALSE(detail::first_memory_type(props, bits({5}), kDL, 0));
+  EXPECT_EQ(detail::first_memory_type(props, bits({5}), kDL | kHV, 0), 5U);
+  EXPECT_EQ(detail::first_memory_type(props, kAny, kHV, 0), 3U);
+
+  // On unified memory a resource no private type suits takes the pool.
+  const auto unified = layout({kLocalHeap}, {{0, kDL}, {0, kDL | kHV | kHC}});
+  EXPECT_EQ(detail::first_memory_type(unified, bits({1}), kDL, 0), 1U);
+  EXPECT_FALSE(detail::first_memory_type(unified, bits({1}), kDL, kHV));
 }
 
 // The resource's own requirements cut every placement.

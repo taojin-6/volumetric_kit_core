@@ -14,6 +14,9 @@
 //   fails the test -- one reported as the instance is destroyed included. A
 //   layer that is missing, fails to load, or cannot reach the log sink fails
 //   it too, so a run cannot pass unvalidated.
+// - VKC_TEST_SYNC_VALIDATION=1 (with the above): the layer's synchronization
+//   validation, enabled through VK_LAYER_ENABLES, must report a deliberate
+//   hazard (vulkan_command_batch_test.cpp), so a run cannot pass with it off.
 
 #include <atomic>
 #include <cstdlib>
@@ -45,11 +48,16 @@ class VulkanTest : public ::testing::Test {
 
   void SetUp() override {
     validation_errors_ = 0;
+    allowed_validation_errors_ = 0;
     validation_errors_allowed_ = false;
     set_log_handler([this](LogLevel level, std::string_view source,
                            std::string_view message) {
-      if (source == "vulkan" && level == LogLevel::Error &&
-          !validation_errors_allowed_) {
+      const bool validation_error =
+          source == "vulkan" && level == LogLevel::Error;
+      if (validation_error && validation_errors_allowed_) {
+        ++allowed_validation_errors_;
+      }
+      if (validation_error && !validation_errors_allowed_) {
         ++validation_errors_;
         ADD_FAILURE() << "validation: " << message;
       } else if (level >= LogLevel::Warning) {
@@ -94,8 +102,12 @@ class VulkanTest : public ::testing::Test {
   const PhysicalDeviceInfo& physical() const { return physical_; }
 
   // For a test that commits invalid usage on purpose: the validation errors
-  // it reports from here on fail nothing.
+  // it reports from here on fail nothing, and are counted instead.
   void allow_validation_errors() { validation_errors_allowed_ = true; }
+  // The validation errors reported since allow_validation_errors.
+  int allowed_validation_errors() const {
+    return allowed_validation_errors_.load();
+  }
 
  private:
   void no_device(const std::string& why) {
@@ -106,6 +118,7 @@ class VulkanTest : public ::testing::Test {
   }
 
   std::atomic<int> validation_errors_{0};
+  std::atomic<int> allowed_validation_errors_{0};
   std::atomic<bool> validation_errors_allowed_{false};
   std::optional<Instance> instance_;
   PhysicalDeviceInfo physical_;

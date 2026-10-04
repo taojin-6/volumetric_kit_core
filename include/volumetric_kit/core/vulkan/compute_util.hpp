@@ -64,9 +64,9 @@ VKC_VULKAN_API VkDeviceSize max_storage_buffer_range(const Device& device);
 /// `VK_WHOLE_SIZE` included -- is invalid usage: a validation-layer message,
 /// and undefined with layers off, as they are where an app ships. The limit is
 /// low enough to reach: Vulkan guarantees only 2^27 bytes (128 MiB), which
-/// Android-class drivers report, while desktop drivers and MoltenVK report far
-/// more -- so an oversized binding is invisible where it is tested and fatal
-/// where it ships.
+/// some drivers report while others report far more -- so an oversized
+/// binding can be invisible on the device it is tested on and fatal on the
+/// one it ships on.
 /// @param what       Names the caller and the buffer, for the message.
 /// @param bytes      The range the binding would cover.
 /// @param max_range  The limit, from @ref max_storage_buffer_range.

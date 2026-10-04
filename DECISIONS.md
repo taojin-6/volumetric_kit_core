@@ -387,9 +387,9 @@ rules after review, the same day.
   `BufferDesc::mapped`, which only had to agree with the placement, is gone,
   and so is `ImageDesc::memory`, which had one legal value.
 - **`DeviceOnly`** takes the device-local types the host cannot see that the
-  resource allows; a device with no such type at all -- lavapipe, most
-  integrated and mobile GPUs, whose every device-local type is host-visible
-  -- has one pool, and takes it. A resource no private type suits takes the
+  resource allows; a device with no such type at all -- every device-local
+  type host-visible, as on many unified-memory devices and CPU
+  implementations -- has one pool, and takes it. A resource no private type suits takes the
   rest of the pool on unified memory and is
   refused (`Unsupported`) otherwise, as the rest of a discrete GPU's
   device-local memory is the BAR window. Images take only this, so a driver
@@ -413,25 +413,36 @@ rules after review, the same day.
   `Staging`, and requires them for `DeviceMapped`, so the host never reads a
   discrete GPU's uncached BAR window: there it is refused (`Unsupported`),
   and unified memory, which has cached device-local memory, takes it.
-- **Reuse precedes budget admission for new memory.** Free space in VMA's
-  existing blocks already counts toward heap usage, so buffer and image
-  suballocations try it first, even when the reported budget has fallen below
-  usage. Resources requiring dedicated allocations skip that attempt. New
-  memory is limited to candidate heaps with budget room, with VMA's
-  `WITHIN_BUDGET` checking block growth too; the explicit admission check also
-  covers VMA's heuristic dedicated-allocation path. Exhaustion returns
-  `VK_ERROR_OUT_OF_DEVICE_MEMORY`, never a spill to another placement.
-  The driver reports current-process usage and a changing budget where
-  `VK_EXT_memory_budget` is enabled; otherwise VMA estimates its own usage
-  against 80% of each heap. Budgets are admission estimates, not reservations
-  or guarantees of permanent residency.
-- **Allocator accounting is separate from heap budgeting.**
-  `HeapStats::usage_bytes` counts this allocator's reserved blocks and
-  `allocation_bytes` its live suballocations. These may be summed across
-  sibling allocators. `heap_usage_bytes` is the usage estimate paired with
-  `budget_bytes`, including other allocations in the current process when
-  the memory-budget extension is enabled; it must not be summed across
-  allocators. Budget checks use that estimate, not per-library accounting.
+- **New memory within budget; at the budget, only reuse.** Where a candidate
+  heap has room for the resource, VMA allocates as it would without a
+  budget, the mask cut to the heaps with room: an existing block first, then
+  a new block of the first candidate type, or memory of the resource's own
+  where the driver prefers that or the resource is large. VMA's
+  `WITHIN_BUDGET` bounds its new blocks but not that dedicated path, which
+  the explicit admission covers. Where no heap has room, nothing new is
+  allocated, but a block's free space already counts toward its heap's usage,
+  so a resource that fits one still takes it -- in any candidate type, even
+  when the reported budget has fallen below usage. A resource that requires
+  memory of its own is refused there. Trying reuse first instead would
+  suballocate resources the driver prefers dedicated, and spill into another
+  type's blocks before the first type grew. Exhaustion returns
+  `VK_ERROR_OUT_OF_DEVICE_MEMORY`, never a spill to another placement, and a
+  budget refusal names the budget rather than a VMA call. The driver reports
+  current-process usage and a changing budget where `VK_EXT_memory_budget`
+  is enabled; otherwise VMA estimates its own usage against 80% of each heap.
+  Budgets are admission estimates, not reservations or guarantees of
+  residency: the check and the allocation are not atomic, and another
+  allocator on the device, or another process, can take the room between
+  them.
+- **A heap's figures and the allocator's share are separate fields.**
+  `HeapStats::usage_bytes` is the heap's usage paired with `budget_bytes` --
+  as recon's and gfx's `usage_bytes` was, so their headroom arithmetic
+  ports unchanged -- and includes every allocation in the process where the
+  memory-budget extension is enabled, so it is never summed across
+  allocators. `reserved_bytes` (blocks and dedicated memory, free space
+  included) and `allocation_bytes` (live allocations) are this allocator's
+  own, and may be summed. Budget admission uses the heap's usage, not
+  per-library accounting.
 - **Special memory stays out.** Lazily allocated, protected, and feature-gated
   device-coherent and device-uncached memory are never a placement's: each
   needs a use or a feature this tier does not have, and VMA leaves the latter
@@ -472,9 +483,14 @@ rules after review, the same day.
   submit returns. External semaphores would order the two on the GPU; they
   wait for a consumer that needs the overlap. gfx's `ExternalHandleType`, a
   field every value but `None` refused, is not carried over.
-  `find_memory_type`, recon's search for a resource bound outside the
-  allocator, skips the same special types the placement masks do. Opaque
-  descriptors only: the family's CUDA interop is Linux.
+  The allocator must be the device's own, checked before the buffer is
+  made: memory from another device's allocator could neither be bound to it
+  nor free it. `find_memory_type`, recon's search for a resource bound
+  outside the allocator, skips the same special types the placement masks
+  do, and places device-local memory asked for without `HOST_VISIBLE` by the
+  `DeviceOnly` mask, so a resource limited to a discrete GPU's BAR window
+  gets no type rather than the window. Opaque descriptors only: the
+  family's CUDA interop is Linux.
 - **`PhysicalDeviceInfo::unified_memory`** tells the architectures apart:
   every heap is device-local, so every type is (the spec sets
   `DEVICE_LOCAL` on a type exactly when its heap has it). An APU whose driver

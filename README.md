@@ -83,16 +83,18 @@ there is none. Two environment variables tighten them, and CI sets both:
 - `VKC_TEST_VALIDATION=1` enables the Khronos validation layer and fails any
   test that triggers a validation error, or that runs without validation.
 
-CI also enables synchronization validation and requests shader-access checks
-where the layer supports them. Linux uses a software Vulkan driver; macOS
-requires an available device. Discrete
-DRAM/VRAM hardware coverage remains planned (DECISIONS.md, "Open decisions").
+CI also enables synchronization validation, checked by a test that commits a
+deliberate hazard (`VKC_TEST_SYNC_VALIDATION=1`), and requests shader-access
+checks where the layer supports them. Linux uses a software Vulkan driver;
+macOS requires an available device. Discrete DRAM/VRAM hardware coverage
+remains planned (DECISIONS.md, "Open decisions").
 
-`Allocator::memory_stats()` separates the allocator's reserved block bytes
-(`usage_bytes`) and live resource bytes (`allocation_bytes`) from heap-budget
-usage (`heap_usage_bytes`, paired with `budget_bytes`). Only the first two
-fields may be summed across sibling allocators; driver budget usage can
-include all allocations in the current process.
+`Allocator::memory_stats()` reports each heap's usage against its budget
+(`usage_bytes`, `budget_bytes`) beside this allocator's own share: its
+reserved blocks (`reserved_bytes`) and live allocations (`allocation_bytes`).
+Only the allocator's own figures may be summed across sibling allocators;
+with `VK_EXT_memory_budget`, a heap's usage already includes every allocation
+in the process.
 
 ## Use it in your project
 

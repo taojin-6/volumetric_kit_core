@@ -9,10 +9,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Fixed
 
-- Buffer and image allocations reuse free space in existing VMA blocks before
-  checking the budget for new memory. A falling budget no longer rejects a
-  suballocation that needs no additional device memory. Dedicated resources
-  retain their budget admission checks.
+- At a heap's budget, buffer and image allocations still take free space in
+  the allocator's existing VMA blocks, so a falling budget no longer rejects
+  a suballocation that needs no additional device memory. With budget room,
+  VMA allocates as before -- honoring the driver's preference for dedicated
+  memory and growing the first candidate type before another. Resources that
+  require dedicated memory are never suballocated. A budget refusal's message
+  now says so instead of naming a VMA call.
 - `CommandBatch` makes completed writes visible to graphics shader uniform
   and storage-buffer accesses, as well as vertex/index input. Barrier scopes
   follow the queue's capabilities, and compute dispatches on a queue without
@@ -20,14 +23,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - Replacing the log handler from inside a callback no longer deadlocks when
   another thread finishes a callback on the old handler. Nested callbacks keep
   the same guarantee.
-- `Allocator::memory_stats()` reports this allocator's reserved block bytes
-  in `usage_bytes` consistently, including with `VK_EXT_memory_budget` enabled.
-  See the field migration below before using these figures for budgeting.
+- `Allocator::memory_stats()` documents `usage_bytes` as what it always
+  was, the heap's usage paired with `budget_bytes` -- process-wide where
+  `VK_EXT_memory_budget` is enabled, not this allocator's share -- and reports
+  that share in new fields (below).
+- `create_exported_buffer` refuses (`InvalidArgument`) an allocator made for
+  another device, before creating anything, instead of binding that device's
+  memory to its buffer.
+- `find_memory_type` places device-local memory asked for without
+  `HOST_VISIBLE` as `MemoryUsage::DeviceOnly` does: a resource limited to a
+  discrete GPU's BAR window now gets no type rather than the window. Ask for
+  `DEVICE_LOCAL | HOST_VISIBLE` to accept it.
 - Hardware examples and synthetic memory fixtures describe capabilities and
   layouts without specific device models or vendor examples.
 - Both Linux and macOS Vulkan CI jobs require a device and a loaded validation
-  layer, with synchronization checks enabled and shader-access checks requested
-  where the layer supports them.
+  layer, with synchronization checks enabled -- and a test that fails unless
+  they report a deliberate hazard (`VKC_TEST_SYNC_VALIDATION`) -- and
+  shader-access checks requested where the layer supports them.
 
 ### Added
 
@@ -193,15 +205,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
-- `HeapStats` separates allocator accounting from budget accounting:
-  `usage_bytes` is this allocator's reserved block memory and the new
-  `allocation_bytes` is its live resource allocation memory. The new
-  `heap_usage_bytes` is the usage estimate paired with `budget_bytes`:
-  current-process usage with `VK_EXT_memory_budget`, this allocator's block
-  usage otherwise. Consumers comparing `usage_bytes` to `budget_bytes` must
-  switch that comparison to `heap_usage_bytes`. Sum only the allocator-local
-  fields across siblings; never sum process usage or budgets. Rebuild
-  consumers after bumping their pin because `HeapStats` changes size.
+- `HeapStats` gains this allocator's own share beside the heap's figures:
+  `reserved_bytes`, its blocks and dedicated memory with their free space,
+  and `allocation_bytes`, its live allocations. `usage_bytes` and
+  `budget_bytes` keep their values and meaning -- the heap's usage and
+  budget, as recon's and gfx's `HeapStats` had them -- so headroom computed
+  as `budget_bytes - usage_bytes` needs no change. Code that read
+  `usage_bytes` as this allocator's own memory, or summed it across
+  allocators, switches to `reserved_bytes`. Rebuild consumers after bumping
+  their pin: `HeapStats` changes size.
 
 For a consumer pinned at a commit of V2's or V3's first API, which this
 section's entries replace (DECISIONS.md, "Where memory lives"):

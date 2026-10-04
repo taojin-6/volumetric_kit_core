@@ -250,8 +250,8 @@ class VKC_VULKAN_API Device {
   /// @return The family's `queueFlags`.
   VkQueueFlags queue_flags() const noexcept { return state_.queue_flags; }
   /// @return The family's `timestampValidBits`, `0` when the queue writes no
-  ///         timestamps (MoltenVK may say so). Gate GPU timing on a non-zero
-  ///         value; convert ticks to nanoseconds with
+  ///         timestamps, as some implementations report. Gate GPU timing on a
+  ///         non-zero value; convert ticks to nanoseconds with
   ///         `caps().limits().timestampPeriod`.
   std::uint32_t timestamp_valid_bits() const noexcept {
     return state_.timestamp_valid_bits;

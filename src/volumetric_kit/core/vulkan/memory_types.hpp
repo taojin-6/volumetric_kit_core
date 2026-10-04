@@ -9,6 +9,7 @@
 // runner has. Not installed.
 
 #include <cstdint>
+#include <optional>
 
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -145,9 +146,30 @@ inline std::uint32_t placement_types(
   return cached != 0 ? cached : types;
 }
 
+// find_memory_type's search: the first type `type_bits` allows with every
+// flag of `required` and none of `excluded`. Device-local memory asked for
+// without HOST_VISIBLE is cut as DeviceOnly is, so it never takes a discrete
+// GPU's BAR window. Empty when no type suits.
+inline std::optional<std::uint32_t> first_memory_type(
+    const VkPhysicalDeviceMemoryProperties& props, std::uint32_t type_bits,
+    VkMemoryPropertyFlags required, VkMemoryPropertyFlags excluded) {
+  std::uint32_t allowed =
+      memory_types_with(props, required, excluded) & type_bits;
+  if ((required & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0 &&
+      (required & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+    // The host access is ignored for device-only memory.
+    allowed &= placement_types(props, MemoryUsage::DeviceOnly,
+                               HostAccess::SequentialWrite, type_bits);
+  }
+  for (std::uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+    if ((allowed & (1U << i)) != 0) return i;
+  }
+  return std::nullopt;
+}
+
 // The types of `types` whose heap has room for `bytes` more within its
-// budget, by an Allocator's `heaps` figures. Used only when reserving new
-// memory: existing blocks already count against the heap usage.
+// budget, by an Allocator's `heaps` figures. Used only to admit new memory:
+// existing blocks already count against the heap's usage.
 inline std::uint32_t types_within_budget(
     const VkPhysicalDeviceMemoryProperties& props, std::uint32_t types,
     VkDeviceSize bytes, const MemoryStats& heaps) {
@@ -157,7 +179,7 @@ inline std::uint32_t types_within_budget(
     if ((types & (1U << i)) == 0 || heap >= heaps.heap_count) continue;
     const HeapStats& figures = heaps.heaps[heap];
     if (bytes <= figures.budget_bytes &&
-        figures.heap_usage_bytes <= figures.budget_bytes - bytes) {
+        figures.usage_bytes <= figures.budget_bytes - bytes) {
       fit |= 1U << i;
     }
   }

@@ -2,13 +2,21 @@
 // Copyright (c) 2026 Tao Jin
 
 // Exercise the production allocation policy with real VMA suballocations and
-// controlled budget figures. This executable owns a separate VMA instance;
-// it does not link the core's allocator object or expose a public test hook.
+// controlled budget figures, through a VMA allocator of the test's own rather
+// than a public test hook.
+//
+// One VMA implementation only: a static core's comes from its archive with
+// the allocator's object, and a shared core hides its own, so only then does
+// this executable instantiate VMA itself (VKC_TEST_PRIVATE_VMA, set by
+// tests/CMakeLists.txt). Two copies in one static link would fail on
+// duplicate symbols as soon as the test touched the Allocator.
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
+#ifdef VKC_TEST_PRIVATE_VMA
 #define VMA_STATIC_VULKAN_FUNCTIONS 1
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 #define VMA_IMPLEMENTATION
+#endif
 #include <vk_mem_alloc.h>
 
 #include <cstdint>
@@ -29,26 +37,113 @@
 namespace volumetric_kit::core {
 namespace {
 
-TEST(AllocationBudget, PreservesErrorsOtherThanDeviceMemoryExhaustion) {
-  const VkPhysicalDeviceMemoryProperties memory{};
-  const VkMemoryRequirements needs{};
-  unsigned attempts = 0;
-  unsigned budget_reads = 0;
-  const VkResult result = detail::allocate_with_budget(
-      memory, needs, 1, /*mapped=*/false, /*dedicated_required=*/false,
-      [&](const VmaAllocationCreateInfo& info) {
-        ++attempts;
-        EXPECT_NE(info.flags & VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT, 0U);
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
-      },
-      [&] {
-        ++budget_reads;
-        return MemoryStats{};
-      });
-  EXPECT_EQ(result, VK_ERROR_OUT_OF_HOST_MEMORY);
-  EXPECT_EQ(attempts, 1U);
-  EXPECT_EQ(budget_reads, 0U);
+// --- the policy alone, against scripted VMA results
+// ---------------------------
+
+// Two device-local types on one 1000-byte-budget heap, which `usage` bytes
+// already fill.
+struct Scripted {
+  VkPhysicalDeviceMemoryProperties memory{};
+  MemoryStats stats;
+  VkMemoryRequirements needs{};
+
+  explicit Scripted(std::uint64_t usage) {
+    memory.memoryHeapCount = 1;
+    memory.memoryHeaps[0] = {1U << 20, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+    memory.memoryTypeCount = 2;
+    memory.memoryTypes[0] = {VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0};
+    memory.memoryTypes[1] = {VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0};
+    stats.heap_count = 1;
+    stats.heaps[0].usage_bytes = usage;
+    stats.heaps[0].budget_bytes = 1000;
+    needs.size = 100;
+    needs.memoryTypeBits = 0x3;
+  }
+
+  // Runs the policy over both types, recording each VMA call's parameters
+  // and answering them from `results` in turn.
+  detail::BudgetedAllocation run(std::vector<VkResult> results,
+                                 std::vector<VmaAllocationCreateInfo>& calls,
+                                 bool dedicated_required = false) const {
+    return detail::allocate_with_budget(
+        memory, needs, 0x3, /*mapped=*/false, dedicated_required,
+        [&](const VmaAllocationCreateInfo& info) {
+          calls.push_back(info);
+          return calls.size() <= results.size() ? results[calls.size() - 1]
+                                                : VK_ERROR_UNKNOWN;
+        },
+        [&] { return stats; });
+  }
+};
+
+bool never_allocates(const VmaAllocationCreateInfo& info) {
+  return (info.flags & VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT) != 0;
 }
+
+// With budget room VMA allocates as it would without one, free to make a new
+// block of the first type or memory of the resource's own.
+TEST(AllocationBudget, WithRoomVmaAllocatesUnrestricted) {
+  std::vector<VmaAllocationCreateInfo> calls;
+  const detail::BudgetedAllocation made = Scripted(0).run({VK_SUCCESS}, calls);
+  EXPECT_EQ(made.result, VK_SUCCESS);
+  ASSERT_EQ(calls.size(), 1U);
+  EXPECT_FALSE(never_allocates(calls[0]));
+  EXPECT_EQ(calls[0].memoryTypeBits, 0x3U);
+  EXPECT_NE(calls[0].flags & VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT, 0U);
+}
+
+// An error other than exhaustion is returned as it is, without a retry.
+TEST(AllocationBudget, PreservesErrorsOtherThanDeviceMemoryExhaustion) {
+  std::vector<VmaAllocationCreateInfo> calls;
+  const detail::BudgetedAllocation made =
+      Scripted(0).run({VK_ERROR_OUT_OF_HOST_MEMORY}, calls);
+  EXPECT_EQ(made.result, VK_ERROR_OUT_OF_HOST_MEMORY);
+  EXPECT_FALSE(made.over_budget);
+  EXPECT_EQ(calls.size(), 1U);
+}
+
+// At the budget only existing blocks are tried, in every candidate type.
+TEST(AllocationBudget, AtTheBudgetOnlyBlocksAreReused) {
+  std::vector<VmaAllocationCreateInfo> calls;
+  const detail::BudgetedAllocation made =
+      Scripted(950).run({VK_SUCCESS}, calls);
+  EXPECT_EQ(made.result, VK_SUCCESS);
+  ASSERT_EQ(calls.size(), 1U);
+  EXPECT_TRUE(never_allocates(calls[0]));
+  EXPECT_EQ(calls[0].memoryTypeBits, 0x3U);
+}
+
+// A refusal for want of budget says so; one by VMA or the driver does not,
+// though no block had room afterwards either.
+TEST(AllocationBudget, TellsABudgetRefusalFromAnAllocationFailure) {
+  std::vector<VmaAllocationCreateInfo> calls;
+  const detail::BudgetedAllocation refused =
+      Scripted(950).run({VK_ERROR_OUT_OF_DEVICE_MEMORY}, calls);
+  EXPECT_EQ(refused.result, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+  EXPECT_TRUE(refused.over_budget);
+
+  calls.clear();
+  const detail::BudgetedAllocation failed = Scripted(0).run(
+      {VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_OUT_OF_DEVICE_MEMORY}, calls);
+  EXPECT_EQ(failed.result, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+  EXPECT_FALSE(failed.over_budget);
+  ASSERT_EQ(calls.size(), 2U);
+  EXPECT_FALSE(never_allocates(calls[0]));
+  EXPECT_TRUE(never_allocates(calls[1]));
+}
+
+// Memory a resource requires to itself is never taken from a block, so at
+// the budget it is refused without a VMA call.
+TEST(AllocationBudget, RequiredDedicatedMemoryIsNeverReused) {
+  std::vector<VmaAllocationCreateInfo> calls;
+  const detail::BudgetedAllocation refused =
+      Scripted(950).run({}, calls, /*dedicated_required=*/true);
+  EXPECT_EQ(refused.result, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+  EXPECT_TRUE(refused.over_budget);
+  EXPECT_TRUE(calls.empty());
+}
+
+// --- the policy against real VMA allocations ---------------------------------
 
 class AllocationBudgetTest : public test::VulkanTest {
  protected:
@@ -88,24 +183,18 @@ class AllocationBudgetTest : public test::VulkanTest {
     return device_->handle();
   }
 
+  // The figures Allocator::memory_stats reports, by the same mapping.
   MemoryStats statistics() const {
     VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
     vmaGetHeapBudgets(allocator_, budgets);
-    MemoryStats result;
-    result.heap_count = physical().memory_properties().memoryHeapCount;
-    for (std::uint32_t i = 0; i < result.heap_count; ++i) {
-      result.heaps[i].usage_bytes = budgets[i].statistics.blockBytes;
-      result.heaps[i].allocation_bytes = budgets[i].statistics.allocationBytes;
-      result.heaps[i].heap_usage_bytes = budgets[i].usage;
-      result.heaps[i].budget_bytes = budgets[i].budget;
-    }
-    return result;
+    return detail::memory_stats_of(
+        budgets, physical().memory_properties().memoryHeapCount);
   }
 
   void exhaust_budget() {
     budget_ = statistics();
     for (std::uint32_t i = 0; i < budget_->heap_count; ++i) {
-      budget_->heaps[i].budget_bytes = budget_->heaps[i].heap_usage_bytes;
+      budget_->heaps[i].budget_bytes = budget_->heaps[i].usage_bytes;
     }
   }
 
@@ -117,12 +206,14 @@ class AllocationBudgetTest : public test::VulkanTest {
         memory, MemoryUsage::DeviceOnly, HostAccess::SequentialWrite,
         needs.memoryTypeBits);
     VmaAllocation allocation = nullptr;
-    const VkResult result = detail::allocate_with_budget(
-        memory, needs, types, /*mapped=*/false, dedicated,
-        [&](const VmaAllocationCreateInfo& info) {
-          return operation(info, &allocation, &out);
-        },
-        [&] { return budget_.has_value() ? *budget_ : statistics(); });
+    const VkResult result =
+        detail::allocate_with_budget(
+            memory, needs, types, /*mapped=*/false, dedicated,
+            [&](const VmaAllocationCreateInfo& info) {
+              return operation(info, &allocation, &out);
+            },
+            [&] { return budget_.has_value() ? *budget_ : statistics(); })
+            .result;
     if (result == VK_SUCCESS) allocations_.push_back(allocation);
     return result;
   }
@@ -188,7 +279,7 @@ TEST_F(AllocationBudgetTest, ReusesBufferMemoryAtTheHeapBudget) {
   EXPECT_NE(after.offset, before.offset);
   const MemoryStats reused = statistics();
   for (std::uint32_t i = 0; i < reserved.heap_count; ++i) {
-    EXPECT_EQ(reused.heaps[i].usage_bytes, reserved.heaps[i].usage_bytes);
+    EXPECT_EQ(reused.heaps[i].reserved_bytes, reserved.heaps[i].reserved_bytes);
   }
 }
 
@@ -256,7 +347,7 @@ TEST_F(AllocationBudgetTest, ReusesImageMemoryAtTheHeapBudget) {
   EXPECT_NE(after.offset, before.offset);
   const MemoryStats reused = statistics();
   for (std::uint32_t i = 0; i < reserved.heap_count; ++i) {
-    EXPECT_EQ(reused.heaps[i].usage_bytes, reserved.heaps[i].usage_bytes);
+    EXPECT_EQ(reused.heaps[i].reserved_bytes, reserved.heaps[i].reserved_bytes);
   }
 }
 
@@ -305,7 +396,7 @@ TEST_F(AllocationBudgetTest, RequiredDedicatedMemorySkipsBlockReuse) {
                            .memory_properties()
                            .memoryTypes[out.memoryType]
                            .heapIndex]
-                .usage_bytes,
+                .reserved_bytes,
             needs.size);
 }
 

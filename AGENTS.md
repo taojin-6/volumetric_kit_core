@@ -74,7 +74,8 @@ iOS and Android. Windows and MSVC are unsupported
 - Prefer plain, behavior-level tests over friend-class backdoors into private
   state.
 - Describe hardware by its capabilities or memory layout, not device models
-  or vendor examples. Keep actual API names and runtime device diagnostics.
+  or vendor examples. Keep actual API names, runtime device diagnostics, and
+  the Vulkan implementation a workaround or platform integration is for.
 
 ## Working with Git
 
