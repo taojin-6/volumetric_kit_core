@@ -21,7 +21,7 @@ namespace volumetric_kit::core {
 ///
 /// Indices refer to the allocating physical device's memory properties.
 /// `HOST_VISIBLE` and `DEVICE_LOCAL` can both be set -- on unified memory
-/// (Apple silicon, mobile) and on a discrete GPU's host-visible device heap --
+/// and on a discrete GPU's host-visible device heap --
 /// so being mappable does not mean living in system memory.
 ///
 /// @code

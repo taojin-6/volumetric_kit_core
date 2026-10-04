@@ -11,6 +11,7 @@
 // indirect dispatch, rewritten sets, the refusals, the moves, and several
 // threads at once.
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -23,6 +24,9 @@
 #include <gtest/gtest.h>
 
 #include "add_comp.spv.hpp"
+#include "batch_visibility_frag.spv.hpp"
+#include "batch_visibility_vert.spv.hpp"
+#include "command_batch_barriers.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -32,6 +36,9 @@
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/shader.hpp"
+#include "volumetric_kit/core/vulkan/unique_handle.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "vulkan_device_fixture.hpp"
 
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
@@ -227,6 +234,279 @@ class BatchTest : public test::VulkanDeviceTest {
   Buffer a_;
   Buffer b_;
 };
+
+TEST(BatchBarriers, TransferOnlyScopesNeedNoShaderOrDrawSupport) {
+  const detail::BatchScope writes = detail::batch_writes(VK_QUEUE_TRANSFER_BIT);
+  const detail::BatchScope commands =
+      detail::batch_commands(VK_QUEUE_TRANSFER_BIT);
+  const detail::BatchScope consumers =
+      detail::batch_consumers(VK_QUEUE_TRANSFER_BIT);
+  EXPECT_EQ(writes.stages, VK_PIPELINE_STAGE_TRANSFER_BIT);
+  EXPECT_EQ(commands.stages, VK_PIPELINE_STAGE_TRANSFER_BIT);
+  EXPECT_EQ(consumers.stages,
+            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT);
+  EXPECT_EQ(writes.access, VK_ACCESS_TRANSFER_WRITE_BIT);
+  EXPECT_EQ(commands.access,
+            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+  EXPECT_EQ(consumers.access, commands.access | VK_ACCESS_HOST_READ_BIT);
+}
+
+TEST(BatchBarriers, GraphicsAndComputeScopesFollowTheirQueueCapabilities) {
+  const detail::BatchScope graphics_writes =
+      detail::batch_writes(VK_QUEUE_GRAPHICS_BIT);
+  const detail::BatchScope graphics_commands =
+      detail::batch_commands(VK_QUEUE_GRAPHICS_BIT);
+  const detail::BatchScope graphics_consumers =
+      detail::batch_consumers(VK_QUEUE_GRAPHICS_BIT);
+  EXPECT_EQ((graphics_writes.stages | graphics_commands.stages |
+             graphics_consumers.stages) &
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0U);
+  EXPECT_NE(graphics_consumers.stages & VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0U);
+  EXPECT_NE(graphics_consumers.access & VK_ACCESS_UNIFORM_READ_BIT, 0U);
+  const detail::BatchScope compute_consumers =
+      detail::batch_consumers(VK_QUEUE_COMPUTE_BIT);
+  EXPECT_EQ(compute_consumers.stages & (VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
+                                        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT),
+            0U);
+  EXPECT_NE(compute_consumers.stages & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0U);
+}
+
+// Exercises the final dependency against actual graphics-stage descriptor
+// reads. The barrier mode runs the production recorder immediately before a
+// draw: waiting on a fence between submissions retires validation's access
+// history, so testing only the public blocking submit would miss this hazard.
+// The other mode also checks the complete public upload-to-render path.
+class BatchGraphicsTest : public test::VulkanDeviceTest,
+                          public ::testing::WithParamInterface<bool> {
+ protected:
+  DeviceRequirements requirements() const override {
+    DeviceRequirements req;
+    req.api_version = VK_API_VERSION_1_3;
+    req.queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    req.dynamic_rendering = true;
+    return req;
+  }
+
+  Status render_uploaded_descriptors(bool public_batch,
+                                     std::array<std::uint8_t, 4>& pixel) {
+    constexpr std::array<std::uint32_t, 4> kValues{17, 34, 68, 102};
+    std::array<Buffer, 4> inputs;
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    for (std::uint32_t i = 0; i < inputs.size(); ++i) {
+      const bool uniform = i % 2 == 0;
+      BufferDesc desc;
+      desc.size = 16;
+      desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                   (uniform ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                            : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      VKC_ASSIGN(inputs[i], allocator().create_buffer(desc));
+      bindings[i].binding = i;
+      bindings[i].descriptorType = uniform ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                           : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      bindings[i].descriptorCount = 1;
+      bindings[i].stageFlags =
+          i < 2 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VKC_ASSIGN(const DescriptorSetLayout layout,
+               DescriptorSetLayout::create(device().handle(), bindings.data(),
+                                           bindings.size()));
+    const VkDescriptorPoolSize sizes[] = {
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+    VKC_ASSIGN(DescriptorPool pool,
+               DescriptorPool::create(device().handle(), sizes, 2, 1));
+    VKC_ASSIGN(DescriptorSet set, pool.allocate(layout.handle()));
+    for (std::uint32_t i = 0; i < inputs.size(); ++i) {
+      if (i % 2 == 0) {
+        set.write_uniform_buffer(i, inputs[i].handle(), 0, inputs[i].size());
+      } else {
+        set.write_storage_buffer(i, inputs[i].handle(), 0, inputs[i].size());
+      }
+    }
+    std::vector<std::uint32_t> vertex_code(
+        vkc_test_batch_visibility_vert_spv_size / sizeof(std::uint32_t));
+    std::vector<std::uint32_t> fragment_code(
+        vkc_test_batch_visibility_frag_spv_size / sizeof(std::uint32_t));
+    std::memcpy(vertex_code.data(), vkc_test_batch_visibility_vert_spv,
+                vkc_test_batch_visibility_vert_spv_size);
+    std::memcpy(fragment_code.data(), vkc_test_batch_visibility_frag_spv,
+                vkc_test_batch_visibility_frag_spv_size);
+    VKC_ASSIGN(const ShaderModule vertex,
+               ShaderModule::create(device().handle(), vertex_code.data(),
+                                    vkc_test_batch_visibility_vert_spv_size));
+    VKC_ASSIGN(const ShaderModule fragment,
+               ShaderModule::create(device().handle(), fragment_code.data(),
+                                    vkc_test_batch_visibility_frag_spv_size));
+    VkDescriptorSetLayout raw_layout = layout.handle();
+    VkPipelineLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_info.setLayoutCount = 1;
+    layout_info.pSetLayouts = &raw_layout;
+    VkPipelineLayout raw_pipeline_layout = VK_NULL_HANDLE;
+    VKC_VK_TRY(vkCreatePipelineLayout(device().handle(), &layout_info, nullptr,
+                                      &raw_pipeline_layout));
+    const UniqueHandle<VkPipelineLayout, vkDestroyPipelineLayout>
+        pipeline_layout(device().handle(), raw_pipeline_layout);
+    VKC_ASSIGN(auto pipeline,
+               graphics_pipeline(vertex, fragment, raw_pipeline_layout));
+
+    ImageDesc image_desc;
+    image_desc.extent = {1, 1};
+    image_desc.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_desc.usage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    VKC_ASSIGN(Image target, allocator().create_image(image_desc));
+    BufferDesc readback_desc;
+    readback_desc.size = pixel.size();
+    readback_desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    readback_desc.memory = MemoryUsage::Staging;
+    readback_desc.host_access = HostAccess::Random;
+    VKC_ASSIGN(Buffer readback, allocator().create_buffer(readback_desc));
+    if (public_batch) {
+      CommandBatch batch(device(), allocator());
+      for (std::uint32_t i = 0; i < inputs.size(); ++i) {
+        VKC_TRY(batch.upload(inputs[i], 0, &kValues[i], sizeof(kValues[i])));
+      }
+      VKC_TRY(batch.submit());
+    }
+    VKC_TRY(device().submit_single_time([&](VkCommandBuffer cmd) {
+      VkImageMemoryBarrier transition{};
+      transition.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      transition.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      transition.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      transition.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      transition.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      transition.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      transition.image = target.handle();
+      transition.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
+                           nullptr, 0, nullptr, 1, &transition);
+      if (!public_batch) {
+        for (std::uint32_t i = 0; i < inputs.size(); ++i) {
+          vkCmdUpdateBuffer(cmd, inputs[i].handle(), 0, sizeof(kValues[i]),
+                            &kValues[i]);
+        }
+        detail::batch_final_barrier(cmd, device().queue_flags());
+      }
+      VkRenderingAttachmentInfo color{};
+      color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+      color.imageView = target.view();
+      color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      VkRenderingInfo rendering{};
+      rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+      rendering.renderArea.extent = {1, 1};
+      rendering.layerCount = 1;
+      rendering.colorAttachmentCount = 1;
+      rendering.pColorAttachments = &color;
+      vkCmdBeginRendering(cmd, &rendering);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.get());
+      const auto raw_set = set.handle();
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              raw_pipeline_layout, 0, 1, &raw_set, 0, nullptr);
+      vkCmdDraw(cmd, 3, 1, 0, 0);
+      vkCmdEndRendering(cmd);
+      transition.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      transition.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      transition.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      transition.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                           nullptr, 1, &transition);
+      VkBufferImageCopy region{};
+      region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.imageExtent = {1, 1, 1};
+      vkCmdCopyImageToBuffer(cmd, target.handle(),
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             readback.handle(), 1, &region);
+      test::host_read_barrier(cmd);
+    }));
+    std::memcpy(pixel.data(), readback.mapped(), pixel.size());
+    return {};
+  }
+
+  Result<UniqueHandle<VkPipeline, vkDestroyPipeline>> graphics_pipeline(
+      const ShaderModule& vertex, const ShaderModule& fragment,
+      VkPipelineLayout layout) {
+    const VkPipelineShaderStageCreateInfo stages[] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+         VK_SHADER_STAGE_VERTEX_BIT, vertex.handle(), "main", nullptr},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+         VK_SHADER_STAGE_FRAGMENT_BIT, fragment.handle(), "main", nullptr}};
+    VkPipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo assembly{};
+    assembly.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    const VkViewport viewport{0, 0, 1, 1, 0, 1};
+    const VkRect2D scissor{{0, 0}, {1, 1}};
+    VkPipelineViewportStateCreateInfo viewports{};
+    viewports.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewports.viewportCount = 1;
+    viewports.pViewports = &viewport;
+    viewports.scissorCount = 1;
+    viewports.pScissors = &scissor;
+    VkPipelineRasterizationStateCreateInfo raster{};
+    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.lineWidth = 1;
+    const VkPipelineMultisampleStateCreateInfo samples{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        nullptr,
+        0,
+        VK_SAMPLE_COUNT_1_BIT,
+        VK_FALSE,
+        0,
+        nullptr,
+        VK_FALSE,
+        VK_FALSE};
+    VkPipelineColorBlendAttachmentState color{};
+    color.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo blend{};
+    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &color;
+    const VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkPipelineRenderingCreateInfo rendering{};
+    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &format;
+    VkGraphicsPipelineCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    info.pNext = &rendering;
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertex_input;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewports;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState = &samples;
+    info.pColorBlendState = &blend;
+    info.layout = layout;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VKC_VK_TRY(vkCreateGraphicsPipelines(device().handle(), VK_NULL_HANDLE, 1,
+                                         &info, nullptr, &pipeline));
+    return UniqueHandle<VkPipeline, vkDestroyPipeline>(device().handle(),
+                                                       pipeline);
+  }
+};
+
+TEST_P(BatchGraphicsTest, UploadsAreVisibleToGraphicsDescriptors) {
+  std::array<std::uint8_t, 4> pixel{};
+  const Status rendered = render_uploaded_descriptors(GetParam(), pixel);
+  ASSERT_TRUE(rendered.ok()) << rendered.message();
+  EXPECT_EQ(pixel, (std::array<std::uint8_t, 4>{17, 34, 68, 102}));
+}
+
+INSTANTIATE_TEST_SUITE_P(FinalBarrierAndPublicBatch, BatchGraphicsTest,
+                         ::testing::Bool());
 
 // --- in order, over both memory kinds ----------------------------------------
 

@@ -16,9 +16,9 @@ their own bottom layer. On 2026-10-03 the copies had already drifted:
   result, shader, unique_handle, vulkan), but the implementations differed
   throughout: the allocators almost line for line, `device` by about 720
   lines.
-- A measured fix stayed in one copy. After an RTX 5090 measurement (one kernel
-  went from 14.6 ms to 0.067 ms once its buffers sat in VRAM), `recon` made
-  `DeviceLocal` *require* device-local memory; `gfx` still only prefers it.
+- A memory-placement fix stayed in one copy: `recon` made `DeviceLocal`
+  *require* device-local memory after host-memory accesses across PCIe slowed
+  its kernels; `gfx` still only prefers it.
 - The shared-device bootstrap existed twice: `recon`'s
   `examples/viewer/shared_device.hpp` (720 lines) and `ios`'s
   `Bridge/SharedDevice` (756 lines).
@@ -46,9 +46,9 @@ uses (`gfx` never pulls in a camera model or a vendor SDK):
   pipelines) stay in `gfx`; consumers migrate in the order `recon`, `gfx`
   (re-measuring its frame times, since its allocator semantics change), `ios`
   (deleting its `SharedDevice` copy).
-- `camera` starts with the rational model (k1–k6, p1, p2), which holds the
-  Orbbec Femto Mega's factory lens exactly and is what `recon`'s calibration
-  file stores. Fisheye (Kannala-Brandt) is planned, not built: the interface
+- `camera` starts with the rational model (k1–k6, p1, p2), matching the
+  factory calibration format that `recon`'s calibration file stores.
+  Fisheye (Kannala-Brandt) is planned, not built: the interface
   returns unit 3D rays so it can be added without a break.
 - `sensor` moves `recon`'s sensor tier here, so `calib` and `recon` share one
   driver per device.
@@ -87,8 +87,8 @@ V1's choices, from comparing the two cores on 2026-10-03:
   `compute_*` and gfx's `graphics_*`. The present queue is the primary queue
   when its family can present.
 - **recon's submit model.** Each submit records on a command pool of its own,
-  so submission is thread-safe, and keeps its fence, as creating one cost an
-  RTX 5090 about 0.3 ms. gfx's single shared `command_pool()` goes; its
+  so submission is thread-safe, and keeps its fence to avoid per-submit
+  creation overhead. gfx's single shared `command_pool()` goes; its
   `submit_and_wait`, `queue_present` and `wait_idle` stay, on the same kept
   fences. `submit_mutex()` is never null (recon's): a device's own mutex
   guards an unshared queue, so several threads may submit through one
@@ -143,8 +143,7 @@ V2's choices, from the same comparison:
 
 - **recon's memory rules**, tightened since (see "Where memory lives"):
   kernel memory *requires* `DEVICE_LOCAL`, so an allocation fails rather
-  than spill bulk kernel data into host memory across PCIe (recon measured a
-  TSDF kernel at 14.6 ms there against 0.067 ms in VRAM); gfx only preferred
+  than spill bulk kernel data into host memory across PCIe; gfx only preferred
   it. A host-visible buffer is mapped persistently and coherent, so
   `mapped()` is a plain pointer. A device-address usage is refused, as
   recon's `MarchingCubes` refused it:
@@ -153,15 +152,16 @@ V2's choices, from the same comparison:
 - **Sharing from the queue families a resource names.** Two or more distinct
   families give `CONCURRENT`, one or none `EXCLUSIVE`; duplicates count once,
   and a family the device lacks is refused. recon's rule, now for images too:
-  gfx's were always exclusive, which is undefined when another family -- on
-  Apple, a compute library's -- reads them. `BufferDesc::kMaxQueueFamilies`
+  gfx's were always exclusive, which needs an ownership transfer when another
+  family reads them. `BufferDesc::kMaxQueueFamilies`
   and `check_queue_family_count` stay for recon's configs.
 - **Resources outlive their allocator safely.** Each buffer and image holds a
   reference to the VMA state, freed with the last of them (recon's); a
   documented destruction order cannot express `a = std::move(b)`.
 - **One allocator per library per device**, separate from `Device`: VMA
   allocators are independent bookkeeping over one `VkDevice`, so a library
-  sharing an adopted device still reports only its own memory.
+  sharing an adopted device reports its own reserved and live allocation
+  bytes separately from process-wide heap-budget usage.
 - **One `Image` type** replaces gfx's `Texture` and recon's adopted `Image`:
   made by `Allocator::create_image` with gfx's validation (3D, arrays, cubes,
   mips, multisampling, a default view whose type and aspect follow the image),
@@ -217,6 +217,13 @@ V3's choices, from the same comparison (gfx has no compute):
   poisons the batch, and a descriptor set rewritten after its dispatch
   refused at submit. Kernel memory is never mapped, so unified memory runs the
   path a discrete GPU does (the open "Unified memory" question below).
+- **Batch barriers follow queue capabilities.** Transfer-only work can run
+  without naming unsupported compute stages; dispatch requires a compute
+  queue. The final barrier includes graphics uniform and storage-buffer
+  accesses on a graphics queue, alongside vertex/index and indirect input.
+  Vertex-input visibility alone does not cover a renderer's descriptor reads.
+  Across queues, consumers still provide the semaphore and any ownership
+  transfer required by the handoff.
 - **A batch records handles, not objects.** A dispatch takes the kernel's
   pipeline and a copy of its set, never a pointer to the caller's object,
   which may move -- a vector of kernels that grows -- or go before the submit.
@@ -353,7 +360,7 @@ the surface was made:
 ### Where memory lives
 
 Everything the GPU reads or writes directly is device-local, on both memory
-architectures, so a discrete GPU (an NVIDIA system) never runs a shader, a
+architectures, so a discrete GPU never runs a shader, a
 vertex fetch or an indirect read against host memory across PCIe: host memory
 reaches the GPU only by a copy. Each placement is a memory-type mask, not a
 preference: VMA scores `DEVICE_LOCAL` alone and `DEVICE_LOCAL | HOST_VISIBLE`
@@ -368,7 +375,7 @@ rules after review, the same day.
 
 | Data | Usage | Discrete GPU (DRAM + VRAM) | Unified memory |
 | --- | --- | --- | --- |
-| Kernel buffers, images, scratch (`device_storage_buffer`, `create_image`) | `DeviceOnly` | VRAM the host cannot map, never the BAR window | GPU-private storage where the device has it (Apple); else the one pool, unmapped |
+| Kernel buffers, images, scratch (`device_storage_buffer`, `create_image`) | `DeviceOnly` | VRAM the host cannot map, never the BAR window | GPU-private storage where the device has it; else the one pool, unmapped |
 | Data the host writes and shaders read: uniforms, per-frame parameters, tables (`mapped_storage_buffer`) | `DeviceMapped` | VRAM through the BAR window (all of VRAM under Resizable BAR) | the one pool, mapped |
 | Uploads and readbacks (`CommandBatch`) | `Staging`, transfer usage only | system RAM: write-combined uploads, cached readbacks | the one pool |
 
@@ -383,16 +390,16 @@ rules after review, the same day.
   resource allows; a device with no such type at all -- lavapipe, most
   integrated and mobile GPUs, whose every device-local type is host-visible
   -- has one pool, and takes it. A resource no private type suits takes the
-  rest of the pool on unified memory (a linear image on Apple) and is
+  rest of the pool on unified memory and is
   refused (`Unsupported`) otherwise, as the rest of a discrete GPU's
   device-local memory is the BAR window. Images take only this, so a driver
-  may compress and tile them (Apple's private storage).
+  may compress and tile them.
 - **`DeviceMapped`** takes device-local, host-coherent types only: the BAR
   window on a discrete GPU, the one pool on unified memory. A device without
   one refuses it (`Unsupported`; `PhysicalDeviceInfo::device_mapped_memory`
   says beforehand), and a full BAR window fails the allocation; neither falls
   back to host memory. It is for small data on a discrete GPU: without
-  Resizable BAR the window is 256 MiB, shared by every library, so a bulk
+  Resizable BAR the window can be small, shared by every library, so a bulk
   input is staged into `DeviceOnly` memory (`StorageInput`), and a buffer the
   host fills for a copy is `Staging`. The host writes it sequentially: its
   reads of the BAR window cross PCIe uncached, so results come back by
@@ -406,19 +413,28 @@ rules after review, the same day.
   `Staging`, and requires them for `DeviceMapped`, so the host never reads a
   discrete GPU's uncached BAR window: there it is refused (`Unsupported`),
   and unified memory, which has cached device-local memory, takes it.
-- **A full heap, or one past its budget, fails.** Nothing moves to slower
-  memory behind a caller's back; `VK_ERROR_OUT_OF_DEVICE_MEMORY` reaches it.
-  Every allocation stays within its heap's budget: VMA's `WITHIN_BUDGET`
-  keeps it from adding a block past it, and the allocator leaves out each
-  heap without room before VMA chooses, as VMA checks no budget for an
-  allocation it makes dedicated because it is large. The budget is the
-  driver's where `VK_EXT_memory_budget` is enabled -- `Device::create`
-  enables it where offered -- so an allocation that would have the driver
-  page VRAM out to system memory is refused instead; without it, VMA's
-  estimate counts only its own allocator, against 80% of the heap.
-- **Special memory stays out.** Lazily allocated, protected, and AMD's
+- **Reuse precedes budget admission for new memory.** Free space in VMA's
+  existing blocks already counts toward heap usage, so buffer and image
+  suballocations try it first, even when the reported budget has fallen below
+  usage. Resources requiring dedicated allocations skip that attempt. New
+  memory is limited to candidate heaps with budget room, with VMA's
+  `WITHIN_BUDGET` checking block growth too; the explicit admission check also
+  covers VMA's heuristic dedicated-allocation path. Exhaustion returns
+  `VK_ERROR_OUT_OF_DEVICE_MEMORY`, never a spill to another placement.
+  The driver reports current-process usage and a changing budget where
+  `VK_EXT_memory_budget` is enabled; otherwise VMA estimates its own usage
+  against 80% of each heap. Budgets are admission estimates, not reservations
+  or guarantees of permanent residency.
+- **Allocator accounting is separate from heap budgeting.**
+  `HeapStats::usage_bytes` counts this allocator's reserved blocks and
+  `allocation_bytes` its live suballocations. These may be summed across
+  sibling allocators. `heap_usage_bytes` is the usage estimate paired with
+  `budget_bytes`, including other allocations in the current process when
+  the memory-budget extension is enabled; it must not be summed across
+  allocators. Budget checks use that estimate, not per-library accounting.
+- **Special memory stays out.** Lazily allocated, protected, and feature-gated
   device-coherent and device-uncached memory are never a placement's: each
-  needs a use or a feature this tier does not have, and VMA leaves the AMD
+  needs a use or a feature this tier does not have, and VMA leaves the latter
   kinds out of every allocation, so a mask that counted them would promise
   memory VMA refuses.
 - **Migrations.** recon's `DeviceLocal` and gfx's preferred `DeviceLocal`
@@ -468,11 +484,12 @@ rules after review, the same day.
   the driver does not call device-local. A library may branch on it; the
   core's own paths do not yet (the open "Unified memory" question; a
   `TODO:` in `StorageInput::buffer` marks where).
-- **The masks are tested against real drivers' layouts** -- NVIDIA and AMD
-  discrete with a BAR window, one without, Apple, Intel, Mali, lavapipe, an
-  AMD APU, AMD device-coherent memory -- with one resource's placement, the
-  host-access rules and the budget cut, without a device, as no CI runner
-  has a discrete GPU.
+- **The masks are tested against memory topologies**: separate host/device
+  heaps with and without a BAR window, unified heaps with and without private
+  types, device-local carve-outs, and feature-gated memory. These cover a
+  resource's placement, host-access rules and budget admission without a
+  device. VMA allocation tests separately cover buffer and image reuse under
+  a reduced budget; hardware coverage remains a separate requirement.
 
 ### Naming
 
@@ -484,6 +501,9 @@ rules after review, the same day.
 - Targets are `volumetric_kit::core_<tier>`, plus the umbrella
   `volumetric_kit::core`. Library files are prefixed
   (`libvolumetric_kit_core_base`), since they land in shared lib directories.
+- Hardware examples and test fixtures name capabilities and memory layouts,
+  not specific devices or vendors. Actual backend/API identifiers and runtime
+  device diagnostics retain their names.
 
 ### Merging the three `Status`/`Result` types
 
@@ -540,6 +560,9 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
   Every call shares one handler object (a stateful handler keeps its state),
   and the old handler is destroyed without the lock held (its destructor may
   log).
+  A returning call on a replaced handler wakes waiters even when other calls
+  remain: a handler replacing itself waits only for calls on other threads,
+  leaving its own active callbacks to return afterwards.
 
 ### One instance per process
 
@@ -593,8 +616,11 @@ decision, landing with its CI leg.
 
 ## Open decisions
 
-- **GPU CI for the vulkan tier.** lavapipe covers correctness on hosted
-  runners, but no real GPU runs here yet. `recon`'s GPU runners
+- **Discrete GPU CI for the vulkan tier.** Hosted Linux uses lavapipe;
+  macOS requires a Vulkan device. Both require validation, with synchronization
+  checks enabled and shader-access checks requested where supported by the
+  layer. No discrete-memory runner is registered
+  here yet. `recon`'s GPU runners
   (`vk-linux-gpu`, `mac`) are registered per repository, so they must be
   registered here too. They were to come before the allocator (V2), whose
   memory placement differs on a discrete GPU; V2 landed without them, so the
@@ -606,8 +632,8 @@ decision, landing with its CI leg.
   Vulkan-Headers 1.4.357 and links the loader privately. Both in one build
   would mix two header versions. Decide at gfx's migration: gfx adopts the
   system headers, or the core vendors the same pin.
-- **Unified memory.** `recon` deliberately runs the staged path on Apple too,
-  pending a staging measurement on the iPad. The vulkan tier inherits that
+- **Unified memory.** `recon` deliberately runs the staged path on unified
+  memory too, pending measurements of staging cost. The vulkan tier inherits that
   rule until the measurement says otherwise. On unified memory a staged
   upload costs one GPU copy within the same DRAM; the alternative,
   `DeviceMapped` memory the host writes in place and a kernel reads as a

@@ -28,6 +28,7 @@
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
+#include "allocation_budget.hpp"
 #include "memory_types.hpp"
 #include "queue_families.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -51,6 +52,7 @@ struct Allocator::Impl {
   std::uint32_t queue_family_count = 0;
   // The heaps and types each placement is cut from (memory_types.hpp).
   VkPhysicalDeviceMemoryProperties memory{};
+  bool dedicated_queries = false;
 
   Impl() = default;
   Impl(const Impl&) = delete;
@@ -62,27 +64,55 @@ struct Allocator::Impl {
 
 namespace {
 
-// VMA's parameters for a resource of `needs` in `types`, the exact mask
-// detail::placement_types cut for it, less every type whose heap has no room
-// for it within its budget: VMA checks the budget for an allocation it puts
-// in a block, not for one it makes dedicated because it is large. The mask
-// alone decides the type: no usage, so VMA adds no preference of its own --
-// it scores DEVICE_LOCAL alone and DEVICE_LOCAL | HOST_VISIBLE the same for
-// memory the host never touches, breaking the tie by the driver's type
-// order -- and on a full heap it moves on only to another type of the mask.
-// VK_ERROR_OUT_OF_DEVICE_MEMORY when every heap is past its budget.
-VkResult allocation_info(const Allocator& allocator,
-                         const VkPhysicalDeviceMemoryProperties& memory,
-                         const VkMemoryRequirements& needs, std::uint32_t types,
-                         bool mapped, VmaAllocationCreateInfo& info) {
-  info = {};
-  info.usage = VMA_MEMORY_USAGE_UNKNOWN;
-  info.memoryTypeBits = detail::types_within_budget(memory, types, needs.size,
-                                                    allocator.memory_stats());
-  if (info.memoryTypeBits == 0) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-  info.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
-  if (mapped) info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
-  return VK_SUCCESS;
+// Core 1.1 exposes mandatory dedicated-allocation requirements. The legacy
+// query remains valid for an adopted 1.0 device, on which VMA enables neither
+// dedicated-allocation extension. A required dedicated allocation must skip
+// the attempt to reuse a block, which VMA would reject as contradictory.
+struct ResourceRequirements {
+  VkMemoryRequirements memory{};
+  bool dedicated = false;
+};
+
+ResourceRequirements buffer_requirements(VkDevice device, VkBuffer buffer,
+                                         bool dedicated_queries) {
+  ResourceRequirements result;
+  if (!dedicated_queries) {
+    vkGetBufferMemoryRequirements(device, buffer, &result.memory);
+    return result;
+  }
+  VkMemoryDedicatedRequirements dedicated{};
+  dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+  VkMemoryRequirements2 requirements{};
+  requirements.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+  requirements.pNext = &dedicated;
+  VkBufferMemoryRequirementsInfo2 info{};
+  info.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2;
+  info.buffer = buffer;
+  vkGetBufferMemoryRequirements2(device, &info, &requirements);
+  result.memory = requirements.memoryRequirements;
+  result.dedicated = dedicated.requiresDedicatedAllocation == VK_TRUE;
+  return result;
+}
+
+ResourceRequirements image_requirements(VkDevice device, VkImage image,
+                                        bool dedicated_queries) {
+  ResourceRequirements result;
+  if (!dedicated_queries) {
+    vkGetImageMemoryRequirements(device, image, &result.memory);
+    return result;
+  }
+  VkMemoryDedicatedRequirements dedicated{};
+  dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+  VkMemoryRequirements2 requirements{};
+  requirements.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+  requirements.pNext = &dedicated;
+  VkImageMemoryRequirementsInfo2 info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
+  info.image = image;
+  vkGetImageMemoryRequirements2(device, &info, &requirements);
+  result.memory = requirements.memoryRequirements;
+  result.dedicated = dedicated.requiresDedicatedAllocation == VK_TRUE;
+  return result;
 }
 
 // The refusal for a resource no type of its placement suits.
@@ -136,8 +166,8 @@ Result<Sharing> sharing_for(const std::uint32_t* families, std::uint32_t count,
   // An index naming no family is undefined under CONCURRENT
   // (VUID-VkBufferCreateInfo-sharingMode-01419), and VMA still succeeds, so
   // with layers off nothing reports it. It is how an app that hardcodes its
-  // compute and render families -- valid on Apple's four -- breaks on a
-  // single-family driver such as lavapipe.
+  // compute and render families for one driver breaks on another with fewer
+  // families.
   for (std::uint32_t i = 0; i < sharing.count; ++i) {
     if (sharing.families[i] >= device_family_count) {
       return Status::invalid_argument(
@@ -329,6 +359,7 @@ Result<Allocator> Allocator::create(VkInstance instance, const Device& device) {
   impl->queue_family_count =
       static_cast<std::uint32_t>(device.caps().queue_families().size());
   impl->memory = device.caps().memory_properties();
+  impl->dedicated_queries = info.vulkanApiVersion >= VK_API_VERSION_1_1;
 
   Allocator allocator;
   allocator.impl_ = std::move(impl);
@@ -389,8 +420,9 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
   // requirements allow, rather than found wanting by an allocation.
   VkBuffer buffer = VK_NULL_HANDLE;
   VKC_VK_TRY(vkCreateBuffer(impl_->device, &buffer_info, nullptr, &buffer));
-  VkMemoryRequirements needs{};
-  vkGetBufferMemoryRequirements(impl_->device, buffer, &needs);
+  const ResourceRequirements requirements =
+      buffer_requirements(impl_->device, buffer, impl_->dedicated_queries);
+  const VkMemoryRequirements& needs = requirements.memory;
   const std::uint32_t types = detail::placement_types(
       impl_->memory, desc.memory, desc.host_access, needs.memoryTypeBits);
   if (types == 0) {
@@ -400,17 +432,16 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
   // A device-mapped or staging buffer is mapped persistently, and its types
   // are coherent, so mapped() is a plain pointer: writes need no flush.
   const bool mapped = desc.memory != MemoryUsage::DeviceOnly;
-  VmaAllocationCreateInfo alloc_info{};
   VmaAllocation allocation = nullptr;
   VmaAllocationInfo out{};
-  const char* step = "create_buffer: past every candidate heap's budget";
-  VkResult made =
-      allocation_info(*this, impl_->memory, needs, types, mapped, alloc_info);
-  if (made == VK_SUCCESS) {
-    step = "vmaAllocateMemoryForBuffer";
-    made = vmaAllocateMemoryForBuffer(impl_->allocator, buffer, &alloc_info,
-                                      &allocation, &out);
-  }
+  const char* step = "vmaAllocateMemoryForBuffer";
+  VkResult made = detail::allocate_with_budget(
+      impl_->memory, needs, types, mapped, requirements.dedicated,
+      [&](const VmaAllocationCreateInfo& info) {
+        return vmaAllocateMemoryForBuffer(impl_->allocator, buffer, &info,
+                                          &allocation, &out);
+      },
+      [&] { return memory_stats(); });
   if (made == VK_SUCCESS) {
     step = "vmaBindBufferMemory";
     made = vmaBindBufferMemory(impl_->allocator, allocation, buffer);
@@ -467,8 +498,9 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
 
   VkImage image = VK_NULL_HANDLE;
   VKC_VK_TRY(vkCreateImage(impl_->device, &image_info, nullptr, &image));
-  VkMemoryRequirements needs{};
-  vkGetImageMemoryRequirements(impl_->device, image, &needs);
+  const ResourceRequirements requirements =
+      image_requirements(impl_->device, image, impl_->dedicated_queries);
+  const VkMemoryRequirements& needs = requirements.memory;
   // The host access is ignored for device-only memory.
   const std::uint32_t types = detail::placement_types(
       impl_->memory, MemoryUsage::DeviceOnly, HostAccess::SequentialWrite,
@@ -477,17 +509,16 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
     vkDestroyImage(impl_->device, image, nullptr);
     return unsuited("create_image", MemoryUsage::DeviceOnly);
   }
-  VmaAllocationCreateInfo alloc_info{};
   VmaAllocation allocation = nullptr;
   VmaAllocationInfo out{};
-  const char* step = "create_image: past every candidate heap's budget";
-  VkResult made = allocation_info(*this, impl_->memory, needs, types,
-                                  /*mapped=*/false, alloc_info);
-  if (made == VK_SUCCESS) {
-    step = "vmaAllocateMemoryForImage";
-    made = vmaAllocateMemoryForImage(impl_->allocator, image, &alloc_info,
-                                     &allocation, &out);
-  }
+  const char* step = "vmaAllocateMemoryForImage";
+  VkResult made = detail::allocate_with_budget(
+      impl_->memory, needs, types, /*mapped=*/false, requirements.dedicated,
+      [&](const VmaAllocationCreateInfo& info) {
+        return vmaAllocateMemoryForImage(impl_->allocator, image, &info,
+                                         &allocation, &out);
+      },
+      [&] { return memory_stats(); });
   if (made == VK_SUCCESS) {
     step = "vmaBindImageMemory";
     made = vmaBindImageMemory(impl_->allocator, allocation, image);
@@ -561,18 +592,17 @@ Result<Buffer> Allocator::bind_exported(VkBuffer buffer, VkDeviceSize size,
   dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
   dedicated.pNext = export_info;
   dedicated.buffer = buffer;
-  VmaAllocationCreateInfo alloc_info{};
   VmaAllocation allocation = nullptr;
   VmaAllocationInfo out{};
-  const char* step =
-      "create_exported_buffer: past every candidate heap's budget";
-  VkResult made = allocation_info(*this, impl_->memory, needs, types,
-                                  /*mapped=*/false, alloc_info);
-  if (made == VK_SUCCESS) {
-    step = "vmaAllocateDedicatedMemory";
-    made = vmaAllocateDedicatedMemory(impl_->allocator, &needs, &alloc_info,
-                                      &dedicated, &allocation, &out);
-  }
+  const char* step = "vmaAllocateDedicatedMemory";
+  VkResult made = detail::allocate_with_budget(
+      impl_->memory, needs, types, /*mapped=*/false,
+      /*dedicated_required=*/true,
+      [&](const VmaAllocationCreateInfo& info) {
+        return vmaAllocateDedicatedMemory(impl_->allocator, &needs, &info,
+                                          &dedicated, &allocation, &out);
+      },
+      [&] { return memory_stats(); });
   if (made == VK_SUCCESS) {
     step = "vmaBindBufferMemory";
     made = vmaBindBufferMemory(impl_->allocator, allocation, buffer);
@@ -601,7 +631,10 @@ MemoryStats Allocator::memory_stats() const {
   vmaGetHeapBudgets(impl_->allocator, budgets);
   stats.heap_count = props->memoryHeapCount;
   for (std::uint32_t heap = 0; heap < stats.heap_count; ++heap) {
-    stats.heaps[heap].usage_bytes = budgets[heap].usage;
+    stats.heaps[heap].usage_bytes = budgets[heap].statistics.blockBytes;
+    stats.heaps[heap].allocation_bytes =
+        budgets[heap].statistics.allocationBytes;
+    stats.heaps[heap].heap_usage_bytes = budgets[heap].usage;
     stats.heaps[heap].budget_bytes = budgets[heap].budget;
   }
   return stats;

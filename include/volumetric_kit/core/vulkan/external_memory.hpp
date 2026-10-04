@@ -102,12 +102,12 @@ struct ExportedBuffer {
 ///        the @ref Allocator: the first that @p type_bits allows with every
 ///        flag of @p required and none of @p excluded.
 ///
-/// Protected, lazily allocated, and AMD device-coherent and device-uncached
-/// types are never chosen: the features they need are not enabled. Of the
-/// rest, Vulkan orders a type ahead of any whose flags strictly contain its
-/// own, so the first match is the plainest: asked for device-local alone, it
-/// is one the host cannot map wherever @p type_bits allows such a type
-/// outside those, keeping the resource out of a discrete GPU's BAR window.
+/// Protected, lazily allocated, and feature-gated device-coherent and
+/// device-uncached types are never chosen: the features they need are not
+/// enabled. Of the rest, Vulkan orders a type ahead of any whose flags strictly
+/// contain its own, so the first match is the plainest: asked for device-local
+/// alone, it is one the host cannot map wherever @p type_bits allows such a
+/// type outside those, keeping the resource out of a discrete GPU's BAR window.
 /// Where the only unmapped device-local type is one of those -- a mobile
 /// GPU's lazily allocated memory -- it is a host-visible one; exclude
 /// `HOST_VISIBLE` to refuse that instead.

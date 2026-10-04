@@ -83,6 +83,17 @@ there is none. Two environment variables tighten them, and CI sets both:
 - `VKC_TEST_VALIDATION=1` enables the Khronos validation layer and fails any
   test that triggers a validation error, or that runs without validation.
 
+CI also enables synchronization validation and requests shader-access checks
+where the layer supports them. Linux uses a software Vulkan driver; macOS
+requires an available device. Discrete
+DRAM/VRAM hardware coverage remains planned (DECISIONS.md, "Open decisions").
+
+`Allocator::memory_stats()` separates the allocator's reserved block bytes
+(`usage_bytes`) and live resource bytes (`allocation_bytes`) from heap-budget
+usage (`heap_usage_bytes`, paired with `budget_bytes`). Only the first two
+fields may be summed across sibling allocators; driver budget usage can
+include all allocations in the current process.
+
 ## Use it in your project
 
 Pin a release tag or a commit SHA -- never `main` -- so every consumer builds

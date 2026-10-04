@@ -127,7 +127,7 @@ TEST(QueuePlanChoice, OneQueueFamiliesGetTwoFamilies) {
 
 TEST(QueuePlanChoice, FamiliesThatCannotComputeLeaveOneSharedQueue) {
   // Several families need not mean two queues: a transfer or video family
-  // beside the one that does everything (Intel, copy engines) adds none.
+  // beside the one that does everything adds none.
   const std::optional<detail::QueueCarving> carving = plan_for(
       {family(kGraphics | kCompute | kTransfer, 1), family(kTransfer, 1),
        family(VK_QUEUE_VIDEO_DECODE_BIT_KHR, 1)});

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// Allocator, Buffer and Image on a real device (or lavapipe); see
+// Allocator, Buffer and Image on a Vulkan device; see
 // vulkan_fixture.hpp for skipping and validation.
 
 #include "volumetric_kit/core/vulkan/allocator.hpp"
@@ -404,6 +404,49 @@ TEST_F(AllocatorTest, ReportsMemoryPerHeap) {
   EXPECT_GT(moved.memory_stats().heap_count, 0u);
 }
 
+TEST_F(AllocatorTest, AllocatorAccountingDoesNotCountAnotherAllocatorsMemory) {
+  const Buffer buffer = make(256, kStorage, MemoryUsage::DeviceOnly);
+  const std::optional<MemoryInfo> memory = buffer.memory_info();
+  if (!memory.has_value()) {
+    FAIL() << "no memory info";
+  }
+  const std::uint32_t heap = memory->heap_index;
+  const MemoryStats allocated = allocator().memory_stats();
+  EXPECT_GE(allocated.heaps[heap].usage_bytes, 256U);
+  EXPECT_GE(allocated.heaps[heap].allocation_bytes, 256U);
+  EXPECT_LE(allocated.heaps[heap].allocation_bytes,
+            allocated.heaps[heap].usage_bytes);
+
+  // Created after the allocation, so an enabled driver-budget extension sees
+  // its process-wide usage in the second allocator's first query as well.
+  Result<Allocator> made = Allocator::create(instance().handle(), device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const Allocator empty = *std::move(made);
+  const MemoryStats unallocated = empty.memory_stats();
+  ASSERT_EQ(unallocated.heap_count, allocated.heap_count);
+  for (std::uint32_t i = 0; i < unallocated.heap_count; ++i) {
+    EXPECT_EQ(unallocated.heaps[i].usage_bytes, 0U);
+    EXPECT_EQ(unallocated.heaps[i].allocation_bytes, 0U);
+  }
+}
+
+TEST_F(AllocatorTest, LiveAllocationBytesDropWhenAResourceIsFreed) {
+  const MemoryStats before = allocator().memory_stats();
+  std::uint32_t heap = 0;
+  {
+    const Buffer buffer = make(256, kStorage, MemoryUsage::DeviceOnly);
+    const std::optional<MemoryInfo> memory = buffer.memory_info();
+    if (!memory.has_value()) {
+      FAIL() << "no memory info";
+    }
+    heap = memory->heap_index;
+    EXPECT_GE(allocator().memory_stats().heaps[heap].allocation_bytes,
+              before.heaps[heap].allocation_bytes + 256);
+  }
+  EXPECT_EQ(allocator().memory_stats().heaps[heap].allocation_bytes,
+            before.heaps[heap].allocation_bytes);
+}
+
 // --- images ------------------------------------------------------------------
 
 ImageDesc color_image(std::uint32_t width, std::uint32_t height) {
@@ -436,9 +479,9 @@ TEST_F(AllocatorTest, MakesADeviceOnlyImageWithAView) {
   EXPECT_TRUE(image->is_device_local());
 }
 
-// An image the device keeps out of private memory -- a linear one, which
-// Apple holds in shared storage -- is device-local all the same: the rest of
-// unified memory's one pool, and on a discrete GPU never the BAR window.
+// A linear image may allow only host-visible types. Unified memory can use
+// those device-local types; a discrete device with private storage refuses
+// the image rather than move it into the mapped window.
 TEST_F(AllocatorTest, ALinearImageIsDeviceLocal) {
   ImageDesc desc = color_image(16, 16);
   desc.tiling = VK_IMAGE_TILING_LINEAR;

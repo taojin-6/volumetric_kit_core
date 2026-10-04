@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <future>
 #include <memory>
 #include <string>
@@ -23,6 +24,69 @@ class LogTest : public ::testing::Test {
  protected:
   void TearDown() override { set_log_handler({}); }
 };
+
+// Runs in a child process so a missed notification fails in bounded time,
+// without leaving a blocked logging thread (and its handler) in the suite.
+[[noreturn]] void self_replacement_with_another_call(bool nested) {
+  constexpr auto kTimeout = std::chrono::seconds(5);
+  std::promise<void> entered;
+  std::promise<void> release;
+  std::promise<void> replaced;
+  auto entered_future = entered.get_future();
+  auto release_future = release.get_future();
+  auto replaced_future = replaced.get_future();
+  std::atomic<bool> replacement_observed{false};
+  set_log_handler([&](LogLevel, std::string_view, std::string_view message) {
+    if (message == "slow") {
+      entered.set_value();
+      release_future.wait();
+    } else if (message == "replace" && nested) {
+      log_message(LogLevel::Info, "test", "nested replace");
+    } else if (message == "replace" || message == "nested replace") {
+      set_log_handler([&](LogLevel, std::string_view, std::string_view) {
+        replacement_observed = true;
+      });
+      replaced.set_value();
+    }
+  });
+
+  std::thread slow([] { log_message(LogLevel::Info, "test", "slow"); });
+  if (entered_future.wait_for(kTimeout) != std::future_status::ready) {
+    std::_Exit(1);
+  }
+  std::thread replacing([] { log_message(LogLevel::Info, "test", "replace"); });
+  // Observing the new handler proves replacement has happened before the
+  // old call returns. It must still wait for that call, including when two
+  // nested old-handler calls on the replacing thread remain in flight.
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (!replacement_observed) {
+    if (std::chrono::steady_clock::now() >= deadline) std::_Exit(2);
+    log_message(LogLevel::Info, "test", "probe");
+    std::this_thread::yield();
+  }
+  if (replaced_future.wait_for(std::chrono::milliseconds(0)) ==
+      std::future_status::ready) {
+    std::_Exit(3);
+  }
+  release.set_value();
+  if (replaced_future.wait_for(kTimeout) != std::future_status::ready) {
+    std::_Exit(4);
+  }
+  slow.join();
+  replacing.join();
+  set_log_handler({});
+  std::_Exit(0);
+}
+
+TEST(LogDeathTest, SelfReplacementWaitsForAnotherThreadsCall) {
+  EXPECT_EXIT(self_replacement_with_another_call(false),
+              ::testing::ExitedWithCode(0), "");
+}
+
+TEST(LogDeathTest, NestedSelfReplacementWaitsForAnotherThreadsCall) {
+  EXPECT_EXIT(self_replacement_with_another_call(true),
+              ::testing::ExitedWithCode(0), "");
+}
 
 TEST_F(LogTest, HandlerReceivesLevelSourceAndMessage) {
   LogLevel level = LogLevel::Debug;

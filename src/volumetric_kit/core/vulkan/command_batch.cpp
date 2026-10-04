@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "command_batch_barriers.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -105,18 +106,6 @@ VkDeviceSize texel_bytes(VkFormat format) {
     default:
       return 0;
   }
-}
-
-void barrier(VkCommandBuffer cmd, VkPipelineStageFlags dst_stages,
-             VkAccessFlags dst_access) {
-  VkMemoryBarrier b{};
-  b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-  b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-  b.dstAccessMask = dst_access;
-  vkCmdPipelineBarrier(
-      cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-      dst_stages, 0, 1, &b, 0, nullptr, 0, nullptr);
 }
 
 }  // namespace
@@ -496,6 +485,10 @@ Status CommandBatch::dispatch(const ComputeKernel& kernel,
                               std::uint32_t push_size, std::uint32_t groups,
                               std::uint32_t max_groups, GpuStageScope* stage) {
   VKC_TRY(check(usable()));
+  if ((device_->queue_flags() & VK_QUEUE_COMPUTE_BIT) == 0) {
+    return check(
+        Status::unsupported("CommandBatch::dispatch: queue cannot compute"));
+  }
   VKC_TRY(check(check_dispatch(kernel, push, push_size)));
   if (!set.valid()) {
     return check(
@@ -519,6 +512,10 @@ Status CommandBatch::dispatch_indirect(const ComputeKernel& kernel,
                                        const Buffer& args, VkDeviceSize offset,
                                        GpuStageScope* stage) {
   VKC_TRY(check(usable()));
+  if ((device_->queue_flags() & VK_QUEUE_COMPUTE_BIT) == 0) {
+    return check(Status::unsupported(
+        "CommandBatch::dispatch_indirect: queue cannot compute"));
+  }
   VKC_TRY(check(check_dispatch(kernel, push, push_size)));
   if (offset % 4 != 0) {
     return check(Status::invalid_argument(
@@ -624,13 +621,10 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
 
 void CommandBatch::record(VkCommandBuffer cmd,
                           std::vector<TimerRun>& runs) const {
-  constexpr VkPipelineStageFlags kInnerStages =
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
-      VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-  constexpr VkAccessFlags kInnerAccess =
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-      VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
-      VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+  const detail::BatchScope writes =
+      detail::batch_writes(device_->queue_flags());
+  const detail::BatchScope commands =
+      detail::batch_commands(device_->queue_flags());
 
   // Each timer's queries reset once, ahead of every span it opens here, not
   // once between every two commands.
@@ -645,7 +639,7 @@ void CommandBatch::record(VkCommandBuffer cmd,
     // Each command sees every write before it -- the ordering one submit per
     // dispatch would give for free.
     if (i > 0 && needs_barrier(first, i)) {
-      barrier(cmd, kInnerStages, kInnerAccess);
+      detail::batch_barrier(cmd, writes, commands);
       first = i;
     }
     // Only a dispatch is named, so the others open no region. The region
@@ -688,13 +682,13 @@ void CommandBatch::record(VkCommandBuffer cmd,
         // them visible to everything after it, and waits on nothing before.
         VkBufferMemoryBarrier b{};
         b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        b.dstAccessMask = kInnerAccess;
+        b.dstAccessMask = commands.access;
         b.srcQueueFamilyIndex = op.value;
         b.dstQueueFamilyIndex = op.to_family;
         b.buffer = op.dst;
         b.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             kInnerStages, 0, 0, nullptr, 1, &b, 0, nullptr);
+                             commands.stages, 0, 0, nullptr, 1, &b, 0, nullptr);
         break;
       }
       case Kind::Release:
@@ -724,19 +718,10 @@ void CommandBatch::record(VkCommandBuffer cmd,
     }
     device_->end_debug_label(cmd, op.name);
   }
-  // The last write, visible to the host, to the next batch, and to a renderer
-  // drawing the result: at VERTEX_INPUT as vertices and indices, at
-  // DRAW_INDIRECT as a command. VERTEX_INPUT needs a graphics family, and the
-  // device may sit on a compute-only one (a discrete GPU's async-compute
-  // family), where a renderer is reached through a semaphore, which carries
-  // the visibility itself.
-  VkPipelineStageFlags stages = kInnerStages | VK_PIPELINE_STAGE_HOST_BIT;
-  VkAccessFlags access = kInnerAccess | VK_ACCESS_HOST_READ_BIT;
-  if ((device_->queue_flags() & VK_QUEUE_GRAPHICS_BIT) != 0) {
-    stages |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-    access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
-  }
-  barrier(cmd, stages, access);
+  // The final dependency covers all readers on this queue, including a
+  // renderer's uniforms and storage buffers. Another queue still needs its
+  // own synchronization, regardless of whether it belongs to the same family.
+  detail::batch_final_barrier(cmd, device_->queue_flags());
   // Each release last, so every command, whenever recorded, ran on the
   // buffer first: it waits for them all and makes their writes available to
   // the family the buffer goes to, whose acquire makes them visible.
@@ -744,12 +729,12 @@ void CommandBatch::record(VkCommandBuffer cmd,
     if (op.kind != Kind::Release) continue;
     VkBufferMemoryBarrier b{};
     b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.srcAccessMask = writes.access;
     b.srcQueueFamilyIndex = op.value;
     b.dstQueueFamilyIndex = op.to_family;
     b.buffer = op.dst;
     b.size = VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(cmd, kInnerStages,
+    vkCmdPipelineBarrier(cmd, commands.stages,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 1,
                          &b, 0, nullptr);
   }

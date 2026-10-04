@@ -133,7 +133,7 @@ struct AdoptedDevice {
 /// Submission is thread-safe: each submit records on a command pool no other
 /// submit is using, and only the `vkQueueSubmit` is serialized, under
 /// @ref submit_mutex. The fence each submit waits on is kept for the next, as
-/// creating one per submit cost an RTX 5090 about 0.3 ms.
+/// avoiding the driver overhead of creating one per submit.
 ///
 /// @warning The instance, and an adopted device's handles and mutexes, must
 ///          outlive this object; it stores only borrowed handles.

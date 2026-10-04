@@ -83,8 +83,8 @@ VKC_VULKAN_API Status check_storage_buffer_range(const char* what,
 ///
 /// The kernels reach it at device-local speed on every platform; on a
 /// discrete GPU it is VRAM through the BAR window, which the host writes
-/// across PCIe, and which without Resizable BAR is 256 MiB shared by every
-/// library on the device. Keep it to small data there, and stage a bulk
+/// across PCIe. Its limited capacity is shared by every library on the
+/// device. Keep it to small data there, and stage a bulk
 /// input -- a @ref StorageInput of host bytes, or a @ref CommandBatch::upload
 /// into a @ref device_storage_buffer -- as on a device without device-mapped
 /// memory (@ref PhysicalDeviceInfo::device_mapped_memory), which refuses
@@ -142,10 +142,8 @@ VKC_VULKAN_API Result<Buffer> upload_storage_buffer(
 /// On a discrete GPU it is VRAM the host cannot map, so nothing it holds
 /// crosses PCIe but what a @ref CommandBatch copies; memory that is not
 /// device-local would be reached across PCIe at every access.
-/// recon measured a hash table's bucket locks there at 1.97 s to allocate a
-/// 5 000-triangle sheet, against 3.4 ms device-local, and a TSDF integrate at
-/// 14.6 ms against 0.067 ms (RTX 5090). `TRANSFER_SRC` and `TRANSFER_DST`
-/// come with it, so a @ref CommandBatch can fill, copy, upload into and read
+/// `TRANSFER_SRC` and `TRANSFER_DST` come with it, so a @ref CommandBatch
+/// can fill, copy, upload into and read
 /// back from it.
 /// @param allocator           The allocator.
 /// @param bytes               Its size; non-zero.

@@ -73,6 +73,8 @@ iOS and Android. Windows and MSVC are unsupported
   CMake and YAML) rather than tracking it only in prose or commits.
 - Prefer plain, behavior-level tests over friend-class backdoors into private
   state.
+- Describe hardware by its capabilities or memory layout, not device models
+  or vendor examples. Keep actual API names and runtime device diagnostics.
 
 ## Working with Git
 

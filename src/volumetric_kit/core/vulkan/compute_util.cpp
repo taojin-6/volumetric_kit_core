@@ -135,7 +135,7 @@ Result<VkBuffer> StorageInput::buffer(CommandBatch& batch, Allocator& allocator,
     batch.retain(std::move(upload));
     upload = Buffer();
     // TODO: on unified memory, write the bytes into a DeviceMapped buffer
-    // instead of staging a copy, once recon's iPad measurement settles which
+    // instead of staging a copy, once unified-memory measurements settle which
     // inputs gain (DECISIONS.md, "Unified memory").
     VKC_ASSIGN(upload, device_storage_buffer(allocator, bytes));
   }

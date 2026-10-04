@@ -7,6 +7,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Fixed
+
+- Buffer and image allocations reuse free space in existing VMA blocks before
+  checking the budget for new memory. A falling budget no longer rejects a
+  suballocation that needs no additional device memory. Dedicated resources
+  retain their budget admission checks.
+- `CommandBatch` makes completed writes visible to graphics shader uniform
+  and storage-buffer accesses, as well as vertex/index input. Barrier scopes
+  follow the queue's capabilities, and compute dispatches on a queue without
+  compute support are refused.
+- Replacing the log handler from inside a callback no longer deadlocks when
+  another thread finishes a callback on the old handler. Nested callbacks keep
+  the same guarantee.
+- `Allocator::memory_stats()` reports this allocator's reserved block bytes
+  in `usage_bytes` consistently, including with `VK_EXT_memory_budget` enabled.
+  See the field migration below before using these figures for budgeting.
+- Hardware examples and synthetic memory fixtures describe capabilities and
+  layouts without specific device models or vendor examples.
+- Both Linux and macOS Vulkan CI jobs require a device and a loaded validation
+  layer, with synchronization checks enabled and shader-access checks requested
+  where the layer supports them.
+
 ### Added
 
 - `vulkan` tier foundation (`volumetric_kit::core_vulkan`, built with
@@ -45,8 +67,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     budget, the driver's where `VK_EXT_memory_budget` is enabled -- fails
     rather than spill: `DeviceOnly` -- the default, and the only one for
     images -- device memory the host cannot map (VRAM, never the BAR window;
-    Apple's private storage); `DeviceMapped`, device-local memory the host
-    writes (the BAR window; unified memory's pool); `Staging`, host memory
+    private storage on unified memory); `DeviceMapped`, device-local memory
+    the host writes (the BAR window; unified memory's pool); `Staging`, host memory
     with copy usage only, so no shader reads host memory. The placement
     decides whether a buffer is mapped; `HostAccess` (`SequentialWrite` by
     default) narrows a mapped one's type. Resources may outlive the
@@ -112,7 +134,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     exported as an opaque file descriptor for CUDA to import (as dedicated,
     `cudaExternalMemoryDedicated`). `UniqueFd` owns the descriptor until an
     import takes it. `find_memory_type`, for a resource bound outside the
-    allocator, never chooses a protected, lazily allocated or AMD
+    allocator, never chooses a protected, lazily allocated or feature-gated
     device-coherent or device-uncached type.
   - `CommandBatch::release`, the releasing half of a queue-family ownership
     transfer, recorded after every command of the batch: an exported buffer
@@ -170,6 +192,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   22.1.8) run through the build with `-DVKC_CLANG_TIDY=ON`, locally and in CI.
 
 ### Changed
+
+- `HeapStats` separates allocator accounting from budget accounting:
+  `usage_bytes` is this allocator's reserved block memory and the new
+  `allocation_bytes` is its live resource allocation memory. The new
+  `heap_usage_bytes` is the usage estimate paired with `budget_bytes`:
+  current-process usage with `VK_EXT_memory_budget`, this allocator's block
+  usage otherwise. Consumers comparing `usage_bytes` to `budget_bytes` must
+  switch that comparison to `heap_usage_bytes`. Sum only the allocator-local
+  fields across siblings; never sum process usage or budgets. Rebuild
+  consumers after bumping their pin because `HeapStats` changes size.
 
 For a consumer pinned at a commit of V2's or V3's first API, which this
 section's entries replace (DECISIONS.md, "Where memory lives"):
