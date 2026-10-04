@@ -48,9 +48,10 @@ namespace volumetric_kit::core {
 /// Result<DeviceRequirements> shared = merge(renderer, fusion);
 /// @endcode
 ///
-/// TODO: give it the instance-level needs (`VK_EXT_debug_utils` for labels, a
-/// window's surface extensions) with the shared-device bootstrap (V5), the
-/// first code to create an instance from requirements.
+/// Device-level only: the instance enables `VK_EXT_debug_utils` itself
+/// (@ref InstanceConfig::request_debug_utils), and the app adds its surface's
+/// instance extensions to @ref InstanceConfig::extensions, as it alone knows
+/// the platform (DECISIONS.md, "The vulkan tier", V5).
 struct DeviceRequirements {
   /// The lowest Vulkan version usable on the device: the lower of what it
   /// reports and what its instance negotiated

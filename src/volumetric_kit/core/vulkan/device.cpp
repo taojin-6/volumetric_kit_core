@@ -54,6 +54,109 @@ class ScopeGuard {
   bool active_ = true;
 };
 
+// The VkDeviceCreateInfo feature chain create_device builds: the
+// requirements' core features, timeline semaphores, scalar block layout and
+// dynamic rendering, then the caller's chain. Built in place -- its nodes point
+// at one another -- so it is never copied or moved once built.
+struct FeatureChain {
+  VkPhysicalDeviceFeatures2 features2{};
+  VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
+  VkPhysicalDeviceScalarBlockLayoutFeatures scalar{};
+  VkPhysicalDeviceDynamicRenderingFeatures dynamic{};
+
+  FeatureChain() = default;
+  FeatureChain(const FeatureChain&) = delete;
+  FeatureChain& operator=(const FeatureChain&) = delete;
+
+  void build(const DeviceRequirements& reqs) {
+    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2.features = reqs.features;
+    timeline.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+    timeline.timelineSemaphore = VK_TRUE;
+    scalar.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+    scalar.scalarBlockLayout = VK_TRUE;
+    dynamic.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
+    dynamic.dynamicRendering = VK_TRUE;
+
+    // A chain may not hold both a version aggregate and a struct it subsumes
+    // (VUID-VkDeviceCreateInfo-pNext-02830). So where the caller's chain
+    // already carries the aggregate or the standalone struct for a feature,
+    // the bit is raised in the caller's struct, and this chain links its own
+    // only otherwise.
+    VkPhysicalDeviceVulkan12Features* v12 = nullptr;
+    VkPhysicalDeviceVulkan13Features* v13 = nullptr;
+    VkPhysicalDeviceTimelineSemaphoreFeatures* their_timeline = nullptr;
+    VkPhysicalDeviceScalarBlockLayoutFeatures* their_scalar = nullptr;
+    VkPhysicalDeviceDynamicRenderingFeatures* their_dynamic = nullptr;
+    for (auto* node = static_cast<VkBaseOutStructure*>(reqs.feature_chain);
+         node != nullptr; node = node->pNext) {
+      switch (node->sType) {
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
+          v12 = reinterpret_cast<VkPhysicalDeviceVulkan12Features*>(node);
+          break;
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
+          v13 = reinterpret_cast<VkPhysicalDeviceVulkan13Features*>(node);
+          break;
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES:
+          their_timeline =
+              reinterpret_cast<VkPhysicalDeviceTimelineSemaphoreFeatures*>(
+                  node);
+          break;
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
+          their_scalar =
+              reinterpret_cast<VkPhysicalDeviceScalarBlockLayoutFeatures*>(
+                  node);
+          break;
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES:
+          their_dynamic =
+              reinterpret_cast<VkPhysicalDeviceDynamicRenderingFeatures*>(node);
+          break;
+        default:
+          break;
+      }
+    }
+
+    auto* tail = reinterpret_cast<VkBaseOutStructure*>(&features2);
+    auto link = [&tail](void* feature) {
+      auto* node = static_cast<VkBaseOutStructure*>(feature);
+      node->pNext = nullptr;
+      tail->pNext = node;
+      tail = node;
+    };
+    if (reqs.timeline_semaphore) {
+      if (v12 != nullptr) {
+        v12->timelineSemaphore = VK_TRUE;
+      } else if (their_timeline != nullptr) {
+        their_timeline->timelineSemaphore = VK_TRUE;
+      } else {
+        link(&timeline);
+      }
+    }
+    if (reqs.scalar_block_layout) {
+      if (v12 != nullptr) {
+        v12->scalarBlockLayout = VK_TRUE;
+      } else if (their_scalar != nullptr) {
+        their_scalar->scalarBlockLayout = VK_TRUE;
+      } else {
+        link(&scalar);
+      }
+    }
+    if (reqs.dynamic_rendering) {
+      if (v13 != nullptr) {
+        v13->dynamicRendering = VK_TRUE;
+      } else if (their_dynamic != nullptr) {
+        their_dynamic->dynamicRendering = VK_TRUE;
+      } else {
+        link(&dynamic);
+      }
+    }
+    tail->pNext = static_cast<VkBaseOutStructure*>(reqs.feature_chain);
+  }
+};
+
 }  // namespace
 
 namespace detail {
@@ -75,6 +178,62 @@ std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
     enable_if_offered(name);
   }
   return enabled;
+}
+
+Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
+                               const DeviceRequirements& reqs,
+                               const std::vector<std::string>& extensions,
+                               const std::vector<QueueRequest>& queues) {
+  std::vector<const char*> extension_names;
+  extension_names.reserve(extensions.size());
+  for (const std::string& name : extensions) {
+    extension_names.push_back(name.c_str());
+  }
+
+  FeatureChain chain;
+  chain.build(reqs);
+
+  std::vector<VkDeviceQueueCreateInfo> infos;
+  std::uint32_t most = 0;
+  for (const QueueRequest& request : queues) {
+    most = std::max(most, request.count);
+    auto same = std::find_if(infos.begin(), infos.end(),
+                             [&](const VkDeviceQueueCreateInfo& q) {
+                               return q.queueFamilyIndex == request.family;
+                             });
+    if (same != infos.end()) {
+      same->queueCount = std::max(same->queueCount, request.count);
+      continue;
+    }
+    VkDeviceQueueCreateInfo q{};
+    q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    q.queueFamilyIndex = request.family;
+    q.queueCount = request.count;
+    infos.push_back(q);
+  }
+  // Every create info reads its priorities from one array, as long as the
+  // longest.
+  const std::vector<float> priorities(most, 1.0f);
+  for (VkDeviceQueueCreateInfo& q : infos) {
+    q.pQueuePriorities = priorities.data();
+  }
+
+  VkDeviceCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+  info.pNext =
+      &chain.features2;  // features via features2, not pEnabledFeatures
+  info.queueCreateInfoCount = static_cast<std::uint32_t>(infos.size());
+  info.pQueueCreateInfos = infos.data();
+  info.enabledExtensionCount =
+      static_cast<std::uint32_t>(extension_names.size());
+  info.ppEnabledExtensionNames =
+      extension_names.empty() ? nullptr : extension_names.data();
+
+  // Created into a local: a failed create leaves the output unspecified, and
+  // the caller must not destroy whatever it holds.
+  VkDevice device = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &device));
+  return device;
 }
 
 }  // namespace detail
@@ -110,46 +269,10 @@ Result<Device> Device::create(VkInstance instance,
              check_device_support(caps, reqs, surface));
 
   std::vector<std::string> enabled = detail::enabled_extensions(caps, reqs);
-  std::vector<const char*> extension_names;
-  extension_names.reserve(enabled.size());
-  for (const std::string& name : enabled) {
-    extension_names.push_back(name.c_str());
-  }
-
-  detail::FeatureChain chain;
-  chain.build(reqs);
-
-  const float priority = 1.0f;
-  std::vector<VkDeviceQueueCreateInfo> queues;
-  auto add_queue = [&](std::uint32_t family) {
-    for (const VkDeviceQueueCreateInfo& q : queues) {
-      if (q.queueFamilyIndex == family) return;
-    }
-    VkDeviceQueueCreateInfo q{};
-    q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    q.queueFamilyIndex = family;
-    q.queueCount = 1;
-    q.pQueuePriorities = &priority;
-    queues.push_back(q);
-  };
-  add_queue(support.queue_family);
-  if (support.present_family) add_queue(*support.present_family);
-
-  VkDeviceCreateInfo info{};
-  info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  info.pNext =
-      &chain.features2;  // features via features2, not pEnabledFeatures
-  info.queueCreateInfoCount = static_cast<std::uint32_t>(queues.size());
-  info.pQueueCreateInfos = queues.data();
-  info.enabledExtensionCount =
-      static_cast<std::uint32_t>(extension_names.size());
-  info.ppEnabledExtensionNames =
-      extension_names.empty() ? nullptr : extension_names.data();
-
-  // Created into a local: a failed create leaves the output unspecified, and
-  // the Device must not destroy whatever it holds.
-  VkDevice handle = VK_NULL_HANDLE;
-  VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &handle));
+  std::vector<detail::QueueRequest> queues = {{support.queue_family, 1}};
+  if (support.present_family) queues.push_back({*support.present_family, 1});
+  VKC_ASSIGN(VkDevice handle,
+             detail::create_device(caps, reqs, enabled, queues));
   Device device;
   device.state_.device = handle;
   device.state_.physical = caps.handle();

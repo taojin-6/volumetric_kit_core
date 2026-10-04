@@ -313,17 +313,33 @@ the surface was made:
   `SharedDeviceConfig` takes the two libraries' `DeviceRequirements` and a
   `make_surface(VkInstance)` callback, so the core links neither GLFW nor
   Metal; the app adds its surface's instance extensions to the
-  `InstanceConfig`. Windowless (no present) needs no surface at all.
-- **The union is checked before anything is created.** `merge` combines the
-  two requirements, and `select_physical_device` checks the union -- version,
-  extensions, features -- so a shortfall names itself instead of failing in
-  `vkCreateDevice`. The feature chain and the enabled extensions are
-  `Device::create`'s own (moved to the internal `support.hpp`), so the two
-  ways of making a device cannot drift.
+  `InstanceConfig`. Windowless (no present) needs no surface at all. So
+  `DeviceRequirements` stays device-level: the instance-level needs are the
+  app's (its surface's extensions) or the instance's own (debug utils).
+- **Each queue does its library's job, whatever the requirements say.** The
+  renderer's gets `VK_QUEUE_GRAPHICS_BIT` and the compute library's
+  `VK_QUEUE_COMPUTE_BIT`, as both copies forced: `queue_flags` defaults to
+  compute alone, and a renderer handed a compute family that presents could
+  record no draw. Only the renderer presents; a compute side asking to is
+  refused, as nothing would present for it.
+- **The union is checked before anything is created, on every device.**
+  `merge` combines the two requirements, and selection checks the union --
+  version, extensions, features -- so a shortfall names itself instead of
+  failing in `vkCreateDevice`. That check finds a family that presents, not
+  that it is the renderer's, so each device that passes is asked for a queue
+  plan too, and one with none is refused for that and the next tried, as both
+  copies did; of the rest, the best by type wins, as
+  `select_physical_device` ranks them. Selection, the present probe, the
+  feature chain, the enabled extensions and `vkCreateDevice` itself are
+  `Device::create`'s own (internal `support.hpp`), so the two ways of making
+  a device cannot drift.
 - **Three queue plans, best first, all searched:** two queues in one family;
   two families (what MoltenVK, with several one-queue families, gets); one
   queue shared under one mutex. Stopping at the first family that does both
-  would take the last plan on MoltenVK.
+  would take the last plan on MoltenVK. The renderer's family presents
+  itself, as in both copies: no driver the siblings target splits graphics
+  from present, and a separate present queue would be a third queue, and
+  mutex, for every embedder to carry.
 - **Every queue has a mutex, always handed out**, as both copies concluded
   after a drain raced a submit: Vulkan requires every host operation on a
   queue be externally synchronized, and `wait_idle` is a third thread on

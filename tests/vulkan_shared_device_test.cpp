@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -18,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include "queue_plan.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -38,14 +40,25 @@ SharedDeviceConfig windowless() {
   return config;
 }
 
-// --- before any device
-// --------------------------------------------------------
+// --- before any device -------------------------------------------------------
 
 TEST(SharedDeviceArgs, APresentingRendererNeedsASurfaceMaker) {
   SharedDeviceConfig config = windowless();
   config.graphics.needs_present = true;
   EXPECT_EQ(SharedDevice::create(config).status().domain(),
             Status::Code::InvalidArgument);
+}
+
+TEST(SharedDeviceArgs, TheComputeLibraryDoesNotPresent) {
+  SharedDeviceConfig config = windowless();
+  config.compute.needs_present = true;
+  config.make_surface = [](VkInstance) -> Result<VkSurfaceKHR> {
+    return Status::unsupported("never called");
+  };
+  const Status s = SharedDevice::create(config).status();
+  EXPECT_EQ(s.domain(), Status::Code::InvalidArgument);
+  EXPECT_NE(s.message().find("compute library"), std::string::npos)
+      << s.message();
 }
 
 TEST(SharedDeviceArgs, RequirementsThatCannotMergeAreRefused) {
@@ -66,8 +79,97 @@ TEST(QueuePlanNames, NameEachPlan) {
   EXPECT_STREQ(to_string(QueuePlan::SharedQueue), "SharedQueue");
 }
 
-// --- on a device
-// ----------------------------------------------------------------
+// --- the queue plan, on families no test machine has -------------------------
+
+VkQueueFamilyProperties family(VkQueueFlags flags, std::uint32_t queues) {
+  VkQueueFamilyProperties properties{};
+  properties.queueFlags = flags;
+  properties.queueCount = queues;
+  return properties;
+}
+
+constexpr VkQueueFlags kGraphics = VK_QUEUE_GRAPHICS_BIT;
+constexpr VkQueueFlags kCompute = VK_QUEUE_COMPUTE_BIT;
+constexpr VkQueueFlags kTransfer = VK_QUEUE_TRANSFER_BIT;
+
+// The plan for a renderer that does graphics and a compute library, every
+// family presenting unless `presents` says otherwise.
+std::optional<detail::QueueCarving> plan_for(
+    const std::vector<VkQueueFamilyProperties>& families,
+    std::vector<bool> presents = {}) {
+  if (presents.empty()) presents.assign(families.size(), true);
+  return detail::choose_queue_plan(families, kGraphics, kCompute, presents);
+}
+
+TEST(QueuePlanChoice, TwoQueuesInOneFamilyComeFirst) {
+  const std::optional<detail::QueueCarving> carving = plan_for(
+      {family(kGraphics | kCompute, 1), family(kGraphics | kCompute, 2)});
+  if (!carving.has_value()) {
+    FAIL() << "no plan";
+  }
+  EXPECT_EQ(carving->plan, QueuePlan::TwoQueuesOneFamily);
+  EXPECT_EQ(carving->graphics_family, 1U);
+  EXPECT_EQ(carving->compute_family, 1U);
+}
+
+TEST(QueuePlanChoice, OneQueueFamiliesGetTwoFamilies) {
+  // MoltenVK's: several families that do everything, a queue each.
+  const VkQueueFlags all = kGraphics | kCompute | kTransfer;
+  const std::optional<detail::QueueCarving> carving = plan_for(
+      {family(all, 1), family(all, 1), family(all, 1), family(all, 1)});
+  if (!carving.has_value()) {
+    FAIL() << "no plan";
+  }
+  EXPECT_EQ(carving->plan, QueuePlan::TwoFamilies);
+  EXPECT_EQ(carving->graphics_family, 0U);
+  EXPECT_EQ(carving->compute_family, 1U);
+}
+
+TEST(QueuePlanChoice, FamiliesThatCannotComputeLeaveOneSharedQueue) {
+  // Several families need not mean two queues: a transfer or video family
+  // beside the one that does everything (Intel, copy engines) adds none.
+  const std::optional<detail::QueueCarving> carving = plan_for(
+      {family(kGraphics | kCompute | kTransfer, 1), family(kTransfer, 1),
+       family(VK_QUEUE_VIDEO_DECODE_BIT_KHR, 1)});
+  if (!carving.has_value()) {
+    FAIL() << "no plan";
+  }
+  EXPECT_EQ(carving->plan, QueuePlan::SharedQueue);
+  EXPECT_EQ(carving->graphics_family, 0U);
+  EXPECT_EQ(carving->compute_family, 0U);
+}
+
+TEST(QueuePlanChoice, AFamilyWithNoQueuesIsNeverTaken) {
+  const std::optional<detail::QueueCarving> carving =
+      plan_for({family(kGraphics | kCompute, 1), family(kCompute, 0)});
+  if (!carving.has_value()) {
+    FAIL() << "no plan";
+  }
+  EXPECT_EQ(carving->plan, QueuePlan::SharedQueue);
+  EXPECT_EQ(carving->compute_family, 0U);
+  EXPECT_FALSE(plan_for({family(kGraphics | kCompute, 0)}));
+}
+
+TEST(QueuePlanChoice, TheRenderersFamilyPresentsItself) {
+  // An async-compute family that presents is not the renderer's, so a
+  // graphics family that cannot present leaves no plan.
+  EXPECT_FALSE(plan_for({family(kGraphics | kCompute, 1), family(kCompute, 1)},
+                        {false, true}));
+  // A later graphics family that presents is taken over one that cannot,
+  // which may still serve compute.
+  const std::optional<detail::QueueCarving> carving =
+      plan_for({family(kGraphics | kCompute, 2),
+                family(kGraphics | kCompute, 1), family(kCompute, 1)},
+               {false, true, true});
+  if (!carving.has_value()) {
+    FAIL() << "no plan";
+  }
+  EXPECT_EQ(carving->plan, QueuePlan::TwoFamilies);
+  EXPECT_EQ(carving->graphics_family, 1U);
+  EXPECT_EQ(carving->compute_family, 0U);
+}
+
+// --- on a device -------------------------------------------------------------
 
 // VulkanTest skips without a device and counts validation errors from the
 // shared device's instance too: they reach the same log sink.
@@ -133,12 +235,21 @@ TEST_F(SharedDeviceTest, BuildsOneDeviceBothLibrariesAdopt) {
       EXPECT_EQ(compute.submit_mutex, graphics.submit_mutex);
       break;
   }
-  const auto families =
-      static_cast<std::uint32_t>(shared->physical().queue_families().size());
-  if (families > 1) {
-    // A device with several families never settles for one shared queue.
-    EXPECT_NE(shared->plan(), QueuePlan::SharedQueue) << summary;
+  // Each library's family does its job, and the plan is the best the
+  // device's families allow -- every one "presents" without a surface.
+  const std::vector<VkQueueFamilyProperties>& families =
+      shared->physical().queue_families();
+  EXPECT_NE(families[graphics.queue_family].queueFlags & VK_QUEUE_GRAPHICS_BIT,
+            0U);
+  EXPECT_NE(families[compute.queue_family].queueFlags & VK_QUEUE_COMPUTE_BIT,
+            0U);
+  const std::optional<detail::QueueCarving> best = detail::choose_queue_plan(
+      families, VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_COMPUTE_BIT,
+      std::vector<bool>(families.size(), true));
+  if (!best.has_value()) {
+    FAIL() << "no plan for " << summary;
   }
+  EXPECT_EQ(shared->plan(), best->plan) << summary;
 
   // Each library adopts with its own requirements, which the declaration
   // must meet -- read back from creation, not restated.
@@ -152,6 +263,20 @@ TEST_F(SharedDeviceTest, BuildsOneDeviceBothLibrariesAdopt) {
   EXPECT_EQ(fusion.queue(), compute.queue);
   EXPECT_EQ(renderer.queue(), graphics.queue);
   EXPECT_EQ(fusion.submit_mutex(), compute.submit_mutex);
+}
+
+// Requirements left at their defaults ask for compute alone; the renderer's
+// queue does graphics all the same, and its adopt still passes.
+TEST_F(SharedDeviceTest, TheRenderersQueueDoesGraphicsWhateverItsFlags) {
+  SharedDeviceConfig config = windowless();
+  config.graphics = DeviceRequirements{};
+  Result<std::unique_ptr<SharedDevice>> made = SharedDevice::create(config);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const std::unique_ptr<SharedDevice> shared = *std::move(made);
+  const VkQueueFamilyProperties& family =
+      shared->physical().queue_families()[shared->graphics_family()];
+  EXPECT_NE(family.queueFlags & VK_QUEUE_GRAPHICS_BIT, 0U) << shared->summary();
+  EXPECT_TRUE(Device::adopt(shared->graphics_payload(), config.graphics).ok());
 }
 
 // The point of one device: a buffer the compute library writes is the

@@ -5,15 +5,17 @@
 
 // Internal to core_vulkan: the pieces of the requirements check that
 // check_device_support (selection, create) and Device::adopt share, and the
-// device-creation pieces Device::create and SharedDevice share. Not
-// installed.
+// device selection and creation Device::create and SharedDevice share, so the
+// two ways of making a device cannot drift. Not installed.
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
+#include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
@@ -63,107 +65,35 @@ Status check_physical_support(const PhysicalDeviceInfo& caps,
 std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
                                             const DeviceRequirements& reqs);
 
-// The VkDeviceCreateInfo feature chain Device::create and SharedDevice build:
-// the requirements' core features, timeline semaphores, scalar block layout and
-// dynamic rendering, then the caller's chain. Built in place -- its nodes point
-// at one another -- so it is never copied or moved once built.
-struct FeatureChain {
-  VkPhysicalDeviceFeatures2 features2{};
-  VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
-  VkPhysicalDeviceScalarBlockLayoutFeatures scalar{};
-  VkPhysicalDeviceDynamicRenderingFeatures dynamic{};
+// Whether queue family `family` of `caps` can present to `surface`. A failed
+// query reads as "cannot present" rather than trusting an unwritten result.
+bool can_present(const PhysicalDeviceInfo& caps, std::uint32_t family,
+                 VkSurfaceKHR surface);
 
-  FeatureChain() = default;
-  FeatureChain(const FeatureChain&) = delete;
-  FeatureChain& operator=(const FeatureChain&) = delete;
-
-  void build(const DeviceRequirements& reqs) {
-    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features2.features = reqs.features;
-    timeline.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
-    timeline.timelineSemaphore = VK_TRUE;
-    scalar.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
-    scalar.scalarBlockLayout = VK_TRUE;
-    dynamic.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
-    dynamic.dynamicRendering = VK_TRUE;
-
-    // A chain may not hold both a version aggregate and a struct it subsumes
-    // (VUID-VkDeviceCreateInfo-pNext-02830). So where the caller's chain
-    // already carries the aggregate or the standalone struct for a feature,
-    // the bit is raised in the caller's struct, and this chain links its own
-    // only otherwise.
-    VkPhysicalDeviceVulkan12Features* v12 = nullptr;
-    VkPhysicalDeviceVulkan13Features* v13 = nullptr;
-    VkPhysicalDeviceTimelineSemaphoreFeatures* their_timeline = nullptr;
-    VkPhysicalDeviceScalarBlockLayoutFeatures* their_scalar = nullptr;
-    VkPhysicalDeviceDynamicRenderingFeatures* their_dynamic = nullptr;
-    for (auto* node = static_cast<VkBaseOutStructure*>(reqs.feature_chain);
-         node != nullptr; node = node->pNext) {
-      switch (node->sType) {
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
-          v12 = reinterpret_cast<VkPhysicalDeviceVulkan12Features*>(node);
-          break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
-          v13 = reinterpret_cast<VkPhysicalDeviceVulkan13Features*>(node);
-          break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES:
-          their_timeline =
-              reinterpret_cast<VkPhysicalDeviceTimelineSemaphoreFeatures*>(
-                  node);
-          break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
-          their_scalar =
-              reinterpret_cast<VkPhysicalDeviceScalarBlockLayoutFeatures*>(
-                  node);
-          break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES:
-          their_dynamic =
-              reinterpret_cast<VkPhysicalDeviceDynamicRenderingFeatures*>(node);
-          break;
-        default:
-          break;
-      }
-    }
-
-    auto* tail = reinterpret_cast<VkBaseOutStructure*>(&features2);
-    auto link = [&tail](void* feature) {
-      auto* node = static_cast<VkBaseOutStructure*>(feature);
-      node->pNext = nullptr;
-      tail->pNext = node;
-      tail = node;
-    };
-    if (reqs.timeline_semaphore) {
-      if (v12 != nullptr) {
-        v12->timelineSemaphore = VK_TRUE;
-      } else if (their_timeline != nullptr) {
-        their_timeline->timelineSemaphore = VK_TRUE;
-      } else {
-        link(&timeline);
-      }
-    }
-    if (reqs.scalar_block_layout) {
-      if (v12 != nullptr) {
-        v12->scalarBlockLayout = VK_TRUE;
-      } else if (their_scalar != nullptr) {
-        their_scalar->scalarBlockLayout = VK_TRUE;
-      } else {
-        link(&scalar);
-      }
-    }
-    if (reqs.dynamic_rendering) {
-      if (v13 != nullptr) {
-        v13->dynamicRendering = VK_TRUE;
-      } else if (their_dynamic != nullptr) {
-        their_dynamic->dynamicRendering = VK_TRUE;
-      } else {
-        link(&dynamic);
-      }
-    }
-    tail->pNext = static_cast<VkBaseOutStructure*>(reqs.feature_chain);
-  }
+// A queue family, and how many of its queues a device is created with.
+struct QueueRequest {
+  std::uint32_t family = 0;
+  std::uint32_t count = 1;
 };
+
+// The one vkCreateDevice path Device::create and SharedDevice share: on
+// `caps`, for `reqs` -- its core features, timeline semaphores, scalar block
+// layout and dynamic rendering, then its feature chain, whose structs may be
+// written (DeviceRequirements::feature_chain) -- enabling `extensions`
+// (enabled_extensions(caps, reqs)) and the queues `queues` asks for: one
+// create info per distinct family, with the most queues any request asks of
+// it.
+Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
+                               const DeviceRequirements& reqs,
+                               const std::vector<std::string>& extensions,
+                               const std::vector<QueueRequest>& queues);
+
+// Instance::select_physical_device, with `accept` asked of each device that
+// meets `reqs` too: one it refuses is passed over, and its reason joins the
+// others when no device qualifies. Null accepts every device.
+Result<PhysicalDeviceInfo> select_physical_device(
+    const Instance& instance, const DeviceRequirements& reqs,
+    VkSurfaceKHR surface,
+    const std::function<Status(const PhysicalDeviceInfo&)>& accept);
 
 }  // namespace volumetric_kit::core::detail

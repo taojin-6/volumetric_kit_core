@@ -6,17 +6,18 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "queue_plan.hpp"
 #include "support.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
-#include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
@@ -38,16 +39,27 @@ SharedDevice::SharedDevice(Instance instance)
 
 Result<std::unique_ptr<SharedDevice>> SharedDevice::create(
     const SharedDeviceConfig& config) {
+  if (config.compute.needs_present) {
+    return Status::invalid_argument(
+        "SharedDevice::create: the compute library's queue does not present; "
+        "set needs_present on the renderer's requirements");
+  }
   const bool presents = config.graphics.needs_present;
   if (presents && !config.make_surface) {
     return Status::invalid_argument(
         "SharedDevice::create: the renderer presents, and there is no "
         "make_surface");
   }
+  // Each queue does its library's job whatever the requirements say: they
+  // default to compute alone, and a renderer handed a compute family that
+  // presents could record no draw on it.
+  DeviceRequirements compute = config.compute;
+  compute.queue_flags |= VK_QUEUE_COMPUTE_BIT;
+  DeviceRequirements graphics = config.graphics;
+  graphics.queue_flags |= VK_QUEUE_GRAPHICS_BIT;
   // Neither library is consulted about the other: each states its needs, and
   // the union is what the device must meet.
-  VKC_ASSIGN(const DeviceRequirements merged,
-             merge(config.compute, config.graphics));
+  VKC_ASSIGN(const DeviceRequirements merged, merge(compute, graphics));
 
   VKC_ASSIGN(Instance instance, Instance::create(config.instance));
   // Made here, so destruction after any failure below goes through one path.
@@ -61,61 +73,44 @@ Result<std::unique_ptr<SharedDevice>> SharedDevice::create(
     }
   }
 
-  // The device-level check -- version, extensions, features, and one family
-  // with both libraries' flags that presents -- which names what a device
-  // lacks. Every graphics device has a family that does graphics and compute
-  // too, so a device that passes has at least the SharedQueue plan.
-  VKC_ASSIGN(shared->physical_, shared->instance_.select_physical_device(
-                                    merged, shared->surface_));
+  // The device-level check -- version, extensions, features, a family with
+  // both libraries' flags, and one that presents -- names what a device
+  // lacks, but cannot say those families carve into the two queues: the
+  // renderer's must present itself. So each device that passes is asked for
+  // its plan too, one with none is refused for that, and the best of the
+  // rest is taken.
+  std::vector<std::pair<VkPhysicalDevice, detail::QueueCarving>> carvings;
+  const auto carve = [&](const PhysicalDeviceInfo& caps) -> Status {
+    const std::vector<VkQueueFamilyProperties>& families =
+        caps.queue_families();
+    // Probed once per family, for every plan to read.
+    std::vector<bool> presents_on(families.size(), true);
+    if (presents) {
+      for (std::uint32_t i = 0; i < families.size(); ++i) {
+        presents_on[i] = detail::can_present(caps, i, shared->surface_);
+      }
+    }
+    const std::optional<detail::QueueCarving> carving =
+        detail::choose_queue_plan(families, graphics.queue_flags,
+                                  compute.queue_flags, presents_on);
+    if (!carving) {
+      return Status::unsupported(std::string(caps.properties().deviceName) +
+                                 " has no family that does graphics" +
+                                 (presents ? " and presents" : "") +
+                                 " beside a family that does compute");
+    }
+    carvings.emplace_back(caps.handle(), *carving);
+    return {};
+  };
+  VKC_ASSIGN(shared->physical_,
+             detail::select_physical_device(shared->instance_, merged,
+                                            shared->surface_, carve));
   const PhysicalDeviceInfo& caps = shared->physical_;
-  const std::vector<VkQueueFamilyProperties>& families = caps.queue_families();
-  const auto family_count = static_cast<std::uint32_t>(families.size());
-  const auto has = [&](std::uint32_t i, VkQueueFlags flags) {
-    return (families[i].queueFlags & flags) == flags;
-  };
-  const auto presents_on = [&](std::uint32_t i) {
-    if (!presents) return true;
-    VkBool32 supported = VK_FALSE;
-    return vkGetPhysicalDeviceSurfaceSupportKHR(
-               caps.handle(), i, shared->surface_, &supported) == VK_SUCCESS &&
-           supported == VK_TRUE;
-  };
-  const VkQueueFlags graphics_flags = config.graphics.queue_flags;
-  const VkQueueFlags compute_flags = config.compute.queue_flags;
-  bool found = false;
-  const auto take = [&](QueuePlan plan, std::uint32_t graphics,
-                        std::uint32_t compute) {
-    shared->plan_ = plan;
-    shared->graphics_family_ = graphics;
-    shared->compute_family_ = compute;
-    found = true;
-  };
-  // Best first, every plan searched in turn: a device whose families hold a
-  // queue each (MoltenVK) has no first plan, and stopping at the first
-  // family that does both would take the last plan and lose independent
-  // submission.
-  for (std::uint32_t i = 0; i < family_count && !found; ++i) {
-    if (has(i, graphics_flags | compute_flags) && families[i].queueCount >= 2 &&
-        presents_on(i)) {
-      take(QueuePlan::TwoQueuesOneFamily, i, i);
-    }
-  }
-  for (std::uint32_t i = 0; i < family_count && !found; ++i) {
-    if (!has(i, graphics_flags) || !presents_on(i)) continue;
-    for (std::uint32_t j = 0; j < family_count && !found; ++j) {
-      if (j != i && has(j, compute_flags)) take(QueuePlan::TwoFamilies, i, j);
-    }
-  }
-  for (std::uint32_t i = 0; i < family_count && !found; ++i) {
-    if (has(i, graphics_flags | compute_flags) && presents_on(i)) {
-      take(QueuePlan::SharedQueue, i, i);
-    }
-  }
-  if (!found) {
-    return Status::unsupported(
-        "SharedDevice::create: " + std::string(caps.properties().deviceName) +
-        " has no family that presents and does graphics beside a family "
-        "that does compute");
+  for (const auto& [device, carving] : carvings) {
+    if (device != caps.handle()) continue;
+    shared->plan_ = carving.plan;
+    shared->graphics_family_ = carving.graphics_family;
+    shared->compute_family_ = carving.compute_family;
   }
 
   // What the device enables, kept for the payloads to declare.
@@ -124,44 +119,23 @@ Result<std::unique_ptr<SharedDevice>> SharedDevice::create(
   for (const std::string& name : shared->extension_storage_) {
     shared->extensions_.push_back(name.c_str());
   }
-  shared->enabled_ = merged;
+  shared->enabled_features_ = merged.features;
+  shared->enabled_timeline_semaphore_ = merged.timeline_semaphore;
+  shared->enabled_scalar_block_layout_ = merged.scalar_block_layout;
+  shared->enabled_dynamic_rendering_ = merged.dynamic_rendering;
   shared->presents_ = presents;
-  detail::FeatureChain chain;
-  chain.build(merged);
 
-  // A create info per distinct family; two queues from it only under the
-  // first plan.
-  const float priorities[2] = {1.0F, 1.0F};
-  std::vector<VkDeviceQueueCreateInfo> queues;
-  VkDeviceQueueCreateInfo queue{};
-  queue.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-  queue.pQueuePriorities = priorities;
-  queue.queueFamilyIndex = shared->graphics_family_;
-  queue.queueCount = shared->plan_ == QueuePlan::TwoQueuesOneFamily ? 2 : 1;
-  queues.push_back(queue);
-  if (shared->compute_family_ != shared->graphics_family_) {
-    queue.queueFamilyIndex = shared->compute_family_;
-    queue.queueCount = 1;
-    queues.push_back(queue);
-  }
-  VkDeviceCreateInfo info{};
-  info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  info.pNext =
-      &chain.features2;  // features via features2, not pEnabledFeatures
-  info.queueCreateInfoCount = static_cast<std::uint32_t>(queues.size());
-  info.pQueueCreateInfos = queues.data();
-  info.enabledExtensionCount =
-      static_cast<std::uint32_t>(shared->extensions_.size());
-  info.ppEnabledExtensionNames =
-      shared->extensions_.empty() ? nullptr : shared->extensions_.data();
-  // Created into a local: a failed create leaves the output unspecified.
-  VkDevice device = VK_NULL_HANDLE;
-  VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &device));
-  shared->device_ = device;
-  vkGetDeviceQueue(device, shared->graphics_family_, 0,
+  // Two queues from the renderer's family only under the first plan, where
+  // the compute library's is its second.
+  const bool two_queues = shared->plan_ == QueuePlan::TwoQueuesOneFamily;
+  VKC_ASSIGN(
+      shared->device_,
+      detail::create_device(caps, merged, shared->extension_storage_,
+                            {{shared->graphics_family_, two_queues ? 2U : 1U},
+                             {shared->compute_family_, 1}}));
+  vkGetDeviceQueue(shared->device_, shared->graphics_family_, 0,
                    &shared->graphics_queue_);
-  vkGetDeviceQueue(device, shared->compute_family_,
-                   shared->plan_ == QueuePlan::TwoQueuesOneFamily ? 1 : 0,
+  vkGetDeviceQueue(shared->device_, shared->compute_family_, two_queues ? 1 : 0,
                    &shared->compute_queue_);
   return shared;
 }
@@ -215,10 +189,10 @@ AdoptedDevice SharedDevice::payload(std::uint32_t family, VkQueue queue,
   adopted.enabled_extensions = extensions_.data();
   adopted.enabled_extension_count =
       static_cast<std::uint32_t>(extensions_.size());
-  adopted.enabled_features = enabled_.features;
-  adopted.enabled_timeline_semaphore = enabled_.timeline_semaphore;
-  adopted.enabled_scalar_block_layout = enabled_.scalar_block_layout;
-  adopted.enabled_dynamic_rendering = enabled_.dynamic_rendering;
+  adopted.enabled_features = enabled_features_;
+  adopted.enabled_timeline_semaphore = enabled_timeline_semaphore_;
+  adopted.enabled_scalar_block_layout = enabled_scalar_block_layout_;
+  adopted.enabled_dynamic_rendering = enabled_dynamic_rendering_;
   adopted.enabled_debug_utils = instance_.debug_utils_enabled();
   return adopted;
 }

@@ -51,11 +51,18 @@ enum class QueuePlan {
   SharedQueue,
 };
 
+/// @brief Name a queue plan, for a log or a read-out.
 /// @param plan  A plan.
 /// @return Its name, e.g. `"TwoFamilies"`.
 VKC_VULKAN_API const char* to_string(QueuePlan plan) noexcept;
 
 /// @brief What @ref SharedDevice::create builds from.
+///
+/// @warning Like @ref Device::create, `create` writes to the structs either
+///          side's @ref DeviceRequirements::feature_chain points at, raising
+///          the bits it enables in them, though it takes the config `const`:
+///          they must be mutable, and a chain reused afterwards carries those
+///          bits.
 ///
 /// @code
 /// SharedDeviceConfig config;
@@ -63,12 +70,11 @@ VKC_VULKAN_API const char* to_string(QueuePlan plan) noexcept;
 /// for (const char* ext : glfw_instance_extensions) {
 ///   config.instance.extensions.push_back(ext);
 /// }
-/// config.compute = fusion_requirements;   // recon's
+/// config.compute = fusion_requirements;     // recon's
 /// config.graphics = renderer_requirements;  // gfx's, needs_present
-/// config.make_surface = [window](VkInstance instance) -> Result<VkSurfaceKHR>
-/// {
+/// config.make_surface = [window](VkInstance vk) -> Result<VkSurfaceKHR> {
 ///   VkSurfaceKHR surface = VK_NULL_HANDLE;
-///   VKC_VK_TRY(glfwCreateWindowSurface(instance, window, nullptr, &surface));
+///   VKC_VK_TRY(glfwCreateWindowSurface(vk, window, nullptr, &surface));
 ///   return surface;
 /// };
 /// @endcode
@@ -76,10 +82,13 @@ struct SharedDeviceConfig {
   /// The instance's configuration: its name, validation, and the instance
   /// extensions the surface needs (`VK_KHR_surface` and the platform's).
   InstanceConfig instance;
-  /// The compute library's requirements (recon's): its queue does compute.
+  /// The compute library's requirements (recon's): its queue does compute,
+  /// whether or not `queue_flags` says so. Its queue never presents, so
+  /// `needs_present` is refused here.
   DeviceRequirements compute;
-  /// The renderer's requirements (gfx's): its queue does graphics, and
-  /// presents when `needs_present` is set.
+  /// The renderer's requirements (gfx's): its queue does graphics, whether or
+  /// not `queue_flags` says so (they default to compute alone), and presents
+  /// when `needs_present` is set.
   DeviceRequirements graphics;
   /// Makes the surface the renderer presents to, on the instance it is
   /// given; required when `graphics.needs_present` is set, unused otherwise.
@@ -103,24 +112,35 @@ struct SharedDeviceConfig {
 ///
 /// @code
 /// VKC_ASSIGN(std::unique_ptr<SharedDevice> shared,
-/// SharedDevice::create(config)); VKC_ASSIGN(Device fusion,
+///            SharedDevice::create(config));
+/// VKC_ASSIGN(Device fusion,
 ///            Device::adopt(shared->compute_payload(), config.compute));
 /// VKC_ASSIGN(Device renderer,
 ///            Device::adopt(shared->graphics_payload(), config.graphics));
-/// log(shared->summary());  // "Apple M5 Max: TwoFamilies, graphics family 0,
-///                          // compute family 1"
+/// log(shared->summary());
+/// // "Apple M5 Max: TwoFamilies, graphics family 0, compute family 1,
+/// // a queue each"
 /// @endcode
 class VKC_VULKAN_API SharedDevice {
  public:
   /// @brief Build the instance, the surface and the device from both
   ///        libraries' merged requirements.
+  ///
+  /// The device is the best one, as @ref Instance::select_physical_device
+  /// ranks them, that meets the union and has a @ref QueuePlan: a family
+  /// that does graphics and presents to the surface itself, beside or
+  /// together with one that does compute. One that meets the union but has
+  /// no plan is passed over, and the next tried.
   /// @param config  The instance, both requirements and the surface maker.
+  ///                Read only, but for the feature structs a
+  ///                @ref DeviceRequirements::feature_chain points at.
   /// @return The shared device; @ref Status::Code::InvalidArgument for a
-  ///         renderer that presents with no surface maker, or requirements
-  ///         that cannot merge; the surface maker's failure; or why no device
-  ///         satisfies the union, naming what it lacks. Treat a failure as
-  ///         fatal rather than falling back to two devices, which would give
-  ///         up the zero-copy seam this exists for.
+  ///         renderer that presents with no surface maker, a compute library
+  ///         that asks to present, or requirements that cannot merge; the
+  ///         surface maker's failure; or why no device satisfies the union and
+  ///         has a plan, naming what each lacks. Treat a failure as fatal
+  ///         rather than falling back to two devices, which would give up the
+  ///         zero-copy seam this exists for.
   static Result<std::unique_ptr<SharedDevice>> create(
       const SharedDeviceConfig& config);
 
@@ -195,7 +215,10 @@ class VKC_VULKAN_API SharedDevice {
   // What vkCreateDevice was given, which the payloads declare.
   std::vector<std::string> extension_storage_;
   std::vector<const char*> extensions_;
-  DeviceRequirements enabled_;
+  VkPhysicalDeviceFeatures enabled_features_{};
+  bool enabled_timeline_semaphore_ = false;
+  bool enabled_scalar_block_layout_ = false;
+  bool enabled_dynamic_rendering_ = false;
 };
 
 }  // namespace volumetric_kit::core
