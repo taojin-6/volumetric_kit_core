@@ -54,110 +54,30 @@ class ScopeGuard {
   bool active_ = true;
 };
 
-// The VkDeviceCreateInfo feature chain create() builds: the requirements'
-// core features, timeline semaphores, scalar block layout and dynamic
-// rendering, then the caller's chain. Built in place -- its nodes point at
-// one another -- so it is never copied or moved once built.
-struct FeatureChain {
-  VkPhysicalDeviceFeatures2 features2{};
-  VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
-  VkPhysicalDeviceScalarBlockLayoutFeatures scalar{};
-  VkPhysicalDeviceDynamicRenderingFeatures dynamic{};
-
-  FeatureChain() = default;
-  FeatureChain(const FeatureChain&) = delete;
-  FeatureChain& operator=(const FeatureChain&) = delete;
-
-  void build(const DeviceRequirements& reqs) {
-    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features2.features = reqs.features;
-    timeline.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
-    timeline.timelineSemaphore = VK_TRUE;
-    scalar.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
-    scalar.scalarBlockLayout = VK_TRUE;
-    dynamic.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
-    dynamic.dynamicRendering = VK_TRUE;
-
-    // A chain may not hold both a version aggregate and a struct it subsumes
-    // (VUID-VkDeviceCreateInfo-pNext-02830). So where the caller's chain
-    // already carries the aggregate or the standalone struct for a feature,
-    // the bit is raised in the caller's struct, and this chain links its own
-    // only otherwise.
-    VkPhysicalDeviceVulkan12Features* v12 = nullptr;
-    VkPhysicalDeviceVulkan13Features* v13 = nullptr;
-    VkPhysicalDeviceTimelineSemaphoreFeatures* their_timeline = nullptr;
-    VkPhysicalDeviceScalarBlockLayoutFeatures* their_scalar = nullptr;
-    VkPhysicalDeviceDynamicRenderingFeatures* their_dynamic = nullptr;
-    for (auto* node = static_cast<VkBaseOutStructure*>(reqs.feature_chain);
-         node != nullptr; node = node->pNext) {
-      switch (node->sType) {
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
-          v12 = reinterpret_cast<VkPhysicalDeviceVulkan12Features*>(node);
-          break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
-          v13 = reinterpret_cast<VkPhysicalDeviceVulkan13Features*>(node);
-          break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES:
-          their_timeline =
-              reinterpret_cast<VkPhysicalDeviceTimelineSemaphoreFeatures*>(
-                  node);
-          break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
-          their_scalar =
-              reinterpret_cast<VkPhysicalDeviceScalarBlockLayoutFeatures*>(
-                  node);
-          break;
-        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES:
-          their_dynamic =
-              reinterpret_cast<VkPhysicalDeviceDynamicRenderingFeatures*>(node);
-          break;
-        default:
-          break;
-      }
-    }
-
-    auto* tail = reinterpret_cast<VkBaseOutStructure*>(&features2);
-    auto link = [&tail](void* feature) {
-      auto* node = static_cast<VkBaseOutStructure*>(feature);
-      node->pNext = nullptr;
-      tail->pNext = node;
-      tail = node;
-    };
-    if (reqs.timeline_semaphore) {
-      if (v12 != nullptr) {
-        v12->timelineSemaphore = VK_TRUE;
-      } else if (their_timeline != nullptr) {
-        their_timeline->timelineSemaphore = VK_TRUE;
-      } else {
-        link(&timeline);
-      }
-    }
-    if (reqs.scalar_block_layout) {
-      if (v12 != nullptr) {
-        v12->scalarBlockLayout = VK_TRUE;
-      } else if (their_scalar != nullptr) {
-        their_scalar->scalarBlockLayout = VK_TRUE;
-      } else {
-        link(&scalar);
-      }
-    }
-    if (reqs.dynamic_rendering) {
-      if (v13 != nullptr) {
-        v13->dynamicRendering = VK_TRUE;
-      } else if (their_dynamic != nullptr) {
-        their_dynamic->dynamicRendering = VK_TRUE;
-      } else {
-        link(&dynamic);
-      }
-    }
-    tail->pNext = static_cast<VkBaseOutStructure*>(reqs.feature_chain);
-  }
-};
-
 }  // namespace
+
+namespace detail {
+
+std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
+                                            const DeviceRequirements& reqs) {
+  std::vector<std::string> enabled = required_extensions(reqs);
+  auto enable_if_offered = [&](const std::string& name) {
+    if (caps.supports_device_extension(name.c_str()) &&
+        std::find(enabled.begin(), enabled.end(), name) == enabled.end()) {
+      enabled.push_back(name);
+    }
+  };
+  // The spec requires enabling it wherever the device exposes it (MoltenVK).
+  enable_if_offered(kPortabilitySubset);
+  // The driver's own heap budgets, which an Allocator allocates within.
+  enable_if_offered(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+  for (const std::string& name : reqs.optional_extensions) {
+    enable_if_offered(name);
+  }
+  return enabled;
+}
+
+}  // namespace detail
 
 Result<Device> Device::create(const Instance& instance,
                               const PhysicalDeviceInfo& physical,
@@ -189,27 +109,14 @@ Result<Device> Device::create(VkInstance instance,
   VKC_ASSIGN(const DeviceSupport support,
              check_device_support(caps, reqs, surface));
 
-  std::vector<std::string> enabled = detail::required_extensions(reqs);
-  auto enable_if_offered = [&](const std::string& name) {
-    if (caps.supports_device_extension(name.c_str()) &&
-        std::find(enabled.begin(), enabled.end(), name) == enabled.end()) {
-      enabled.push_back(name);
-    }
-  };
-  // The spec requires enabling it wherever the device exposes it (MoltenVK).
-  enable_if_offered(detail::kPortabilitySubset);
-  // The driver's own heap budgets, which an Allocator allocates within.
-  enable_if_offered(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
-  for (const std::string& name : reqs.optional_extensions) {
-    enable_if_offered(name);
-  }
+  std::vector<std::string> enabled = detail::enabled_extensions(caps, reqs);
   std::vector<const char*> extension_names;
   extension_names.reserve(enabled.size());
   for (const std::string& name : enabled) {
     extension_names.push_back(name.c_str());
   }
 
-  FeatureChain chain;
+  detail::FeatureChain chain;
   chain.build(reqs);
 
   const float priority = 1.0f;

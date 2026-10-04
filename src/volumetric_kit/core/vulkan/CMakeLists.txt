@@ -43,6 +43,7 @@ target_sources(
           instance.cpp
           physical_device_info.cpp
           query_pool.cpp
+          shared_device.cpp
           queue_families.hpp
           shader.cpp
           support.hpp

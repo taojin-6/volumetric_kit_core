@@ -37,7 +37,8 @@ if(VKC_WITH_VULKAN)
     vulkan_compute
     vulkan_command_batch
     vulkan_timer
-    vulkan_external_memory)
+    vulkan_external_memory
+    vulkan_shared_device)
     add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
     target_link_libraries(vkc_${_vkc_test}_test
                           PRIVATE volumetric_kit::core_vulkan GTest::gtest_main)

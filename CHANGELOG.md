@@ -125,6 +125,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     synchronize the CUDA stream that wrote before submitting the batch that
     acquires the buffer, and release it back in that batch, so CUDA writes
     the next frame into a buffer Vulkan has handed over.
+- `vulkan` tier shared device (DECISIONS.md, "The vulkan tier", V5):
+  `SharedDevice` and `SharedDeviceConfig` build one instance, device and
+  optional surface satisfying a compute library's and a renderer's
+  requirements, carve their queues by the best `QueuePlan` the device allows,
+  and hand each a core `AdoptedDevice`, with a mutex for every queue.
+  Replaces recon's `examples/viewer/shared_device.hpp` and ios's
+  `SharedDevice`.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
   on and reach the log sink; a leg builds with no Vulkan installed.
