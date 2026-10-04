@@ -13,6 +13,7 @@
 #include "volumetric_kit/core/version.hpp"
 
 #ifdef VKC_CONSUMER_HAS_VULKAN
+#include "smoke_comp.spv.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #endif
@@ -38,6 +39,12 @@ vkc::Status run() {
              vkc::merge(graphics, vkc::DeviceRequirements{}));
   VKC_CHECK(both.queue_flags == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT),
             "merged queue flags");
+  // Embedded SPIR-V: whole words, opening with the SPIR-V magic number.
+  VKC_CHECK(vkc_consumer_smoke_comp_spv_size % 4 == 0 &&
+                vkc_consumer_smoke_comp_spv_size > 20 &&
+                vkc_consumer_smoke_comp_spv[0] == 0x03 &&
+                vkc_consumer_smoke_comp_spv[3] == 0x07,
+            "embedded SPIR-V");
   std::printf("vulkan tier consumed\n");
 #endif
   return {};

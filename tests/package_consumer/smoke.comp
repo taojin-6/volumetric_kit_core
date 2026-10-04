@@ -1,0 +1,8 @@
+#version 450
+
+// The package consumer's shader: proves vkc_embed_shaders reaches a consumer,
+// installed or fetched. Never dispatched.
+
+layout(local_size_x = 1) in;
+
+void main() {}

@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <utility>
@@ -417,7 +419,7 @@ Device::~Device() { destroy(); }
 
 void Device::destroy() noexcept {
   bool unfinished = false;
-  for (const Command& command : made_) {
+  for (Command& command : made_) {
     // One left to the device after a failed wait is waited for first, and
     // leaked if the device may still run it. A lost device's is freed: its
     // children must still be destroyed.
@@ -426,9 +428,17 @@ void Device::destroy() noexcept {
                                               VK_TRUE, UINT64_MAX);
       if (waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST) {
         unfinished = true;
+        // What the work uses is leaked with it: freeing memory a running
+        // submit may read is undefined, where a leak is only a leak.
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+        static_cast<void>(new (std::nothrow) std::shared_ptr<void>(
+            std::move(command.keep_alive)));
         continue;
       }
     }
+    // Before the VkDevice: a staging buffer frees through its allocator, which
+    // it may be the last to hold.
+    command.keep_alive.reset();
     vkDestroyFence(state_.device, command.fence, nullptr);
     if (command.pool != VK_NULL_HANDLE) {
       vkDestroyCommandPool(state_.device, command.pool, nullptr);  // + buffer
@@ -559,14 +569,20 @@ void Device::give_back(const Command& command) const noexcept {
   free_commands_.push_back(command);
 }
 
-void Device::leave_to_device(const Command& command) const noexcept {
+void Device::leave_to_device(const Command& command,
+                             std::shared_ptr<void> keep_alive) const noexcept {
   const std::scoped_lock lock(commands_mutex_);
   for (Command& made : made_) {
-    if (made.fence == command.fence) made.pending = true;
+    if (made.fence == command.fence) {  // one each: the fence names it
+      made.pending = true;
+      made.keep_alive = std::move(keep_alive);
+      break;
+    }
   }
 }
 
 Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
+                              std::shared_ptr<void> keep_alive,
                               bool* reusable) const {
   *reusable = true;
   VkSubmitInfo submit{};
@@ -587,8 +603,9 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
           : submitted;
   if (waited != VK_SUCCESS) {
     // The submit may still be pending, so its buffer and fence must not go to
-    // another submit; destroy() waits for them before freeing them.
-    leave_to_device(command);
+    // another submit, nor what it uses be freed; destroy() waits for them
+    // before freeing them.
+    leave_to_device(command, std::move(keep_alive));
     *reusable = false;
     return vk_error(
         waited, submitted == VK_SUCCESS ? "vkWaitForFences" : "vkQueueSubmit");
@@ -601,7 +618,8 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
 }
 
 Status Device::submit_single_time(
-    const std::function<void(VkCommandBuffer)>& record) const {
+    const std::function<void(VkCommandBuffer)>& record,
+    std::shared_ptr<void> keep_alive) const {
   VKC_ASSIGN(const Command command, take_command(/*record=*/true));
   VkCommandBuffer cmd = command.buffer;
   bool recording = false;
@@ -622,7 +640,8 @@ Status Device::submit_single_time(
   recording = false;
 
   bool reusable = true;
-  Status status = submit_waiting(cmd, command, &reusable);
+  Status status =
+      submit_waiting(cmd, command, std::move(keep_alive), &reusable);
   if (!reusable) give_back_command.release();
   return status;
 }
@@ -638,7 +657,7 @@ Status Device::submit_and_wait(VkCommandBuffer cmd) const {
   VKC_ASSIGN(const Command command, take_command(/*record=*/false));
   ScopeGuard give_back_command([&] { give_back(command); });
   bool reusable = true;
-  Status status = submit_waiting(cmd, command, &reusable);
+  Status status = submit_waiting(cmd, command, nullptr, &reusable);
   if (!reusable) give_back_command.release();
   return status;
 }

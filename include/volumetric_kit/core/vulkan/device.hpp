@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -297,18 +298,26 @@ class VKC_VULKAN_API Device {
   /// may itself submit on this device; what it records -- descriptor sets,
   /// buffers -- must still be its own. Blocking, so it suits setup and
   /// single-shot work; per-frame work batches its own submits.
-  /// @param record  Records into the command buffer it is given.
+  /// @param record      Records into the command buffer it is given.
+  /// @param keep_alive  Optional; what the work reads or writes that the
+  ///                    caller frees once this returns -- a
+  ///                    @ref CommandBatch's staging. Released before this
+  ///                    returns, unless the call fails after the device had
+  ///                    the work (a failed wait, or a submit that lost the
+  ///                    device): the device may still run it then, so it
+  ///                    keeps this with the command buffer, as below.
   /// @return OK once the work completes; or the failed step's backend
-  ///         @ref Status. A failed wait leaves the command buffer and fence
-  ///         to a device that may still run them, until the device is
-  ///         destroyed; if the work is still unfinished then, a `VkDevice`
-  ///         this object owns is leaked with them rather than destroyed
-  ///         under running work (logged as an error).
+  ///         @ref Status. A failed wait leaves the command buffer, fence and
+  ///         @p keep_alive to a device that may still run them, until the
+  ///         device is destroyed: it waits for the work then, and frees them
+  ///         before the `VkDevice`. If the work is still unfinished then, a
+  ///         `VkDevice` this object owns is leaked with them rather than
+  ///         destroyed under running work (logged as an error).
   ///
   /// TODO: add the overload that brackets the work with a GPU timestamp span
   /// (recon's GpuTimer) with the tier's timers.
-  Status submit_single_time(
-      const std::function<void(VkCommandBuffer)>& record) const;
+  Status submit_single_time(const std::function<void(VkCommandBuffer)>& record,
+                            std::shared_ptr<void> keep_alive = nullptr) const;
 
   /// @brief Submit an already-recorded, ended command buffer to @ref queue
   ///        and wait for it, on a kept fence.
@@ -414,12 +423,14 @@ class VKC_VULKAN_API Device {
   // one no other holds: a free one, or a new one when all are in use. It
   // comes back once its wait is done; `made_` keeps every one, so destroy()
   // frees them all, and one left to the device after a failed wait is
-  // `pending` there and waited for first. The fence names it.
+  // `pending` there and waited for first, with what its work uses kept in
+  // `keep_alive` until then. The fence names it.
   struct Command {
     VkFence fence = VK_NULL_HANDLE;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer buffer = VK_NULL_HANDLE;
     bool pending = false;
+    std::shared_ptr<void> keep_alive;
   };
 
   Device() = default;
@@ -435,12 +446,14 @@ class VKC_VULKAN_API Device {
   // commands_mutex_.
   Status add_command_buffer(Command* command) const;
   void give_back(const Command& command) const noexcept;
-  void leave_to_device(const Command& command) const noexcept;
+  void leave_to_device(const Command& command,
+                       std::shared_ptr<void> keep_alive) const noexcept;
   // Submits `cmd` signalling `command.fence`, waits, and resets the fence.
   // `*reusable` says whether `command` may be given back: not after a failed
-  // wait (it is left to the device) or a failed fence reset.
+  // wait, which leaves it, and `keep_alive` with it, to the device; nor after
+  // a failed fence reset.
   Status submit_waiting(VkCommandBuffer cmd, const Command& command,
-                        bool* reusable) const;
+                        std::shared_ptr<void> keep_alive, bool* reusable) const;
 
   State state_;
   PhysicalDeviceInfo caps_;

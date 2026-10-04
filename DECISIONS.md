@@ -61,7 +61,7 @@ It lands in five stages, each its own PR, merged before any sibling migrates:
 | --- | --- |
 | V1 (landed) | `vulkan.hpp`, the `VkResult` helpers, `UniqueHandle`, `PhysicalDeviceInfo`, `DeviceRequirements` with `merge` and `check_device_support`, `Instance`, `Device` |
 | V2 (landed) | `Allocator`, `Buffer`, `Image`, descriptor layouts, pools and sets, `ShaderModule`, fences and semaphores, command pools and buffers |
-| V3 | compute pipelines, kernel sets, `CommandBatch`, the compute helpers |
+| V3 (landed) | `ComputePipeline`, `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`, `CommandBatch`, the compute helpers, and the shader build functions |
 | V4 | query pools, `GpuTimer`, `StageMetrics` (to `base`), external memory |
 | V5 | the shared-device bootstrap, replacing recon's example copy and ios's `SharedDevice` |
 
@@ -196,6 +196,63 @@ V2's choices, from the same comparison:
 - **gfx's fences, semaphores, command pools and command buffers**, with one
   change: an empty fence or timeline semaphore returns `InvalidArgument`
   instead of passing a null device to Vulkan.
+
+V3's choices, from the same comparison (gfx has no compute):
+
+- **recon's compute, under its own signatures.** `ComputePipeline`,
+  `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`,
+  `CommandBatch` and the `compute_util` helpers keep recon's names and
+  parameters -- the explicit `max_groups` included, which recon's callers also
+  use to split oversized grids -- so recon migrates by namespace. `dispatch`
+  takes a `const Device&`, and a builder of binding-less kernels sizes a pool
+  of one descriptor instead of the invalid zero. `max_storage_buffer_range`
+  takes the `Device` too, whose caps hold the limit, rather than query a
+  `VkPhysicalDevice` again: recon's one caller changes. A kernel registered
+  again is built aside and moved in whole, so a failure leaves it as it was
+  and a rebuilt kernel holds no set of its old layout.
+- **One path between host and kernel memory.** `CommandBatch` is it: uploads
+  inline up to 64 KiB and staged beyond, readbacks through one host buffer,
+  barriers only where a command could see another's writes, a refusal that
+  poisons the batch, and a descriptor set rewritten after its dispatch
+  refused at submit. Kernel memory is never mapped, so unified memory runs the
+  path a discrete GPU does (the open "Unified memory" question below).
+- **A batch records handles, not objects.** A dispatch takes the kernel's
+  pipeline and a copy of its set, never a pointer to the caller's object,
+  which may move -- a vector of kernels that grows -- or go before the submit.
+  What it cannot see stays the caller's to keep alive, as buffers and images
+  always were. A set is the exception, as callers rewrite and replace them
+  routinely: a `DescriptorSet` sees its pool go, so the submit refuses a set
+  rewritten or freed since its dispatch. A buffer the caller replaces
+  mid-batch -- an outgrown `StorageInput` upload or scratch -- goes to
+  `CommandBatch::retain`, and an unaligned `zero` edge copies from one staged
+  word of zeros rather than staging each.
+- **Image copies take the common uncompressed color formats**, 8- to 128-bit
+  texels, where recon's took `R8` and `R8G8`. They read the layout
+  `Image::layout` records (V2's `set_layout` keeps it current) and refuse a
+  multisampled image by `Image::samples`.
+- **After a failed wait the device keeps what the work uses.**
+  `submit_single_time` takes a `keep_alive`, which the device holds with the
+  command buffer it may still run and frees once `destroy` has waited for it,
+  before the `VkDevice`. A batch's staging, and the allocator behind it, is
+  then neither freed under the GPU nor leaked past the device.
+- **Timer spans come with V4.** recon's optional `GpuStageScope*` parameters
+  return then as trailing defaults, beside `GpuTimer`.
+- **One shader toolchain.** `vkc_compile_shaders` and `vkc_embed_shaders`
+  replace recon's `vr_*`, gfx's `vg_*`, and the copy of recon's ios borrows.
+  `TARGET_ENV` (default Vulkan 1.2; gfx's renderer passes 1.3),
+  `INCLUDE_DIRS` (recon's include root) and `SPIRV_VAL_ARGS` (recon's
+  `--scalar-block-layout`) cover the differences. `SYMBOL_PREFIX` is
+  required: the arrays are inline variables, which the linker merges by name,
+  so two libraries' `fill.comp` would otherwise share one shader. The
+  functions are defined when the core is added, and installed beside the
+  package config, which includes them. Each rule belongs to one target --
+  `vkc_embed_shaders` compiles and embeds under one -- as a rule two targets
+  reach races under Make and is refused by Xcode. Headers and symbols are
+  named for the file name made a C identifier, and two names that make one
+  are refused. An INTERFACE library shares one compile among the targets
+  that link it. A shader that fails `spirv-val` fails every build until
+  fixed: Make deletes a failed command's output, and Ninja and Xcode rerun
+  it.
 
 ### Naming
 
