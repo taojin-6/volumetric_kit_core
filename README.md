@@ -45,11 +45,12 @@ GPU (calib's headless solver) links only the tiers it uses.
 
 ## Prerequisites
 
-The `base` tier needs only a C++17 compiler and CMake ≥ 3.21. googletest is
-fetched, pinned, when tests are built. The `vulkan` tier also needs a Vulkan
-SDK's headers and loader (MoltenVK on Apple), and its tests a GLSL compiler
-(`glslc`, or `glslangValidator`); `spirv-val` validates the shaders when
-found:
+The `base` tier needs only a C++17 compiler -- GCC or Clang; Windows and MSVC
+are not supported ([DECISIONS.md](DECISIONS.md#platforms)) -- and CMake ≥
+3.21. googletest is fetched, pinned, when tests are built. The `vulkan` tier
+also needs a Vulkan SDK's headers and loader (MoltenVK on Apple), and its
+tests a GLSL compiler (`glslc`, or `glslangValidator`); `spirv-val`
+validates the shaders when found:
 
 ```sh
 brew install vulkan-headers vulkan-loader molten-vk shaderc spirv-tools  # macOS

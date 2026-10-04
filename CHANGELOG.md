@@ -192,6 +192,15 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
   backend error, or for an image another device-local type), and
   `VK_ERROR_OUT_OF_DEVICE_MEMORY` past the heap's budget.
 
+### Removed
+
+- Windows and MSVC support, which no sibling or CI leg used (DECISIONS.md,
+  "Platforms"): the MSVC warning flags (`/W4`, `/WX`) and `VKC_SANITIZE`'s
+  MSVC check; `UniqueFd`'s CRT close; and the `_MSC_VER` path, with the
+  `"unknown"` fallback for other compilers, of the call-site capture
+  `Result::value()` uses -- `result.hpp` now needs GCC or Clang. Nothing to
+  migrate on Linux, macOS, iOS or Android.
+
 ### Migrating from a sibling's own copy
 
 - `volumetric_kit::{calib,recon,gfx}::Status` / `Result` →

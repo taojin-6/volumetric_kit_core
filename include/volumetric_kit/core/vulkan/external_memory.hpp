@@ -146,9 +146,6 @@ VKC_VULKAN_API std::optional<std::uint32_t> find_memory_type(
 /// TODO: external semaphores (`VK_KHR_external_semaphore_fd`), so the two
 /// APIs are ordered on the GPU rather than by the host waiting on each.
 ///
-/// TODO: Windows handles (`VK_KHR_external_memory_win32`) when a sibling
-/// builds there; the family's CUDA interop is Linux.
-///
 /// @code
 /// VKC_ASSIGN(ExportedBuffer frame,
 ///            create_exported_buffer(device, allocator, bytes));

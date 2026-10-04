@@ -3,13 +3,7 @@
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
-// The descriptor's close: POSIX's, or the CRT's on Windows, where no opaque
-// descriptor is ever exported but the tier still builds.
-#ifdef _WIN32
-#include <io.h>
-#else
 #include <unistd.h>
-#endif
 
 #include <cstdint>
 #include <optional>
@@ -26,13 +20,7 @@
 namespace volumetric_kit::core {
 
 void UniqueFd::reset(int fd) noexcept {
-  if (fd_ >= 0 && fd_ != fd) {
-#ifdef _WIN32
-    _close(fd_);
-#else
-    close(fd_);
-#endif
-  }
+  if (fd_ >= 0 && fd_ != fd) close(fd_);
   fd_ = fd;
 }
 
