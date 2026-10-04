@@ -49,11 +49,14 @@ if(VKC_WITH_VULKAN)
     vkc_vulkan_queue_families_test
     PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")
 
-  # The compute tests' kernels, compiled and embedded as a consumer would
-  # (cmake/vkc_shaders.cmake), so a build with tests needs glslc.
+  # The compute tests' kernels, compiled and embedded once as a consumer would
+  # (cmake/vkc_shaders.cmake), into an INTERFACE library both tests link, so a
+  # build with tests needs glslc.
+  add_library(vkc_test_shaders INTERFACE)
+  vkc_embed_shaders(vkc_test_shaders SYMBOL_PREFIX vkc_test_ SHADERS
+                    shaders/add.comp shaders/fill.comp)
   foreach(_vkc_test vulkan_compute vulkan_command_batch)
-    vkc_embed_shaders(vkc_${_vkc_test}_test SYMBOL_PREFIX vkc_test_ SHADERS
-                      shaders/add.comp shaders/fill.comp)
+    target_link_libraries(vkc_${_vkc_test}_test PRIVATE vkc_test_shaders)
   endforeach()
 endif()
 

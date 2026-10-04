@@ -109,6 +109,7 @@ struct ComputeKernel {
 /// @endcode
 class VKC_VULKAN_API KernelSetBuilder {
  public:
+  /// @brief Start a group of kernels on @p device, with none registered.
   /// @param device  The device the kernels are built on; borrowed, and it
   ///                must outlive the builder. A @ref Device rather than a
   ///                `VkDevice`, as only it can name the objects for a
@@ -124,6 +125,11 @@ class VKC_VULKAN_API KernelSetBuilder {
   /// @brief Register a kernel: build @p out's layout (@p bindings storage
   ///        buffers at 0 .. bindings - 1) and its pipeline now; @ref build
   ///        allocates its set.
+  ///
+  /// Everything is built before @p out is touched: on success @p out is
+  /// replaced whole -- a kernel built before loses its old layout, pipeline
+  /// and set, and is not @ref ComputeKernel::valid until @ref build -- and on
+  /// failure it is left as it was.
   ///
   /// @warning The builder keeps a pointer to @p out until @ref build, so each
   ///          registered kernel stays at a fixed address from here through
@@ -165,10 +171,10 @@ class VKC_VULKAN_API KernelSetBuilder {
 /// @brief Descriptor sets of one kernel's layout, in a pool of their own.
 ///
 /// A @ref CommandBatch binds a set when it submits, so it refuses one
-/// rewritten after its dispatch was recorded. A batch that dispatches one
-/// kernel several times over different buffers -- each camera of a rig in one
-/// submit -- binds one of these to each dispatch (the set overload of
-/// @ref CommandBatch::dispatch).
+/// rewritten after its dispatch was recorded, or freed. A batch that
+/// dispatches one kernel several times over different buffers -- each camera
+/// of a rig in one submit -- binds one of these to each dispatch (the set
+/// overload of @ref CommandBatch::dispatch).
 ///
 /// @code
 /// KernelSets per_camera;
@@ -200,8 +206,8 @@ class VKC_VULKAN_API KernelSets {
   /// @brief Hold at least @p count sets of @p kernel's layout.
   ///
   /// Grow-only: holding fewer, the pool is replaced by one of @p count sets,
-  /// which frees every set held before, so none may be in a batch not yet
-  /// submitted. New sets are unwritten.
+  /// which frees every set held before -- a @ref CommandBatch that recorded a
+  /// dispatch on one then refuses to submit. New sets are unwritten.
   /// @param device  The kernel's device.
   /// @param kernel  A built kernel, the same one on every call.
   /// @param count   How many sets.

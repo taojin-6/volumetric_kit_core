@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -282,6 +283,17 @@ TEST_F(DeviceTest, SubmitsAndWaits) {
   }
   EXPECT_EQ(recorded, 3);
   EXPECT_TRUE(made->wait_idle().ok());
+}
+
+TEST_F(DeviceTest, ReleasesWhatTheWorkUsedOnceItCompletes) {
+  // Kept only past a failed wait, which a working device does not give: here
+  // the device's reference goes before the call returns.
+  const Result<Device> made = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  auto kept = std::make_shared<int>(7);
+  const std::weak_ptr<int> watch = kept;
+  ASSERT_TRUE(made->submit_single_time(record_barrier, std::move(kept)).ok());
+  EXPECT_TRUE(watch.expired());
 }
 
 TEST_F(DeviceTest, SubmitsFromManyThreads) {

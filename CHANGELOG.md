@@ -49,23 +49,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     families give `VK_SHARING_MODE_CONCURRENT`; `check_queue_family_count`.
   - `DescriptorSetLayout`, `DescriptorPool`, and `DescriptorSet` with storage
     buffer, uniform buffer, combined image sampler and storage image writes;
-    a write naming a null buffer or view aborts via `VKC_CHECK`.
+    a write naming a null buffer or view aborts via `VKC_CHECK`. A set from
+    `DescriptorPool::allocate`, and every copy, reads as empty once the pool
+    is destroyed.
   - `ShaderModule`; `Fence`, `Semaphore`, `TimelineSemaphore`; `CommandPool`
     and `CommandBuffer`.
 - `vulkan` tier compute (DECISIONS.md, "The vulkan tier", V3), from recon:
   - `ComputePipeline`; `ComputeKernel`, `KernelSetBuilder` (kernels sharing
-    one descriptor pool), `KernelSets` (extra sets of a kernel's layout), and
+    one descriptor pool; a kernel registered again is replaced whole, or left
+    as it was on failure), `KernelSets` (extra sets of a kernel's layout), and
     the one-shot `dispatch`.
   - `CommandBatch`: one call's uploads, fills, zeroes, copies (buffer and
     image), queue-family acquires, dispatches (direct and indirect) and
     readbacks, recorded into one command buffer, submitted and waited on once.
-  - `compute_util`: `group_count`, `max_storage_buffer_range`,
-    `check_storage_buffer_range`, `storage_buffer`, `upload_storage_buffer`,
-    `device_storage_buffer`, `ensure_device_scratch`, `StorageInput`.
+    It records handles and set copies, so a kernel or set may move before the
+    submit, which refuses a dispatch whose set was rewritten or freed;
+    `retain` keeps a buffer its commands use that the caller replaces.
+  - `compute_util`: `group_count`, `max_storage_buffer_range` (from the
+    `Device`'s caps), `check_storage_buffer_range`, `storage_buffer`,
+    `upload_storage_buffer`, `device_storage_buffer`, `ensure_device_scratch`
+    and `StorageInput`, whose outgrown buffers go to the batch that used them.
   - `vkc_compile_shaders` and `vkc_embed_shaders`, for every sibling's
-    shaders, installed with the package.
-  - `Device::submit_single_time` reports whether failed work was left in
-    flight.
+    shaders, installed with the package. Headers and symbols are named for
+    the file name made a C identifier; an INTERFACE library shares one
+    compile among the targets that link it.
+  - `Device::submit_single_time` takes what the work uses (`keep_alive`),
+    which the device keeps past a failed wait, with the command buffer, until
+    it has waited for the work.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
   on and reach the log sink; a leg builds with no Vulkan installed.
@@ -135,3 +145,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   threads' calls to the previous handler to return.
 - `calib`: `VC_CHECK` now reports through the log sink instead of printing to
   stderr; the default sink still prints it to stderr.
+- `recon`: the compute pieces move by namespace, except
+  `max_storage_buffer_range(physical)`, which becomes
+  `max_storage_buffer_range(device)` (`volume/voxel_block_grid.cpp`). A
+  `CommandBatch` now binds the set a dispatch recorded, so reassigning the
+  caller's `DescriptorSet` object after it no longer refuses the submit, and
+  a temporary set is accepted.

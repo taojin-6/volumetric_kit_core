@@ -41,13 +41,16 @@ Status KernelSetBuilder::add(ComputeKernel& out, const char* name,
                              const unsigned char* spv, std::size_t spv_size,
                              std::uint32_t bindings,
                              const VkPushConstantRange* push) {
-  // Named before the first return, so a kernel that fails is named in it.
-  out.name = name;
   if (push != nullptr && push->offset != 0) {
     return named(name, Status::invalid_argument(
                            "the push range must start at offset 0"));
   }
-  out.push_bytes = push != nullptr ? push->size : 0;
+  // Built aside and moved in whole, so a failure leaves `out` as it was, and
+  // a kernel built again holds no set of its old layout until build().
+  ComputeKernel kernel;
+  kernel.name = name;
+  kernel.push_bytes = push != nullptr ? push->size : 0;
+  kernel.bindings = bindings;
 
   // Set 0: `bindings` compute-stage storage buffers, matched by index.
   std::vector<VkDescriptorSetLayoutBinding> b(bindings);
@@ -58,7 +61,7 @@ Status KernelSetBuilder::add(ComputeKernel& out, const char* name,
     b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   }
   VKC_TRY(assign_named(
-      out.layout,
+      kernel.layout,
       DescriptorSetLayout::create(device_->handle(), b.data(), bindings),
       name));
 
@@ -72,27 +75,27 @@ Status KernelSetBuilder::add(ComputeKernel& out, const char* name,
                            reinterpret_cast<const std::uint32_t*>(spv),
                            spv_size),
       name));
-  VkDescriptorSetLayout layout = out.layout.handle();
+  VkDescriptorSetLayout layout = kernel.layout.handle();
   ComputePipelineDesc desc;
   desc.shader = &module;
   desc.set_layouts = &layout;
   desc.set_layout_count = 1;
   desc.push_ranges = push;
   desc.push_range_count = push != nullptr ? 1U : 0U;
-  VKC_TRY(assign_named(out.pipeline,
+  VKC_TRY(assign_named(kernel.pipeline,
                        ComputePipeline::create(device_->handle(), desc), name));
 
   // Name what a capture indexes by, not only the dispatch's region: Nsight
   // groups by VkPipeline, and MoltenVK labels the MTLComputePipelineState
   // with a named pipeline's name.
   device_->set_object_name(VK_OBJECT_TYPE_PIPELINE,
-                           debug_object_handle(out.pipeline.handle()), name);
+                           debug_object_handle(kernel.pipeline.handle()), name);
   device_->set_object_name(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                           debug_object_handle(out.pipeline.layout()), name);
+                           debug_object_handle(kernel.pipeline.layout()), name);
   device_->set_object_name(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
-                           debug_object_handle(out.layout.handle()), name);
+                           debug_object_handle(kernel.layout.handle()), name);
 
-  out.bindings = bindings;
+  out = std::move(kernel);
   kernels_.push_back(&out);
   descriptor_total_ += bindings;
   return {};

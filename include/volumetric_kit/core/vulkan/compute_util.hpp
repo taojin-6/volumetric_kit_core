@@ -49,9 +49,13 @@ inline std::uint32_t group_count(std::uint32_t items,
 ///        binding may cover, a separate limit from how much memory can be
 ///        allocated. Read once at a library's create and kept, as the
 ///        workgroup-count limit beside it is.
-/// @param physical  The physical device.
-/// @return The limit in bytes.
-VKC_VULKAN_API VkDeviceSize max_storage_buffer_range(VkPhysicalDevice physical);
+///
+/// @code
+/// max_range_ = max_storage_buffer_range(device);
+/// @endcode
+/// @param device  The device; its @ref Device::caps hold the limit.
+/// @return The limit in bytes; 0 for a moved-from device.
+VKC_VULKAN_API VkDeviceSize max_storage_buffer_range(const Device& device);
 
 /// @brief Refuse a storage-buffer binding whose range the device does not
 ///        permit.
@@ -134,10 +138,20 @@ VKC_VULKAN_API Result<Buffer> device_storage_buffer(
 /// @brief Make @p buffer, retained device-local scratch, hold at least
 ///        @p bytes.
 ///
-/// A buffer that fits is kept. Otherwise the old one is released before its
-/// replacement is made, so a grow never holds both, and the replacement takes
-/// 1.5x headroom (within @p max_range), so an input that creeps up does not
-/// reallocate on every call. Contents are not kept.
+/// A buffer that fits is kept. Otherwise the replacement takes 1.5x headroom
+/// (within @p max_range), so an input that creeps up does not reallocate on
+/// every call, and the old one goes first: freed before the replacement is
+/// made, so a grow never holds both -- or, given @p batch, kept by it until
+/// it has run. Contents are not kept.
+///
+/// So call it before recording what uses @p buffer, as a call does at its
+/// start; a grow after that must pass the batch that recorded it. No other
+/// batch not yet submitted may use @p buffer.
+///
+/// @code
+/// VKC_TRY(ensure_device_scratch(device, allocator, counts_, count_bytes,
+///                               max_range_, "codec.counts"));
+/// @endcode
 /// @param device     Names the buffer for a GPU capture.
 /// @param allocator  The allocator.
 /// @param buffer     The retained buffer; empty after a failed grow.
@@ -145,13 +159,17 @@ VKC_VULKAN_API Result<Buffer> device_storage_buffer(
 /// @param max_range  The limit, from @ref max_storage_buffer_range.
 /// @param name       The debug name, `library.buffer`, which also labels the
 ///                   range error.
+/// @param batch      Optional; a batch whose recorded commands use @p buffer,
+///                   which a grow hands the old one to
+///                   (@ref CommandBatch::retain).
 /// @return OK; @ref Status::Code::InvalidArgument when @p bytes exceeds
 ///         @p max_range; or the allocation's failure.
 VKC_VULKAN_API Status ensure_device_scratch(const Device& device,
                                             Allocator& allocator,
                                             Buffer& buffer, VkDeviceSize bytes,
                                             VkDeviceSize max_range,
-                                            const char* name);
+                                            const char* name,
+                                            CommandBatch* batch = nullptr);
 
 /// @brief An input a call reads as a storage binding: host bytes the call
 ///        stages onto the device, or a storage buffer already there (another
@@ -172,12 +190,16 @@ VKC_VULKAN_API Status ensure_device_scratch(const Device& device,
 /// @endcode
 class VKC_VULKAN_API StorageInput {
  public:
-  /// @param host  Host bytes, staged by @ref buffer; null is refused by
-  ///              @ref check.
+  /// @brief An input of host bytes, which @ref buffer stages.
+  /// @param host  Host bytes; null is refused by @ref check.
   explicit StorageInput(const void* host) noexcept : host_(host) {}
-  /// @param device  A storage buffer in known device-local memory, bound in
-  ///                place; host-visible device-local memory is accepted.
+  /// @brief An input already on the device, which @ref buffer binds in place.
+  /// @param device  A storage buffer in known device-local memory;
+  ///                host-visible device-local memory is accepted.
   explicit StorageInput(const Buffer& device) noexcept : device_(&device) {}
+  /// A @ref Buffer is passed by reference: through a pointer it would be
+  /// taken as host bytes, and the object itself uploaded.
+  explicit StorageInput(const Buffer* device) = delete;
 
   /// @brief Whether this can be bound as @p bytes of storage. Constant time,
   ///        so a call checks it before doing any work.
@@ -196,7 +218,10 @@ class VKC_VULKAN_API StorageInput {
   /// Bind exactly @p bytes of it, never `VK_WHOLE_SIZE`: a caller's buffer
   /// may exceed `maxStorageBufferRange` where the input does not. The caller
   /// keeps @p upload alive until the batch has run, and records the dispatch
-  /// that reads it after this.
+  /// that reads it after this. An @p upload too small is replaced, and the
+  /// old one handed to @p batch (@ref CommandBatch::retain), so commands it
+  /// recorded on the old one still run on it; no other batch not yet
+  /// submitted may use @p upload.
   /// @param batch      Records the upload.
   /// @param allocator  Makes the device buffer.
   /// @param bytes      The binding's range; non-zero, and checked by

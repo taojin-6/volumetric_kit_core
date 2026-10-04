@@ -389,6 +389,42 @@ TEST_F(BatchTest, ZeroesAtAnyAlignment) {
   }
 }
 
+TEST_F(BatchTest, ZeroesManyScatteredUnalignedBlocks) {
+  // Each block has two unaligned edges, all copied from the batch's one
+  // staged word of zeros, and not a byte between the blocks touched.
+  constexpr VkDeviceSize kBlocks = 60;
+  const std::vector<std::uint32_t> ones(kCount, 0xFFFFFFFFU);
+  std::vector<unsigned char> bytes(kBytes, 0);
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(batch.upload(a_, 0, ones.data(), kBytes).ok());
+  for (VkDeviceSize b = 0; b < kBlocks; ++b) {
+    ASSERT_TRUE(batch.zero(a_, (b * 16) + 1, 9).ok());
+  }
+  ASSERT_TRUE(batch.readback(a_, 0, kBytes, bytes.data()).ok());
+  ASSERT_TRUE(batch.submit().ok());
+  for (VkDeviceSize i = 0; i < kBytes; ++i) {
+    const VkDeviceSize at = i % 16;
+    const bool zeroed = i < kBlocks * 16 && at >= 1 && at < 10;
+    ASSERT_EQ(bytes[i], zeroed ? 0 : 0xFF) << "byte " << i;
+  }
+}
+
+TEST_F(BatchTest, RetainsABufferItsCommandsUseUntilTheyRun) {
+  // A buffer the caller lets go after recording on it: the batch keeps it.
+  const std::vector<std::uint32_t> p = pattern(5);
+  std::vector<std::uint32_t> got(kCount, 0);
+  Buffer scratch = make(true, kBytes);
+  ASSERT_TRUE(scratch.valid());
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(batch.upload(scratch, 0, p.data(), kBytes).ok());
+  ASSERT_TRUE(batch.copy(scratch, 0, b_, 0, kBytes).ok());
+  batch.retain(std::move(scratch));
+  batch.retain(Buffer{});  // nothing to keep
+  ASSERT_TRUE(batch.readback(b_, 0, kBytes, got.data()).ok());
+  ASSERT_TRUE(batch.submit().ok());
+  EXPECT_EQ(got, p);
+}
+
 TEST_F(BatchTest, RunsRisingFillsTogetherAndOrdersOneThatGoesBack) {
   std::vector<std::uint32_t> got(kCount, 0);
   CommandBatch batch(device(), allocator());
@@ -564,14 +600,22 @@ TEST_F(BatchTest, DispatchesOneKernelOverSetsOfItsOwn) {
   EXPECT_EQ(got_a, plus(p, 3));
   EXPECT_EQ(got_b, plus(q, 2));
 
-  // A supplied set replaced, or rewritten, after its dispatch is refused.
+  // The batch binds the set it was given, so the caller's object may be
+  // reassigned, or be a temporary; a set rewritten after its dispatch is
+  // refused.
   DescriptorSet swapped = sa;
   CommandBatch reassigned(device(), allocator());
   ASSERT_TRUE(
       reassigned.dispatch(add_, swapped, &one, sizeof(one), groups, max_groups_)
           .ok());
+  ASSERT_TRUE(reassigned
+                  .dispatch(add_, DescriptorSet(sb), &one, sizeof(one), groups,
+                            max_groups_)
+                  .ok());
   swapped = sb;
-  EXPECT_TRUE(is_invalid(reassigned.submit()));
+  ASSERT_TRUE(reassigned.submit().ok());
+  EXPECT_EQ(read(a_), plus(p, 4));
+  EXPECT_EQ(read(b_), plus(q, 3));
 
   CommandBatch rewritten(device(), allocator());
   ASSERT_TRUE(
@@ -584,6 +628,47 @@ TEST_F(BatchTest, DispatchesOneKernelOverSetsOfItsOwn) {
   CommandBatch empty_set(device(), allocator());
   EXPECT_TRUE(is_invalid(
       empty_set.dispatch(add_, none, &one, sizeof(one), groups, max_groups_)));
+}
+
+TEST_F(BatchTest, RefusesASetFreedWithItsPool) {
+  // A KernelSets that grows frees the sets it held, and a kernel's pool can
+  // go too: either way the recorded binding is gone, and submit refuses
+  // rather than bind freed memory.
+  const std::vector<std::uint32_t> z(kCount, 0);
+  upload(a_, z);
+  const Push push{kCount, 1};
+  const std::uint32_t groups = group_count(kCount, 64);
+  KernelSets sets;
+  ASSERT_TRUE(sets.reserve(device(), add_, 1).ok());
+  sets[0].write_storage_buffer(0, a_.handle(), 0, VK_WHOLE_SIZE);
+  CommandBatch grown(device(), allocator());
+  ASSERT_TRUE(
+      grown.dispatch(add_, sets[0], &push, sizeof(push), groups, max_groups_)
+          .ok());
+  ASSERT_TRUE(sets.reserve(device(), add_, 2).ok());
+  EXPECT_TRUE(is_invalid(grown.submit()));
+
+  CommandBatch own(device(), allocator());
+  ASSERT_TRUE(add_to(own, a_, 1).ok());
+  pool_ = DescriptorPool{};
+  EXPECT_TRUE(is_invalid(own.submit()));
+  EXPECT_FALSE(add_.valid());  // its set went with the pool
+  EXPECT_EQ(read(a_), z);      // neither dispatch ran
+}
+
+TEST_F(BatchTest, BindsTheKernelItRecordedThoughTheKernelMoves) {
+  // The batch takes the kernel's pipeline and set when it records, so a
+  // kernel moved before submit -- a vector of kernels that grew -- still runs.
+  const std::vector<std::uint32_t> p = pattern(1);
+  upload(a_, p);
+  std::vector<std::uint32_t> got(kCount, 0);
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(add_to(batch, a_, 6).ok());
+  ComputeKernel moved = std::move(add_);
+  ASSERT_TRUE(batch.readback(a_, 0, kBytes, got.data()).ok());
+  ASSERT_TRUE(batch.submit().ok());
+  EXPECT_EQ(got, plus(p, 6));
+  add_ = std::move(moved);
 }
 
 // --- acquires ----------------------------------------------------------------

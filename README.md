@@ -17,14 +17,15 @@ buffers zero-copy on one shared device.
 
 > **Status:** the `base` tier is implemented and tested: exception-free
 > `Status`/`Result`, the `VKC_CHECK` contract check, the pluggable log sink, and
-> the version API. calib and recon build on it. The `vulkan` tier's foundation
-> memory and compute are implemented -- the instance, device selection against
-> a library's requirements, the logical device every sibling creates or
-> adopts, the VMA allocator with its buffers and images, descriptors,
-> synchronization, compute kernels, `CommandBatch`, and the shader build
-> functions -- and its timers, external memory and shared-device pieces
-> follow. The `camera` and `sensor` tiers are planned; see [DECISIONS.md](DECISIONS.md#tiers) for what
-> each holds and the order they land in.
+> the version API. calib and recon build on it. The `vulkan` tier's
+> foundation, memory and compute are implemented -- the instance, device
+> selection against a library's requirements, the logical device every sibling
+> creates or adopts, the VMA allocator with its buffers and images,
+> descriptors, synchronization, compute kernels, `CommandBatch`, and the shader
+> build functions -- and its timers, external memory and shared-device pieces
+> follow. The `camera` and `sensor` tiers are planned; see
+> [DECISIONS.md](DECISIONS.md#tiers) for what each holds and the order they land
+> in.
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and
 Claude Code; `CLAUDE.md` imports it.

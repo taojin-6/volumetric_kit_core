@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -55,6 +56,13 @@ TEST(ComputeUtil, ChecksAStorageRangeAgainstTheLimit) {
   EXPECT_NE(over.message().find("tsdf.voxels"), std::string::npos);
   EXPECT_TRUE(is_invalid(check_storage_buffer_range(nullptr, 2, 1)));
 }
+
+// Through a pointer a Buffer would convert to host bytes, and the object
+// itself be uploaded; host bytes of any type still convert.
+static_assert(!std::is_constructible_v<StorageInput, const Buffer*>);
+static_assert(!std::is_constructible_v<StorageInput, Buffer*>);
+static_assert(std::is_constructible_v<StorageInput, const std::uint32_t*>);
+static_assert(std::is_constructible_v<StorageInput, const Buffer&>);
 
 TEST(ComputeUtil, StorageInputRefusesNullHostBytes) {
   const StorageInput none(static_cast<const void*>(nullptr));
@@ -283,7 +291,7 @@ TEST_F(ComputeTest, NamesTheKernelThatFailsToBuild) {
                                     vkc_test_add_comp_spv_size, 1, &off);
   EXPECT_TRUE(is_invalid(offset));
   EXPECT_NE(offset.message().find("misplaced"), std::string::npos);
-  EXPECT_STREQ(kernel.name, "misplaced");
+  EXPECT_EQ(kernel.name, nullptr);  // a failed add leaves the kernel as it was
 
   // A size that is not whole words fails in ShaderModule, before Vulkan.
   const Status words = builder.add(kernel, "truncated", vkc_test_add_comp_spv,
@@ -295,6 +303,43 @@ TEST_F(ComputeTest, NamesTheKernelThatFailsToBuild) {
   const Result<DescriptorPool> pool = builder.build();
   ASSERT_TRUE(pool.ok()) << pool.status().message();
   EXPECT_FALSE(kernel.valid());
+}
+
+TEST_F(ComputeTest, BuildsAKernelAgainWholeOrNotAtAll) {
+  const VkPushConstantRange push = range(sizeof(AddPush));
+  ComputeKernel kernel;
+  KernelSetBuilder first(device());
+  ASSERT_TRUE(first
+                  .add(kernel, "test_add", vkc_test_add_comp_spv,
+                       vkc_test_add_comp_spv_size, 1, &push)
+                  .ok());
+  Result<DescriptorPool> pool = first.build();
+  ASSERT_TRUE(pool.ok()) << pool.status().message();
+  ASSERT_TRUE(kernel.valid());
+  VkPipeline built = kernel.pipeline.handle();
+  VkDescriptorSet set = kernel.set.handle();
+
+  // A failed rebuild keeps the kernel whole: its pipeline, layout and set.
+  KernelSetBuilder failing(device());
+  EXPECT_TRUE(is_invalid(failing.add(kernel, "truncated", vkc_test_add_comp_spv,
+                                     vkc_test_add_comp_spv_size - 1, 1)));
+  EXPECT_TRUE(kernel.valid());
+  EXPECT_EQ(kernel.pipeline.handle(), built);
+  EXPECT_EQ(kernel.set.handle(), set);
+  EXPECT_STREQ(kernel.name, "test_add");
+
+  // A rebuild replaces it whole: no set of the old layout until build().
+  KernelSetBuilder again(device());
+  ASSERT_TRUE(again
+                  .add(kernel, "test_fill", vkc_test_fill_comp_spv,
+                       vkc_test_fill_comp_spv_size, 1, &push)
+                  .ok());
+  EXPECT_FALSE(kernel.valid());
+  EXPECT_EQ(kernel.set.handle(), VK_NULL_HANDLE);
+  EXPECT_STREQ(kernel.name, "test_fill");
+  pool = again.build();
+  ASSERT_TRUE(pool.ok()) << pool.status().message();
+  EXPECT_TRUE(kernel.valid());
 }
 
 TEST_F(ComputeTest, KernelSetsGrowOnlyAndMove) {
@@ -317,8 +362,12 @@ TEST_F(ComputeTest, KernelSetsGrowOnlyAndMove) {
   ASSERT_TRUE(sets.reserve(device(), add, 1).ok());  // fewer: kept
   EXPECT_EQ(sets.size(), 2U);
   EXPECT_EQ(sets[0].handle(), first);
+  const DescriptorSet held = sets[0];
   ASSERT_TRUE(sets.reserve(device(), add, 3).ok());  // more: replaced
   EXPECT_EQ(sets.size(), 3U);
+  // The old pool, and with it every copy of an old set, is gone.
+  EXPECT_FALSE(held.valid());
+  EXPECT_EQ(held.handle(), VK_NULL_HANDLE);
 
   KernelSets moved(std::move(sets));
   // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
@@ -372,7 +421,7 @@ TEST_F(ComputeTest, DispatchesOnceAndRefusesWhatABatchRefuses) {
 }
 
 TEST_F(ComputeTest, MakesStorageBuffersWhereTheyBelong) {
-  EXPECT_EQ(max_storage_buffer_range(physical().handle()),
+  EXPECT_EQ(max_storage_buffer_range(device()),
             physical().limits().maxStorageBufferRange);
 
   Result<Buffer> host = storage_buffer(allocator(), 64, HostAccess::Random,
@@ -419,6 +468,30 @@ TEST_F(ComputeTest, ScratchGrowsWithHeadroomWithinTheLimit) {
   EXPECT_NE(over.message().find("test.scratch"), std::string::npos);
 }
 
+TEST_F(ComputeTest, ScratchGrownMidBatchStaysTheBatchsUntilItRuns) {
+  // Written and copied out by a batch, then grown with that batch passed: the
+  // copy still reads the old buffer, which the batch kept.
+  const std::vector<std::uint32_t> words = {1, 2, 3, 4};
+  Result<Buffer> made = device_storage_buffer(allocator(), 16);
+  ASSERT_TRUE(made.ok());
+  const Buffer out = *std::move(made);
+  Buffer scratch;
+  ASSERT_TRUE(ensure_device_scratch(device(), allocator(), scratch, 16, 4096,
+                                    "test.scratch")
+                  .ok());
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(batch.upload(scratch, 0, words.data(), 16).ok());
+  ASSERT_TRUE(batch.copy(scratch, 0, out, 0, 16).ok());
+  VkBuffer old = scratch.handle();
+  ASSERT_TRUE(ensure_device_scratch(device(), allocator(), scratch, 1000, 4096,
+                                    "test.scratch", &batch)
+                  .ok());
+  EXPECT_NE(scratch.handle(), old);
+  EXPECT_EQ(scratch.size(), 1500U);
+  ASSERT_TRUE(batch.submit().ok());
+  EXPECT_EQ(read(out, 4), words);
+}
+
 TEST_F(ComputeTest, StorageInputBindsDeviceBuffersAndStagesHostBytes) {
   Result<Buffer> resident = device_storage_buffer(allocator(), 64);
   Result<Buffer> host = storage_buffer(allocator(), 64);
@@ -458,6 +531,30 @@ TEST_F(ComputeTest, StorageInputBindsDeviceBuffersAndStagesHostBytes) {
       StorageInput(words.data()).buffer(again, allocator(), 8, upload).ok());
   EXPECT_EQ(upload.handle(), reused);  // big enough: reused
   ASSERT_TRUE(again.submit().ok());
+}
+
+TEST_F(ComputeTest, StorageInputKeepsAnUploadItOutgrowsForTheBatch) {
+  // Two inputs through one upload member in one batch, the second larger:
+  // what the batch recorded on the first buffer still runs on it.
+  const std::vector<std::uint32_t> small = {1, 2, 3, 4};
+  const std::vector<std::uint32_t> large = {5, 6, 7, 8, 9, 10, 11, 12};
+  Result<Buffer> made = device_storage_buffer(allocator(), 16);
+  ASSERT_TRUE(made.ok());
+  const Buffer out = *std::move(made);
+  Buffer upload;
+  CommandBatch batch(device(), allocator());
+  const Result<VkBuffer> first =
+      StorageInput(small.data()).buffer(batch, allocator(), 16, upload);
+  ASSERT_TRUE(first.ok()) << first.status().message();
+  ASSERT_TRUE(batch.copy(upload, 0, out, 0, 16).ok());
+  const Result<VkBuffer> second =
+      StorageInput(large.data()).buffer(batch, allocator(), 32, upload);
+  ASSERT_TRUE(second.ok()) << second.status().message();
+  EXPECT_NE(*second, *first);  // outgrown: replaced
+  EXPECT_EQ(upload.handle(), *second);
+  ASSERT_TRUE(batch.submit().ok());
+  EXPECT_EQ(read(out, 4), small);
+  EXPECT_EQ(read(upload, 8), large);
 }
 
 }  // namespace

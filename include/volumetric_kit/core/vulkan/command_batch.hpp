@@ -18,13 +18,13 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 
 class Allocator;
-class DescriptorSet;
 class Device;
 class Image;
 struct ComputeKernel;
@@ -59,11 +59,18 @@ struct ComputeKernel;
 /// them and records or runs nothing, so a batch missing a command is never
 /// submitted.
 ///
-/// Every @ref Buffer recorded must stay alive until @ref submit returns, and
-/// so must every readback destination. If the fence wait fails, the device
-/// may still run the batch: the batch then keeps its staging for good, as
-/// @ref Device::submit_single_time keeps its command buffer, and the device
-/// is best treated as lost. The batch borrows its @ref Device and
+/// **A batch records handles, not objects.** Every @ref Buffer and @ref Image
+/// recorded, each dispatched kernel's pipeline, and every readback
+/// destination must stay alive until @ref submit returns -- the objects may
+/// move meanwhile -- and an image must stay in the layout it was copied in.
+/// The one recorded thing a caller may change before then is a dispatch's
+/// descriptor set, so @ref submit checks it and refuses the batch if it was
+/// rewritten through any copy, or freed with its pool. A buffer its owner
+/// replaces before then -- a grown upload or scratch buffer -- goes to
+/// @ref retain. If the fence wait fails, the device may still run the batch:
+/// it keeps the batch's staging with its command buffer until it is destroyed
+/// (@ref Device::submit_single_time), and is best treated as lost. The batch
+/// borrows its @ref Device and
 /// @ref Allocator, which must outlive it. A batch belongs to one thread, but
 /// batches on several threads may share a device and allocator, each
 /// recording its own kernels and buffers.
@@ -147,12 +154,16 @@ class VKC_VULKAN_API CommandBatch {
               std::uint32_t value);
 
   /// @brief Set @p bytes of @p dst at @p offset to zero, at any alignment: a
-  ///        @ref fill for the whole words, an @ref upload for an unaligned
-  ///        edge.
+  ///        @ref fill for the whole words, and a copy for an unaligned edge
+  ///        from one small buffer of zeros the batch stages once, however
+  ///        many edges it zeroes.
   /// @param dst     Needs `TRANSFER_DST` usage.
   /// @param offset  The byte offset into @p dst.
   /// @param bytes   How many; 0 records nothing.
-  /// @return As @ref fill and @ref upload.
+  /// @return OK; @ref Status::Code::InvalidArgument for a range past @p dst,
+  ///         a missing usage bit, or an unaligned edge on a batch with no
+  ///         allocator; the zeros' allocation's failure; or a poisoned
+  ///         batch's first refusal.
   Status zero(const Buffer& dst, VkDeviceSize offset, VkDeviceSize bytes);
 
   /// @brief Copy @p bytes from @p src to @p dst on the device.
@@ -171,7 +182,10 @@ class VKC_VULKAN_API CommandBatch {
   ///        @p dst at @p dst_offset, rows packed (`vkCmdCopyImageToBuffer`).
   ///
   /// Reads mip 0, layer 0 (the first slice of a 3D image), in the layout
-  /// @ref Image::layout records, which the image's writer left it in.
+  /// @ref Image::layout records now, which the image's writer left it in.
+  /// The handle and layout are taken here, so the image must stay alive, and
+  /// in that layout, until @ref submit returns; the batch cannot see a later
+  /// transition.
   /// @param src         A single-sample image of an uncompressed 8-, 16- or
   ///                    32-bit-channel color format (`R8_UNORM` through
   ///                    `R32G32B32A32_SFLOAT`), with `TRANSFER_SRC` usage,
@@ -218,10 +232,14 @@ class VKC_VULKAN_API CommandBatch {
   Status acquire(const Buffer& buffer, std::uint32_t from);
 
   /// @brief Record a 1-D dispatch of @p kernel over @p groups workgroups.
+  ///
+  /// The kernel's pipeline, name and set are taken here, so the kernel may
+  /// move, or have another set assigned, before @ref submit, which binds what
+  /// was taken; its pipeline must stay alive until then.
   /// @param kernel      A built kernel whose set is written. The set is bound
   ///                    when @ref submit records, so rewriting it through any
-  ///                    copy, or replacing it, before then makes @ref submit
-  ///                    refuse the batch.
+  ///                    copy, or freeing its pool, before then makes
+  ///                    @ref submit refuse the batch.
   /// @param push        Push-constant bytes, copied here; null only when
   ///                    @p push_size is 0.
   /// @param push_size   A multiple of 4, at most the kernel's
@@ -243,13 +261,14 @@ class VKC_VULKAN_API CommandBatch {
   /// So one batch can dispatch a kernel several times over different
   /// buffers, each dispatch binding a set of its own of the kernel's layout
   /// (@ref KernelSets). The kernel's own set's rule holds for @p set:
-  /// rewritten through any copy, or replaced, before @ref submit, the batch
-  /// is refused.
+  /// rewritten through any copy, or freed with its pool -- a
+  /// @ref KernelSets::reserve that grows -- before @ref submit, the batch is
+  /// refused.
   /// @param kernel      As @ref dispatch.
-  /// @param set         A written set of @p kernel's layout; it must stay
-  ///                    alive until @ref submit returns, as the batch binds
-  ///                    and checks that object, not a copy. The layout is not
-  ///                    checked; the validation layer names a mismatch.
+  /// @param set         A written set of @p kernel's layout. The batch keeps
+  ///                    a copy, which shares the set's write count, so the
+  ///                    caller's object may go. The layout is not checked;
+  ///                    the validation layer names a mismatch.
   /// @param push        As @ref dispatch.
   /// @param push_size   As @ref dispatch.
   /// @param groups      As @ref dispatch.
@@ -259,10 +278,6 @@ class VKC_VULKAN_API CommandBatch {
   Status dispatch(const ComputeKernel& kernel, const DescriptorSet& set,
                   const void* push, std::uint32_t push_size,
                   std::uint32_t groups, std::uint32_t max_groups);
-  /// A temporary set would be gone by @ref submit.
-  Status dispatch(const ComputeKernel& kernel, DescriptorSet&& set,
-                  const void* push, std::uint32_t push_size,
-                  std::uint32_t groups, std::uint32_t max_groups) = delete;
 
   /// @brief Record a dispatch of @p kernel whose workgroup counts the device
   ///        reads from @p args at @p offset (`vkCmdDispatchIndirect`), so a
@@ -294,6 +309,22 @@ class VKC_VULKAN_API CommandBatch {
   Status readback(const Buffer& src, VkDeviceSize offset, VkDeviceSize bytes,
                   void* dst);
 
+  /// @brief Keep @p buffer alive as the batch's own, freed with its staging
+  ///        once @ref submit has waited.
+  ///
+  /// For a buffer the recorded commands use that its owner replaces before
+  /// @ref submit -- an upload or scratch buffer grown mid-call, as
+  /// @ref StorageInput::buffer and @ref ensure_device_scratch do -- which
+  /// would otherwise be freed under them. Taken on any batch, a poisoned or
+  /// submitted one included, and freed with it if it never runs.
+  ///
+  /// @code
+  /// batch.retain(std::move(upload));  // the commands so far still read it
+  /// VKC_ASSIGN(upload, device_storage_buffer(allocator, bigger));
+  /// @endcode
+  /// @param buffer  The buffer; may be empty, which keeps nothing.
+  void retain(Buffer buffer);
+
   /// @brief Submit everything recorded as one command buffer, wait for it,
   ///        and fill every readback destination.
   ///
@@ -301,9 +332,8 @@ class VKC_VULKAN_API CommandBatch {
   /// submitted at most once.
   /// @return OK; the first refusal a recording call returned;
   ///         @ref Status::Code::InvalidArgument for a second submit, a
-  ///         moved-from batch, or a set rewritten through any copy or
-  ///         replaced after its dispatch was recorded; or a staging or Vulkan
-  ///         failure.
+  ///         moved-from batch, or a set rewritten through any copy, or freed,
+  ///         after its dispatch was recorded; or a staging or Vulkan failure.
   Status submit();
 
   /// @return Whether @ref submit has run, whatever it returned.
@@ -320,6 +350,8 @@ class VKC_VULKAN_API CommandBatch {
     Acquire,
     ImageCopy
   };
+  // What a command needs at submit, taken when it is recorded: handles and
+  // copies, never a pointer to a caller's object, which may move or go.
   struct Op {
     Kind kind = Kind::Copy;
     VkBuffer src = VK_NULL_HANDLE;
@@ -329,10 +361,16 @@ class VKC_VULKAN_API CommandBatch {
     VkDeviceSize bytes = 0;
     std::uint32_t value = 0;      // fill word, workgroup count, or from-family
     std::uint32_t to_family = 0;  // an acquire's destination family
-    const ComputeKernel* kernel = nullptr;
-    const DescriptorSet* set = nullptr;           // the set a dispatch binds
-    VkDescriptorSet set_handle = VK_NULL_HANDLE;  // its handle when recorded
-    std::uint64_t set_writes = 0;                 // its writes when recorded
+    // A dispatch's kernel: its pipeline, the layout it binds and pushes
+    // through, and its name, borrowed (a string literal) for the region.
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+    const char* name = nullptr;
+    // The set a dispatch binds: a copy, sharing the write count and seeing
+    // the pool go, and its handle and write count when recorded.
+    DescriptorSet set;
+    VkDescriptorSet set_handle = VK_NULL_HANDLE;
+    std::uint64_t set_writes = 0;
     std::vector<unsigned char> data;  // push constants, or an inline upload
     void* host_dst = nullptr;         // a readback's destination
     bool staged = false;              // a Copy from this batch's own staging
@@ -351,13 +389,16 @@ class VKC_VULKAN_API CommandBatch {
                         std::uint32_t push_size);
   // A host-visible buffer of `bytes`, held until the submit's wait is done.
   Result<const Buffer*> stage(VkDeviceSize bytes, bool upload);
+  // Zeroes `bytes` (under 4) of `dst` at `offset` by a copy from zeros_.
+  Status zero_edge(const Buffer& dst, VkDeviceSize offset, VkDeviceSize bytes);
   bool needs_barrier(std::size_t first, std::size_t i) const;
   void record(VkCommandBuffer cmd) const;
 
   const Device* device_;
   Allocator* allocator_;
   std::vector<Op> ops_;
-  std::vector<Buffer> staging_;
+  std::vector<Buffer> staging_;      // and what retain() keeps
+  VkBuffer zeros_ = VK_NULL_HANDLE;  // a staged word of zeros, made once
   Status status_;
   bool submitted_ = false;
 };

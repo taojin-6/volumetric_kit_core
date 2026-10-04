@@ -65,7 +65,9 @@ class VKC_VULKAN_API DescriptorSetLayout {
 /// @brief Owns a `VkDescriptorPool` and allocates @ref DescriptorSet s from it.
 ///
 /// Its sets are freed with the pool, not one by one, so retire the pool only
-/// once the GPU is done with every set drawn from it.
+/// once the GPU is done with every set drawn from it. A set, and every copy of
+/// it, reads as empty once its pool is destroyed or replaced, so what recorded
+/// it -- a @ref CommandBatch -- can tell it is gone.
 ///
 /// @warning The device passed to @ref create must outlive the pool.
 ///
@@ -112,6 +114,9 @@ class VKC_VULKAN_API DescriptorPool {
 
  private:
   UniqueHandle<VkDescriptorPool, vkDestroyDescriptorPool> pool_;
+  // Shared with nothing but watched by every set allocated here: it goes
+  // with the pool, which frees the sets.
+  std::shared_ptr<const void> lifetime_;
 };
 
 /// @brief A `VkDescriptorSet`, owned by its @ref DescriptorPool, and the writes
@@ -119,9 +124,11 @@ class VKC_VULKAN_API DescriptorPool {
 ///
 /// Freely copyable: it borrows the set. Copies share a count of the writes made
 /// through any of them, so a command batch that recorded the set can refuse it
-/// once it has been rewritten through an alias. As for the `VkDescriptorSet`
-/// itself, writes through any copy need external synchronization, and every
-/// resource a write names must outlive the work that reads it.
+/// once it has been rewritten through an alias -- or once its pool is gone, as
+/// a set from @ref DescriptorPool::allocate, and every copy, then reads as
+/// empty. As for the `VkDescriptorSet` itself, writes through any copy need
+/// external synchronization, and every resource a write names must outlive the
+/// work that reads it.
 ///
 /// A write names a real buffer or view: a null one is valid only under the
 /// `nullDescriptor` feature, which the tier does not enable, so it aborts via
@@ -138,7 +145,8 @@ class VKC_VULKAN_API DescriptorSet {
   DescriptorSet() noexcept = default;
 
   /// @brief Wrap a set allocated on @p device; @ref DescriptorPool::allocate
-  ///        makes these.
+  ///        makes these. A set wrapped here cannot see its pool, so it stays
+  ///        valid until the wrapper and its copies are gone.
   /// @param device  The device its writes update through.
   /// @param set     The set.
   DescriptorSet(VkDevice device, VkDescriptorSet set);
@@ -179,11 +187,14 @@ class VKC_VULKAN_API DescriptorSet {
   void write_storage_image(std::uint32_t binding, VkImageView view,
                            VkImageLayout layout) const;
 
-  /// @return The set (`VK_NULL_HANDLE` when empty).
+  /// @return The set (`VK_NULL_HANDLE` when empty, or once its pool is gone).
   VkDescriptorSet handle() const noexcept {
-    return state_ != nullptr ? state_->set : VK_NULL_HANDLE;
+    if (state_ == nullptr || (state_->pooled && state_->pool.expired())) {
+      return VK_NULL_HANDLE;
+    }
+    return state_->set;
   }
-  /// @return Whether this refers to a set.
+  /// @return Whether this refers to a set whose pool still holds it.
   bool valid() const noexcept { return handle() != VK_NULL_HANDLE; }
   /// @return How many writes this set and its copies have made.
   std::uint64_t writes() const noexcept {
@@ -198,10 +209,16 @@ class VKC_VULKAN_API DescriptorSet {
              const VkDescriptorBufferInfo* buffer,
              const VkDescriptorImageInfo* image) const;
 
+  friend class DescriptorPool;  // to tie the sets it allocates to it
+
   struct State {
     VkDevice device = VK_NULL_HANDLE;
     VkDescriptorSet set = VK_NULL_HANDLE;
     std::uint64_t writes = 0;
+    // The allocating pool's lifetime; `pooled` tells an expired one from a
+    // wrapped set's, which has none to watch.
+    std::weak_ptr<const void> pool;
+    bool pooled = false;
   };
   std::shared_ptr<State> state_;
 };

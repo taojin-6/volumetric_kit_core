@@ -64,6 +64,7 @@ Result<DescriptorPool> DescriptorPool::create(VkDevice device,
   DescriptorPool pool;
   pool.pool_ =
       UniqueHandle<VkDescriptorPool, vkDestroyDescriptorPool>(device, handle);
+  pool.lifetime_ = std::make_shared<char>();
   return pool;
 }
 
@@ -81,11 +82,17 @@ Result<DescriptorSet> DescriptorPool::allocate(VkDescriptorSetLayout layout) {
   info.pSetLayouts = &layout;
   VkDescriptorSet set = VK_NULL_HANDLE;
   VKC_VK_TRY(vkAllocateDescriptorSets(pool_.device(), &info, &set));
-  return DescriptorSet(pool_.device(), set);
+  DescriptorSet out(pool_.device(), set);
+  out.state_->pool = lifetime_;
+  out.state_->pooled = true;
+  return out;
 }
 
 DescriptorSet::DescriptorSet(VkDevice device, VkDescriptorSet set)
-    : state_(std::make_shared<State>(State{device, set, 0})) {}
+    : state_(std::make_shared<State>()) {
+  state_->device = device;
+  state_->set = set;
+}
 
 void DescriptorSet::write(const char* caller, VkDescriptorType type,
                           std::uint32_t binding,

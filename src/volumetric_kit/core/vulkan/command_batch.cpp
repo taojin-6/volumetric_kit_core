@@ -7,11 +7,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -131,8 +131,8 @@ CommandBatch::CommandBatch(const Device& device, Allocator& allocator)
 }
 
 // Staging still held here never reached the device, or its submit failed
-// before the device had it: a successful submit frees its own, and a failed
-// wait leaks it.
+// before the device had it: submit hands its own to the device, which frees
+// it after the wait, or after waiting again at its destruction.
 CommandBatch::~CommandBatch() = default;
 
 CommandBatch::CommandBatch(CommandBatch&& other) noexcept
@@ -140,6 +140,7 @@ CommandBatch::CommandBatch(CommandBatch&& other) noexcept
       allocator_(std::exchange(other.allocator_, nullptr)),
       ops_(std::exchange(other.ops_, {})),
       staging_(std::exchange(other.staging_, {})),
+      zeros_(std::exchange(other.zeros_, VK_NULL_HANDLE)),
       status_(std::exchange(other.status_, Status{})),
       submitted_(std::exchange(other.submitted_, false)) {}
 
@@ -149,6 +150,7 @@ CommandBatch& CommandBatch::operator=(CommandBatch&& other) noexcept {
     allocator_ = std::exchange(other.allocator_, nullptr);
     ops_ = std::exchange(other.ops_, {});
     staging_ = std::exchange(other.staging_, {});
+    zeros_ = std::exchange(other.zeros_, VK_NULL_HANDLE);
     status_ = std::exchange(other.status_, Status{});
     submitted_ = std::exchange(other.submitted_, false);
   }
@@ -266,17 +268,41 @@ Status CommandBatch::fill(const Buffer& dst, VkDeviceSize offset,
 
 Status CommandBatch::zero(const Buffer& dst, VkDeviceSize offset,
                           VkDeviceSize bytes) {
-  static constexpr unsigned char kZeros[4] = {};
   VKC_TRY(check(usable()));
   if (bytes == 0) return {};
   VKC_TRY(check(in_range(dst, offset, bytes, "zero")));
+  VKC_TRY(check(has_usage(dst, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          "zero needs a TRANSFER_DST buffer")));
   const VkDeviceSize end = offset + bytes;
   const VkDeviceSize first_word =
       std::min((offset + 3) & ~VkDeviceSize{3}, end);
   const VkDeviceSize last_word = std::max(end & ~VkDeviceSize{3}, first_word);
-  VKC_TRY(upload(dst, offset, kZeros, first_word - offset));
+  VKC_TRY(zero_edge(dst, offset, first_word - offset));
   VKC_TRY(fill(dst, first_word, last_word - first_word, 0U));
-  return upload(dst, last_word, kZeros, end - last_word);
+  return zero_edge(dst, last_word, end - last_word);
+}
+
+// Every edge copies from one word of zeros, staged on the first: zeroing
+// thousands of scattered blocks allocates once, not twice a block. No command
+// writes that word, so the copies join a run like any staged upload.
+Status CommandBatch::zero_edge(const Buffer& dst, VkDeviceSize offset,
+                               VkDeviceSize bytes) {
+  if (bytes == 0) return {};
+  if (zeros_ == VK_NULL_HANDLE) {
+    Result<const Buffer*> staged = stage(4, /*upload=*/true);
+    if (!staged) return check(staged.status());
+    std::memset((*staged)->mapped(), 0, 4);
+    zeros_ = (*staged)->handle();
+  }
+  Op op;
+  op.kind = Kind::Copy;
+  op.src = zeros_;
+  op.dst = dst.handle();
+  op.dst_offset = offset;
+  op.bytes = bytes;
+  op.staged = true;
+  ops_.push_back(std::move(op));
+  return {};
 }
 
 Status CommandBatch::copy(const Buffer& src, VkDeviceSize src_offset,
@@ -421,8 +447,10 @@ CommandBatch::Op CommandBatch::dispatch_op(Kind kind,
                                            std::uint32_t push_size) {
   Op op;
   op.kind = kind;
-  op.kernel = &kernel;
-  op.set = &set;
+  op.pipeline = kernel.pipeline.handle();
+  op.pipeline_layout = kernel.pipeline.layout();
+  op.name = kernel.name;
+  op.set = set;
   op.set_handle = set.handle();
   op.set_writes = set.writes();
   if (push_size > 0) {
@@ -583,7 +611,8 @@ void CommandBatch::record(VkCommandBuffer cmd) const {
       barrier(cmd, kInnerStages, kInnerAccess);
       first = i;
     }
-    if (op.kernel != nullptr) device_->begin_debug_label(cmd, op.kernel->name);
+    // Only a dispatch is named, so the others open no region.
+    device_->begin_debug_label(cmd, op.name);
     switch (op.kind) {
       case Kind::Update:
         vkCmdUpdateBuffer(cmd, op.dst, op.dst_offset, op.bytes, op.data.data());
@@ -625,17 +654,13 @@ void CommandBatch::record(VkCommandBuffer cmd) const {
       }
       case Kind::Dispatch:
       case Kind::DispatchIndirect: {
-        VKC_CHECK(op.kernel != nullptr, "CommandBatch: a dispatch's kernel");
-        VKC_CHECK(op.set != nullptr, "CommandBatch: a dispatch's set");
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          op.kernel->pipeline.handle());
-        VkDescriptorSet set = op.set->handle();
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, op.pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                op.kernel->pipeline.layout(), 0, 1, &set, 0,
+                                op.pipeline_layout, 0, 1, &op.set_handle, 0,
                                 nullptr);
         if (!op.data.empty()) {
           vkCmdPushConstants(
-              cmd, op.kernel->pipeline.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+              cmd, op.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
               static_cast<std::uint32_t>(op.data.size()), op.data.data());
         }
         if (op.kind == Kind::Dispatch) {
@@ -646,7 +671,7 @@ void CommandBatch::record(VkCommandBuffer cmd) const {
         break;
       }
     }
-    if (op.kernel != nullptr) device_->end_debug_label(cmd, op.kernel->name);
+    device_->end_debug_label(cmd, op.name);
   }
   // The last write, visible to the host, to the next batch, and to a renderer
   // drawing the result: at VERTEX_INPUT as vertices and indices, at
@@ -674,10 +699,16 @@ Status CommandBatch::submit() {
   if (!status_.ok()) return status_;
   if (ops_.empty()) return {};
   // The set is bound only now, so a write since its dispatch was recorded
-  // would run that dispatch on the later binding.
+  // would run that dispatch on the later binding, and a set whose pool is
+  // gone would bind freed memory.
   for (const Op& op : ops_) {
-    if (op.set != nullptr && (op.set->handle() != op.set_handle ||
-                              op.set->writes() != op.set_writes)) {
+    if (op.set_handle == VK_NULL_HANDLE) continue;  // not a dispatch
+    if (!op.set.valid()) {
+      return Status::invalid_argument(
+          "CommandBatch::submit: a kernel's descriptor set was freed, with "
+          "its pool, after its dispatch was recorded");
+    }
+    if (op.set.writes() != op.set_writes) {
       return Status::invalid_argument(
           "CommandBatch::submit: a kernel's descriptor set was rewritten "
           "after its dispatch was recorded");
@@ -699,18 +730,13 @@ Status CommandBatch::submit() {
     }
   }
 
-  bool in_flight = false;
-  Status submitted = device_->submit_single_time(
-      [&](VkCommandBuffer cmd) { record(cmd); }, &in_flight);
-  if (!submitted.ok()) {
-    if (in_flight) {
-      // The device may still run the buffer, so what it touches stays, as
-      // submit_single_time keeps the buffer: the staging is leaked.
-      // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-      static_cast<void>(new std::vector<Buffer>(std::move(staging_)));
-    }
-    return submitted;
-  }
+  // Shared with the device, which keeps it past a failed wait, with the
+  // command buffer it may still run, until it has waited for that. Moving the
+  // vector leaves its buffers in place, so `readbacks` still points at one.
+  const auto staging =
+      std::make_shared<std::vector<Buffer>>(std::exchange(staging_, {}));
+  VKC_TRY(device_->submit_single_time([&](VkCommandBuffer cmd) { record(cmd); },
+                                      staging));
 
   if (readbacks != nullptr) {
     const auto* base = static_cast<const unsigned char*>(readbacks->mapped());
@@ -720,8 +746,11 @@ Status CommandBatch::submit() {
                   static_cast<std::size_t>(op.bytes));
     }
   }
-  staging_.clear();
   return {};
+}
+
+void CommandBatch::retain(Buffer buffer) {
+  if (buffer.valid()) staging_.push_back(std::move(buffer));
 }
 
 }  // namespace volumetric_kit::core

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
@@ -18,10 +19,8 @@
 
 namespace volumetric_kit::core {
 
-VkDeviceSize max_storage_buffer_range(VkPhysicalDevice physical) {
-  VkPhysicalDeviceProperties props{};
-  vkGetPhysicalDeviceProperties(physical, &props);
-  return props.limits.maxStorageBufferRange;
+VkDeviceSize max_storage_buffer_range(const Device& device) {
+  return device.caps().limits().maxStorageBufferRange;
 }
 
 Status check_storage_buffer_range(const char* what, VkDeviceSize bytes,
@@ -76,9 +75,13 @@ Result<Buffer> device_storage_buffer(Allocator& allocator, VkDeviceSize bytes,
 
 Status ensure_device_scratch(const Device& device, Allocator& allocator,
                              Buffer& buffer, VkDeviceSize bytes,
-                             VkDeviceSize max_range, const char* name) {
+                             VkDeviceSize max_range, const char* name,
+                             CommandBatch* batch) {
   VKC_TRY(check_storage_buffer_range(name, bytes, max_range));
   if (buffer.size() >= bytes) return {};
+  // The old one goes before its replacement is made, unless a batch has
+  // commands on it, which keeps it until they have run.
+  if (batch != nullptr) batch->retain(std::move(buffer));
   buffer = Buffer();
   VKC_ASSIGN(buffer, device_storage_buffer(
                          allocator, std::min(max_range, bytes + (bytes / 2))));
@@ -122,6 +125,9 @@ Result<VkBuffer> StorageInput::buffer(CommandBatch& batch, Allocator& allocator,
     return Status::invalid_argument("StorageInput: the host bytes are null");
   }
   if (!upload.valid() || !upload.is_device_local() || upload.size() < bytes) {
+    // What the batch recorded on the old one still runs on it.
+    batch.retain(std::move(upload));
+    upload = Buffer();
     VKC_ASSIGN(upload, device_storage_buffer(allocator, bytes));
   }
   VKC_TRY(batch.upload(upload, 0, host_, bytes));
