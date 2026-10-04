@@ -35,11 +35,13 @@ target_sources(
           compute_pipeline.cpp
           compute_util.cpp
           descriptor.cpp
+          gpu_timer.cpp
           device.cpp
           device_requirements.cpp
           image.cpp
           instance.cpp
           physical_device_info.cpp
+          query_pool.cpp
           queue_families.hpp
           shader.cpp
           support.hpp

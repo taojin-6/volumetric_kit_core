@@ -20,6 +20,7 @@
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
+#include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
@@ -646,6 +647,35 @@ Status Device::submit_single_time(
       submit_waiting(cmd, command, std::move(keep_alive), &reusable);
   if (!reusable) give_back_command.release();
   return status;
+}
+
+Status Device::submit_single_time(
+    const std::function<void(VkCommandBuffer)>& record, GpuStageScope& stage,
+    std::shared_ptr<void> keep_alive) const {
+  GpuTimer* timer = stage.timer();
+  if (timer == nullptr)
+    return submit_single_time(record, std::move(keep_alive));
+  std::uint32_t span = GpuTimer::kNoSpan;
+  Status submitted = submit_single_time(
+      [&](VkCommandBuffer cmd) {
+        span = timer->begin(cmd, stage.name());
+        record(cmd);
+        timer->end(cmd, span);
+      },
+      std::move(keep_alive));
+  if (!submitted.ok()) {
+    // Whether the device still has the work is not reported, so its queries
+    // may yet be written: the timer retires rather than reuse them.
+    if (span != GpuTimer::kNoSpan) timer->abandon();
+    return submitted;
+  }
+  const Status resolved = timer->resolve();
+  if (!resolved.ok()) {
+    log_message(LogLevel::Warning, kLogSource,
+                "Device::submit_single_time: GPU timestamps not resolved (" +
+                    resolved.message() + "); the work itself succeeded");
+  }
+  return {};
 }
 
 Status Device::submit_and_wait(VkCommandBuffer cmd) const {

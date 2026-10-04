@@ -87,6 +87,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   - `Device::submit_single_time` takes what the work uses (`keep_alive`),
     which the device keeps past a failed wait, with the command buffer, until
     it has waited for the work.
+- `vulkan` tier timing (DECISIONS.md, "The vulkan tier", V4):
+  - `QueryPool`, from gfx; `GpuTimer` and `GpuStageScope`, from recon, with
+    `timestamp_delta` and `ticks_to_ms`.
+  - `CommandBatch`'s uploads, copies and dispatches, and `dispatch`, take an
+    optional `GpuStageScope*`; `Device::submit_single_time` has an overload
+    taking a `GpuStageScope&`. Spans resolve once the fence has signalled.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
   on and reach the log sink; a leg builds with no Vulkan installed.
@@ -107,6 +113,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   - The pluggable log sink (`set_log_handler`, `log_message`), one per process
     for the whole family, with each message's source library.
   - The version API (`version_string`, `VKC_VERSION_*`).
+  - `StageMetrics`, `StageRow` and `StageScope` (from recon, replacing gfx's
+    `FrameMetrics::Section`): named host and device spans every library
+    reports in.
 - Tests (GoogleTest) and a package-consumer project, which installs and
   exports a library of its own, that CI builds against an installed copy and
   against the source tree (also sanitized).

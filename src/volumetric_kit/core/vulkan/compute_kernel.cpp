@@ -150,11 +150,11 @@ Status KernelSets::reserve(const Device& device, const ComputeKernel& kernel,
 
 Status dispatch(const Device& device, const ComputeKernel& kernel,
                 const void* push, std::uint32_t push_size, std::uint32_t groups,
-                std::uint32_t max_groups) {
-  // A batch of one, so the checks, the label and the barrier have one
-  // definition.
+                std::uint32_t max_groups, GpuStageScope* stage) {
+  // A batch of one, so the checks, the span, the label and the barrier have
+  // one definition.
   CommandBatch batch(device);
-  VKC_TRY(batch.dispatch(kernel, push, push_size, groups, max_groups));
+  VKC_TRY(batch.dispatch(kernel, push, push_size, groups, max_groups, stage));
   return batch.submit();
 }
 

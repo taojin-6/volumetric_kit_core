@@ -62,7 +62,7 @@ It lands in five stages, each its own PR, merged before any sibling migrates:
 | V1 (landed) | `vulkan.hpp`, the `VkResult` helpers, `UniqueHandle`, `PhysicalDeviceInfo`, `DeviceRequirements` with `merge` and `check_device_support`, `Instance`, `Device` |
 | V2 (landed) | `Allocator`, `Buffer`, `Image`, descriptor layouts, pools and sets, `ShaderModule`, fences and semaphores, command pools and buffers |
 | V3 (landed) | `ComputePipeline`, `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`, `CommandBatch`, the compute helpers, and the shader build functions |
-| V4 | query pools, `GpuTimer`, `StageMetrics` (to `base`), external memory |
+| V4 (timers landed) | `QueryPool`, `GpuTimer`, `GpuStageScope`, `StageMetrics` (in `base`), timed `CommandBatch` commands and submits; external memory follows the memory-placement change |
 | V5 | the shared-device bootstrap, replacing recon's example copy and ios's `SharedDevice` |
 
 V1's choices, from comparing the two cores on 2026-10-03:
@@ -236,8 +236,8 @@ V3's choices, from the same comparison (gfx has no compute):
   command buffer it may still run and frees once `destroy` has waited for it,
   before the `VkDevice`. A batch's staging, and the allocator behind it, is
   then neither freed under the GPU nor leaked past the device.
-- **Timer spans come with V4.** recon's optional `GpuStageScope*` parameters
-  return then as trailing defaults, beside `GpuTimer`.
+- **Timer spans came with V4** (below): recon's optional `GpuStageScope*`
+  parameters are back as trailing defaults.
 - **One shader toolchain.** `vkc_compile_shaders` and `vkc_embed_shaders`
   replace recon's `vr_*`, gfx's `vg_*`, and the copy of recon's ios borrows.
   `TARGET_ENV` (default Vulkan 1.2; gfx's renderer passes 1.3),
@@ -254,6 +254,35 @@ V3's choices, from the same comparison (gfx has no compute):
   that link it. A shader that fails `spirv-val` fails every build until
   fixed: Make deletes a failed command's output, and Ninja and Xcode rerun
   it.
+
+V4's choices, timing first (external memory follows, on the placement
+rules in "Where memory lives"):
+
+- **One metrics vocabulary, in `base`.** recon's `StageMetrics` and gfx's
+  `FrameMetrics::Section` were the same four fields; `StageRow`,
+  `StageMetrics` and `StageScope` are now the family's, with no Vulkan, so
+  calib and a host-only exporter report in them too and an app shows recon's
+  stages and gfx's frame in one table. gfx's `FrameMetrics` keeps its frame
+  totals around `StageRow`s at its migration.
+- **gfx's `QueryPool`, recon's `GpuTimer` on it.** The pool owns the handle
+  and range-checks its commands; the timer is recon's -- fence-blocked spans
+  read the moment a submit returns, unavailable rather than failing where a
+  family has no timestamps, one window a report. gfx's frames-in-flight
+  profiler stays in gfx, rebuilt on these.
+- **`GpuStageScope` is how work is timed.** `CommandBatch`'s uploads,
+  copies and dispatches and `dispatch` take recon's trailing
+  `GpuStageScope* = nullptr`, so recon migrates by namespace. The `Device`
+  overload takes a `GpuStageScope&`: a nullable pointer beside the untimed
+  overload's `keep_alive` would let `submit_single_time(record, nullptr)`
+  pick the timed one.
+- **A failed submit retires its timers.** `keep_alive` replaced the flag that
+  said whether the device still had the work, so a timer cannot tell a span
+  that never ran (recon discarded it) from one that may still write its
+  queries; it retires (`abandon`) either way. A failed submit means a lost or
+  exhausted device, and the cost is a diagnostic.
+- **At most 2048 spans a window.** MoltenVK backs a timestamp pool with a
+  32 KiB Metal counter sample buffer -- 4096 timestamps -- and emulates
+  timing past it, so recon's 4096-span ceiling became 2048.
 
 ### Where memory lives
 

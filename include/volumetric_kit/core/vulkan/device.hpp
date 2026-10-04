@@ -24,6 +24,7 @@
 
 namespace volumetric_kit::core {
 
+class GpuStageScope;
 class Instance;
 
 /// @brief Cast any Vulkan handle to the `std::uint64_t`
@@ -317,10 +318,29 @@ class VKC_VULKAN_API Device {
   ///         before the `VkDevice`. If the work is still unfinished then, a
   ///         `VkDevice` this object owns is leaked with them rather than
   ///         destroyed under running work (logged as an error).
-  ///
-  /// TODO: add the overload that brackets the work with a GPU timestamp span
-  /// (recon's GpuTimer) with the tier's timers.
   Status submit_single_time(const std::function<void(VkCommandBuffer)>& record,
+                            std::shared_ptr<void> keep_alive = nullptr) const;
+
+  /// @brief @ref submit_single_time, with the recorded work inside a device
+  ///        span of @p stage, resolved once the fence has signalled.
+  ///
+  /// The span covers what @p record records, not the command buffer's
+  /// allocation, the submit or the wait -- the difference a wall-clock row
+  /// cannot show. An inert @p stage (null metrics) is exactly the untimed
+  /// call. A failed resolve is logged, not returned: the work succeeded, and
+  /// a diagnostic must not fail it. A failed submit retires @p stage's timer
+  /// (@ref GpuTimer::abandon), as the device may still write its queries.
+  ///
+  /// @code
+  /// GpuStageScope stage(metrics, timer, "rebuild");
+  /// VKC_TRY(device.submit_single_time(record, stage));
+  /// @endcode
+  /// @param record      Records into the command buffer it is given.
+  /// @param stage       The span's timer and label.
+  /// @param keep_alive  As the untimed overload.
+  /// @return As the untimed overload.
+  Status submit_single_time(const std::function<void(VkCommandBuffer)>& record,
+                            GpuStageScope& stage,
                             std::shared_ptr<void> keep_alive = nullptr) const;
 
   /// @brief Submit an already-recorded, ended command buffer to @ref queue

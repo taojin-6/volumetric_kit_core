@@ -25,6 +25,8 @@
 namespace volumetric_kit::core {
 
 class Allocator;
+class GpuStageScope;
+class GpuTimer;
 class Device;
 class Image;
 struct ComputeKernel;
@@ -75,9 +77,10 @@ struct ComputeKernel;
 /// batches on several threads may share a device and allocator, each
 /// recording its own kernels and buffers.
 ///
-/// TODO: V4 adds recon's optional `GpuStageScope*` span to @ref upload,
-/// @ref reserve_upload, the copies and the dispatches, resolved at
-/// @ref submit.
+/// An upload, a copy or a dispatch given a @ref GpuStageScope is timed: its
+/// span covers the command alone, inside the dispatch's debug region, and
+/// @ref submit resolves it once the fence has signalled, for the scope to
+/// publish when it closes.
 ///
 /// @code
 /// CommandBatch batch(device, allocator);
@@ -117,12 +120,14 @@ class VKC_VULKAN_API CommandBatch {
   /// @param offset  The byte offset into @p dst.
   /// @param src     The bytes; null only when @p bytes is 0.
   /// @param bytes   How many; 0 records nothing.
+  /// @param stage   Optional span around the write, so a stage's device time
+  ///                counts moving its input; it must outlive @ref submit.
   /// @return OK; @ref Status::Code::InvalidArgument for a range past @p dst,
   ///         a missing usage bit, a null @p src, or a staged upload on a
   ///         batch with no allocator; a staging allocation's failure; or a
   ///         poisoned batch's first refusal.
   Status upload(const Buffer& dst, VkDeviceSize offset, const void* src,
-                VkDeviceSize bytes);
+                VkDeviceSize bytes, GpuStageScope* stage = nullptr);
 
   /// @brief Stage @p bytes for @p dst at @p offset and return the staging,
   ///        for the caller to fill before @ref submit.
@@ -133,13 +138,15 @@ class VKC_VULKAN_API CommandBatch {
   /// @param dst     Needs `TRANSFER_DST` usage.
   /// @param offset  The byte offset into @p dst.
   /// @param bytes   How many; not 0.
+  /// @param stage   As @ref upload.
   /// @return The @p bytes to write, valid until @ref submit;
   ///         @ref Status::Code::InvalidArgument for 0 bytes, a range past
   ///         @p dst, a missing usage bit or a batch with no allocator; a
   ///         staging allocation's failure; or a poisoned batch's first
   ///         refusal.
   Result<void*> reserve_upload(const Buffer& dst, VkDeviceSize offset,
-                               VkDeviceSize bytes);
+                               VkDeviceSize bytes,
+                               GpuStageScope* stage = nullptr);
 
   /// @brief Set @p bytes of @p dst at @p offset to the repeated word
   ///        @p value (`vkCmdFillBuffer`).
@@ -172,11 +179,13 @@ class VKC_VULKAN_API CommandBatch {
   /// @param dst         Needs `TRANSFER_DST` usage.
   /// @param dst_offset  The byte offset into @p dst.
   /// @param bytes       How many; 0 records nothing.
+  /// @param stage       As @ref upload.
   /// @return OK; @ref Status::Code::InvalidArgument for a range past either
   ///         buffer, overlapping ranges of one buffer or a missing usage bit;
   ///         or a poisoned batch's first refusal.
   Status copy(const Buffer& src, VkDeviceSize src_offset, const Buffer& dst,
-              VkDeviceSize dst_offset, VkDeviceSize bytes);
+              VkDeviceSize dst_offset, VkDeviceSize bytes,
+              GpuStageScope* stage = nullptr);
 
   /// @brief Copy @p width x @p height texels of @p src, from its corner, into
   ///        @p dst at @p dst_offset, rows packed (`vkCmdCopyImageToBuffer`).
@@ -196,12 +205,14 @@ class VKC_VULKAN_API CommandBatch {
   /// @param dst         Needs `TRANSFER_DST` usage.
   /// @param dst_offset  The byte offset into @p dst; a multiple of 4 and of
   ///                    the texel size.
+  /// @param stage       As @ref upload.
   /// @return OK; @ref Status::Code::InvalidArgument for an empty image or one
   ///         of another format, sample count or layout, a region empty or
   ///         past it, a misaligned offset or a range past @p dst, or a missing
   ///         usage bit; or a poisoned batch's first refusal.
   Status copy(const Image& src, std::uint32_t width, std::uint32_t height,
-              const Buffer& dst, VkDeviceSize dst_offset);
+              const Buffer& dst, VkDeviceSize dst_offset,
+              GpuStageScope* stage = nullptr);
 
   /// @brief Take @p buffer over from the queue family @p from before the
   ///        commands recorded after this use it: the acquiring half of a
@@ -248,13 +259,16 @@ class VKC_VULKAN_API CommandBatch {
   /// @param max_groups  The device's `maxComputeWorkGroupCount[0]`: an
   ///                    oversized grid is invalid on a minimum-spec driver,
   ///                    and clamping it would drop work silently.
+  /// @param stage       Optional span around the dispatch, on the scope's
+  ///                    timer and label; null or inert is untimed. It must
+  ///                    outlive @ref submit, which records and resolves it.
   /// @return OK; @ref Status::Code::InvalidArgument for @p groups past
   ///         @p max_groups, a null @p push with a size, a push size the
   ///         kernel does not take, or an unbuilt kernel; or a poisoned
   ///         batch's first refusal.
   Status dispatch(const ComputeKernel& kernel, const void* push,
                   std::uint32_t push_size, std::uint32_t groups,
-                  std::uint32_t max_groups);
+                  std::uint32_t max_groups, GpuStageScope* stage = nullptr);
 
   /// @brief @ref dispatch with @p set bound in place of the kernel's own.
   ///
@@ -273,11 +287,13 @@ class VKC_VULKAN_API CommandBatch {
   /// @param push_size   As @ref dispatch.
   /// @param groups      As @ref dispatch.
   /// @param max_groups  As @ref dispatch.
+  /// @param stage       As @ref dispatch.
   /// @return As @ref dispatch; @ref Status::Code::InvalidArgument also for an
   ///         empty @p set.
   Status dispatch(const ComputeKernel& kernel, const DescriptorSet& set,
                   const void* push, std::uint32_t push_size,
-                  std::uint32_t groups, std::uint32_t max_groups);
+                  std::uint32_t groups, std::uint32_t max_groups,
+                  GpuStageScope* stage = nullptr);
 
   /// @brief Record a dispatch of @p kernel whose workgroup counts the device
   ///        reads from @p args at @p offset (`vkCmdDispatchIndirect`), so a
@@ -289,12 +305,13 @@ class VKC_VULKAN_API CommandBatch {
   ///                   `INDIRECT_BUFFER` usage. Counts past the device's
   ///                   limits are the writer's to prevent.
   /// @param offset     A multiple of 4.
+  /// @param stage      As @ref dispatch.
   /// @return OK; @ref Status::Code::InvalidArgument for a misaligned or
   ///         out-of-range command, a missing usage bit, or a push or kernel
   ///         @ref dispatch refuses; or a poisoned batch's first refusal.
   Status dispatch_indirect(const ComputeKernel& kernel, const void* push,
                            std::uint32_t push_size, const Buffer& args,
-                           VkDeviceSize offset);
+                           VkDeviceSize offset, GpuStageScope* stage = nullptr);
 
   /// @brief Read @p bytes of @p src at @p offset, as they stand at this point
   ///        in the batch, into @p dst once @ref submit has waited.
@@ -328,8 +345,11 @@ class VKC_VULKAN_API CommandBatch {
   /// @brief Submit everything recorded as one command buffer, wait for it,
   ///        and fill every readback destination.
   ///
-  /// Frees the batch's staging. An empty batch submits nothing. A batch is
-  /// submitted at most once.
+  /// Frees the batch's staging, and resolves the spans of every timer a
+  /// command used; a resolve that fails is logged, not returned, as the batch
+  /// succeeded. A submit that fails retires those timers
+  /// (@ref GpuTimer::abandon): the device may still write their queries. An
+  /// empty batch submits nothing. A batch is submitted at most once.
   /// @return OK; the first refusal a recording call returned;
   ///         @ref Status::Code::InvalidArgument for a second submit, a
   ///         moved-from batch, or a set rewritten through any copy, or freed,
@@ -376,8 +396,14 @@ class VKC_VULKAN_API CommandBatch {
     bool staged = false;              // a Copy from this batch's own staging
     VkImage image = VK_NULL_HANDLE;   // an ImageCopy's source
     VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    std::uint32_t width = 0;   // an ImageCopy's texels a row
-    std::uint32_t height = 0;  // and rows
+    std::uint32_t width = 0;         // an ImageCopy's texels a row
+    std::uint32_t height = 0;        // and rows
+    GpuStageScope* stage = nullptr;  // its span, borrowed until submit
+  };
+  // A span record() opened, on the timer submit resolves.
+  struct Span {
+    GpuTimer* timer = nullptr;
+    std::uint32_t id = 0;
   };
 
   Status check(Status status);
@@ -392,7 +418,7 @@ class VKC_VULKAN_API CommandBatch {
   // Zeroes `bytes` (under 4) of `dst` at `offset` by a copy from zeros_.
   Status zero_edge(const Buffer& dst, VkDeviceSize offset, VkDeviceSize bytes);
   bool needs_barrier(std::size_t first, std::size_t i) const;
-  void record(VkCommandBuffer cmd) const;
+  void record(VkCommandBuffer cmd, std::vector<Span>& spans) const;
 
   const Device* device_;
   Allocator* allocator_;

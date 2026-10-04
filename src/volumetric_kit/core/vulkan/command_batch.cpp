@@ -12,12 +12,14 @@
 #include <utility>
 #include <vector>
 
+#include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
@@ -194,14 +196,15 @@ Result<const Buffer*> CommandBatch::stage(VkDeviceSize bytes, bool upload) {
 }
 
 Status CommandBatch::upload(const Buffer& dst, VkDeviceSize offset,
-                            const void* src, VkDeviceSize bytes) {
+                            const void* src, VkDeviceSize bytes,
+                            GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   if (bytes == 0) return {};
   if (src == nullptr) {
     return check(Status::invalid_argument("CommandBatch::upload: src is null"));
   }
   if (bytes > kMaxInlineUpload || offset % 4 != 0 || bytes % 4 != 0) {
-    VKC_ASSIGN(void* staging, reserve_upload(dst, offset, bytes));
+    VKC_ASSIGN(void* staging, reserve_upload(dst, offset, bytes, stage));
     std::memcpy(staging, src, static_cast<std::size_t>(bytes));
     return {};
   }
@@ -216,13 +219,15 @@ Status CommandBatch::upload(const Buffer& dst, VkDeviceSize offset,
   op.bytes = bytes;
   const auto* from = static_cast<const unsigned char*>(src);
   op.data.assign(from, from + bytes);
+  op.stage = stage;
   ops_.push_back(std::move(op));
   return {};
 }
 
 Result<void*> CommandBatch::reserve_upload(const Buffer& dst,
                                            VkDeviceSize offset,
-                                           VkDeviceSize bytes) {
+                                           VkDeviceSize bytes,
+                                           GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   if (bytes == 0) {
     return check(
@@ -231,7 +236,7 @@ Result<void*> CommandBatch::reserve_upload(const Buffer& dst,
   VKC_TRY(check(in_range(dst, offset, bytes, "upload")));
   VKC_TRY(check(has_usage(dst, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                           "upload needs a TRANSFER_DST buffer")));
-  Result<const Buffer*> staged = stage(bytes, /*upload=*/true);
+  Result<const Buffer*> staged = this->stage(bytes, /*upload=*/true);
   if (!staged) return check(staged.status());
   Op op;
   op.kind = Kind::Copy;
@@ -240,6 +245,7 @@ Result<void*> CommandBatch::reserve_upload(const Buffer& dst,
   op.dst_offset = offset;
   op.bytes = bytes;
   op.staged = true;
+  op.stage = stage;
   ops_.push_back(std::move(op));
   return (*staged)->mapped();
 }
@@ -306,7 +312,7 @@ Status CommandBatch::zero_edge(const Buffer& dst, VkDeviceSize offset,
 
 Status CommandBatch::copy(const Buffer& src, VkDeviceSize src_offset,
                           const Buffer& dst, VkDeviceSize dst_offset,
-                          VkDeviceSize bytes) {
+                          VkDeviceSize bytes, GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   if (bytes == 0) return {};
   VKC_TRY(check(in_range(src, src_offset, bytes, "copy source")));
@@ -328,13 +334,14 @@ Status CommandBatch::copy(const Buffer& src, VkDeviceSize src_offset,
   op.dst = dst.handle();
   op.dst_offset = dst_offset;
   op.bytes = bytes;
+  op.stage = stage;
   ops_.push_back(std::move(op));
   return {};
 }
 
 Status CommandBatch::copy(const Image& src, std::uint32_t width,
                           std::uint32_t height, const Buffer& dst,
-                          VkDeviceSize dst_offset) {
+                          VkDeviceSize dst_offset, GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   if (!src.valid()) {
     return check(
@@ -388,6 +395,7 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
   op.dst = dst.handle();
   op.dst_offset = dst_offset;
   op.bytes = bytes;
+  op.stage = stage;
   ops_.push_back(std::move(op));
   return {};
 }
@@ -461,14 +469,15 @@ CommandBatch::Op CommandBatch::dispatch_op(Kind kind,
 
 Status CommandBatch::dispatch(const ComputeKernel& kernel, const void* push,
                               std::uint32_t push_size, std::uint32_t groups,
-                              std::uint32_t max_groups) {
-  return dispatch(kernel, kernel.set, push, push_size, groups, max_groups);
+                              std::uint32_t max_groups, GpuStageScope* stage) {
+  return dispatch(kernel, kernel.set, push, push_size, groups, max_groups,
+                  stage);
 }
 
 Status CommandBatch::dispatch(const ComputeKernel& kernel,
                               const DescriptorSet& set, const void* push,
                               std::uint32_t push_size, std::uint32_t groups,
-                              std::uint32_t max_groups) {
+                              std::uint32_t max_groups, GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   VKC_TRY(check(check_dispatch(kernel, push, push_size)));
   if (!set.valid()) {
@@ -482,6 +491,7 @@ Status CommandBatch::dispatch(const ComputeKernel& kernel,
   }
   Op op = dispatch_op(Kind::Dispatch, kernel, set, push, push_size);
   op.value = groups;
+  op.stage = stage;
   ops_.push_back(std::move(op));
   return {};
 }
@@ -489,8 +499,8 @@ Status CommandBatch::dispatch(const ComputeKernel& kernel,
 Status CommandBatch::dispatch_indirect(const ComputeKernel& kernel,
                                        const void* push,
                                        std::uint32_t push_size,
-                                       const Buffer& args,
-                                       VkDeviceSize offset) {
+                                       const Buffer& args, VkDeviceSize offset,
+                                       GpuStageScope* stage) {
   VKC_TRY(check(usable()));
   VKC_TRY(check(check_dispatch(kernel, push, push_size)));
   if (offset % 4 != 0) {
@@ -505,6 +515,7 @@ Status CommandBatch::dispatch_indirect(const ComputeKernel& kernel,
       dispatch_op(Kind::DispatchIndirect, kernel, kernel.set, push, push_size);
   op.src = args.handle();
   op.src_offset = offset;
+  op.stage = stage;
   ops_.push_back(std::move(op));
   return {};
 }
@@ -592,7 +603,7 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
   return false;
 }
 
-void CommandBatch::record(VkCommandBuffer cmd) const {
+void CommandBatch::record(VkCommandBuffer cmd, std::vector<Span>& spans) const {
   constexpr VkPipelineStageFlags kInnerStages =
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
       VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
@@ -610,8 +621,14 @@ void CommandBatch::record(VkCommandBuffer cmd) const {
       barrier(cmd, kInnerStages, kInnerAccess);
       first = i;
     }
-    // Only a dispatch is named, so the others open no region.
+    // Only a dispatch is named, so the others open no region. The region
+    // sits outside the span: a label may cost an encoder boundary (MoltenVK's
+    // push/popDebugGroup), which a span must not measure.
     device_->begin_debug_label(cmd, op.name);
+    GpuTimer* timer = op.stage != nullptr ? op.stage->timer() : nullptr;
+    const std::uint32_t span = timer != nullptr
+                                   ? timer->begin(cmd, op.stage->name())
+                                   : GpuTimer::kNoSpan;
     switch (op.kind) {
       case Kind::Update:
         vkCmdUpdateBuffer(cmd, op.dst, op.dst_offset, op.bytes, op.data.data());
@@ -669,6 +686,10 @@ void CommandBatch::record(VkCommandBuffer cmd) const {
         }
         break;
       }
+    }
+    if (span != GpuTimer::kNoSpan) {
+      timer->end(cmd, span);
+      spans.push_back({timer, span});
     }
     device_->end_debug_label(cmd, op.name);
   }
@@ -734,8 +755,30 @@ Status CommandBatch::submit() {
   // vector leaves its buffers in place, so `readbacks` still points at one.
   const auto staging =
       std::make_shared<std::vector<Buffer>>(std::exchange(staging_, {}));
-  VKC_TRY(device_->submit_single_time([&](VkCommandBuffer cmd) { record(cmd); },
-                                      staging));
+  std::vector<Span> spans;
+  Status submitted = device_->submit_single_time(
+      [&](VkCommandBuffer cmd) { record(cmd, spans); }, staging);
+  if (!submitted.ok()) {
+    // Whether the device still has the work is not reported, so its queries
+    // may yet be written: each timer retires rather than reuse them.
+    for (const Span& span : spans) span.timer->abandon();
+    return submitted;
+  }
+  // Each timer once: a resolve reads every span it holds that is unresolved.
+  std::vector<GpuTimer*> timers;
+  for (const Span& span : spans) {
+    if (std::find(timers.begin(), timers.end(), span.timer) == timers.end()) {
+      timers.push_back(span.timer);
+    }
+  }
+  for (GpuTimer* timer : timers) {
+    const Status resolved = timer->resolve();
+    if (!resolved.ok()) {
+      log_message(LogLevel::Warning, "vulkan",
+                  "CommandBatch::submit: GPU timestamps not resolved (" +
+                      resolved.message() + "); the batch itself succeeded");
+    }
+  }
 
   if (readbacks != nullptr) {
     const auto* base = static_cast<const unsigned char*>(readbacks->mapped());
