@@ -15,7 +15,10 @@
 
 #include <chrono>
 #include <cstring>
+#include <utility>
 #include <vector>
+
+#include "volumetric_kit/core/base/check.hpp"
 
 namespace volumetric_kit::core {
 
@@ -36,9 +39,9 @@ namespace volumetric_kit::core {
 /// }
 /// @endcode
 struct StageRow {
-  /// The stage's label. Stored by pointer, not copied, which keeps this
-  /// trivially copyable: it must outlive every read of the metrics -- a
-  /// string literal, as every caller passes.
+  /// The stage's label, never null. Stored by pointer, not copied, which
+  /// keeps this trivially copyable: it must outlive every read of the
+  /// metrics -- a string literal, as every caller passes.
   const char* name = nullptr;
   /// Wall-clock host time, in milliseconds. Around a blocking submit this
   /// covers recording, submission, the fence wait and the device's work
@@ -56,6 +59,9 @@ struct StageRow {
 /// nothing when the caller passes null: no global sink, no state kept between
 /// calls, nothing measured when unasked. Repeat spans under one name
 /// accumulate, so a stage that runs twice in a frame reports its total.
+///
+/// A name is never null: a null one is a programmer error (`VKC_CHECK`), as
+/// every row is matched by its text.
 ///
 /// @code
 /// StageMetrics metrics;
@@ -76,6 +82,37 @@ class StageMetrics {
   /// dispatch, so a breakdown row's GPU half is a separate dispatch no row
   /// above contains.
   static constexpr const char* kBreakdownPrefix = "  ..";
+
+  /// @brief Construct an empty set.
+  StageMetrics() = default;
+  ~StageMetrics() = default;
+
+  /// @brief Copy @p other's rows, not its open scopes: a @ref Scope times the
+  ///        set it was opened on, so a copy starts with none.
+  /// @param other  The set to copy.
+  StageMetrics(const StageMetrics& other) : rows_(other.rows_) {}
+
+  /// @brief Take @p other's rows; its open scopes stay with it.
+  /// @param other  The set to take from.
+  StageMetrics(StageMetrics&& other) noexcept : rows_(std::move(other.rows_)) {}
+
+  /// @brief Replace the rows with @p other's, keeping this set's open
+  ///        scopes, so `metrics = StageMetrics{}` inside a scope clears the
+  ///        rows and leaves the scope counted.
+  /// @param other  The set to copy.
+  /// @return This set.
+  StageMetrics& operator=(const StageMetrics& other) {
+    if (this != &other) rows_ = other.rows_;
+    return *this;
+  }
+
+  /// @brief As the copy assignment, taking @p other's rows.
+  /// @param other  The set to take from.
+  /// @return This set.
+  StageMetrics& operator=(StageMetrics&& other) noexcept {
+    if (this != &other) rows_ = std::move(other.rows_);
+    return *this;
+  }
 
   /// @brief Drop every row, keeping the storage.
   void clear() noexcept { rows_.clear(); }
@@ -175,6 +212,7 @@ class StageMetrics {
   // Matched by content, not pointer: one stage seeded in one translation unit
   // and timed in another names two literals, which need not share an address.
   StageRow& find_or_add(const char* name) {
+    VKC_CHECK(name != nullptr, "StageMetrics: a row's name is null");
     for (StageRow& row : rows_) {
       if (std::strcmp(row.name, name) == 0) return row;
     }
@@ -187,6 +225,8 @@ class StageMetrics {
   }
 
   std::vector<StageRow> rows_;
+  // The scopes open on this object, not part of its value: neither copied
+  // nor assigned, so a set reset by assignment inside a scope stays in it.
   int open_scopes_ = 0;
 };
 
@@ -205,15 +245,20 @@ class StageMetrics::Scope {
  public:
   /// @brief Start timing @p name into @p metrics.
   /// @param metrics  The set the span lands in.
-  /// @param name     The label; string-literal lifetime.
+  /// @param name     The label; string-literal lifetime, not null.
   Scope(StageMetrics& metrics, const char* name) : Scope(&metrics, name) {}
 
   /// @brief Start timing @p name into @p metrics, or nothing when it is null.
   /// @param metrics  The set the span lands in, or null.
-  /// @param name     The label; string-literal lifetime.
+  /// @param name     The label; string-literal lifetime, and not null when
+  ///                 @p metrics is not (`VKC_CHECK`).
   Scope(StageMetrics* metrics, const char* name)
       : metrics_(metrics), name_(name), start_(Clock::now()) {
-    if (metrics_ != nullptr) ++metrics_->open_scopes_;
+    if (metrics_ == nullptr) return;
+    // Here, not where the row is added as the scope closes, so the abort
+    // names the call that passed it.
+    VKC_CHECK(name_ != nullptr, "StageScope: the name is null");
+    ++metrics_->open_scopes_;
   }
 
   /// @brief Stop timing and add the span, unless inert.

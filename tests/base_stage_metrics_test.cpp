@@ -7,6 +7,7 @@
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 
 #include <string>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -96,6 +97,48 @@ TEST(StageMetrics, ScopesReportTheirNesting) {
     const StageScope none(nullptr, "nowhere");
     EXPECT_FALSE(m.in_stage());
   }
+}
+
+// The open scopes belong to the object, not its value: a set reset by
+// assignment inside a scope stays in it, and a copy starts in none.
+TEST(StageMetrics, CopiesAndAssignmentsLeaveTheScopesWhereTheyAre) {
+  StageMetrics m;
+  {
+    const StageScope frame(m, "frame");
+    m.add_cpu("stale", 1.0);
+    m = StageMetrics{};
+    EXPECT_TRUE(m.empty());
+    EXPECT_TRUE(m.in_stage());
+    const StageMetrics copy = m;
+    EXPECT_FALSE(copy.in_stage());
+    const StageMetrics moved = std::move(m);
+    EXPECT_FALSE(moved.in_stage());
+    // The scope stays with the moved-from set it was opened on.
+    // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+    EXPECT_TRUE(m.in_stage());
+  }
+  EXPECT_FALSE(m.in_stage());  // closed once, as opened
+  {
+    const StageScope again(m, "frame");
+    EXPECT_TRUE(m.in_stage());
+  }
+  EXPECT_FALSE(m.in_stage());
+}
+
+// Every row is matched by its text, so a null name is a caller's bug.
+TEST(StageMetricsDeathTest, ANullNameIsAProgrammerError) {
+  EXPECT_DEATH(
+      {
+        StageMetrics m;
+        m.add_cpu(nullptr, 1.0);
+      },
+      "a row's name is null");
+  EXPECT_DEATH(
+      {
+        StageMetrics m;
+        const StageScope scope(m, nullptr);
+      },
+      "the name is null");
 }
 
 TEST(StageMetrics, ClearKeepsItUsable) {

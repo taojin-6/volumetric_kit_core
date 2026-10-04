@@ -62,7 +62,7 @@ It lands in five stages, each its own PR, merged before any sibling migrates:
 | V1 (landed) | `vulkan.hpp`, the `VkResult` helpers, `UniqueHandle`, `PhysicalDeviceInfo`, `DeviceRequirements` with `merge` and `check_device_support`, `Instance`, `Device` |
 | V2 (landed) | `Allocator`, `Buffer`, `Image`, descriptor layouts, pools and sets, `ShaderModule`, fences and semaphores, command pools and buffers |
 | V3 (landed) | `ComputePipeline`, `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`, `CommandBatch`, the compute helpers, and the shader build functions |
-| V4 (timers landed) | `QueryPool`, `GpuTimer`, `GpuStageScope`, `StageMetrics` (in `base`), timed `CommandBatch` commands and submits; external memory follows the memory-placement change |
+| V4 (timers landed) | `QueryPool`, `GpuTimer`, `GpuStageScope`, `StageMetrics` (in `base`), timed `CommandBatch` commands and submits; external memory follows |
 | V5 | the shared-device bootstrap, replacing recon's example copy and ios's `SharedDevice` |
 
 V1's choices, from comparing the two cores on 2026-10-03:
@@ -263,26 +263,47 @@ rules in "Where memory lives"):
   `StageMetrics` and `StageScope` are now the family's, with no Vulkan, so
   calib and a host-only exporter report in them too and an app shows recon's
   stages and gfx's frame in one table. gfx's `FrameMetrics` keeps its frame
-  totals around `StageRow`s at its migration.
+  totals around `StageRow`s at its migration. A set's open scopes are not
+  part of its value: a copy or an assignment carries the rows only, so
+  `metrics = StageMetrics{}` inside a scope leaves it counted. A null name
+  is a programmer error (`VKC_CHECK`), not a crash in `strcmp`.
 - **gfx's `QueryPool`, recon's `GpuTimer` on it.** The pool owns the handle
-  and range-checks its commands; the timer is recon's -- fence-blocked spans
-  read the moment a submit returns, unavailable rather than failing where a
-  family has no timestamps, one window a report. gfx's frames-in-flight
+  and range-checks its commands. It holds timestamp and occlusion queries
+  only, one 64-bit result each, which is what it reads. The timer is recon's
+  -- fence-blocked spans read the moment a submit returns, unavailable rather
+  than failing where a family has no timestamps. gfx's frames-in-flight
   profiler stays in gfx, rebuilt on these.
 - **`GpuStageScope` is how work is timed.** `CommandBatch`'s uploads,
   copies and dispatches and `dispatch` take recon's trailing
-  `GpuStageScope* = nullptr`, so recon migrates by namespace. The `Device`
-  overload takes a `GpuStageScope&`: a nullable pointer beside the untimed
-  overload's `keep_alive` would let `submit_single_time(record, nullptr)`
-  pick the timed one.
-- **A failed submit retires its timers.** `keep_alive` replaced the flag that
-  said whether the device still had the work, so a timer cannot tell a span
-  that never ran (recon discarded it) from one that may still write its
-  queries; it retires (`abandon`) either way. A failed submit means a lost or
-  exhausted device, and the cost is a diagnostic.
+  `GpuStageScope* = nullptr`, so recon migrates by namespace. A command keeps
+  the scope's `GpuSpanTag` (timer, label, scope id), not the scope, so a
+  scope that closes before the submit leaves the command untimed rather than
+  dangling. The `Device` overload takes a `GpuStageScope&`: a nullable
+  pointer beside the untimed overload's `keep_alive` would let
+  `submit_single_time(record, nullptr)` pick the timed one.
+- **A span is read after its own submit, and published by its own scope.**
+  recon's `resolve` read every unresolved span, so a submit nested in
+  another's recording read the outer span before its command buffer ran --
+  unreset queries in a first window, the last frame's value after -- and a
+  closing scope published every span on the timer, a helper's scope taking
+  its stage's. `GpuTimer::settle` resolves exactly the spans one submit
+  carried, and a scope publishes the spans opened under it; the window ends
+  when the last open scope closes.
+- **A failed submit drops its spans, or retires its timers, as recon did.**
+  `Device::submit_single_time` reports `in_flight`, whether a failed call
+  left work the device may still run. Spans whose work never reached the
+  device are dropped, a `record` that throws included, and the timer keeps
+  timing; work in flight retires its timers (`abandon`), which still publish
+  what they resolved. A timer's query pool rides the submit's `keep_alive`,
+  so the device holds it past a failed wait, as it holds a batch's staging.
+- **One query reset a timer a batch.** A batch resets each timer's queries
+  once, ahead of its spans, not between every two commands, where a reset
+  can split MoltenVK's compute encoder and perturb what is measured.
 - **At most 2048 spans a window.** MoltenVK backs a timestamp pool with a
   32 KiB Metal counter sample buffer -- 4096 timestamps -- and emulates
-  timing past it, so recon's 4096-span ceiling became 2048.
+  timing past it, so recon's 4096-span ceiling became 2048. A `reserve` past
+  it is clamped, logged, and a stage that loses a span to a full window
+  publishes no device time: a partial sum would read as the whole stage's.
 
 ### Where memory lives
 

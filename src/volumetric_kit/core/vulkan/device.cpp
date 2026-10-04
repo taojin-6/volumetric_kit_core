@@ -622,7 +622,8 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
 
 Status Device::submit_single_time(
     const std::function<void(VkCommandBuffer)>& record,
-    std::shared_ptr<void> keep_alive) const {
+    std::shared_ptr<void> keep_alive, bool* in_flight) const {
+  if (in_flight != nullptr) *in_flight = false;
   VKC_ASSIGN(const Command command, take_command(/*record=*/true));
   VkCommandBuffer cmd = command.buffer;
   bool recording = false;
@@ -646,36 +647,39 @@ Status Device::submit_single_time(
   Status status =
       submit_waiting(cmd, command, std::move(keep_alive), &reusable);
   if (!reusable) give_back_command.release();
+  // Failed and not reusable: left to the device, which may still run it. (A
+  // fence that will not reset is not reusable either, but after success.)
+  if (in_flight != nullptr) *in_flight = !status.ok() && !reusable;
   return status;
 }
 
 Status Device::submit_single_time(
     const std::function<void(VkCommandBuffer)>& record, GpuStageScope& stage,
     std::shared_ptr<void> keep_alive) const {
-  GpuTimer* timer = stage.timer();
-  if (timer == nullptr)
+  const GpuSpanTag tag = stage.tag();
+  if (tag.timer == nullptr || !tag.timer->available()) {
     return submit_single_time(record, std::move(keep_alive));
+  }
+  GpuTimer& timer = *tag.timer;
+  // The pool goes with what the work uses, so the device holds it past a
+  // failed wait.
+  auto kept =
+      std::make_shared<std::pair<std::shared_ptr<void>, std::shared_ptr<void>>>(
+          std::move(keep_alive), timer.keep_alive());
   std::uint32_t span = GpuTimer::kNoSpan;
-  Status submitted = submit_single_time(
+  // A record that throws leaves a span whose command buffer never ran.
+  ScopeGuard drop_span([&] { timer.discard(span); });
+  bool in_flight = false;
+  const Status submitted = submit_single_time(
       [&](VkCommandBuffer cmd) {
-        span = timer->begin(cmd, stage.name());
+        span = timer.begin(cmd, tag);
         record(cmd);
-        timer->end(cmd, span);
+        timer.end(cmd, span);
       },
-      std::move(keep_alive));
-  if (!submitted.ok()) {
-    // Whether the device still has the work is not reported, so its queries
-    // may yet be written: the timer retires rather than reuse them.
-    if (span != GpuTimer::kNoSpan) timer->abandon();
-    return submitted;
-  }
-  const Status resolved = timer->resolve();
-  if (!resolved.ok()) {
-    log_message(LogLevel::Warning, kLogSource,
-                "Device::submit_single_time: GPU timestamps not resolved (" +
-                    resolved.message() + "); the work itself succeeded");
-  }
-  return {};
+      std::move(kept), &in_flight);
+  drop_span.release();
+  if (span != GpuTimer::kNoSpan) timer.settle(span, 1, submitted, in_flight);
+  return submitted;
 }
 
 Status Device::submit_and_wait(VkCommandBuffer cmd) const {

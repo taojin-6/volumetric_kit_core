@@ -23,6 +23,12 @@ Result<QueryPool> QueryPool::create(VkDevice device, std::uint32_t query_count,
   if (query_count == 0) {
     return Status::invalid_argument("QueryPool::create: query_count is zero");
   }
+  // read_results reads one 64-bit value a query; a pipeline-statistics query
+  // has one a counter, and a pool of them needs the counters named.
+  if (type != VK_QUERY_TYPE_TIMESTAMP && type != VK_QUERY_TYPE_OCCLUSION) {
+    return Status::unsupported(
+        "QueryPool::create: only timestamp and occlusion queries");
+  }
   VkQueryPoolCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
   info.queryType = type;

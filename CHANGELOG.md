@@ -88,11 +88,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     which the device keeps past a failed wait, with the command buffer, until
     it has waited for the work.
 - `vulkan` tier timing (DECISIONS.md, "The vulkan tier", V4):
-  - `QueryPool`, from gfx; `GpuTimer` and `GpuStageScope`, from recon, with
-    `timestamp_delta` and `ticks_to_ms`.
+  - `QueryPool` (timestamp and occlusion queries), from gfx; `GpuTimer`,
+    `GpuStageScope` and `GpuSpanTag`, from recon, with `timestamp_delta` and
+    `ticks_to_ms`. A span is read only after its own submit
+    (`GpuTimer::settle`) and published by the scope that opened it; a stage
+    that loses a span to a full window reports no device time.
   - `CommandBatch`'s uploads, copies and dispatches, and `dispatch`, take an
-    optional `GpuStageScope*`; `Device::submit_single_time` has an overload
-    taking a `GpuStageScope&`. Spans resolve once the fence has signalled.
+    optional `GpuStageScope*`, keeping its tag rather than the scope;
+    `Device::submit_single_time` has an overload taking a `GpuStageScope&`.
+    Spans resolve once the fence has signalled. Work that never reached the
+    device drops its spans; work that may still run retires its timers, whose
+    query pools the device keeps until it has waited.
+  - `Device::submit_single_time` takes an optional `bool* in_flight`: whether
+    a failed call left work the device may still run.
+  - Migrating from recon's `GpuTimer`: `resolve()` and `discard(span)` take
+    the spans one submit carried (`resolve(first, count)`,
+    `discard(first, count)`; `settle` does both), `report_into` is for a
+    timer used without scopes, and a null span name aborts (`VKC_CHECK`)
+    rather than reading as `"gpu"`.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
   on and reach the log sink; a leg builds with no Vulkan installed.
@@ -115,7 +128,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   - The version API (`version_string`, `VKC_VERSION_*`).
   - `StageMetrics`, `StageRow` and `StageScope` (from recon, replacing gfx's
     `FrameMetrics::Section`): named host and device spans every library
-    reports in.
+    reports in. A copy or an assignment carries the rows, not the open
+    scopes; a null name aborts (`VKC_CHECK`).
 - Tests (GoogleTest) and a package-consumer project, which installs and
   exports a library of its own, that CI builds against an installed copy and
   against the source tree (also sanitized).

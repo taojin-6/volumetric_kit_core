@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <ratio>
 #include <string>
@@ -32,7 +33,13 @@
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/query_pool.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "vulkan_device_fixture.hpp"
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+#include <stdexcept>
+#define VKC_TEST_EXCEPTIONS 1
+#endif
 
 namespace volumetric_kit::core {
 namespace {
@@ -77,10 +84,18 @@ TEST(GpuTimerEmpty, IsInert) {
   EXPECT_FALSE(timer.available());
   EXPECT_EQ(timer.begin(VK_NULL_HANDLE, "x"), GpuTimer::kNoSpan);
   timer.end(VK_NULL_HANDLE, GpuTimer::kNoSpan);
-  EXPECT_TRUE(timer.resolve().ok());
+  EXPECT_TRUE(timer.resolve(0).ok());
+  timer.settle(0, 1, Status{}, /*in_flight=*/false);
   StageMetrics metrics;
   timer.report_into(metrics);
   EXPECT_TRUE(metrics.empty());
+  EXPECT_EQ(timer.keep_alive(), nullptr);
+}
+
+// A span's name lands in a StageMetrics row, which a null one would crash.
+TEST(GpuTimerDeathTest, ANullNameIsAProgrammerError) {
+  GpuTimer timer;
+  EXPECT_DEATH(timer.begin(VK_NULL_HANDLE, nullptr), "name is null");
 }
 
 TEST(GpuStageScopeInert, NullMetricsTimesNothing) {
@@ -174,6 +189,14 @@ TEST_F(TimerTest, TimestampsAdvance) {
 }
 
 TEST_F(TimerTest, QueryPoolWritesAndReadsTimestamps) {
+  // One 64-bit result a query is all read_results reads.
+  EXPECT_TRUE(
+      QueryPool::create(device().handle(), 2, VK_QUERY_TYPE_OCCLUSION).ok());
+  EXPECT_EQ(
+      QueryPool::create(device().handle(), 2, VK_QUERY_TYPE_PIPELINE_STATISTICS)
+          .status()
+          .domain(),
+      Status::Code::Unsupported);
   Result<QueryPool> made = QueryPool::create(device().handle(), 2);
   ASSERT_TRUE(made.ok()) << made.status().message();
   const QueryPool pool = *std::move(made);
@@ -255,7 +278,9 @@ TEST_F(TimerTest, AWindowIsBoundedPublishedOnceAndReusable) {
       tiny.end(cmd, span);
     });
     EXPECT_TRUE(s.ok()) << s.message();
-    EXPECT_TRUE(tiny.resolve().ok());
+    if (span != GpuTimer::kNoSpan) {
+      EXPECT_TRUE(tiny.resolve(span).ok());
+    }
     return span;
   };
   EXPECT_NE(timed("a"), GpuTimer::kNoSpan);
@@ -295,51 +320,71 @@ TEST_F(TimerTest, AWindowIsBoundedPublishedOnceAndReusable) {
   EXPECT_EQ(tiny.count(), 0U);
 }
 
-TEST_F(TimerTest, DiscardDropsOnlyTheNewestUnresolvedSpan) {
+// Recorded and never submitted, as by a submit that failed before the device:
+// the spans settle by being dropped, newest run only, and the timer keeps
+// timing; work the device may still run retires it.
+TEST_F(TimerTest, SettleDropsWhatNeverRanAndRetiresWhatMayStillRun) {
   Result<GpuTimer> made = GpuTimer::create(device(), 4);
   ASSERT_TRUE(made.ok());
   GpuTimer timer = *std::move(made);
   if (!timer.available()) GTEST_SKIP() << "the queue family has no timestamps";
-  std::uint32_t first = GpuTimer::kNoSpan;
-  std::uint32_t second = GpuTimer::kNoSpan;
-  // Recorded and never submitted: as a submit that failed before the device.
   Result<CommandPool> pool =
       CommandPool::create(device().handle(), device().queue_family());
   ASSERT_TRUE(pool.ok());
   Result<CommandBuffer> cmd = pool->allocate_primary();
   ASSERT_TRUE(cmd.ok());
   ASSERT_TRUE(cmd->begin().ok());
-  first = timer.begin(cmd->handle(), "first");
-  timer.end(cmd->handle(), first);
-  second = timer.begin(cmd->handle(), "second");
-  timer.end(cmd->handle(), second);
+  const auto timed = [&](const char* name) {
+    const std::uint32_t span = timer.begin(cmd->handle(), name);
+    timer.end(cmd->handle(), span);
+    return span;
+  };
+  const std::uint32_t first = timed("first");
+  const std::uint32_t second = timed("second");
+  const std::uint32_t third = timed("third");
   ASSERT_TRUE(cmd->end().ok());
-  EXPECT_EQ(timer.count(), 2U);
-  timer.discard(first);  // not the newest: ignored
-  EXPECT_EQ(timer.count(), 2U);
+  EXPECT_EQ(timer.count(), 3U);
+  const Status refused = vk_error(VK_ERROR_OUT_OF_HOST_MEMORY, "vkQueueSubmit");
+
+  timer.discard(first);  // not the newest: kept
+  timer.discard(second, 1);
   timer.discard(GpuTimer::kNoSpan);
+  EXPECT_EQ(timer.count(), 3U);
+  timer.settle(third, 1, refused, /*in_flight=*/false);
   EXPECT_EQ(timer.count(), 2U);
-  timer.discard(second);
-  EXPECT_EQ(timer.count(), 1U);
-  timer.discard(first);  // newest now
+  timer.settle(first, 2, refused, /*in_flight=*/false);  // the newest run now
   EXPECT_EQ(timer.count(), 0U);
+  EXPECT_TRUE(timer.available());
   // Nothing unsubmitted is left to read: resolving it would read queries no
   // command buffer reset (VUID-vkGetQueryPoolResults-None-09401).
-  ASSERT_TRUE(timer.resolve().ok());
   StageMetrics metrics;
   timer.report_into(metrics);
   EXPECT_TRUE(metrics.empty());
+
+  // The device may still run it: the queries cannot be reused, ever.
+  const std::shared_ptr<void> queries = timer.keep_alive();
+  timer.settle(0, 0, refused, /*in_flight=*/true);
+  EXPECT_FALSE(timer.available());
+  EXPECT_EQ(timer.keep_alive(), queries);  // held, for the device to keep
 }
 
+// What the window resolved before the timer retired is still published;
+// nothing is timed after.
 TEST_F(TimerTest, AbandonRetiresTheTimer) {
   Result<GpuTimer> made = GpuTimer::create(device());
   ASSERT_TRUE(made.ok());
   GpuTimer timer = *std::move(made);
   if (!timer.available()) GTEST_SKIP() << "the queue family has no timestamps";
-  timer.abandon();
+  StageMetrics metrics;
+  {
+    GpuStageScope stage(&metrics, timer, "before");
+    ASSERT_TRUE(device().submit_single_time(fill(), stage).ok());
+    timer.abandon();
+  }
+  ASSERT_NE(row(metrics, "before"), nullptr);
+  EXPECT_TRUE(row(metrics, "before")->has_gpu);
   EXPECT_TRUE(timer.valid());
   EXPECT_FALSE(timer.available());
-  StageMetrics metrics;
   {
     GpuStageScope stage(&metrics, timer, "after");
     ASSERT_TRUE(device().submit_single_time(fill(), stage).ok());
@@ -347,6 +392,171 @@ TEST_F(TimerTest, AbandonRetiresTheTimer) {
   ASSERT_NE(row(metrics, "after"), nullptr);
   EXPECT_FALSE(row(metrics, "after")->has_gpu);
 }
+
+// A submit made inside another's recording reads its own span alone: the
+// outer span's queries are reset by a command buffer that has not run yet,
+// which the validation layer reports if read (VUID-vkGetQueryPoolResults-
+// None-09401), and in a later window hold the previous frame's value.
+TEST_F(TimerTest, ANestedSubmitReadsOnlyItsOwnSpan) {
+  Result<GpuTimer> made = GpuTimer::create(device());
+  ASSERT_TRUE(made.ok());
+  GpuTimer timer = *std::move(made);
+  if (!timer.available()) GTEST_SKIP() << "the queue family has no timestamps";
+  for (int window = 0; window < 2; ++window) {
+    StageMetrics metrics;
+    {
+      GpuStageScope stage(&metrics, timer, "outer");
+      const auto record = fill();
+      const Status s = device().submit_single_time(
+          [&](VkCommandBuffer cmd) {
+            record(cmd);
+            EXPECT_TRUE(device().submit_single_time(fill(), stage).ok());
+          },
+          stage);
+      ASSERT_TRUE(s.ok()) << s.message();
+      EXPECT_EQ(timer.count(), 2U);
+    }
+    ASSERT_NE(row(metrics, "outer"), nullptr);
+    EXPECT_TRUE(row(metrics, "outer")->has_gpu);
+    if (timestamps_advance()) {
+      EXPECT_GT(row(metrics, "outer")->gpu_ms, 0.0);
+    }
+  }
+}
+
+// Two scopes open on one timer, with metrics of their own -- a stage, and a
+// helper inside it: each publishes its own spans, and the window ends with
+// the outer one.
+TEST_F(TimerTest, EachScopePublishesOnlyItsOwnSpans) {
+  Result<GpuTimer> made = GpuTimer::create(device());
+  ASSERT_TRUE(made.ok());
+  GpuTimer timer = *std::move(made);
+  StageMetrics frame;
+  StageMetrics local;
+  {
+    GpuStageScope stage(&frame, timer, "integrate");
+    ASSERT_TRUE(device().submit_single_time(fill(), stage).ok());
+    {
+      GpuStageScope helper(&local, timer, "sub");
+      ASSERT_TRUE(device().submit_single_time(fill(), helper).ok());
+      ASSERT_TRUE(device().submit_single_time(fill(), stage).ok());
+    }
+    EXPECT_EQ(row(local, "integrate"), nullptr);
+    if (timer.available()) {
+      EXPECT_EQ(timer.count(), 3U);  // the stage's two are still to publish
+    }
+  }
+  EXPECT_EQ(timer.count(), 0U);
+  EXPECT_EQ(row(frame, "sub"), nullptr);
+  ASSERT_NE(row(frame, "integrate"), nullptr);
+  ASSERT_NE(row(local, "sub"), nullptr);
+  EXPECT_EQ(row(frame, "integrate")->has_gpu, timer.available());
+  EXPECT_EQ(row(local, "sub")->has_gpu, timer.available());
+}
+
+// A batch keeps the scope's tag, not the scope: one that closes before the
+// submit leaves the command untimed rather than dangling.
+TEST_F(TimerTest, AScopeClosedBeforeItsSubmitLeavesTheCommandUntimed) {
+  Result<GpuTimer> made = GpuTimer::create(device());
+  ASSERT_TRUE(made.ok());
+  GpuTimer timer = *std::move(made);
+  const std::vector<std::uint32_t> words(16, 7U);
+  StageMetrics metrics;
+  CommandBatch batch(device(), allocator());
+  {
+    GpuStageScope gone(&metrics, timer, "gone");
+    ASSERT_TRUE(batch.upload(target_, 0, words.data(), 64, &gone).ok());
+  }
+  {
+    const GpuStageScope later(&metrics, timer, "later");
+    ASSERT_TRUE(batch.submit().ok());
+    EXPECT_EQ(timer.count(), 0U);
+  }
+  ASSERT_NE(row(metrics, "gone"), nullptr);
+  EXPECT_FALSE(row(metrics, "gone")->has_gpu);
+  EXPECT_FALSE(row(metrics, "later")->has_gpu);
+}
+
+// A stage that loses a span to a full window publishes no device time, not
+// the part that fit; the next window times it whole.
+TEST_F(TimerTest, AStageThatFillsTheWindowReportsNoDeviceTime) {
+  Result<GpuTimer> made = GpuTimer::create(device(), 1);
+  ASSERT_TRUE(made.ok());
+  GpuTimer tiny = *std::move(made);
+  if (!tiny.available()) GTEST_SKIP() << "the queue family has no timestamps";
+  const std::vector<std::uint32_t> words(16, 7U);
+  StageMetrics full;
+  {
+    GpuStageScope stage(&full, tiny, "big");
+    CommandBatch batch(device(), allocator());
+    ASSERT_TRUE(batch.upload(target_, 0, words.data(), 64, &stage).ok());
+    ASSERT_TRUE(batch.upload(target_, 64, words.data(), 64, &stage).ok());
+    ASSERT_TRUE(batch.submit().ok());
+    EXPECT_EQ(tiny.count(), 1U);
+  }
+  ASSERT_NE(row(full, "big"), nullptr);
+  EXPECT_FALSE(row(full, "big")->has_gpu);
+  StageMetrics fits;
+  {
+    GpuStageScope stage(&fits, tiny, "big");
+    CommandBatch batch(device(), allocator());
+    ASSERT_TRUE(batch.upload(target_, 0, words.data(), 64, &stage).ok());
+    ASSERT_TRUE(batch.submit().ok());
+  }
+  EXPECT_TRUE(row(fits, "big")->has_gpu);
+}
+
+// reserve grows the pool inside an open scope, which keeps publishing, and
+// refuses a device other than the timer's.
+TEST_F(TimerTest, ReserveGrowsWithinAScopeOnItsOwnDevice) {
+  Result<GpuTimer> made = GpuTimer::create(device(), 1);
+  ASSERT_TRUE(made.ok());
+  GpuTimer timer = *std::move(made);
+  if (!timer.available()) GTEST_SKIP() << "the queue family has no timestamps";
+  StageMetrics metrics;
+  {
+    GpuStageScope stage(&metrics, timer, "grown");
+    ASSERT_TRUE(timer.reserve(device(), 2).ok());
+    ASSERT_TRUE(device().submit_single_time(fill(), stage).ok());
+    ASSERT_TRUE(device().submit_single_time(fill(), stage).ok());
+    EXPECT_EQ(timer.count(), 2U);
+  }
+  EXPECT_TRUE(row(metrics, "grown")->has_gpu);
+  EXPECT_TRUE(timer.reserve(device(), GpuTimer::kMaxSpans + 1).ok());
+  EXPECT_TRUE(timer.available());  // clamped to the ceiling, logged
+  Device moved = std::move(device());
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_TRUE(is_invalid(timer.reserve(device(), 4)));
+  device() = std::move(moved);
+}
+
+#ifdef VKC_TEST_EXCEPTIONS
+// A record that throws never reaches the device: its span is dropped, and
+// the timer keeps timing.
+TEST_F(TimerTest, ARecordThatThrowsDropsItsSpan) {
+  Result<GpuTimer> made = GpuTimer::create(device());
+  ASSERT_TRUE(made.ok());
+  GpuTimer timer = *std::move(made);
+  if (!timer.available()) GTEST_SKIP() << "the queue family has no timestamps";
+  StageMetrics metrics;
+  {
+    GpuStageScope stage(&metrics, timer, "thrown");
+    bool threw = false;
+    try {
+      static_cast<void>(device().submit_single_time(
+          [](VkCommandBuffer) { throw std::runtime_error("record"); }, stage));
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(timer.count(), 0U);
+    EXPECT_TRUE(timer.available());
+    ASSERT_TRUE(device().submit_single_time(fill(), stage).ok());
+    EXPECT_EQ(timer.count(), 1U);
+  }
+  EXPECT_TRUE(row(metrics, "thrown")->has_gpu);
+}
+#endif
 
 TEST_F(TimerTest, CreateRefusesWhatWouldWrap) {
   EXPECT_TRUE(is_invalid(GpuTimer::create(device(), 0).status()));

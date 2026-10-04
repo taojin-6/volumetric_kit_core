@@ -15,11 +15,15 @@
 
 namespace volumetric_kit::core {
 
-/// @brief Owns a `VkQueryPool` of timestamp (or other) queries.
+/// @brief Owns a `VkQueryPool` of timestamp or occlusion queries.
 ///
 /// The commands it records check their range and do nothing on an empty pool,
 /// so a moved-from pool cannot pass a null handle to the driver. @ref GpuTimer
 /// times compute work on one; gfx's profiler times frames on its own.
+///
+/// Only the query types with one 64-bit result a query, which is what
+/// @ref read_results reads: a pipeline-statistics query returns one a counter
+/// it enables, and needs the counters named at create.
 ///
 /// @warning The device passed to @ref create must outlive the pool.
 ///
@@ -38,9 +42,11 @@ class VKC_VULKAN_API QueryPool {
   /// @brief Create a pool of @p query_count queries of @p type.
   /// @param device       The device.
   /// @param query_count  How many; non-zero.
-  /// @param type         The query type.
+  /// @param type         `VK_QUERY_TYPE_TIMESTAMP` or
+  ///                     `VK_QUERY_TYPE_OCCLUSION`.
   /// @return The pool; @ref Status::Code::InvalidArgument for a null
-  ///         @p device or a zero count; or a backend @ref Status.
+  ///         @p device or a zero count; @ref Status::Code::Unsupported for
+  ///         another query type; or a backend @ref Status.
   static Result<QueryPool> create(VkDevice device, std::uint32_t query_count,
                                   VkQueryType type = VK_QUERY_TYPE_TIMESTAMP);
 

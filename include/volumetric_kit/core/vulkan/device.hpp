@@ -311,6 +311,12 @@ class VKC_VULKAN_API Device {
   ///                    the work (a failed wait, or a submit that lost the
   ///                    device): the device may still run it then, so it
   ///                    keeps this with the command buffer, as below.
+  /// @param in_flight   Optional; set to whether the call failed after the
+  ///                    device had the work, which may still run: a failed
+  ///                    wait, or a submit that lost the device. False on
+  ///                    success, and on a failure before the device had it
+  ///                    (a begin, end or submit it refused), which ran none
+  ///                    of it.
   /// @return OK once the work completes; or the failed step's backend
   ///         @ref Status. A failed wait leaves the command buffer, fence and
   ///         @p keep_alive to a device that may still run them, until the
@@ -319,7 +325,8 @@ class VKC_VULKAN_API Device {
   ///         `VkDevice` this object owns is leaked with them rather than
   ///         destroyed under running work (logged as an error).
   Status submit_single_time(const std::function<void(VkCommandBuffer)>& record,
-                            std::shared_ptr<void> keep_alive = nullptr) const;
+                            std::shared_ptr<void> keep_alive = nullptr,
+                            bool* in_flight = nullptr) const;
 
   /// @brief @ref submit_single_time, with the recorded work inside a device
   ///        span of @p stage, resolved once the fence has signalled.
@@ -327,9 +334,13 @@ class VKC_VULKAN_API Device {
   /// The span covers what @p record records, not the command buffer's
   /// allocation, the submit or the wait -- the difference a wall-clock row
   /// cannot show. An inert @p stage (null metrics) is exactly the untimed
-  /// call. A failed resolve is logged, not returned: the work succeeded, and
-  /// a diagnostic must not fail it. A failed submit retires @p stage's timer
-  /// (@ref GpuTimer::abandon), as the device may still write its queries.
+  /// call. The span settles as @ref GpuTimer::settle says: resolved on
+  /// success, a failed read logged rather than returned; dropped when the
+  /// work never ran, a @p record that throws included; and the timer retired
+  /// when the device may still run it. The timer's query pool goes with
+  /// @p keep_alive, so a timer destroyed after that frees no queries the work
+  /// may still write. @p record may itself submit, timed on @p stage too:
+  /// each submit reads only its own span.
   ///
   /// @code
   /// GpuStageScope stage(metrics, timer, "rebuild");

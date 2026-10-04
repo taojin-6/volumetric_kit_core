@@ -20,13 +20,12 @@
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
+#include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 
 class Allocator;
-class GpuStageScope;
-class GpuTimer;
 class Device;
 class Image;
 struct ComputeKernel;
@@ -80,7 +79,8 @@ struct ComputeKernel;
 /// An upload, a copy or a dispatch given a @ref GpuStageScope is timed: its
 /// span covers the command alone, inside the dispatch's debug region, and
 /// @ref submit resolves it once the fence has signalled, for the scope to
-/// publish when it closes.
+/// publish when it closes. The command keeps the scope's @ref GpuSpanTag, not
+/// the scope: one that closes before @ref submit leaves the command untimed.
 ///
 /// @code
 /// CommandBatch batch(device, allocator);
@@ -121,7 +121,8 @@ class VKC_VULKAN_API CommandBatch {
   /// @param src     The bytes; null only when @p bytes is 0.
   /// @param bytes   How many; 0 records nothing.
   /// @param stage   Optional span around the write, so a stage's device time
-  ///                counts moving its input; it must outlive @ref submit.
+  ///                counts moving its input; null or inert is untimed. Its
+  ///                timer must outlive @ref submit; the scope need not.
   /// @return OK; @ref Status::Code::InvalidArgument for a range past @p dst,
   ///         a missing usage bit, a null @p src, or a staged upload on a
   ///         batch with no allocator; a staging allocation's failure; or a
@@ -260,8 +261,9 @@ class VKC_VULKAN_API CommandBatch {
   ///                    oversized grid is invalid on a minimum-spec driver,
   ///                    and clamping it would drop work silently.
   /// @param stage       Optional span around the dispatch, on the scope's
-  ///                    timer and label; null or inert is untimed. It must
-  ///                    outlive @ref submit, which records and resolves it.
+  ///                    timer and label; null or inert is untimed. Its timer
+  ///                    must outlive @ref submit, which records and resolves
+  ///                    the span; the scope need not.
   /// @return OK; @ref Status::Code::InvalidArgument for @p groups past
   ///         @p max_groups, a null @p push with a size, a push size the
   ///         kernel does not take, or an unbuilt kernel; or a poisoned
@@ -345,11 +347,13 @@ class VKC_VULKAN_API CommandBatch {
   /// @brief Submit everything recorded as one command buffer, wait for it,
   ///        and fill every readback destination.
   ///
-  /// Frees the batch's staging, and resolves the spans of every timer a
-  /// command used; a resolve that fails is logged, not returned, as the batch
-  /// succeeded. A submit that fails retires those timers
-  /// (@ref GpuTimer::abandon): the device may still write their queries. An
-  /// empty batch submits nothing. A batch is submitted at most once.
+  /// Frees the batch's staging, and settles the spans of every timer a
+  /// command used (@ref GpuTimer::settle): resolved, a read that fails logged
+  /// rather than returned, as the batch succeeded; dropped if the work never
+  /// reached the device; and the timer retired if the device may still run
+  /// it, with its query pool kept beside the staging until then. Each timer's
+  /// queries are reset once, ahead of its spans. An empty batch submits
+  /// nothing. A batch is submitted at most once.
   /// @return OK; the first refusal a recording call returned;
   ///         @ref Status::Code::InvalidArgument for a second submit, a
   ///         moved-from batch, or a set rewritten through any copy, or freed,
@@ -396,14 +400,20 @@ class VKC_VULKAN_API CommandBatch {
     bool staged = false;              // a Copy from this batch's own staging
     VkImage image = VK_NULL_HANDLE;   // an ImageCopy's source
     VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    std::uint32_t width = 0;         // an ImageCopy's texels a row
-    std::uint32_t height = 0;        // and rows
-    GpuStageScope* stage = nullptr;  // its span, borrowed until submit
+    std::uint32_t width = 0;   // an ImageCopy's texels a row
+    std::uint32_t height = 0;  // and rows
+    // Its span: the timer, which must stay put until submit, and the label
+    // and scope by value, so a scope that closes first leaves it untimed.
+    GpuSpanTag timing;
   };
-  // A span record() opened, on the timer submit resolves.
-  struct Span {
+  // One timer's spans in a submit. Counted before recording, so one reset
+  // ahead covers them and recording allocates nothing; opened as
+  // [first, first + count), as nothing else opens one on it meanwhile.
+  struct TimerRun {
     GpuTimer* timer = nullptr;
-    std::uint32_t id = 0;
+    std::uint32_t ahead = 0;  // the commands that name it
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
   };
 
   Status check(Status status);
@@ -418,7 +428,7 @@ class VKC_VULKAN_API CommandBatch {
   // Zeroes `bytes` (under 4) of `dst` at `offset` by a copy from zeros_.
   Status zero_edge(const Buffer& dst, VkDeviceSize offset, VkDeviceSize bytes);
   bool needs_barrier(std::size_t first, std::size_t i) const;
-  void record(VkCommandBuffer cmd, std::vector<Span>& spans) const;
+  void record(VkCommandBuffer cmd, std::vector<TimerRun>& runs) const;
 
   const Device* device_;
   Allocator* allocator_;

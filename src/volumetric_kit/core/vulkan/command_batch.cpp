@@ -12,7 +12,6 @@
 #include <utility>
 #include <vector>
 
-#include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -25,6 +24,13 @@
 
 namespace volumetric_kit::core {
 namespace {
+
+// What a submit's work uses past the batch: the staging it copies through,
+// and the query pools its spans write.
+struct Retained {
+  std::vector<Buffer> staging;
+  std::vector<std::shared_ptr<void>> queries;
+};
 
 // `bytes` at `offset` lie inside `buffer`, written so neither sum can wrap.
 Status in_range(const Buffer& buffer, VkDeviceSize offset, VkDeviceSize bytes,
@@ -219,7 +225,7 @@ Status CommandBatch::upload(const Buffer& dst, VkDeviceSize offset,
   op.bytes = bytes;
   const auto* from = static_cast<const unsigned char*>(src);
   op.data.assign(from, from + bytes);
-  op.stage = stage;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
@@ -245,7 +251,7 @@ Result<void*> CommandBatch::reserve_upload(const Buffer& dst,
   op.dst_offset = offset;
   op.bytes = bytes;
   op.staged = true;
-  op.stage = stage;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return (*staged)->mapped();
 }
@@ -334,7 +340,7 @@ Status CommandBatch::copy(const Buffer& src, VkDeviceSize src_offset,
   op.dst = dst.handle();
   op.dst_offset = dst_offset;
   op.bytes = bytes;
-  op.stage = stage;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
@@ -395,7 +401,7 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
   op.dst = dst.handle();
   op.dst_offset = dst_offset;
   op.bytes = bytes;
-  op.stage = stage;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
@@ -491,7 +497,7 @@ Status CommandBatch::dispatch(const ComputeKernel& kernel,
   }
   Op op = dispatch_op(Kind::Dispatch, kernel, set, push, push_size);
   op.value = groups;
-  op.stage = stage;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
@@ -515,7 +521,7 @@ Status CommandBatch::dispatch_indirect(const ComputeKernel& kernel,
       dispatch_op(Kind::DispatchIndirect, kernel, kernel.set, push, push_size);
   op.src = args.handle();
   op.src_offset = offset;
-  op.stage = stage;
+  if (stage != nullptr) op.timing = stage->tag();
   ops_.push_back(std::move(op));
   return {};
 }
@@ -603,7 +609,8 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
   return false;
 }
 
-void CommandBatch::record(VkCommandBuffer cmd, std::vector<Span>& spans) const {
+void CommandBatch::record(VkCommandBuffer cmd,
+                          std::vector<TimerRun>& runs) const {
   constexpr VkPipelineStageFlags kInnerStages =
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
       VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
@@ -612,6 +619,12 @@ void CommandBatch::record(VkCommandBuffer cmd, std::vector<Span>& spans) const {
       VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
       VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
 
+  // Each timer's queries reset once, ahead of every span it opens here, not
+  // once between every two commands.
+  for (TimerRun& run : runs) {
+    run.first = static_cast<std::uint32_t>(run.timer->count());
+    run.timer->cmd_reset_ahead(cmd, run.ahead);
+  }
   std::size_t first = 0;  // the first command since the last barrier
   for (std::size_t i = 0; i < ops_.size(); ++i) {
     const Op& op = ops_[i];
@@ -625,10 +638,12 @@ void CommandBatch::record(VkCommandBuffer cmd, std::vector<Span>& spans) const {
     // sits outside the span: a label may cost an encoder boundary (MoltenVK's
     // push/popDebugGroup), which a span must not measure.
     device_->begin_debug_label(cmd, op.name);
-    GpuTimer* timer = op.stage != nullptr ? op.stage->timer() : nullptr;
-    const std::uint32_t span = timer != nullptr
-                                   ? timer->begin(cmd, op.stage->name())
-                                   : GpuTimer::kNoSpan;
+    const auto run = std::find_if(
+        runs.begin(), runs.end(),
+        [&op](const TimerRun& r) { return r.timer == op.timing.timer; });
+    const std::uint32_t span =
+        run != runs.end() ? run->timer->begin(cmd, op.timing, /*reset=*/false)
+                          : GpuTimer::kNoSpan;
     switch (op.kind) {
       case Kind::Update:
         vkCmdUpdateBuffer(cmd, op.dst, op.dst_offset, op.bytes, op.data.data());
@@ -688,8 +703,8 @@ void CommandBatch::record(VkCommandBuffer cmd, std::vector<Span>& spans) const {
       }
     }
     if (span != GpuTimer::kNoSpan) {
-      timer->end(cmd, span);
-      spans.push_back({timer, span});
+      run->timer->end(cmd, span);
+      ++run->count;
     }
     device_->end_debug_label(cmd, op.name);
   }
@@ -750,35 +765,34 @@ Status CommandBatch::submit() {
     }
   }
 
+  // Each timer the commands name, counted now: recording then allocates
+  // nothing, so no exception leaves a span its command buffer never ran.
+  std::vector<TimerRun> runs;
+  for (const Op& op : ops_) {
+    GpuTimer* timer = op.timing.timer;
+    if (timer == nullptr || !timer->available()) continue;
+    auto run =
+        std::find_if(runs.begin(), runs.end(),
+                     [timer](const TimerRun& r) { return r.timer == timer; });
+    if (run == runs.end()) run = runs.insert(runs.end(), TimerRun{timer});
+    ++run->ahead;
+  }
+
   // Shared with the device, which keeps it past a failed wait, with the
   // command buffer it may still run, until it has waited for that. Moving the
   // vector leaves its buffers in place, so `readbacks` still points at one.
-  const auto staging =
-      std::make_shared<std::vector<Buffer>>(std::exchange(staging_, {}));
-  std::vector<Span> spans;
-  Status submitted = device_->submit_single_time(
-      [&](VkCommandBuffer cmd) { record(cmd, spans); }, staging);
-  if (!submitted.ok()) {
-    // Whether the device still has the work is not reported, so its queries
-    // may yet be written: each timer retires rather than reuse them.
-    for (const Span& span : spans) span.timer->abandon();
-    return submitted;
+  const auto retained = std::make_shared<Retained>();
+  retained->staging = std::exchange(staging_, {});
+  for (const TimerRun& run : runs) {
+    retained->queries.push_back(run.timer->keep_alive());
   }
-  // Each timer once: a resolve reads every span it holds that is unresolved.
-  std::vector<GpuTimer*> timers;
-  for (const Span& span : spans) {
-    if (std::find(timers.begin(), timers.end(), span.timer) == timers.end()) {
-      timers.push_back(span.timer);
-    }
+  bool in_flight = false;
+  const Status submitted = device_->submit_single_time(
+      [&](VkCommandBuffer cmd) { record(cmd, runs); }, retained, &in_flight);
+  for (const TimerRun& run : runs) {
+    run.timer->settle(run.first, run.count, submitted, in_flight);
   }
-  for (GpuTimer* timer : timers) {
-    const Status resolved = timer->resolve();
-    if (!resolved.ok()) {
-      log_message(LogLevel::Warning, "vulkan",
-                  "CommandBatch::submit: GPU timestamps not resolved (" +
-                      resolved.message() + "); the batch itself succeeded");
-    }
-  }
+  VKC_TRY(submitted);
 
   if (readbacks != nullptr) {
     const auto* base = static_cast<const unsigned char*>(readbacks->mapped());
