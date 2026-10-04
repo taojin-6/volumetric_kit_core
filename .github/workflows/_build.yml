@@ -36,8 +36,9 @@ jobs:
         if: inputs.vulkan && runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # glslc and spirv-val compile and validate the compute tests' shaders.
           sudo apt-get install -y --no-install-recommends \
-            libvulkan-dev vulkan-tools
+            libvulkan-dev vulkan-tools glslc spirv-tools
           # lavapipe, Mesa's software Vulkan driver, installed WITH recommends:
           # without them its runtime libraries (LLVM) are stripped and it loads
           # as INCOMPATIBLE_DRIVER, which would skip every device test.
@@ -57,7 +58,9 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
           HOMEBREW_NO_INSTALL_CLEANUP: '1'
-        run: brew install vulkan-headers vulkan-loader molten-vk
+        run: |
+          brew install vulkan-headers vulkan-loader molten-vk shaderc \
+            spirv-tools
 
       - name: Configure
         run: |

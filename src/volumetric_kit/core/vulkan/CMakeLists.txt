@@ -28,8 +28,12 @@ target_sources(
   core_vulkan
   PRIVATE allocator.cpp
           buffer.cpp
+          command_batch.cpp
           command_buffer.cpp
           command_pool.cpp
+          compute_kernel.cpp
+          compute_pipeline.cpp
+          compute_util.cpp
           descriptor.cpp
           device.cpp
           device_requirements.cpp
@@ -111,4 +115,8 @@ if(VKC_INSTALL)
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     FILES_MATCHING
     PATTERN "*.hpp")
+  # The shader functions, which the package config includes.
+  install(FILES "${PROJECT_SOURCE_DIR}/cmake/vkc_shaders.cmake"
+                "${PROJECT_SOURCE_DIR}/cmake/vkc_embed_spirv.cmake"
+          DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/volumetric_kit_core")
 endif()

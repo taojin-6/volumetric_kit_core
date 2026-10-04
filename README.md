@@ -18,12 +18,12 @@ buffers zero-copy on one shared device.
 > **Status:** the `base` tier is implemented and tested: exception-free
 > `Status`/`Result`, the `VKC_CHECK` contract check, the pluggable log sink, and
 > the version API. calib and recon build on it. The `vulkan` tier's foundation
-> and memory are implemented -- the instance, device selection against a
-> library's requirements, the logical device every sibling creates or adopts,
-> the VMA allocator with its buffers and images, descriptors, shader modules,
-> synchronization and command buffers -- and its compute and shared-device
-> pieces follow. The `camera` and
-> `sensor` tiers are planned; see [DECISIONS.md](DECISIONS.md#tiers) for what
+> memory and compute are implemented -- the instance, device selection against
+> a library's requirements, the logical device every sibling creates or
+> adopts, the VMA allocator with its buffers and images, descriptors,
+> synchronization, compute kernels, `CommandBatch`, and the shader build
+> functions -- and its timers, external memory and shared-device pieces
+> follow. The `camera` and `sensor` tiers are planned; see [DECISIONS.md](DECISIONS.md#tiers) for what
 > each holds and the order they land in.
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and
@@ -34,7 +34,7 @@ Claude Code; `CLAUDE.md` imports it.
 | Tier | Target | Holds | Status |
 | --- | --- | --- | --- |
 | `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, version | implemented |
-| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers; then compute, external memory, shared-device bootstrap | foundation and memory implemented |
+| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions; then timers, external memory, shared-device bootstrap | foundation, memory and compute implemented |
 | `camera` | `volumetric_kit::core_camera` | camera models (rational first), rig calibration file | planned |
 | `sensor` | `volumetric_kit::core_sensor` | frame types, capture interface, vendor drivers (Orbbec) | planned |
 
@@ -45,11 +45,13 @@ GPU (calib's headless solver) links only the tiers it uses.
 
 The `base` tier needs only a C++17 compiler and CMake ≥ 3.21. googletest is
 fetched, pinned, when tests are built. The `vulkan` tier also needs a Vulkan
-SDK's headers and loader (MoltenVK on Apple):
+SDK's headers and loader (MoltenVK on Apple), and its tests a GLSL compiler
+(`glslc`, or `glslangValidator`); `spirv-val` validates the shaders when
+found:
 
 ```sh
-brew install vulkan-headers vulkan-loader molten-vk     # macOS
-sudo apt-get install libvulkan-dev mesa-vulkan-drivers  # Ubuntu (+ lavapipe)
+brew install vulkan-headers vulkan-loader molten-vk shaderc spirv-tools  # macOS
+sudo apt-get install libvulkan-dev mesa-vulkan-drivers glslc spirv-tools # Ubuntu
 ```
 
 `VKC_WITH_VULKAN` builds it. It defaults ON at the top level and OFF in a
@@ -97,7 +99,14 @@ target_link_libraries(your_target PRIVATE volumetric_kit::core_base)
 
 or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`.
 For the vulkan tier, set `VKC_WITH_VULKAN` ON before
-`FetchContent_MakeAvailable` and link `volumetric_kit::core_vulkan`.
+`FetchContent_MakeAvailable` and link `volumetric_kit::core_vulkan`. Either
+way, `vkc_embed_shaders` then compiles a target's GLSL and embeds the SPIR-V
+as headers (`cmake/vkc_shaders.cmake` documents its options):
+
+```cmake
+vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp)
+# your sources: #include "integrate_comp.spv.hpp" -> your_integrate_comp_spv[]
+```
 
 A consumer that installs and exports its own targets installs the core beside
 them (the core's install rules stay on in a subproject), and its package config

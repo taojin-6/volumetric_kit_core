@@ -52,6 +52,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     a write naming a null buffer or view aborts via `VKC_CHECK`.
   - `ShaderModule`; `Fence`, `Semaphore`, `TimelineSemaphore`; `CommandPool`
     and `CommandBuffer`.
+- `vulkan` tier compute (DECISIONS.md, "The vulkan tier", V3), from recon:
+  - `ComputePipeline`; `ComputeKernel`, `KernelSetBuilder` (kernels sharing
+    one descriptor pool), `KernelSets` (extra sets of a kernel's layout), and
+    the one-shot `dispatch`.
+  - `CommandBatch`: one call's uploads, fills, zeroes, copies (buffer and
+    image), queue-family acquires, dispatches (direct and indirect) and
+    readbacks, recorded into one command buffer, submitted and waited on once.
+  - `compute_util`: `group_count`, `max_storage_buffer_range`,
+    `check_storage_buffer_range`, `storage_buffer`, `upload_storage_buffer`,
+    `device_storage_buffer`, `ensure_device_scratch`, `StorageInput`.
+  - `vkc_compile_shaders` and `vkc_embed_shaders`, for every sibling's
+    shaders, installed with the package.
+  - `Device::submit_single_time` reports whether failed work was left in
+    flight.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
   on and reach the log sink; a leg builds with no Vulkan installed.

@@ -61,7 +61,7 @@ It lands in five stages, each its own PR, merged before any sibling migrates:
 | --- | --- |
 | V1 (landed) | `vulkan.hpp`, the `VkResult` helpers, `UniqueHandle`, `PhysicalDeviceInfo`, `DeviceRequirements` with `merge` and `check_device_support`, `Instance`, `Device` |
 | V2 (landed) | `Allocator`, `Buffer`, `Image`, descriptor layouts, pools and sets, `ShaderModule`, fences and semaphores, command pools and buffers |
-| V3 | compute pipelines, kernel sets, `CommandBatch`, the compute helpers |
+| V3 (landed) | `ComputePipeline`, `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`, `CommandBatch`, the compute helpers, and the shader build functions |
 | V4 | query pools, `GpuTimer`, `StageMetrics` (to `base`), external memory |
 | V5 | the shared-device bootstrap, replacing recon's example copy and ios's `SharedDevice` |
 
@@ -196,6 +196,39 @@ V2's choices, from the same comparison:
 - **gfx's fences, semaphores, command pools and command buffers**, with one
   change: an empty fence or timeline semaphore returns `InvalidArgument`
   instead of passing a null device to Vulkan.
+
+V3's choices, from the same comparison (gfx has no compute):
+
+- **recon's compute, under its own signatures.** `ComputePipeline`,
+  `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`,
+  `CommandBatch` and the `compute_util` helpers keep recon's names and
+  parameters -- the explicit `max_groups` included, which recon's callers also
+  use to split oversized grids -- so recon migrates by namespace. `dispatch`
+  takes a `const Device&`, and a builder of binding-less kernels sizes a pool
+  of one descriptor instead of the invalid zero.
+- **One path between host and kernel memory.** `CommandBatch` is it: uploads
+  inline up to 64 KiB and staged beyond, readbacks through one host buffer,
+  barriers only where a command could see another's writes, a refusal that
+  poisons the batch, and a descriptor set rewritten after its dispatch
+  refused at submit. Kernel memory is never mapped, so unified memory runs the
+  path a discrete GPU does (the open "Unified memory" question below).
+- **Image copies take the common uncompressed color formats**, 8- to 128-bit
+  texels, where recon's took `R8` and `R8G8`. They read the layout
+  `Image::layout` records (V2's `set_layout` keeps it current) and refuse a
+  multisampled image by `Image::samples`.
+- **`submit_single_time` reports work left in flight**, so a batch whose wait
+  failed leaks its staging rather than free memory the GPU may still read.
+- **Timer spans come with V4.** recon's optional `GpuStageScope*` parameters
+  return then as trailing defaults, beside `GpuTimer`.
+- **One shader toolchain.** `vkc_compile_shaders` and `vkc_embed_shaders`
+  replace recon's `vr_*`, gfx's `vg_*`, and the copy of recon's ios borrows.
+  `TARGET_ENV` (default Vulkan 1.2; gfx's renderer passes 1.3),
+  `INCLUDE_DIRS` (recon's include root) and `SPIRV_VAL_ARGS` (recon's
+  `--scalar-block-layout`) cover the differences. `SYMBOL_PREFIX` is
+  required: the arrays are inline variables, which the linker merges by name,
+  so two libraries' `fill.comp` would otherwise share one shader. The
+  functions are defined when the core is added, and installed beside the
+  package config, which includes them.
 
 ### Naming
 

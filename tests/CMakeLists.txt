@@ -30,7 +30,9 @@ if(VKC_WITH_VULKAN)
     vulkan_queue_families
     vulkan_device
     vulkan_allocator
-    vulkan_resources)
+    vulkan_resources
+    vulkan_compute
+    vulkan_command_batch)
     add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
     target_link_libraries(vkc_${_vkc_test}_test
                           PRIVATE volumetric_kit::core_vulkan GTest::gtest_main)
@@ -46,6 +48,13 @@ if(VKC_WITH_VULKAN)
   target_include_directories(
     vkc_vulkan_queue_families_test
     PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")
+
+  # The compute tests' kernels, compiled and embedded as a consumer would
+  # (cmake/vkc_shaders.cmake), so a build with tests needs glslc.
+  foreach(_vkc_test vulkan_compute vulkan_command_batch)
+    vkc_embed_shaders(vkc_${_vkc_test}_test SYMBOL_PREFIX vkc_test_ SHADERS
+                      shaders/add.comp shaders/fill.comp)
+  endforeach()
 endif()
 
 # The one-instance warning (cmake/vkc_single_instance.cmake): configure a

@@ -1,0 +1,22 @@
+#version 450
+
+// The CommandBatch test shader: add `delta` to each of the first `count`
+// values. It reads what it writes, so a batch that ran its commands out of
+// order -- an upload after the dispatch, a readback before it -- leaves a
+// different value than one that ran them in order.
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) buffer Values { uint values[]; };
+
+layout(push_constant) uniform Push {
+  uint count;
+  uint delta;
+};
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i < count) {
+    values[i] += delta;
+  }
+}

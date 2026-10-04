@@ -297,7 +297,12 @@ class VKC_VULKAN_API Device {
   /// may itself submit on this device; what it records -- descriptor sets,
   /// buffers -- must still be its own. Blocking, so it suits setup and
   /// single-shot work; per-frame work batches its own submits.
-  /// @param record  Records into the command buffer it is given.
+  /// @param record     Records into the command buffer it is given.
+  /// @param in_flight  Optional; set to `true` when the call failed after the
+  ///                   device had the work -- a failed wait, or a submit that
+  ///                   lost the device -- so the device may still run it, and
+  ///                   whatever it records must stay alive; `false` otherwise.
+  ///                   A @ref CommandBatch keeps its staging alive by it.
   /// @return OK once the work completes; or the failed step's backend
   ///         @ref Status. A failed wait leaves the command buffer and fence
   ///         to a device that may still run them, until the device is
@@ -307,8 +312,8 @@ class VKC_VULKAN_API Device {
   ///
   /// TODO: add the overload that brackets the work with a GPU timestamp span
   /// (recon's GpuTimer) with the tier's timers.
-  Status submit_single_time(
-      const std::function<void(VkCommandBuffer)>& record) const;
+  Status submit_single_time(const std::function<void(VkCommandBuffer)>& record,
+                            bool* in_flight = nullptr) const;
 
   /// @brief Submit an already-recorded, ended command buffer to @ref queue
   ///        and wait for it, on a kept fence.
@@ -438,9 +443,10 @@ class VKC_VULKAN_API Device {
   void leave_to_device(const Command& command) const noexcept;
   // Submits `cmd` signalling `command.fence`, waits, and resets the fence.
   // `*reusable` says whether `command` may be given back: not after a failed
-  // wait (it is left to the device) or a failed fence reset.
+  // wait (it is left to the device) or a failed fence reset. `*in_flight`
+  // says whether the device may still run `cmd`: only after a failed wait.
   Status submit_waiting(VkCommandBuffer cmd, const Command& command,
-                        bool* reusable) const;
+                        bool* reusable, bool* in_flight) const;
 
   State state_;
   PhysicalDeviceInfo caps_;

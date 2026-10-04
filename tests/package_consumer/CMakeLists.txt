@@ -47,6 +47,13 @@ target_link_libraries(vkc_package_consumer PRIVATE vkc_package_consumer_lib)
 if(TARGET volumetric_kit::core_vulkan)
   target_compile_definitions(vkc_package_consumer
                              PRIVATE VKC_CONSUMER_HAS_VULKAN)
+  # The shader functions, as a sibling embeds its kernels: from the installed
+  # package config, or defined by the core's own CMakeLists.
+  if(NOT COMMAND vkc_embed_shaders)
+    message(FATAL_ERROR "the vulkan tier brought no vkc_embed_shaders")
+  endif()
+  vkc_embed_shaders(vkc_package_consumer SYMBOL_PREFIX vkc_consumer_ SHADERS
+                    smoke.comp)
 endif()
 
 install(TARGETS vkc_package_consumer_lib EXPORT vkc_package_consumerTargets)

@@ -50,6 +50,11 @@ include(vkc_warnings)
 include(vkc_sanitizers)
 include(vkc_clang_tidy)
 include(vkc_single_instance)
+# vkc_compile_shaders / vkc_embed_shaders: functions are global in CMake, so a
+# project that fetches the core can call them once it is added.
+if(VKC_WITH_VULKAN)
+  include(vkc_shaders)
+endif()
 
 # --- Dependencies + library tiers --------------------------------------------
 add_subdirectory(third_party)

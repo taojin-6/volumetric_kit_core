@@ -567,8 +567,9 @@ void Device::leave_to_device(const Command& command) const noexcept {
 }
 
 Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
-                              bool* reusable) const {
+                              bool* reusable, bool* in_flight) const {
   *reusable = true;
+  *in_flight = false;
   VkSubmitInfo submit{};
   submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   submit.commandBufferCount = 1;
@@ -590,6 +591,7 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
     // another submit; destroy() waits for them before freeing them.
     leave_to_device(command);
     *reusable = false;
+    *in_flight = true;
     return vk_error(
         waited, submitted == VK_SUCCESS ? "vkWaitForFences" : "vkQueueSubmit");
   }
@@ -601,7 +603,8 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
 }
 
 Status Device::submit_single_time(
-    const std::function<void(VkCommandBuffer)>& record) const {
+    const std::function<void(VkCommandBuffer)>& record, bool* in_flight) const {
+  if (in_flight != nullptr) *in_flight = false;
   VKC_ASSIGN(const Command command, take_command(/*record=*/true));
   VkCommandBuffer cmd = command.buffer;
   bool recording = false;
@@ -622,8 +625,10 @@ Status Device::submit_single_time(
   recording = false;
 
   bool reusable = true;
-  Status status = submit_waiting(cmd, command, &reusable);
+  bool left = false;
+  Status status = submit_waiting(cmd, command, &reusable, &left);
   if (!reusable) give_back_command.release();
+  if (in_flight != nullptr) *in_flight = left;
   return status;
 }
 
@@ -638,7 +643,8 @@ Status Device::submit_and_wait(VkCommandBuffer cmd) const {
   VKC_ASSIGN(const Command command, take_command(/*record=*/false));
   ScopeGuard give_back_command([&] { give_back(command); });
   bool reusable = true;
-  Status status = submit_waiting(cmd, command, &reusable);
+  bool left = false;
+  Status status = submit_waiting(cmd, command, &reusable, &left);
   if (!reusable) give_back_command.release();
   return status;
 }
