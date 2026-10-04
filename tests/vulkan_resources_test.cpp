@@ -158,8 +158,7 @@ TEST(VulkanObjectsDeathTest, WritesRefuseANullResource) {
   EXPECT_EQ(set.writes(), 0u);
 }
 
-// --- on a device
-// --------------------------------------------------------------
+// --- on a device -------------------------------------------------------------
 
 class ResourcesTest : public test::VulkanDeviceTest {
  protected:
@@ -185,19 +184,20 @@ class ResourcesTest : public test::VulkanDeviceTest {
     ASSERT_EQ(device().queue_submit(1, &info, fence), VK_SUCCESS);
   }
 
-  Buffer host_buffer(VkDeviceSize size, VkBufferUsageFlags usage) {
+  Buffer buffer(VkDeviceSize size, VkBufferUsageFlags usage, MemoryUsage memory,
+                HostAccess access = HostAccess::SequentialWrite) {
     BufferDesc desc;
     desc.size = size;
     desc.usage = usage;
-    desc.memory = MemoryUsage::HostVisible;
-    desc.mapped = true;
+    desc.memory = memory;
+    desc.host_access = access;
     Result<Buffer> buffer = allocator().create_buffer(desc);
     EXPECT_TRUE(buffer.ok()) << buffer.status().message();
     return buffer.ok() ? *std::move(buffer) : Buffer{};
   }
 };
 
-// --- descriptors
+// --- descriptors -------------------------------------------------------------
 
 TEST_F(ResourcesTest, WritesEveryDescriptorKindIntoASet) {
   constexpr VkShaderStageFlags kCompute = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -226,8 +226,11 @@ TEST_F(ResourcesTest, WritesEveryDescriptorKindIntoASet) {
   const DescriptorSet set = *std::move(allocated);
   ASSERT_TRUE(set.valid());
 
-  const Buffer storage = host_buffer(256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  const Buffer uniform = host_buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+  const Buffer storage =
+      buffer(256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, MemoryUsage::DeviceOnly);
+  // Device-only: a descriptor binds a buffer wherever it lives.
+  const Buffer uniform =
+      buffer(256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, MemoryUsage::DeviceOnly);
   ImageDesc sampled_desc;
   sampled_desc.extent = {4, 4};
   sampled_desc.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -283,7 +286,7 @@ TEST_F(ResourcesTest, DescriptorObjectsMove) {
   EXPECT_TRUE(moved.allocate(b.handle()).ok());
 }
 
-// --- shader modules
+// --- shader modules ----------------------------------------------------------
 
 TEST_F(ResourcesTest, BuildsAShaderModuleFromSpirv) {
   Result<ShaderModule> shader =
@@ -294,7 +297,7 @@ TEST_F(ResourcesTest, BuildsAShaderModuleFromSpirv) {
   EXPECT_NE(moved.handle(), VK_NULL_HANDLE);
 }
 
-// --- fences and semaphores
+// --- fences and semaphores ---------------------------------------------------
 
 TEST_F(ResourcesTest, FenceSignalsWaitsTimesOutAndResets) {
   Result<Fence> unsignaled = Fence::create(vk());
@@ -341,7 +344,7 @@ TEST_F(ResourcesTest, TimelineCountsUpFromTheHostAndTheQueue) {
   EXPECT_EQ(counter(timeline), 10u);
 }
 
-// --- command pools and buffers
+// --- command pools and buffers -----------------------------------------------
 
 TEST_F(ResourcesTest, RecordsSubmitsAndReRecordsACommandBuffer) {
   Result<CommandPool> made = CommandPool::create(vk(), device().queue_family());
@@ -353,7 +356,8 @@ TEST_F(ResourcesTest, RecordsSubmitsAndReRecordsACommandBuffer) {
   CommandBuffer cmd = *std::move(allocated);
   ASSERT_TRUE(cmd.valid());
 
-  const Buffer target = host_buffer(64, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+  const Buffer target = buffer(64, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               MemoryUsage::Staging, HostAccess::Random);
   const auto* words = static_cast<const std::uint32_t*>(target.mapped());
   for (const std::uint32_t pattern : {0xC0FFEEu, 0xBADF00Du}) {
     // The pool's RESET_COMMAND_BUFFER flag lets begin() reset it in place.

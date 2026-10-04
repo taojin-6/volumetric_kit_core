@@ -245,6 +245,10 @@ TEST_F(DeviceTest, EnablesOptionalExtensionsOnlyWhereOffered) {
   // The spec requires the portability subset wherever it is exposed.
   EXPECT_EQ(made->extension_enabled(kPortabilitySubset),
             made->caps().supports_device_extension(kPortabilitySubset));
+  // The driver's heap budgets, for an Allocator, wherever offered.
+  EXPECT_EQ(made->extension_enabled(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME),
+            made->caps().supports_device_extension(
+                VK_EXT_MEMORY_BUDGET_EXTENSION_NAME));
   EXPECT_FALSE(made->extension_enabled(nullptr));
 }
 

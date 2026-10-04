@@ -3,8 +3,8 @@
 
 // CommandBatch, ported from recon's core_command_batch_test: every recording
 // call, in orders that would expose a command run out of place -- an upload
-// after a dispatch, a readback before one -- over a device-local and a
-// host-visible buffer, as a buffer's memory type must not change what a batch
+// after a dispatch, a readback before one -- over a device-only and a
+// device-mapped buffer, as a buffer's memory type must not change what a batch
 // does. Uploads inline, staged and packed by the caller, several readbacks in
 // one batch, transfers left unordered (fills, uploads and copies rising
 // through one buffer among them), image copies, acquires, indirect dispatch,
@@ -129,14 +129,15 @@ class BatchTest : public test::VulkanDeviceTest {
                           max_groups_);
   }
 
-  // A device-local buffer, or a host-visible one, with every usage a batch
-  // call needs.
-  Buffer make(bool device_local, VkDeviceSize bytes) {
+  // A device-only buffer, or a device-mapped one, with every usage a batch
+  // call needs: both device-local, as everything a kernel binds is.
+  Buffer make(bool device_only, VkDeviceSize bytes) {
     Result<Buffer> made =
-        device_local ? device_storage_buffer(allocator(), bytes)
-                     : storage_buffer(allocator(), bytes, HostAccess::Random,
-                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        device_only ? device_storage_buffer(allocator(), bytes)
+                    : mapped_storage_buffer(
+                          allocator(), bytes, HostAccess::SequentialWrite,
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     EXPECT_TRUE(made.ok()) << made.status().message();
     return made.ok() ? *std::move(made) : Buffer{};
   }
@@ -173,8 +174,7 @@ class BatchTest : public test::VulkanDeviceTest {
     BufferDesc staging_desc;
     staging_desc.size = texels.size();
     staging_desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    staging_desc.memory = MemoryUsage::HostVisible;
-    staging_desc.mapped = true;
+    staging_desc.memory = MemoryUsage::Staging;
     Result<Buffer> staging = allocator().create_buffer(staging_desc);
     EXPECT_TRUE(staging.ok());
     if (!staging.ok()) return Image{};
@@ -233,6 +233,9 @@ class BatchOrderTest : public BatchTest,
                        public ::testing::WithParamInterface<bool> {};
 
 TEST_P(BatchOrderTest, RunsCommandsInTheOrderRecorded) {
+  if (!GetParam() && !physical().device_mapped_memory()) {
+    GTEST_SKIP() << "the device has no device-mapped memory";
+  }
   const Buffer buffer = make(GetParam(), kBytes);
   ASSERT_TRUE(buffer.valid());
 
@@ -322,7 +325,7 @@ TEST_P(BatchOrderTest, RunsCommandsInTheOrderRecorded) {
 
 INSTANTIATE_TEST_SUITE_P(Memory, BatchOrderTest, ::testing::Bool(),
                          [](const ::testing::TestParamInfo<bool>& info) {
-                           return info.param ? "DeviceLocal" : "HostVisible";
+                           return info.param ? "DeviceOnly" : "DeviceMapped";
                          });
 
 // --- transfers ---------------------------------------------------------------
@@ -860,15 +863,17 @@ TEST_F(BatchTest, RefusesBadArguments) {
   BufferDesc desc;
   desc.size = kBytes;
   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  desc.memory = MemoryUsage::DeviceLocal;
+  desc.memory = MemoryUsage::DeviceOnly;
   Result<Buffer> bare_made = allocator().create_buffer(desc);
   ASSERT_TRUE(bare_made.ok());
   const Buffer bare = *std::move(bare_made);
-  // Host-visible without the transfer bits: refused all the same, as nothing
-  // is written through its mapping.
-  Result<Buffer> mapped_made = storage_buffer(allocator(), kBytes);
-  ASSERT_TRUE(mapped_made.ok());
-  const Buffer mapped_bare = *std::move(mapped_made);
+  // Device-mapped without the transfer bits: refused all the same, as a batch
+  // writes and reads nothing through a mapping. Where the device has no
+  // device-mapped memory, an empty buffer, refused too.
+  Result<Buffer> mapped_made = mapped_storage_buffer(allocator(), kBytes);
+  ASSERT_EQ(mapped_made.ok(), physical().device_mapped_memory());
+  const Buffer mapped_bare =
+      mapped_made.ok() ? *std::move(mapped_made) : Buffer{};
   const std::vector<std::uint32_t> p = pattern(1);
   std::vector<std::uint32_t> got(kCount, 0);
   const auto refuses = [&](auto&& call) {

@@ -17,9 +17,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     `VKC_VK_TRY`, `vk_result` and `to_string(VkResult)`; `UniqueHandle`,
     whose deleter may also be a loaded entry point, so a switch to volk
     changes no spelling.
-  - `PhysicalDeviceInfo`: a device's properties, queue families, extensions
-    and features, captured once, and the version usable on it -- the lower of
-    the device's and its instance's.
+  - `PhysicalDeviceInfo`: a device's properties, memory heaps and types,
+    queue families, extensions and features, captured once; the version
+    usable on it -- the lower of the device's and its instance's;
+    `unified_memory()`, which tells unified memory (every heap device-local)
+    from a discrete GPU; and `device_mapped_memory()`, whether `DeviceMapped`
+    memory exists.
   - `DeviceRequirements`, which replaces recon's and gfx's `DeviceConfig`;
     `merge` for a device two libraries share; and `check_device_support`, the
     one check selection, create and adopt share.
@@ -33,13 +36,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     the instance's version too; one queue plus an optional present queue;
     thread-safe `submit_single_time`, `submit_and_wait`, `queue_present` and
     `wait_idle`; a never-null `submit_mutex`; debug labels; external-memory
-    and Metal-object capabilities.
+    and Metal-object capabilities. `create` enables `VK_EXT_memory_budget`
+    where offered.
 - `vulkan` tier memory and resources (DECISIONS.md, "The vulkan tier", V2):
   - `Allocator` over VMA v3.4.0 (private): `create_buffer`, `create_image`,
-    per-heap `memory_stats`. Device-local memory is required, not preferred,
-    and every image is device-local; host-visible buffers are mapped and
-    coherent; resources may outlive the allocator. A device-address buffer
-    usage is refused for now.
+    per-heap `memory_stats`. Three placements, each a memory-type mask cut to
+    the resource's own requirements, and a full heap -- or one past its
+    budget, the driver's where `VK_EXT_memory_budget` is enabled -- fails
+    rather than spill: `DeviceOnly` -- the default, and the only one for
+    images -- device memory the host cannot map (VRAM, never the BAR window;
+    Apple's private storage); `DeviceMapped`, device-local memory the host
+    writes (the BAR window; unified memory's pool); `Staging`, host memory
+    with copy usage only, so no shader reads host memory. The placement
+    decides whether a buffer is mapped; `HostAccess` (`SequentialWrite` by
+    default) narrows a mapped one's type. Resources may outlive the
+    allocator. A device-address buffer usage is refused for now.
   - `Buffer` and `Image` (with `MemoryInfo`), made by the allocator or
     adopted with a deleter. `Image` covers 2D, 3D, array, cube, mipmapped and
     multisampled images with a default view, and replaces gfx's `Texture`.
@@ -66,7 +77,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     submit, which refuses a dispatch whose set was rewritten or freed;
     `retain` keeps a buffer its commands use that the caller replaces.
   - `compute_util`: `group_count`, `max_storage_buffer_range` (from the
-    `Device`'s caps), `check_storage_buffer_range`, `storage_buffer`,
+    `Device`'s caps), `check_storage_buffer_range`, `mapped_storage_buffer`,
     `upload_storage_buffer`, `device_storage_buffer`, `ensure_device_scratch`
     and `StorageInput`, whose outgrown buffers go to the batch that used them.
   - `vkc_compile_shaders` and `vkc_embed_shaders`, for every sibling's
@@ -107,6 +118,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   files in place, hygiene checks (YAML, merge-conflict markers, large files,
   line endings), `.editorconfig`, and clang-tidy (`.clang-tidy`, pinned
   22.1.8) run through the build with `-DVKC_CLANG_TIDY=ON`, locally and in CI.
+
+### Changed
+
+For a consumer pinned at a commit of V2's or V3's first API, which this
+section's entries replace (DECISIONS.md, "Where memory lives"):
+
+- `MemoryUsage::DeviceLocal` and `MemoryUsage::Auto` → `DeviceOnly`.
+  `MemoryUsage::HostVisible` → `Staging` for a buffer with copy usage only;
+  `DeviceMapped` for one a shader reads (uniforms, parameters), or
+  `DeviceOnly` written by a `CommandBatch` where
+  `PhysicalDeviceInfo::device_mapped_memory()` is false.
+- `BufferDesc::mapped` is removed: delete the assignment. `DeviceMapped` and
+  `Staging` buffers are always mapped, `DeviceOnly` ones never.
+  `ImageDesc::memory` is removed too: every image is device-only.
+- `BufferDesc::host_access` defaults to `SequentialWrite` (was `Random`): set
+  `HostAccess::Random` on a buffer the host reads, such as a staging
+  readback. `Random` on a `DeviceMapped` buffer needs cached device-local
+  memory, which unified memory has and a discrete GPU does not
+  (`Unsupported`).
+- `storage_buffer` → `mapped_storage_buffer`, now device-mapped (was
+  host-visible) and `HostAccess::SequentialWrite` by default (was `Random`).
+  A caller that reads it through `mapped()` passes `HostAccess::Random` on
+  unified memory, or reads the results back with `CommandBatch::readback`; a
+  caller that only copied from it (`TRANSFER_SRC`, never bound) makes a
+  `MemoryUsage::Staging` buffer instead; a bulk input goes through
+  `StorageInput`, staged into device-only memory. `upload_storage_buffer`
+  is device-mapped the same way.
+- `create_buffer` and `create_image` return `Unsupported` where no type of
+  the placement suits the resource (was a `VK_ERROR_FEATURE_NOT_PRESENT`
+  backend error, or for an image another device-local type), and
+  `VK_ERROR_OUT_OF_DEVICE_MEMORY` past the heap's budget.
 
 ### Migrating from a sibling's own copy
 
@@ -151,3 +193,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `CommandBatch` now binds the set a dispatch recorded, so reassigning the
   caller's `DescriptorSet` object after it no longer refuses the submit, and
   a temporary set is accepted.
+- `recon` / `gfx` memory, as "Changed" above: `DeviceLocal` → `DeviceOnly`;
+  drop `desc.mapped`. `recon`: `CommandBatch`'s staging and
+  `gpu_frame_prep`'s frame staging (`storage_buffer` with `TRANSFER_SRC`)
+  become `MemoryUsage::Staging` buffers; the marching-cubes block spans,
+  which the host walks, become a `device_storage_buffer` read back by
+  `CommandBatch::readback`, or `mapped_storage_buffer(..., HostAccess::Random)`
+  where `unified_memory()` holds. `gfx`: buffers left at `Auto` become
+  `DeviceOnly`; the texture-upload and offscreen-readback staging
+  (`HostVisible`) becomes `Staging`, the readback with `HostAccess::Random`;
+  the per-frame uniform buffers (`OwnedDescriptorSet`) become `DeviceMapped`,
+  or `DeviceOnly` written by a `CommandBatch` where `device_mapped_memory()`
+  is false; and image descriptors drop `memory`, as `ImageDesc` has none.

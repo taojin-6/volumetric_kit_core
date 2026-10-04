@@ -99,7 +99,9 @@ struct AdoptedDevice {
   /// When the present queue is a different queue shared with another
   /// library, the mutex it must hold; ignored when it is @ref queue.
   std::mutex* present_mutex = nullptr;
-  /// The device extensions the creator enabled.
+  /// The device extensions the creator enabled. With
+  /// `VK_EXT_memory_budget` among them, an @ref Allocator allocates within
+  /// the driver's own heap budgets.
   const char* const* enabled_extensions = nullptr;
   /// The length of @ref enabled_extensions.
   std::uint32_t enabled_extension_count = 0;
@@ -150,10 +152,12 @@ class VKC_VULKAN_API Device {
   ///
   /// Enables @p reqs' extensions, features and feature chain; each of its
   /// optional extensions the device offers; `VK_KHR_portability_subset`
-  /// where the device exposes it (the spec requires it); and
-  /// `VK_KHR_swapchain` with presentation. Creates one queue on the first
-  /// family with every @ref DeviceRequirements::queue_flags bit, and a present
-  /// queue, which is that same queue when its family can present.
+  /// where the device exposes it (the spec requires it);
+  /// `VK_EXT_memory_budget` where offered, so an @ref Allocator allocates
+  /// within the driver's own heap budgets; and `VK_KHR_swapchain` with
+  /// presentation. Creates one queue on the first family with every
+  /// @ref DeviceRequirements::queue_flags bit, and a present queue, which is
+  /// that same queue when its family can present.
   /// @param instance  The instance @p physical belongs to; it must outlive the
   ///                  device. Its debug utils decide whether the label entry
   ///                  points resolve.

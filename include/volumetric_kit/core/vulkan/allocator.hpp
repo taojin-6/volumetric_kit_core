@@ -23,37 +23,84 @@ class Device;
 
 /// @brief Where a resource's memory lives.
 ///
-/// Memory the kernels read or write is `DeviceLocal`, and the host reaches it
-/// through staging copies, never a mapping: on a discrete GPU, host-visible
-/// memory sits across PCIe, and recon measured a TSDF kernel at 14.6 ms with
-/// its buffers there against 0.067 ms in VRAM (RTX 5090). `HostVisible` is
-/// for what the host produces or consumes -- staging, readback, small
-/// parameters. On unified memory both land in the same pool, and a
-/// device-local type may also be host-visible.
+/// Every resource the GPU reads or writes directly is device-local, by
+/// construction: kernel data is `DeviceOnly`, data the host writes for shaders
+/// to read is `DeviceMapped`, and host memory -- `Staging` -- takes copy usage
+/// alone, so the GPU reaches it only by a copy, never from a shader. On a
+/// discrete GPU host memory sits across PCIe: recon measured a TSDF kernel at
+/// 14.6 ms with its buffers there against 0.067 ms in VRAM (RTX 5090).
+///
+/// - `DeviceOnly`: on a discrete GPU (DRAM + VRAM), VRAM the host cannot
+///   map; on unified memory, GPU-private memory where the device has it
+///   (Apple), else the one pool, unmapped.
+/// - `DeviceMapped`: on a discrete GPU, VRAM the host maps through the BAR
+///   window; on unified memory, the one pool, mapped.
+/// - `Staging`: on a discrete GPU, system RAM, mapped; on unified memory, the
+///   one pool, mapped.
+///
+/// Each placement is a memory-type mask, not a preference, cut to the types
+/// each resource's memory requirements allow, so it does not depend on the
+/// order a driver lists its types. A full heap fails the allocation rather
+/// than move the resource somewhere slower, and so does one past its budget:
+/// every allocation is made within the heap's budget, the driver's own figure
+/// where the device has `VK_EXT_memory_budget` (which @ref Device::create
+/// enables where offered), so an allocation that would have a driver page
+/// VRAM out to system memory (Windows) is refused instead.
+/// @ref PhysicalDeviceInfo::unified_memory tells the two architectures apart.
 enum class MemoryUsage {
-  Auto,         ///< VMA chooses from the usage (`VMA_MEMORY_USAGE_AUTO`).
-  DeviceLocal,  ///< `DEVICE_LOCAL` memory, required: the allocation fails
-                ///< rather than spill to another heap.
-  HostVisible,  ///< Mappable memory, preferred in system RAM.
+  /// GPU memory the host never maps: `DEVICE_LOCAL` and not `HOST_VISIBLE`
+  /// wherever the device has such a type -- a discrete GPU's VRAM outside its
+  /// BAR window, Apple silicon's private storage. A device whose every
+  /// device-local type is host-visible (lavapipe, most integrated and mobile
+  /// GPUs) has one pool, and the resource lands there, unmapped; so does one
+  /// on unified memory that no private type suits (a linear image on Apple).
+  /// Without unified memory, a resource no private type suits is refused
+  /// (`Unsupported`): the rest of a discrete GPU's device-local memory is
+  /// the BAR window. Never host memory, and never the BAR window. Kernel
+  /// data, and every image.
+  DeviceOnly,
+  /// Device-local memory the host maps, coherently: a discrete GPU's BAR
+  /// window -- all of VRAM under Resizable BAR, 256 MiB without it -- or the
+  /// one pool of unified memory. For data the host writes and shaders read
+  /// directly, as uniforms and per-frame parameters, and on unified memory
+  /// for inputs with no staging copy. Small, on a discrete GPU: without
+  /// Resizable BAR every device-mapped buffer of every library shares
+  /// 256 MiB, so bulk inputs go up by staging into `DeviceOnly` memory.
+  /// Write it with @ref HostAccess::SequentialWrite: on a discrete GPU the
+  /// host's reads cross PCIe uncached, so results come back by copy. Never
+  /// host memory: a device with no such type
+  /// (@ref PhysicalDeviceInfo::device_mapped_memory) refuses it
+  /// (`Unsupported`), and a full BAR window fails the allocation.
+  DeviceMapped,
+  /// Host memory, mapped and coherent: system RAM on a discrete GPU --
+  /// write-combined for @ref HostAccess::SequentialWrite uploads, cached for
+  /// @ref HostAccess::Random readbacks -- never VRAM or the BAR window; the
+  /// one pool on unified memory. A copy's source or destination only: its
+  /// usage is `TRANSFER_SRC` and `TRANSFER_DST` at most.
+  Staging,
 };
 
-/// @brief How the host touches a mapped buffer, which steers the memory type.
+/// @brief How the host touches a mapped buffer -- a `DeviceMapped` or
+///        `Staging` one -- which narrows its memory type.
 enum class HostAccess {
-  /// Reads and writes in any order: cached host memory.
+  /// Reads and writes in any order: cached memory. A staging buffer prefers
+  /// it, and takes uncached memory on a device with none; a device-mapped
+  /// buffer requires it, which unified memory has and a discrete GPU's BAR
+  /// window never does, so there it is refused (`Unsupported`) rather than
+  /// read across PCIe uncached. For a buffer the host reads: a readback.
   Random,
-  /// Writes only, front to back, never reads: lets VMA pick write-combined
-  /// memory, which streams uploads faster on a discrete GPU. Reading through
-  /// @ref Buffer::mapped after choosing it is undefined.
+  /// Writes only, front to back, never reads: write-combined (uncached)
+  /// memory where the placement has it, which streams uploads faster on a
+  /// discrete GPU. Reading through @ref Buffer::mapped after choosing it is
+  /// undefined. The default.
   SequentialWrite,
 };
 
 /// @brief One memory heap's usage and budget, in bytes.
 ///
-/// VMA's running accounting, not a live driver query: heuristics unless the
-/// device enables `VK_EXT_memory_budget`.
-///
-/// TODO: enable `VK_EXT_memory_budget` where offered (an optional extension
-/// of the requirements) so these become the driver's own figures.
+/// The driver's figures where the device has `VK_EXT_memory_budget`, which
+/// count every allocator and process on the heap; otherwise VMA's estimate,
+/// which counts only this allocator and puts the budget at 80% of the heap.
 struct HeapStats {
   std::uint64_t usage_bytes = 0;   ///< Bytes VMA has allocated from the heap.
   std::uint64_t budget_bytes = 0;  ///< Bytes VMA estimates are usable.
@@ -88,14 +135,14 @@ struct BufferDesc {
   /// `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`, which the allocator does not
   /// enable.
   VkBufferUsageFlags usage = 0;
-  /// Where the memory lives.
-  MemoryUsage memory = MemoryUsage::Auto;
-  /// Map the allocation persistently (host-visible memory only), reachable
-  /// through @ref Buffer::mapped for the buffer's lifetime, and coherent, so
-  /// writes need no flush.
-  bool mapped = false;
-  /// How the host touches the mapping; read only when @ref mapped.
-  HostAccess host_access = HostAccess::Random;
+  /// Where the memory lives; device-only unless said otherwise. A
+  /// `DeviceMapped` or `Staging` buffer is mapped persistently, reachable
+  /// through @ref Buffer::mapped for its lifetime, and coherent, so writes
+  /// need no flush; a `DeviceOnly` one is never mapped.
+  MemoryUsage memory = MemoryUsage::DeviceOnly;
+  /// How the host touches the mapping; ignored for `DeviceOnly`. Set
+  /// @ref HostAccess::Random to read it.
+  HostAccess host_access = HostAccess::SequentialWrite;
   /// The queue families that will access the buffer, or null for one.
   ///
   /// Null gives `VK_SHARING_MODE_EXCLUSIVE`, owned by whichever family uses it
@@ -130,9 +177,12 @@ VKC_VULKAN_API Status check_queue_family_count(std::uint32_t count,
 /// @brief Parameters for @ref Allocator::create_image.
 ///
 /// The defaults describe a single-mip, single-layer, single-sample 2D image
-/// in device-local memory, with a default view. Set `type` and `depth` for a
-/// 3D (volume) image, `array_layers` for an array, `cube` for a cubemap,
-/// `mip_levels` for a mip chain, `samples` for multisampling.
+/// with a default view. Every image is `MemoryUsage::DeviceOnly`, which also
+/// lets a driver compress and tile it (Apple's private storage); an image has
+/// no host accessor, so read one back by copying it into a staging buffer.
+/// Set `type` and `depth` for a 3D (volume) image, `array_layers` for an
+/// array, `cube` for a cubemap, `mip_levels` for a mip chain, `samples` for
+/// multisampling.
 struct ImageDesc {
   /// Width and height in texels; non-zero.
   VkExtent2D extent{};
@@ -156,10 +206,6 @@ struct ImageDesc {
   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
   /// Tiling.
   VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
-  /// Where the memory lives: `DEVICE_LOCAL`, required, for `DeviceLocal` and
-  /// `Auto` alike. `HostVisible` is refused, as an image has no host accessor
-  /// -- read one back by copying it into a host-visible buffer.
-  MemoryUsage memory = MemoryUsage::DeviceLocal;
   /// Create a default view over every mip and layer. Clear it for a
   /// transfer-only image, and for a multi-planar or 4:2:2 format (a
   /// decoder's picture), whose view needs a sampler Y'CbCr conversion.
@@ -196,9 +242,7 @@ struct ImageDesc {
 /// BufferDesc staging;
 /// staging.size = bytes;
 /// staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-/// staging.memory = MemoryUsage::HostVisible;
-/// staging.mapped = true;
-/// staging.host_access = HostAccess::SequentialWrite;
+/// staging.memory = MemoryUsage::Staging;  // mapped, written sequentially
 /// VKC_ASSIGN(Buffer upload, allocator.create_buffer(staging));
 /// std::memcpy(upload.mapped(), data, bytes);
 /// @endcode
@@ -218,27 +262,34 @@ class VKC_VULKAN_API Allocator {
   Allocator& operator=(const Allocator&) = delete;
 
   /// @brief Allocate a buffer and its memory.
-  /// @param desc  Size, usage, memory, mapping and sharing.
+  /// @param desc  Size, usage, memory, host access and sharing.
   /// @return The buffer; @ref Status::Code::InvalidArgument for a zero size
-  ///         or usage, a device-address usage, a mapped device-local buffer,
-  ///         an unmapped host-visible one (there is no separate map), more
-  ///         than @ref BufferDesc::kMaxQueueFamilies distinct families, or a
-  ///         family the device does not have; or a backend @ref Status.
+  ///         or usage, a device-address usage, a staging buffer with usage
+  ///         beyond the transfers, more than
+  ///         @ref BufferDesc::kMaxQueueFamilies distinct families, or a family
+  ///         the device does not have; @ref Status::Code::Unsupported when no
+  ///         memory type of the placement suits the buffer -- device-mapped
+  ///         memory on a device without it, or without cached memory for
+  ///         @ref HostAccess::Random; or a backend @ref Status
+  ///         (`VK_ERROR_OUT_OF_DEVICE_MEMORY` when the heap is full or past
+  ///         its budget: nothing moves to slower memory).
   Result<Buffer> create_buffer(const BufferDesc& desc);
 
   /// @brief Allocate an image and its memory, and its default view.
   /// @param desc  Extent, format, usage, type, mips, layers, samples, tiling,
-  ///              memory, view and sharing.
+  ///              view and sharing.
   /// @return The image; @ref Status::Code::InvalidArgument for a zero extent,
   ///         depth, mip or layer count, no usage, an undefined format, a depth
   ///         without a 3D type, a 1D image taller than 1, an arrayed 3D image,
   ///         a malformed cube, a multisampled image that is not single-mip
   ///         optimal 2D, a view of a transfer-only image or of a format that
-  ///         needs a Y'CbCr conversion, host-visible memory, or a bad sharing
-  ///         list; or a backend @ref Status. The image is device-local. The
-  ///         view spans every mip and layer; its type follows the image (the
-  ///         `_ARRAY` variant when arrayed, `CUBE` for a cube), and its aspect
-  ///         the format (depth, stencil, or color).
+  ///         needs a Y'CbCr conversion, or a bad sharing list;
+  ///         @ref Status::Code::Unsupported when no device-only memory type
+  ///         suits the image (a discrete GPU's BAR window would be the rest);
+  ///         or a backend @ref Status, as @ref create_buffer. The view spans
+  ///         every mip and layer; its type follows the image (the `_ARRAY`
+  ///         variant when arrayed, `CUBE` for a cube), and its aspect the
+  ///         format (depth, stencil, or color).
   Result<Image> create_image(const ImageDesc& desc);
 
   /// @brief Per-heap usage and budget, for what this allocator allocated.

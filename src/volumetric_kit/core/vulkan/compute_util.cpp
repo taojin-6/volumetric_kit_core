@@ -33,15 +33,15 @@ Status check_storage_buffer_range(const char* what, VkDeviceSize bytes,
   return {};
 }
 
-Result<Buffer> storage_buffer(Allocator& allocator, VkDeviceSize bytes,
-                              HostAccess access, VkBufferUsageFlags extra_usage,
-                              const std::uint32_t* queue_families,
-                              std::uint32_t queue_family_count) {
+Result<Buffer> mapped_storage_buffer(Allocator& allocator, VkDeviceSize bytes,
+                                     HostAccess access,
+                                     VkBufferUsageFlags extra_usage,
+                                     const std::uint32_t* queue_families,
+                                     std::uint32_t queue_family_count) {
   BufferDesc desc;
   desc.size = bytes;
   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | extra_usage;
-  desc.memory = MemoryUsage::HostVisible;
-  desc.mapped = true;
+  desc.memory = MemoryUsage::DeviceMapped;
   desc.host_access = access;
   desc.queue_families = queue_families;
   desc.queue_family_count = queue_family_count;
@@ -53,7 +53,7 @@ Result<Buffer> upload_storage_buffer(Allocator& allocator, const void* src,
   if (src == nullptr) {
     return Status::invalid_argument("upload_storage_buffer: src is null");
   }
-  VKC_ASSIGN(Buffer buffer, storage_buffer(allocator, bytes, access));
+  VKC_ASSIGN(Buffer buffer, mapped_storage_buffer(allocator, bytes, access));
   std::memcpy(buffer.mapped(), src, static_cast<std::size_t>(bytes));
   return buffer;
 }
@@ -67,7 +67,7 @@ Result<Buffer> device_storage_buffer(Allocator& allocator, VkDeviceSize bytes,
   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                VK_BUFFER_USAGE_TRANSFER_DST_BIT | extra_usage;
-  desc.memory = MemoryUsage::DeviceLocal;
+  desc.memory = MemoryUsage::DeviceOnly;
   desc.queue_families = queue_families;
   desc.queue_family_count = queue_family_count;
   return allocator.create_buffer(desc);
@@ -124,10 +124,19 @@ Result<VkBuffer> StorageInput::buffer(CommandBatch& batch, Allocator& allocator,
   if (host_ == nullptr) {
     return Status::invalid_argument("StorageInput: the host bytes are null");
   }
-  if (!upload.valid() || !upload.is_device_local() || upload.size() < bytes) {
+  // Kept only when it is what device_storage_buffer makes, near enough: big
+  // enough, device-local, bindable, and a copy's destination -- a
+  // device-mapped buffer is device-local too, without TRANSFER_DST.
+  constexpr VkBufferUsageFlags kUploadable =
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  if (!upload.valid() || !upload.is_device_local() || upload.size() < bytes ||
+      (upload.usage() & kUploadable) != kUploadable) {
     // What the batch recorded on the old one still runs on it.
     batch.retain(std::move(upload));
     upload = Buffer();
+    // TODO: on unified memory, write the bytes into a DeviceMapped buffer
+    // instead of staging a copy, once recon's iPad measurement settles which
+    // inputs gain (DECISIONS.md, "Unified memory").
     VKC_ASSIGN(upload, device_storage_buffer(allocator, bytes));
   }
   VKC_TRY(batch.upload(upload, 0, host_, bytes));

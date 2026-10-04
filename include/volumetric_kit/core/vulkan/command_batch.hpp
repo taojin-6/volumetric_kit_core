@@ -8,9 +8,9 @@
 ///        recorded into one command buffer and submitted with one fence wait.
 ///
 /// The host reaches device memory through this and nothing else: kernel
-/// memory is device-local and unmapped on every platform, so the host only
-/// records commands, and unified memory runs the same path a discrete GPU
-/// does.
+/// memory is @ref MemoryUsage::DeviceOnly and unmapped on every platform, so
+/// the host only records commands, and unified memory runs the same path a
+/// discrete GPU does.
 
 #include <cstddef>
 #include <cstdint>
@@ -46,7 +46,7 @@ struct ComputeKernel;
 /// **Host bytes cross only at the edges, and each way has one path.** An
 /// @ref upload of up to 64 KiB, 4-byte aligned -- a frame's parameters -- is
 /// written inline in the command buffer (`vkCmdUpdateBuffer`); a larger one,
-/// such as a depth frame, is copied in through a host-visible staging buffer
+/// such as a depth frame, is copied in through a staging buffer in host memory
 /// the batch allocates, which @ref reserve_upload hands to a caller packing
 /// its own bytes. A @ref readback is for small results, a count or a failure
 /// tally: every readback of a batch is copied into one small host buffer
