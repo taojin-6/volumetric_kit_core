@@ -201,19 +201,14 @@ struct SourceLocation {
   const char* file;  ///< Source file of the call.
   int line;          ///< Source line of the call.
 
-#if defined(__GNUC__) || defined(__clang__) || \
-    (defined(_MSC_VER) && _MSC_VER >= 1929)
   /// @return Where the call that defaulted this argument was made: the
-  ///         builtins evaluate at the caller, as `source_location` does.
+  ///         builtins (GCC and Clang) evaluate at the caller, as
+  ///         `source_location` does.
   static constexpr SourceLocation current(
       const char* file_name = __builtin_FILE(),
       int line_number = __builtin_LINE()) noexcept {
     return {file_name, line_number};
   }
-#else
-  /// @return An unknown location; this compiler has no call-site builtins.
-  static constexpr SourceLocation current() noexcept { return {"unknown", 0}; }
-#endif
 };
 
 /// @brief Abort for reading the value of an error @ref Result: names the

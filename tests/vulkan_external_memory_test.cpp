@@ -9,9 +9,7 @@
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
-#ifndef _WIN32
 #include <unistd.h>
-#endif
 
 #include <cstdint>
 #include <optional>
@@ -118,7 +116,6 @@ TEST_F(MemoryTypeTest, ADeviceWithoutExportRefusesIt) {
       Status::Code::Unsupported);
 }
 
-#ifndef _WIN32
 // Whether `fd` names an open descriptor: only an open one duplicates.
 bool is_open(int fd) {
   const int copy = dup(fd);
@@ -157,7 +154,6 @@ TEST(UniqueFdTest, ClosesWhatItOwnsUnlessReleased) {
   EXPECT_TRUE(is_open(ends[1]));
   EXPECT_EQ(close(ends[1]), 0);
 }
-#endif
 
 // A device asked for export where the driver offers it.
 class ExportTest : public test::VulkanDeviceTest {

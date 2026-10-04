@@ -14,12 +14,6 @@
 # Example: cmake -B build -DCMAKE_BUILD_TYPE=Debug
 # -DVKC_SANITIZE="address;undefined"
 if(VKC_SANITIZE)
-  if(MSVC)
-    message(
-      FATAL_ERROR
-        "VKC_SANITIZE is not supported with MSVC; use a Clang or GCC build.")
-  endif()
-
   # address;undefined -> address,undefined (the -fsanitize= argument form).
   list(JOIN VKC_SANITIZE "," _vkc_sanitize_list)
   set(_vkc_sanitize_flags

@@ -368,9 +368,9 @@ rules after review, the same day.
   heap without room before VMA chooses, as VMA checks no budget for an
   allocation it makes dedicated because it is large. The budget is the
   driver's where `VK_EXT_memory_budget` is enabled -- `Device::create`
-  enables it where offered -- so an allocation that would have Windows page
-  VRAM out to system memory is refused instead; without it, VMA's estimate
-  counts only its own allocator, against 80% of the heap.
+  enables it where offered -- so an allocation that would have the driver
+  page VRAM out to system memory is refused instead; without it, VMA's
+  estimate counts only its own allocator, against 80% of the heap.
 - **Special memory stays out.** Lazily allocated, protected, and AMD's
   device-coherent and device-uncached memory are never a placement's: each
   needs a use or a feature this tier does not have, and VMA leaves the AMD
@@ -533,6 +533,18 @@ fetch it at configure time. The base tier is pure C++17 with no
 dependencies, so GitHub-hosted Linux and macOS runners cover it, including a
 `-fno-exceptions` leg, a shared-library leg, sanitizers, and both ways of
 consuming the package.
+
+### Platforms
+
+The core builds for Linux, macOS, iOS and Android, with GCC or Clang
+(Apple's included). Windows and MSVC are not supported: no sibling builds
+there -- the family's CUDA interop is Linux, its apps are Apple's -- and no
+CI leg does, so a Windows branch could only rot untested. The code assumes
+POSIX and those compilers outright, with no `_WIN32` or `_MSC_VER` paths and
+no MSVC flags: an exported buffer's memory is a file descriptor
+(`VK_KHR_external_memory_fd`), and `Result::value()` takes its caller's line
+from `__builtin_FILE`/`__builtin_LINE`. Supporting Windows would be a new
+decision, landing with its CI leg.
 
 ## Open decisions
 
