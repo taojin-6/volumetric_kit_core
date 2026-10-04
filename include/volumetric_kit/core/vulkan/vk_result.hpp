@@ -23,6 +23,7 @@
 /// @endcode
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -48,10 +49,25 @@ inline Status vk_error(VkResult result, std::string_view what) {
 /// @brief The `VkResult` a backend @ref Status carries.
 /// @param status  Any status.
 /// @return Its @ref Status::detail as a `VkResult` when its domain is
-///         `Code::Backend`; empty for any other domain, success included.
+///         `Code::Backend` and the detail fits in 32 bits; empty otherwise,
+///         success included.
+///
+/// The domain does not say *which* backend failed: a CUDA failure is a backend
+/// status too, whose `cudaError_t` detail this reads as an unrelated
+/// `VkResult` (`cudaErrorMemoryAllocation`, 2, as `VK_TIMEOUT`). Ask it only of
+/// a status from a Vulkan call.
 inline std::optional<VkResult> vk_result(const Status& status) noexcept {
-  if (status.domain() != Status::Code::Backend) return std::nullopt;
-  return static_cast<VkResult>(status.detail());
+  // TODO: return empty for a CUDA status once Status records which backend
+  // failed.
+  const std::int64_t detail = status.detail();
+  // A detail wider than VkResult's 32 bits is no VkResult, and converting it
+  // to the enum would be undefined.
+  if (status.domain() != Status::Code::Backend ||
+      detail < std::numeric_limits<std::int32_t>::min() ||
+      detail > std::numeric_limits<std::int32_t>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<VkResult>(detail);
 }
 
 /// @brief The name of a `VkResult`, e.g. `"VK_ERROR_DEVICE_LOST"`.

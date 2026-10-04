@@ -9,6 +9,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Fixed
 
+- `vk_result` returns empty for a backend status whose detail does not fit in
+  32 bits, instead of converting it to `VkResult`, which was undefined. It
+  still cannot tell a CUDA status from a Vulkan one: ask it only of a status
+  from a Vulkan call.
 - At a heap's budget, buffer and image allocations still take free space in
   the allocator's existing VMA blocks, so a falling budget no longer rejects
   a suballocation that needs no additional device memory. With budget room,

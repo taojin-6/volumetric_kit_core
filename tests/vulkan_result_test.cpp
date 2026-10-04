@@ -3,6 +3,8 @@
 
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 
+#include <cstdint>
+#include <limits>
 #include <optional>
 
 #include <gtest/gtest.h>
@@ -31,6 +33,20 @@ TEST(VkResult, ErrorIsABackendStatusCarryingTheResult) {
 TEST(VkResult, OnlyABackendStatusCarriesAResult) {
   EXPECT_EQ(vk_result(Status{}), std::nullopt);
   EXPECT_EQ(vk_result(Status::unsupported("no")), std::nullopt);
+}
+
+// A backend detail wider than 32 bits is no VkResult; converting it to the
+// enum would be undefined (UBSan's enum check).
+TEST(VkResult, ADetailWiderThan32BitsCarriesNoResult) {
+  EXPECT_EQ(vk_result(Status::backend_error(std::int64_t{1} << 40, "wide")),
+            std::nullopt);
+  EXPECT_EQ(vk_result(Status::backend_error(
+                std::numeric_limits<std::int64_t>::min(), "wide")),
+            std::nullopt);
+  EXPECT_EQ(vk_result(Status::backend_error(
+                std::numeric_limits<std::int32_t>::min(), "narrow")),
+            std::optional<VkResult>(static_cast<VkResult>(
+                std::numeric_limits<std::int32_t>::min())));
 }
 
 Status pass_through(VkResult result) {
