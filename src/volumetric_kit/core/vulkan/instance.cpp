@@ -6,11 +6,13 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "support.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
@@ -266,15 +268,22 @@ Result<Instance> Instance::create(const InstanceConfig& config) {
 
 Result<PhysicalDeviceInfo> Instance::select_physical_device(
     const DeviceRequirements& reqs, VkSurfaceKHR surface) const {
+  return detail::select_physical_device(*this, reqs, surface, nullptr);
+}
+
+Result<PhysicalDeviceInfo> detail::select_physical_device(
+    const Instance& instance, const DeviceRequirements& reqs,
+    VkSurfaceKHR surface,
+    const std::function<Status(const PhysicalDeviceInfo&)>& accept) {
   if (reqs.needs_present && surface == VK_NULL_HANDLE) {
     return Status::invalid_argument(
         "select_physical_device: needs_present requires a surface");
   }
   std::uint32_t count = 0;
-  VKC_VK_TRY(vkEnumeratePhysicalDevices(instance_, &count, nullptr));
+  VKC_VK_TRY(vkEnumeratePhysicalDevices(instance.handle(), &count, nullptr));
   std::vector<VkPhysicalDevice> devices(count);
   const VkResult listed =
-      vkEnumeratePhysicalDevices(instance_, &count, devices.data());
+      vkEnumeratePhysicalDevices(instance.handle(), &count, devices.data());
   if (listed != VK_SUCCESS && listed != VK_INCOMPLETE) {
     return vk_error(listed, "vkEnumeratePhysicalDevices");
   }
@@ -286,14 +295,25 @@ Result<PhysicalDeviceInfo> Instance::select_physical_device(
   std::optional<PhysicalDeviceInfo> best;
   int best_score = -1;
   std::string refusals;
+  const auto refuse = [&refusals](const Status& why) {
+    refusals += refusals.empty() ? "" : "; ";
+    refusals += why.message();
+  };
   for (VkPhysicalDevice device : devices) {
-    PhysicalDeviceInfo caps = PhysicalDeviceInfo::query(device, api_version_);
+    PhysicalDeviceInfo caps =
+        PhysicalDeviceInfo::query(device, instance.api_version());
     const Result<DeviceSupport> support =
         check_device_support(caps, reqs, surface);
     if (!support) {
-      refusals += refusals.empty() ? "" : "; ";
-      refusals += support.status().message();
+      refuse(support.status());
       continue;
+    }
+    if (accept) {
+      const Status accepted = accept(caps);
+      if (!accepted) {
+        refuse(accepted);
+        continue;
+      }
     }
     const int score = device_type_score(caps.properties().deviceType);
     if (score > best_score) {

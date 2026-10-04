@@ -125,6 +125,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     synchronize the CUDA stream that wrote before submitting the batch that
     acquires the buffer, and release it back in that batch, so CUDA writes
     the next frame into a buffer Vulkan has handed over.
+- `vulkan` tier shared device (DECISIONS.md, "The vulkan tier", V5):
+  `SharedDevice` and `SharedDeviceConfig` build one instance, device and
+  optional surface satisfying a compute library's and a renderer's
+  requirements, on the best device that meets them and has a `QueuePlan`,
+  carve their queues by the best plan it allows -- the renderer's always does
+  graphics and presents itself -- and hand each a core `AdoptedDevice`, with a
+  mutex for every queue. Replaces recon's `examples/viewer/shared_device.hpp`
+  and ios's `SharedDevice`; "Migrating from a sibling's own copy" says how.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
   on and reach the log sink; a leg builds with no Vulkan installed.
@@ -256,3 +264,28 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
   the per-frame uniform buffers (`OwnedDescriptorSet`) become `DeviceMapped`,
   or `DeviceOnly` written by a `CommandBatch` where `device_mapped_memory()`
   is false; and image descriptors drop `memory`, as `ImageDesc` has none.
+- `recon`'s `examples/viewer/shared_device.hpp` and `ios`'s
+  `Bridge/SharedDevice` → `SharedDevice`, made only by
+  `SharedDevice::create(config)` as a `std::unique_ptr`, after recon and gfx
+  adopt through the core's `Device` (the payloads are core `AdoptedDevice`s):
+  - The config: each library's requirements go to `config.compute` (recon's)
+    and `config.graphics` (gfx's, with `needs_present` for a window); the old
+    config's `app_name` and `enable_validation` move to `config.instance`.
+    The surface is the app's: put its instance extensions in
+    `config.instance.extensions` -- `glfwGetRequiredInstanceExtensions`'s, or
+    `VK_KHR_surface` and `VK_EXT_metal_surface` on iOS -- and create it in
+    `config.make_surface`, which `glfwCreateWindowSurface` (recon) or
+    `vkCreateMetalSurfaceEXT` on the `CAMetalLayer` (ios) becomes.
+  - recon: `build_shared_device(window, config, out)`, which returned `bool`
+    and printed why, → `create`, which returns why. `out.queue_plan`,
+    `graphics_family`, `compute_family`, `instance`, `device` and `surface`
+    become accessors (`plan()`, ...), and `instance()` returns the `Instance`
+    (`instance().handle()` for the `VkInstance`). The `submit_mutex`, set only
+    under the shared-queue plan, becomes one in every payload.
+  - ios: `build(metal_layer, app_name)` on a default-constructed member →
+    `create`; `instance()` returns the `Instance`, as above.
+  - Both: `recon_adopt_payload` / `recon_payload()` → `compute_payload()`;
+    `gfx_adopt_payload` / `gfx_payload()` → `graphics_payload()`;
+    `QueuePlan::kTwoQueuesOneFamily`, `kTwoFamilies`, `kSharedQueue` →
+    `TwoQueuesOneFamily`, `TwoFamilies`, `SharedQueue`. `release_surface()`,
+    `wait_idle()` and `summary()` keep their names (recon gains the last two).

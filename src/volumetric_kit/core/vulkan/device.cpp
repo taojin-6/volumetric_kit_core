@@ -54,10 +54,10 @@ class ScopeGuard {
   bool active_ = true;
 };
 
-// The VkDeviceCreateInfo feature chain create() builds: the requirements'
-// core features, timeline semaphores, scalar block layout and dynamic
-// rendering, then the caller's chain. Built in place -- its nodes point at
-// one another -- so it is never copied or moved once built.
+// The VkDeviceCreateInfo feature chain create_device builds: the
+// requirements' core features, timeline semaphores, scalar block layout and
+// dynamic rendering, then the caller's chain. Built in place -- its nodes point
+// at one another -- so it is never copied or moved once built.
 struct FeatureChain {
   VkPhysicalDeviceFeatures2 features2{};
   VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
@@ -159,6 +159,85 @@ struct FeatureChain {
 
 }  // namespace
 
+namespace detail {
+
+std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
+                                            const DeviceRequirements& reqs) {
+  std::vector<std::string> enabled = required_extensions(reqs);
+  auto enable_if_offered = [&](const std::string& name) {
+    if (caps.supports_device_extension(name.c_str()) &&
+        std::find(enabled.begin(), enabled.end(), name) == enabled.end()) {
+      enabled.push_back(name);
+    }
+  };
+  // The spec requires enabling it wherever the device exposes it (MoltenVK).
+  enable_if_offered(kPortabilitySubset);
+  // The driver's own heap budgets, which an Allocator allocates within.
+  enable_if_offered(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+  for (const std::string& name : reqs.optional_extensions) {
+    enable_if_offered(name);
+  }
+  return enabled;
+}
+
+Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
+                               const DeviceRequirements& reqs,
+                               const std::vector<std::string>& extensions,
+                               const std::vector<QueueRequest>& queues) {
+  std::vector<const char*> extension_names;
+  extension_names.reserve(extensions.size());
+  for (const std::string& name : extensions) {
+    extension_names.push_back(name.c_str());
+  }
+
+  FeatureChain chain;
+  chain.build(reqs);
+
+  std::vector<VkDeviceQueueCreateInfo> infos;
+  std::uint32_t most = 0;
+  for (const QueueRequest& request : queues) {
+    most = std::max(most, request.count);
+    auto same = std::find_if(infos.begin(), infos.end(),
+                             [&](const VkDeviceQueueCreateInfo& q) {
+                               return q.queueFamilyIndex == request.family;
+                             });
+    if (same != infos.end()) {
+      same->queueCount = std::max(same->queueCount, request.count);
+      continue;
+    }
+    VkDeviceQueueCreateInfo q{};
+    q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    q.queueFamilyIndex = request.family;
+    q.queueCount = request.count;
+    infos.push_back(q);
+  }
+  // Every create info reads its priorities from one array, as long as the
+  // longest.
+  const std::vector<float> priorities(most, 1.0f);
+  for (VkDeviceQueueCreateInfo& q : infos) {
+    q.pQueuePriorities = priorities.data();
+  }
+
+  VkDeviceCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+  info.pNext =
+      &chain.features2;  // features via features2, not pEnabledFeatures
+  info.queueCreateInfoCount = static_cast<std::uint32_t>(infos.size());
+  info.pQueueCreateInfos = infos.data();
+  info.enabledExtensionCount =
+      static_cast<std::uint32_t>(extension_names.size());
+  info.ppEnabledExtensionNames =
+      extension_names.empty() ? nullptr : extension_names.data();
+
+  // Created into a local: a failed create leaves the output unspecified, and
+  // the caller must not destroy whatever it holds.
+  VkDevice device = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &device));
+  return device;
+}
+
+}  // namespace detail
+
 Result<Device> Device::create(const Instance& instance,
                               const PhysicalDeviceInfo& physical,
                               const DeviceRequirements& reqs,
@@ -189,60 +268,11 @@ Result<Device> Device::create(VkInstance instance,
   VKC_ASSIGN(const DeviceSupport support,
              check_device_support(caps, reqs, surface));
 
-  std::vector<std::string> enabled = detail::required_extensions(reqs);
-  auto enable_if_offered = [&](const std::string& name) {
-    if (caps.supports_device_extension(name.c_str()) &&
-        std::find(enabled.begin(), enabled.end(), name) == enabled.end()) {
-      enabled.push_back(name);
-    }
-  };
-  // The spec requires enabling it wherever the device exposes it (MoltenVK).
-  enable_if_offered(detail::kPortabilitySubset);
-  // The driver's own heap budgets, which an Allocator allocates within.
-  enable_if_offered(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
-  for (const std::string& name : reqs.optional_extensions) {
-    enable_if_offered(name);
-  }
-  std::vector<const char*> extension_names;
-  extension_names.reserve(enabled.size());
-  for (const std::string& name : enabled) {
-    extension_names.push_back(name.c_str());
-  }
-
-  FeatureChain chain;
-  chain.build(reqs);
-
-  const float priority = 1.0f;
-  std::vector<VkDeviceQueueCreateInfo> queues;
-  auto add_queue = [&](std::uint32_t family) {
-    for (const VkDeviceQueueCreateInfo& q : queues) {
-      if (q.queueFamilyIndex == family) return;
-    }
-    VkDeviceQueueCreateInfo q{};
-    q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    q.queueFamilyIndex = family;
-    q.queueCount = 1;
-    q.pQueuePriorities = &priority;
-    queues.push_back(q);
-  };
-  add_queue(support.queue_family);
-  if (support.present_family) add_queue(*support.present_family);
-
-  VkDeviceCreateInfo info{};
-  info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  info.pNext =
-      &chain.features2;  // features via features2, not pEnabledFeatures
-  info.queueCreateInfoCount = static_cast<std::uint32_t>(queues.size());
-  info.pQueueCreateInfos = queues.data();
-  info.enabledExtensionCount =
-      static_cast<std::uint32_t>(extension_names.size());
-  info.ppEnabledExtensionNames =
-      extension_names.empty() ? nullptr : extension_names.data();
-
-  // Created into a local: a failed create leaves the output unspecified, and
-  // the Device must not destroy whatever it holds.
-  VkDevice handle = VK_NULL_HANDLE;
-  VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &handle));
+  std::vector<std::string> enabled = detail::enabled_extensions(caps, reqs);
+  std::vector<detail::QueueRequest> queues = {{support.queue_family, 1}};
+  if (support.present_family) queues.push_back({*support.present_family, 1});
+  VKC_ASSIGN(VkDevice handle,
+             detail::create_device(caps, reqs, enabled, queues));
   Device device;
   device.state_.device = handle;
   device.state_.physical = caps.handle();

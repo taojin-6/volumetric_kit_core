@@ -129,6 +129,14 @@ Status check_physical_support(const PhysicalDeviceInfo& caps,
   return {};
 }
 
+bool can_present(const PhysicalDeviceInfo& caps, std::uint32_t family,
+                 VkSurfaceKHR surface) {
+  VkBool32 supported = VK_FALSE;
+  return vkGetPhysicalDeviceSurfaceSupportKHR(caps.handle(), family, surface,
+                                              &supported) == VK_SUCCESS &&
+         supported == VK_TRUE;
+}
+
 }  // namespace detail
 
 Result<DeviceRequirements> merge(const DeviceRequirements& a,
@@ -204,21 +212,14 @@ Result<DeviceSupport> check_device_support(const PhysicalDeviceInfo& caps,
   DeviceSupport support;
   support.queue_family = *family;
   if (reqs.needs_present) {
-    // A failed query reads as "cannot present" rather than trusting an
-    // unwritten result.
-    auto can_present = [&](std::uint32_t index) {
-      VkBool32 supported = VK_FALSE;
-      return vkGetPhysicalDeviceSurfaceSupportKHR(caps.handle(), index, surface,
-                                                  &supported) == VK_SUCCESS &&
-             supported == VK_TRUE;
-    };
     // The queue's own family first: one queue for both is the common case,
     // and needs no ownership transfer of the swapchain images.
-    if (can_present(*family)) {
+    if (detail::can_present(caps, *family, surface)) {
       support.present_family = family;
     } else {
       for (std::uint32_t i = 0; i < families.size(); ++i) {
-        if (families[i].queueCount > 0 && can_present(i)) {
+        if (families[i].queueCount > 0 &&
+            detail::can_present(caps, i, surface)) {
           support.present_family = i;
           break;
         }

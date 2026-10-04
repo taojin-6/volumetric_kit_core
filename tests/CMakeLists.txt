@@ -37,7 +37,8 @@ if(VKC_WITH_VULKAN)
     vulkan_compute
     vulkan_command_batch
     vulkan_timer
-    vulkan_external_memory)
+    vulkan_external_memory
+    vulkan_shared_device)
     add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
     target_link_libraries(vkc_${_vkc_test}_test
                           PRIVATE volumetric_kit::core_vulkan GTest::gtest_main)
@@ -48,11 +49,12 @@ if(VKC_WITH_VULKAN)
       TIMEOUT 120)
   endforeach()
 
-  # The queue-family reduction and the memory-type masks are internal to
-  # core_vulkan, so their tests -- and the device tests that check a resource
-  # landed in its placement's types -- reach into the source directory for them.
+  # The queue-family reduction, the memory-type masks and the queue-plan choice
+  # are internal to core_vulkan, so their tests -- and the device tests that
+  # check a resource landed in its placement's types -- reach into the source
+  # directory for them.
   foreach(_vkc_test vulkan_queue_families vulkan_memory_types vulkan_allocator
-                    vulkan_compute)
+                    vulkan_compute vulkan_shared_device)
     target_include_directories(
       vkc_${_vkc_test}_test
       PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")

@@ -63,7 +63,7 @@ It lands in five stages, each its own PR, merged before any sibling migrates:
 | V2 (landed) | `Allocator`, `Buffer`, `Image`, descriptor layouts, pools and sets, `ShaderModule`, fences and semaphores, command pools and buffers |
 | V3 (landed) | `ComputePipeline`, `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`, `CommandBatch`, the compute helpers, and the shader build functions |
 | V4 (landed) | `QueryPool`, `GpuTimer`, `GpuStageScope`, `StageMetrics` (in `base`), timed `CommandBatch` commands and submits; `create_exported_buffer`, `UniqueFd`, `find_memory_type`, `CommandBatch::release` |
-| V5 | the shared-device bootstrap, replacing recon's example copy and ios's `SharedDevice` |
+| V5 (landed) | `SharedDevice`: one device for a compute library and a renderer, replacing recon's example copy and ios's `SharedDevice` |
 
 V1's choices, from comparing the two cores on 2026-10-03:
 
@@ -304,6 +304,51 @@ in "Where memory lives"):
   timing past it, so recon's 4096-span ceiling became 2048. A `reserve` past
   it is clamped, logged, and a stage that loses a span to a full window
   publishes no device time: a partial sum would read as the whole stage's.
+
+V5's choices, from recon's `examples/viewer/shared_device.hpp` and ios's
+`Bridge/SharedDevice`, which did the same job twice and differed only in how
+the surface was made:
+
+- **The core builds the shared device; the app makes the surface.**
+  `SharedDeviceConfig` takes the two libraries' `DeviceRequirements` and a
+  `make_surface(VkInstance)` callback, so the core links neither GLFW nor
+  Metal; the app adds its surface's instance extensions to the
+  `InstanceConfig`. Windowless (no present) needs no surface at all. So
+  `DeviceRequirements` stays device-level: the instance-level needs are the
+  app's (its surface's extensions) or the instance's own (debug utils).
+- **Each queue does its library's job, whatever the requirements say.** The
+  renderer's gets `VK_QUEUE_GRAPHICS_BIT` and the compute library's
+  `VK_QUEUE_COMPUTE_BIT`, as both copies forced: `queue_flags` defaults to
+  compute alone, and a renderer handed a compute family that presents could
+  record no draw. Only the renderer presents; a compute side asking to is
+  refused, as nothing would present for it.
+- **The union is checked before anything is created, on every device.**
+  `merge` combines the two requirements, and selection checks the union --
+  version, extensions, features -- so a shortfall names itself instead of
+  failing in `vkCreateDevice`. That check finds a family that presents, not
+  that it is the renderer's, so each device that passes is asked for a queue
+  plan too, and one with none is refused for that and the next tried, as both
+  copies did; of the rest, the best by type wins, as
+  `select_physical_device` ranks them. Selection, the present probe, the
+  feature chain, the enabled extensions and `vkCreateDevice` itself are
+  `Device::create`'s own (internal `support.hpp`), so the two ways of making
+  a device cannot drift.
+- **Three queue plans, best first, all searched:** two queues in one family;
+  two families (what MoltenVK, with several one-queue families, gets); one
+  queue shared under one mutex. Stopping at the first family that does both
+  would take the last plan on MoltenVK. The renderer's family presents
+  itself, as in both copies: no driver the siblings target splits graphics
+  from present, and a separate present queue would be a third queue, and
+  mutex, for every embedder to carry.
+- **Every queue has a mutex, always handed out**, as both copies concluded
+  after a drain raced a submit: Vulkan requires every host operation on a
+  queue be externally synchronized, and `wait_idle` is a third thread on
+  both. Under the shared-queue plan the two payloads share one. `create`
+  returns a `unique_ptr`, as the libraries keep the mutexes' addresses.
+- **The payloads declare what was created, never restate it**: `Device::adopt`
+  checks each library's needs against them, as Vulkan cannot be asked what a
+  logical device enabled. They are core `AdoptedDevice`s, so recon and gfx
+  adopt through the core's `Device` once they migrate.
 
 ### Where memory lives
 

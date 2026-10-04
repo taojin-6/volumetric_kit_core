@@ -4,15 +4,18 @@
 #pragma once
 
 // Internal to core_vulkan: the pieces of the requirements check that
-// check_device_support (selection, create) and Device::adopt share. Not
-// installed.
+// check_device_support (selection, create) and Device::adopt share, and the
+// device selection and creation Device::create and SharedDevice share, so the
+// two ways of making a device cannot drift. Not installed.
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
+#include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
@@ -54,5 +57,43 @@ VkPhysicalDeviceFeatures features_union(const VkPhysicalDeviceFeatures& a,
 Status check_physical_support(const PhysicalDeviceInfo& caps,
                               const DeviceRequirements& reqs,
                               const std::vector<std::string>& required);
+
+// The extensions a device made for `reqs` enables: the required ones, then
+// the portability subset (which the spec requires wherever it is exposed),
+// VK_EXT_memory_budget, and `reqs.optional_extensions`, each where `caps`
+// offers it.
+std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
+                                            const DeviceRequirements& reqs);
+
+// Whether queue family `family` of `caps` can present to `surface`. A failed
+// query reads as "cannot present" rather than trusting an unwritten result.
+bool can_present(const PhysicalDeviceInfo& caps, std::uint32_t family,
+                 VkSurfaceKHR surface);
+
+// A queue family, and how many of its queues a device is created with.
+struct QueueRequest {
+  std::uint32_t family = 0;
+  std::uint32_t count = 1;
+};
+
+// The one vkCreateDevice path Device::create and SharedDevice share: on
+// `caps`, for `reqs` -- its core features, timeline semaphores, scalar block
+// layout and dynamic rendering, then its feature chain, whose structs may be
+// written (DeviceRequirements::feature_chain) -- enabling `extensions`
+// (enabled_extensions(caps, reqs)) and the queues `queues` asks for: one
+// create info per distinct family, with the most queues any request asks of
+// it.
+Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
+                               const DeviceRequirements& reqs,
+                               const std::vector<std::string>& extensions,
+                               const std::vector<QueueRequest>& queues);
+
+// Instance::select_physical_device, with `accept` asked of each device that
+// meets `reqs` too: one it refuses is passed over, and its reason joins the
+// others when no device qualifies. Null accepts every device.
+Result<PhysicalDeviceInfo> select_physical_device(
+    const Instance& instance, const DeviceRequirements& reqs,
+    VkSurfaceKHR surface,
+    const std::function<Status(const PhysicalDeviceInfo&)>& accept);
 
 }  // namespace volumetric_kit::core::detail
