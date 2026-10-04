@@ -123,6 +123,10 @@ class VKC_VULKAN_API DescriptorPool {
 /// itself, writes through any copy need external synchronization, and every
 /// resource a write names must outlive the work that reads it.
 ///
+/// A write names a real buffer or view: a null one is valid only under the
+/// `nullDescriptor` feature, which the tier does not enable, so it aborts via
+/// @ref VKC_CHECK rather than reach the driver.
+///
 /// @code
 /// set.write_storage_buffer(0, voxels.handle(), 0, VK_WHOLE_SIZE);
 /// set.write_combined_image_sampler(1, color.view(), sampler,
@@ -144,7 +148,8 @@ class VKC_VULKAN_API DescriptorSet {
   /// @param buffer   The buffer.
   /// @param offset   The byte offset into it.
   /// @param range    The bytes bound, or `VK_WHOLE_SIZE`.
-  /// @pre @ref valid; otherwise aborts via @ref VKC_CHECK.
+  /// @pre @ref valid, and @p buffer non-null; otherwise aborts via
+  ///      @ref VKC_CHECK.
   void write_storage_buffer(std::uint32_t binding, VkBuffer buffer,
                             VkDeviceSize offset, VkDeviceSize range) const;
   /// @brief Bind a uniform buffer at @p binding.
@@ -152,16 +157,16 @@ class VKC_VULKAN_API DescriptorSet {
   /// @param buffer   The buffer.
   /// @param offset   The byte offset into it.
   /// @param range    The bytes bound, or `VK_WHOLE_SIZE`.
-  /// @pre @ref valid.
+  /// @pre @ref valid, and @p buffer non-null.
   void write_uniform_buffer(std::uint32_t binding, VkBuffer buffer,
                             VkDeviceSize offset, VkDeviceSize range) const;
   /// @brief Bind an image and its sampler (a GLSL `sampler2D`) at @p binding.
   /// @param binding  The slot.
   /// @param view     The image's view.
-  /// @param sampler  The sampler.
+  /// @param sampler  The sampler; null when the layout binds an immutable one.
   /// @param layout   The layout the image is in when sampled, typically
   ///                 `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`.
-  /// @pre @ref valid.
+  /// @pre @ref valid, and @p view non-null.
   void write_combined_image_sampler(std::uint32_t binding, VkImageView view,
                                     VkSampler sampler,
                                     VkImageLayout layout) const;
@@ -170,7 +175,7 @@ class VKC_VULKAN_API DescriptorSet {
   /// @param binding  The slot.
   /// @param view     The image's view.
   /// @param layout   The layout the image is in, `VK_IMAGE_LAYOUT_GENERAL`.
-  /// @pre @ref valid.
+  /// @pre @ref valid, and @p view non-null (an image made `with_view`).
   void write_storage_image(std::uint32_t binding, VkImageView view,
                            VkImageLayout layout) const;
 
@@ -186,7 +191,12 @@ class VKC_VULKAN_API DescriptorSet {
   }
 
  private:
-  void write(const VkWriteDescriptorSet& write) const;
+  // The one write the four share: checks the set and the resource, updates
+  // one descriptor of `type` from `buffer` or `image` (the other null), and
+  // counts it. `caller` names the public write in a failed check.
+  void write(const char* caller, VkDescriptorType type, std::uint32_t binding,
+             const VkDescriptorBufferInfo* buffer,
+             const VkDescriptorImageInfo* image) const;
 
   struct State {
     VkDevice device = VK_NULL_HANDLE;

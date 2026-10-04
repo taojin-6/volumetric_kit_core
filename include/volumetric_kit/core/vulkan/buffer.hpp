@@ -88,41 +88,48 @@ class VKC_VULKAN_API Buffer {
   Buffer& operator=(const Buffer&) = delete;
 
   /// @return The buffer (`VK_NULL_HANDLE` when empty).
-  VkBuffer handle() const noexcept { return buffer_; }
+  VkBuffer handle() const noexcept { return state_.buffer; }
   /// @return Its size in bytes (`0` when empty).
-  VkDeviceSize size() const noexcept { return size_; }
+  VkDeviceSize size() const noexcept { return state_.size; }
   /// @return The usage flags it was created with (`0` when empty).
-  VkBufferUsageFlags usage() const noexcept { return usage_; }
+  VkBufferUsageFlags usage() const noexcept { return state_.usage; }
   /// @return The sharing mode it was created with
   ///         (`VK_SHARING_MODE_EXCLUSIVE` when empty). Reading an exclusive
   ///         buffer from a queue family that does not own it is undefined, so
   ///         a consumer on another family checks this before reading.
-  VkSharingMode sharing_mode() const noexcept { return sharing_; }
+  VkSharingMode sharing_mode() const noexcept { return state_.sharing; }
   /// @return The persistent host pointer, or null when not mapped.
-  void* mapped() const noexcept { return mapped_; }
+  void* mapped() const noexcept { return state_.mapped; }
   /// @return The memory type backing it; empty for an empty buffer or an
   ///         adopted one whose type was not supplied.
   const std::optional<MemoryInfo>& memory_info() const noexcept {
-    return memory_;
+    return state_.memory;
   }
   /// @return Whether the known backing memory is `DEVICE_LOCAL` (possibly
   ///         `HOST_VISIBLE` too); `false` when unknown.
   bool is_device_local() const noexcept {
-    return memory_.has_value() &&
-           (memory_->properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    return state_.memory.has_value() &&
+           (state_.memory->properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) !=
+               0;
   }
   /// @return Whether this owns a buffer.
-  bool valid() const noexcept { return buffer_ != VK_NULL_HANDLE; }
+  bool valid() const noexcept { return state_.buffer != VK_NULL_HANDLE; }
 
  private:
   void destroy() noexcept;
 
-  VkBuffer buffer_ = VK_NULL_HANDLE;
-  VkDeviceSize size_ = 0;
-  VkBufferUsageFlags usage_ = 0;
-  VkSharingMode sharing_ = VK_SHARING_MODE_EXCLUSIVE;
-  void* mapped_ = nullptr;
-  std::optional<MemoryInfo> memory_;
+  // Everything but the deleter, taken and reset as one, as Image's ImageInfo
+  // is, so a moved-from or destroyed buffer cannot keep a stale field.
+  struct State {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize size = 0;
+    VkBufferUsageFlags usage = 0;
+    VkSharingMode sharing = VK_SHARING_MODE_EXCLUSIVE;
+    void* mapped = nullptr;
+    std::optional<MemoryInfo> memory;
+  };
+
+  State state_;
   std::function<void()> deleter_;
 };
 

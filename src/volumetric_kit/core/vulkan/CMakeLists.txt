@@ -40,16 +40,22 @@ target_sources(
           shader.cpp
           support.hpp
           sync.cpp
-          vk_result.cpp
-          vma_impl.cpp)
+          vk_result.cpp)
 
-# VMA is private: only allocator.cpp and vma_impl.cpp include it, never a public
-# header. SYSTEM keeps its own warnings out of the -Werror surface.
-if(NOT VKC_VMA_INCLUDE_DIR)
-  message(FATAL_ERROR "core_vulkan: VKC_VMA_INCLUDE_DIR is unset -- "
-                      "third_party/ must fetch VMA before src/")
+# VMA is private: only allocator.cpp includes it, never a public header. Its
+# include directory is read from the target VMA's own build defines, whether
+# FetchContent built it or a dependency provider found it (third_party/), and
+# SYSTEM keeps its warnings out of the -Werror surface. It is read, not linked,
+# so VMA never enters core_vulkan's exported interface.
+if(NOT TARGET GPUOpen::VulkanMemoryAllocator)
+  message(FATAL_ERROR "core_vulkan: no GPUOpen::VulkanMemoryAllocator target "
+                      "-- third_party/ must make VMA available before src/")
 endif()
-target_include_directories(core_vulkan SYSTEM PRIVATE "${VKC_VMA_INCLUDE_DIR}")
+target_include_directories(
+  core_vulkan SYSTEM
+  PRIVATE
+    "$<TARGET_PROPERTY:GPUOpen::VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>"
+)
 
 generate_export_header(
   core_vulkan

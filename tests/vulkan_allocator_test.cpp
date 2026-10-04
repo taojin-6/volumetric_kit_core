@@ -120,6 +120,10 @@ TEST_F(AllocatorTest, RefusesContradictoryBuffers) {
   BufferDesc unmapped_host = good;
   unmapped_host.memory = MemoryUsage::HostVisible;
   EXPECT_EQ(domain(unmapped_host), Status::Code::InvalidArgument);
+  // VMA would abort on it: the allocator does not enable device addresses.
+  BufferDesc addressed = good;
+  addressed.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  EXPECT_EQ(domain(addressed), Status::Code::InvalidArgument);
 }
 
 TEST_F(AllocatorTest, SharingFollowsTheDistinctFamilies) {
@@ -186,6 +190,7 @@ TEST_F(AllocatorTest, RoundTripsThroughDeviceLocalMemory) {
     vkCmdCopyBuffer(cmd, upload.handle(), resident.handle(), 1, &region);
     transfer_barrier(cmd);
     vkCmdCopyBuffer(cmd, resident.handle(), readback.handle(), 1, &region);
+    test::host_read_barrier(cmd);
   });
   ASSERT_TRUE(s.ok()) << s.message();
   EXPECT_EQ(std::memcmp(readback.mapped(), data.data(), kBytes), 0);
@@ -213,6 +218,8 @@ TEST_F(AllocatorTest, BuffersMoveAndEmpty) {
   // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_FALSE(a.valid());
   EXPECT_EQ(a.size(), 0u);
+  EXPECT_EQ(a.usage(), 0u);
+  EXPECT_EQ(a.mapped(), nullptr);
   EXPECT_FALSE(a.memory_info().has_value());
   // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(b.handle(), handle);
@@ -262,8 +269,22 @@ TEST_F(AllocatorTest, MakesADeviceLocalImageWithAView) {
   EXPECT_EQ(image->height(), 32u);
   EXPECT_EQ(image->depth(), 1u);
   EXPECT_EQ(image->format(), VK_FORMAT_R8G8B8A8_UNORM);
+  EXPECT_EQ(image->type(), VK_IMAGE_TYPE_2D);
+  EXPECT_EQ(image->create_flags(), 0u);
+  EXPECT_EQ(image->samples(), VK_SAMPLE_COUNT_1_BIT);
+  EXPECT_EQ(image->tiling(), VK_IMAGE_TILING_OPTIMAL);
   EXPECT_EQ(image->layout(), VK_IMAGE_LAYOUT_UNDEFINED);
   EXPECT_EQ(image->sharing_mode(), VK_SHARING_MODE_EXCLUSIVE);
+  EXPECT_TRUE(image->is_device_local());
+}
+
+// Auto still requires DEVICE_LOCAL for an image, so a full VRAM fails the
+// allocation rather than place it in host memory.
+TEST_F(AllocatorTest, AnAutoImageIsDeviceLocal) {
+  ImageDesc desc = color_image(16, 16);
+  desc.memory = MemoryUsage::Auto;
+  const Result<Image> image = allocator().create_image(desc);
+  ASSERT_TRUE(image.ok()) << image.status().message();
   EXPECT_TRUE(image->is_device_local());
 }
 
@@ -281,6 +302,8 @@ TEST_F(AllocatorTest, MakesViewlessCubeVolumeAndMippedImages) {
   const Result<Image> cubemap = allocator().create_image(cube);
   ASSERT_TRUE(cubemap.ok()) << cubemap.status().message();
   EXPECT_EQ(cubemap->array_layers(), 6u);
+  // What tells a cube from a six-layer array.
+  EXPECT_NE(cubemap->create_flags() & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, 0u);
   EXPECT_NE(cubemap->view(), VK_NULL_HANDLE);
 
   ImageDesc volume;
@@ -292,6 +315,7 @@ TEST_F(AllocatorTest, MakesViewlessCubeVolumeAndMippedImages) {
   const Result<Image> voxels = allocator().create_image(volume);
   ASSERT_TRUE(voxels.ok()) << voxels.status().message();
   EXPECT_EQ(voxels->depth(), 8u);
+  EXPECT_EQ(voxels->type(), VK_IMAGE_TYPE_3D);
 
   ImageDesc mipped = color_image(64, 64);
   mipped.mip_levels = 7;
@@ -346,6 +370,14 @@ TEST_F(AllocatorTest, RefusesContradictoryImages) {
   d = good;
   d.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;  // and a view
   EXPECT_TRUE(refused(d));
+  d = good;
+  d.extent = {64, 32};
+  d.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;  // NV12, and a view
+  EXPECT_TRUE(refused(d));
+  d.format = VK_FORMAT_G8B8G8R8_422_UNORM;  // single-plane, but subsampled
+  EXPECT_TRUE(refused(d));
+  d.format = VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16;  // 4:4:4
+  EXPECT_TRUE(refused(d));
 }
 
 void transition(VkCommandBuffer cmd, VkImage image, VkImageLayout from,
@@ -396,9 +428,34 @@ TEST_F(AllocatorTest, RoundTripsThroughAnImage) {
                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            readback.handle(), 1, &region);
+    test::host_read_barrier(cmd);
   });
   ASSERT_TRUE(s.ok()) << s.message();
   EXPECT_EQ(std::memcmp(readback.mapped(), texels.data(), kBytes), 0);
+}
+
+// The image records the layout its owner moved it to, for code that records
+// against it later; a fresh one is UNDEFINED.
+TEST_F(AllocatorTest, AnImageRecordsTheLayoutItsOwnerSets) {
+  Result<Image> made = allocator().create_image(color_image(8, 8));
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  Image image = *std::move(made);
+  ASSERT_EQ(image.layout(), VK_IMAGE_LAYOUT_UNDEFINED);
+  const Status s = device().submit_single_time([&](VkCommandBuffer cmd) {
+    transition(cmd, image.handle(), VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_TRANSFER_READ_BIT);
+  });
+  ASSERT_TRUE(s.ok()) << s.message();
+  image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+  EXPECT_EQ(image.layout(), VK_IMAGE_LAYOUT_GENERAL);
+  EXPECT_EQ(image.info().layout, VK_IMAGE_LAYOUT_GENERAL);
+
+  const Image moved = std::move(image);
+  EXPECT_EQ(moved.layout(), VK_IMAGE_LAYOUT_GENERAL);
+  // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  image.set_layout(VK_IMAGE_LAYOUT_GENERAL);  // empty: records nothing
+  EXPECT_EQ(image.layout(), VK_IMAGE_LAYOUT_UNDEFINED);
+  // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 }
 
 TEST_F(AllocatorTest, ImagesMoveAndAnAdoptedOneDescribesItself) {

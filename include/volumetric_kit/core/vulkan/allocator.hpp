@@ -84,7 +84,9 @@ struct MemoryStats {
 struct BufferDesc {
   /// Size in bytes; non-zero.
   VkDeviceSize size = 0;
-  /// Usage flags; non-zero.
+  /// Usage flags; non-zero, and without
+  /// `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`, which the allocator does not
+  /// enable.
   VkBufferUsageFlags usage = 0;
   /// Where the memory lives.
   MemoryUsage memory = MemoryUsage::Auto;
@@ -154,12 +156,13 @@ struct ImageDesc {
   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
   /// Tiling.
   VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
-  /// Where the memory lives: device-local by default, and never host-visible,
-  /// as an image has no host accessor -- read one back by copying it into a
-  /// host-visible buffer.
+  /// Where the memory lives: `DEVICE_LOCAL`, required, for `DeviceLocal` and
+  /// `Auto` alike. `HostVisible` is refused, as an image has no host accessor
+  /// -- read one back by copying it into a host-visible buffer.
   MemoryUsage memory = MemoryUsage::DeviceLocal;
-  /// Create a default view over every mip and layer. Clear it for an image
-  /// whose usage names no view-compatible bit (a transfer-only image).
+  /// Create a default view over every mip and layer. Clear it for a
+  /// transfer-only image, and for a multi-planar or 4:2:2 format (a
+  /// decoder's picture), whose view needs a sampler Y'CbCr conversion.
   bool with_view = true;
   /// The queue families that will access the image, as
   /// @ref BufferDesc::queue_families.
@@ -188,9 +191,12 @@ struct ImageDesc {
 ///          allocator and every resource made from it.
 ///
 /// @code
-/// VKC_ASSIGN(Allocator allocator, Allocator::create(instance.handle(),
-/// device)); BufferDesc staging; staging.size = bytes; staging.usage =
-/// VK_BUFFER_USAGE_TRANSFER_SRC_BIT; staging.memory = MemoryUsage::HostVisible;
+/// VKC_ASSIGN(Allocator allocator,
+///            Allocator::create(instance.handle(), device));
+/// BufferDesc staging;
+/// staging.size = bytes;
+/// staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+/// staging.memory = MemoryUsage::HostVisible;
 /// staging.mapped = true;
 /// staging.host_access = HostAccess::SequentialWrite;
 /// VKC_ASSIGN(Buffer upload, allocator.create_buffer(staging));
@@ -214,10 +220,10 @@ class VKC_VULKAN_API Allocator {
   /// @brief Allocate a buffer and its memory.
   /// @param desc  Size, usage, memory, mapping and sharing.
   /// @return The buffer; @ref Status::Code::InvalidArgument for a zero size
-  ///         or usage, a mapped device-local buffer, an unmapped host-visible
-  ///         one (there is no separate map), more than
-  ///         @ref BufferDesc::kMaxQueueFamilies distinct families, or a family
-  ///         the device does not have; or a backend @ref Status.
+  ///         or usage, a device-address usage, a mapped device-local buffer,
+  ///         an unmapped host-visible one (there is no separate map), more
+  ///         than @ref BufferDesc::kMaxQueueFamilies distinct families, or a
+  ///         family the device does not have; or a backend @ref Status.
   Result<Buffer> create_buffer(const BufferDesc& desc);
 
   /// @brief Allocate an image and its memory, and its default view.
@@ -227,9 +233,10 @@ class VKC_VULKAN_API Allocator {
   ///         depth, mip or layer count, no usage, an undefined format, a depth
   ///         without a 3D type, a 1D image taller than 1, an arrayed 3D image,
   ///         a malformed cube, a multisampled image that is not single-mip
-  ///         optimal 2D, a view with no view-compatible usage, host-visible
-  ///         memory, or a bad sharing list; or a backend @ref Status. The view
-  ///         spans every mip and layer; its type follows the image (the
+  ///         optimal 2D, a view of a transfer-only image or of a format that
+  ///         needs a Y'CbCr conversion, host-visible memory, or a bad sharing
+  ///         list; or a backend @ref Status. The image is device-local. The
+  ///         view spans every mip and layer; its type follows the image (the
   ///         `_ARRAY` variant when arrayed, `CUBE` for a cube), and its aspect
   ///         the format (depth, stencil, or color).
   Result<Image> create_image(const ImageDesc& desc);

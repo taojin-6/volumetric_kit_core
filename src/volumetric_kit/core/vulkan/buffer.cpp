@@ -13,34 +13,25 @@ Buffer::Buffer(VkBuffer handle, VkDeviceSize size, VkBufferUsageFlags usage,
                VkSharingMode sharing, void* mapped,
                std::function<void()> deleter,
                std::optional<MemoryInfo> memory) noexcept
-    : buffer_(handle),
-      size_(size),
-      usage_(usage),
-      sharing_(sharing),
-      mapped_(mapped),
-      memory_(handle == VK_NULL_HANDLE ? std::nullopt : memory),
-      deleter_(std::move(deleter)) {}
+    : deleter_(std::move(deleter)) {
+  state_.buffer = handle;
+  state_.size = size;
+  state_.usage = usage;
+  state_.sharing = sharing;
+  state_.mapped = mapped;
+  if (handle != VK_NULL_HANDLE) state_.memory = memory;
+}
 
 Buffer::~Buffer() { destroy(); }
 
 Buffer::Buffer(Buffer&& other) noexcept
-    : buffer_(std::exchange(other.buffer_, VK_NULL_HANDLE)),
-      size_(std::exchange(other.size_, 0)),
-      usage_(std::exchange(other.usage_, 0)),
-      sharing_(std::exchange(other.sharing_, VK_SHARING_MODE_EXCLUSIVE)),
-      mapped_(std::exchange(other.mapped_, nullptr)),
-      memory_(std::exchange(other.memory_, std::nullopt)),
+    : state_(std::exchange(other.state_, State{})),
       deleter_(std::exchange(other.deleter_, nullptr)) {}
 
 Buffer& Buffer::operator=(Buffer&& other) noexcept {
   if (this != &other) {
     destroy();
-    buffer_ = std::exchange(other.buffer_, VK_NULL_HANDLE);
-    size_ = std::exchange(other.size_, 0);
-    usage_ = std::exchange(other.usage_, 0);
-    sharing_ = std::exchange(other.sharing_, VK_SHARING_MODE_EXCLUSIVE);
-    mapped_ = std::exchange(other.mapped_, nullptr);
-    memory_ = std::exchange(other.memory_, std::nullopt);
+    state_ = std::exchange(other.state_, State{});
     deleter_ = std::exchange(other.deleter_, nullptr);
   }
   return *this;
@@ -51,12 +42,7 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
 // NOLINTNEXTLINE(bugprone-exception-escape)
 void Buffer::destroy() noexcept {
   if (deleter_) deleter_();
-  buffer_ = VK_NULL_HANDLE;
-  size_ = 0;
-  usage_ = 0;
-  sharing_ = VK_SHARING_MODE_EXCLUSIVE;
-  mapped_ = nullptr;
-  memory_.reset();
+  state_ = State{};
   deleter_ = nullptr;
 }
 

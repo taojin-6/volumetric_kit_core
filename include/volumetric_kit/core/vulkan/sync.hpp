@@ -141,10 +141,19 @@ class VKC_VULKAN_API TimelineSemaphore {
   ///         for an empty semaphore; or a backend @ref Status.
   Result<std::uint64_t> value() const;
   /// @brief Raise the counter from the host.
-  /// @param value  The new value, above the current one.
+  ///
+  /// The check reads the counter, then signals: two steps Vulkan cannot make
+  /// one. It catches a caller's stale value, not a race -- another thread's
+  /// signal landing between the two, or a value at or past one a queue has
+  /// still to signal. Signalling a value that does not advance the counter is
+  /// undefined, so when several parties signal one timeline (libraries
+  /// handing work over), give each its own values, as a frame index does,
+  /// rather than reading the counter and adding one.
+  /// @param value  The new value, above the current one and below any value
+  ///               a pending queue submission will signal.
   /// @return OK; @ref Status::Code::InvalidArgument for an empty semaphore
-  ///         or when @p value does not exceed the current value (a host
-  ///         signal must advance it); or a backend @ref Status.
+  ///         or when @p value does not exceed the value just read; or a
+  ///         backend @ref Status.
   Status signal(std::uint64_t value);
   /// @brief Wait until the counter reaches @p value, or the timeout passes.
   /// @param value       The value to wait for.

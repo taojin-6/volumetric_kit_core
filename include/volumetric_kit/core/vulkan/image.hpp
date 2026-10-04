@@ -18,7 +18,10 @@
 namespace volumetric_kit::core {
 
 /// @brief What an @ref Image is: everything recorded at creation that Vulkan
-///        cannot be asked afterwards.
+///        cannot be asked afterwards, and the layout its contents are in.
+///
+/// The defaults describe a single-sample, optimal-tiling 2D image, so an
+/// adopter sets only what differs.
 ///
 /// @code
 /// ImageInfo info;  // a decoder's picture, imported by hand
@@ -35,6 +38,11 @@ struct ImageInfo {
   /// A default view over every mip and layer, or `VK_NULL_HANDLE` for a
   /// viewless image (a transfer-only staging image, say).
   VkImageView view = VK_NULL_HANDLE;
+  /// The create flags it was made with: `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT`
+  /// for a cubemap, which tells it from a six-layer array.
+  VkImageCreateFlags flags = 0;
+  /// 1D, 2D or 3D; a 3D image of depth 1 is not a 2D one.
+  VkImageType type = VK_IMAGE_TYPE_2D;
   /// Its format.
   VkFormat format = VK_FORMAT_UNDEFINED;
   /// Its extent in texels; `depth` is 1 except for a 3D image.
@@ -43,12 +51,17 @@ struct ImageInfo {
   std::uint32_t mip_levels = 1;
   /// Its array layers (6 for a cubemap).
   std::uint32_t array_layers = 1;
+  /// Its sample count: above 1 for a multisampled image, which a copy cannot
+  /// read and a resolve must.
+  VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+  /// Its tiling.
+  VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
   /// The usage flags it was created with.
   VkImageUsageFlags usage = 0;
   /// The layout its contents are in: `VK_IMAGE_LAYOUT_UNDEFINED` for a fresh
-  /// allocation, or the layout an adopter's maker left its contents in, which
-  /// they stay in (`GENERAL` or `TRANSFER_SRC_OPTIMAL` for an image a copy
-  /// reads).
+  /// allocation, or the layout an adopter's maker left its contents in
+  /// (`GENERAL` or `TRANSFER_SRC_OPTIMAL` for an image a copy reads). The
+  /// owner records later transitions with @ref Image::set_layout.
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
   /// The sharing mode it was created with.
   VkSharingMode sharing = VK_SHARING_MODE_EXCLUSIVE;
@@ -76,6 +89,8 @@ struct ImageInfo {
 /// desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 /// VKC_ASSIGN(Image color, allocator.create_image(desc));
 /// VkImageView view = color.view();
+/// // ... submit an upload that leaves it SHADER_READ_ONLY_OPTIMAL ...
+/// color.set_layout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 /// @endcode
 class VKC_VULKAN_API Image {
  public:
@@ -100,6 +115,10 @@ class VKC_VULKAN_API Image {
   VkImage handle() const noexcept { return info_.image; }
   /// @return The default view, or `VK_NULL_HANDLE` for a viewless image.
   VkImageView view() const noexcept { return info_.view; }
+  /// @return The create flags it was made with.
+  VkImageCreateFlags create_flags() const noexcept { return info_.flags; }
+  /// @return 1D, 2D or 3D.
+  VkImageType type() const noexcept { return info_.type; }
   /// @return Its format.
   VkFormat format() const noexcept { return info_.format; }
   /// @return Its extent in texels.
@@ -114,10 +133,27 @@ class VKC_VULKAN_API Image {
   std::uint32_t mip_levels() const noexcept { return info_.mip_levels; }
   /// @return Its array layers.
   std::uint32_t array_layers() const noexcept { return info_.array_layers; }
+  /// @return Its sample count.
+  VkSampleCountFlagBits samples() const noexcept { return info_.samples; }
+  /// @return Its tiling.
+  VkImageTiling tiling() const noexcept { return info_.tiling; }
   /// @return The usage flags it was created with.
   VkImageUsageFlags usage() const noexcept { return info_.usage; }
-  /// @return The layout its contents are in.
+  /// @return The layout its contents are in, as last recorded: at creation
+  ///         or by @ref set_layout.
   VkImageLayout layout() const noexcept { return info_.layout; }
+  /// @brief Record the layout the contents are now in, after the caller's
+  ///        own transition.
+  ///
+  /// Only a record: it transitions nothing, and Vulkan cannot be asked for
+  /// an image's layout. Code that records work on the image -- a copy, a
+  /// descriptor write -- reads @ref layout, so update it once the
+  /// transition's work is submitted, as it would then be stale otherwise.
+  /// @param layout  The layout the contents are in.
+  /// @pre @ref valid; an empty image records nothing.
+  void set_layout(VkImageLayout layout) noexcept {
+    if (valid()) info_.layout = layout;
+  }
   /// @return The sharing mode it was created with.
   VkSharingMode sharing_mode() const noexcept { return info_.sharing; }
   /// @return The memory type backing it, when known.

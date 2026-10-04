@@ -145,7 +145,10 @@ V2's choices, from the same comparison:
   `DEVICE_LOCAL`, so an allocation fails rather than spill bulk kernel data
   into host memory across PCIe (recon measured a TSDF kernel at 14.6 ms there
   against 0.067 ms in VRAM); gfx only preferred it. A host-visible buffer is
-  mapped persistently and coherent, so `mapped()` is a plain pointer.
+  mapped persistently and coherent, so `mapped()` is a plain pointer. A
+  device-address usage is refused, as recon's `MarchingCubes` refused it:
+  VMA aborts on one unless its allocator enables buffer device addresses,
+  which needs a feature `DeviceRequirements` cannot ask for yet.
 - **Sharing from the queue families a resource names.** Two or more distinct
   families give `CONCURRENT`, one or none `EXCLUSIVE`; duplicates count once,
   and a family the device lacks is refused. recon's rule, now for images too:
@@ -162,13 +165,26 @@ V2's choices, from the same comparison:
   made by `Allocator::create_image` with gfx's validation (3D, arrays, cubes,
   mips, multisampling, a default view whose type and aspect follow the image),
   or adopted from an `ImageInfo` and a deleter. `handle()`, not gfx's
-  `image()`, as every other wrapper names it. Images are device-local only:
-  they have no host accessor, so a host-visible one would be memory the host
-  cannot use. recon's `BufferMemoryInfo` becomes `MemoryInfo`, shared by both.
+  `image()`, as every other wrapper names it. Images are device-local only,
+  `MemoryUsage::Auto` included: they have no host accessor, so a host-visible
+  one would be memory the host cannot use. recon's `BufferMemoryInfo` becomes
+  `MemoryInfo`, shared by both. `ImageInfo` records what Vulkan cannot be
+  asked afterwards -- type, samples, create flags and tiling with the rest --
+  so a library handed a borrowed image can tell a cube from a six-layer array
+  or a multisampled image from a single-sample one. It also records the
+  layout the contents are in, which the owner updates with `set_layout` after
+  each transition it submits: Vulkan cannot be asked that either, and a copy
+  recorded against a stale layout is invalid. The default view is refused
+  only where it cannot be right: a transfer-only usage, or a multi-planar or
+  4:2:2 format, whose view needs a sampler Y'CbCr conversion.
 - **VMA v3.4.0, private**, under the FetchContent name recon and gfx use, so
   one build resolves one copy. Static Vulkan functions against the linked
   loader, and Vulkan 1.1 as VMA's ceiling, as both did. It never reaches a
-  public header.
+  public header. Its implementation is compiled into the allocator's own
+  object, so a static link that also pulls in another VMA implementation --
+  recon's or gfx's own, until each moves to this allocator and drops it --
+  fails on duplicate symbols, instead of running the allocator on a copy
+  built against other Vulkan headers. A shared core hides VMA's symbols.
 - **Descriptor sets write all four kinds** the family uses: storage buffers
   (recon), uniform buffers and combined image samplers (gfx), and storage
   images, new, for compute kernels that write images. Copies share a write
@@ -291,8 +307,10 @@ consuming the package.
 - **GPU CI for the vulkan tier.** lavapipe covers correctness on hosted
   runners, but no real GPU runs here yet. `recon`'s GPU runners
   (`vk-linux-gpu`, `mac`) are registered per repository, so they must be
-  registered here too -- before the allocator (V2), whose memory placement
-  differs on a discrete GPU. On a public repository those legs must run only
+  registered here too. They were to come before the allocator (V2), whose
+  memory placement differs on a discrete GPU; V2 landed without them, so the
+  discrete-GPU path -- `DeviceLocal` in VRAM, apart from host-visible memory
+  -- is still untested here. On a public repository those legs must run only
   same-repository code, as `recon`'s guard does.
 - **Vulkan headers for gfx.** The tier uses the system's headers; gfx pins
   Vulkan-Headers 1.4.357 and links the loader privately. Both in one build

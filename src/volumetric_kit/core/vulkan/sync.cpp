@@ -99,8 +99,10 @@ Result<std::uint64_t> TimelineSemaphore::value() const {
 
 Status TimelineSemaphore::signal(std::uint64_t value) {
   // A host signal must advance the counter
-  // (VUID-VkSemaphoreSignalInfo-value-03258); refuse one that does not, so
-  // the misuse is an error rather than undefined behaviour with layers off.
+  // (VUID-VkSemaphoreSignalInfo-value-03258); refuse one that does not, so a
+  // stale value is an error rather than undefined behaviour with layers off.
+  // Vulkan has no compare-and-signal, so a signal racing this one from another
+  // thread or a queue gets past the check; sync.hpp says how to avoid one.
   VKC_ASSIGN(const std::uint64_t current, this->value());
   if (value <= current) {
     return Status::invalid_argument(

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -86,70 +87,62 @@ Result<DescriptorSet> DescriptorPool::allocate(VkDescriptorSetLayout layout) {
 DescriptorSet::DescriptorSet(VkDevice device, VkDescriptorSet set)
     : state_(std::make_shared<State>(State{device, set, 0})) {}
 
-void DescriptorSet::write(const VkWriteDescriptorSet& write) const {
-  vkUpdateDescriptorSets(state_->device, 1, &write, 0, nullptr);
+void DescriptorSet::write(const char* caller, VkDescriptorType type,
+                          std::uint32_t binding,
+                          const VkDescriptorBufferInfo* buffer,
+                          const VkDescriptorImageInfo* image) const {
+  VKC_CHECK(valid(), std::string(caller) + " on an empty set");
+  // A null resource is undefined without nullDescriptor, and with layers off
+  // surfaces, if at all, as a fault at a dispatch far from here.
+  if (buffer != nullptr) {
+    VKC_CHECK(buffer->buffer != VK_NULL_HANDLE,
+              std::string(caller) + ": the buffer is null");
+  } else {
+    VKC_CHECK(image->imageView != VK_NULL_HANDLE,
+              std::string(caller) + ": the image view is null");
+  }
+  VkWriteDescriptorSet w{};
+  w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  w.dstSet = state_->set;
+  w.dstBinding = binding;
+  w.descriptorCount = 1;
+  w.descriptorType = type;
+  w.pBufferInfo = buffer;
+  w.pImageInfo = image;
+  vkUpdateDescriptorSets(state_->device, 1, &w, 0, nullptr);
   ++state_->writes;
 }
 
 void DescriptorSet::write_storage_buffer(std::uint32_t binding, VkBuffer buffer,
                                          VkDeviceSize offset,
                                          VkDeviceSize range) const {
-  VKC_CHECK(valid(), "DescriptorSet::write_storage_buffer on an empty set");
   const VkDescriptorBufferInfo info{buffer, offset, range};
-  VkWriteDescriptorSet w{};
-  w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  w.dstSet = state_->set;
-  w.dstBinding = binding;
-  w.descriptorCount = 1;
-  w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  w.pBufferInfo = &info;
-  write(w);
+  write("DescriptorSet::write_storage_buffer",
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, binding, &info, nullptr);
 }
 
 void DescriptorSet::write_uniform_buffer(std::uint32_t binding, VkBuffer buffer,
                                          VkDeviceSize offset,
                                          VkDeviceSize range) const {
-  VKC_CHECK(valid(), "DescriptorSet::write_uniform_buffer on an empty set");
   const VkDescriptorBufferInfo info{buffer, offset, range};
-  VkWriteDescriptorSet w{};
-  w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  w.dstSet = state_->set;
-  w.dstBinding = binding;
-  w.descriptorCount = 1;
-  w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  w.pBufferInfo = &info;
-  write(w);
+  write("DescriptorSet::write_uniform_buffer",
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, binding, &info, nullptr);
 }
 
 void DescriptorSet::write_combined_image_sampler(std::uint32_t binding,
                                                  VkImageView view,
                                                  VkSampler sampler,
                                                  VkImageLayout layout) const {
-  VKC_CHECK(valid(),
-            "DescriptorSet::write_combined_image_sampler on an empty set");
   const VkDescriptorImageInfo info{sampler, view, layout};
-  VkWriteDescriptorSet w{};
-  w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  w.dstSet = state_->set;
-  w.dstBinding = binding;
-  w.descriptorCount = 1;
-  w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  w.pImageInfo = &info;
-  write(w);
+  write("DescriptorSet::write_combined_image_sampler",
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, binding, nullptr, &info);
 }
 
 void DescriptorSet::write_storage_image(std::uint32_t binding, VkImageView view,
                                         VkImageLayout layout) const {
-  VKC_CHECK(valid(), "DescriptorSet::write_storage_image on an empty set");
   const VkDescriptorImageInfo info{VK_NULL_HANDLE, view, layout};
-  VkWriteDescriptorSet w{};
-  w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  w.dstSet = state_->set;
-  w.dstBinding = binding;
-  w.descriptorCount = 1;
-  w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  w.pImageInfo = &info;
-  write(w);
+  write("DescriptorSet::write_storage_image", VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        binding, nullptr, &info);
 }
 
 }  // namespace volumetric_kit::core

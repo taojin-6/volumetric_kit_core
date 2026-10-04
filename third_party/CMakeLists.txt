@@ -14,8 +14,9 @@ include(FetchContent)
 # --- VMA: Vulkan Memory Allocator (header-only; one core_vulkan TU) ----------
 # The same pin and FetchContent name as recon and gfx, so a build fetching
 # several of them resolves one copy -- and the libraries sharing a VkDevice
-# allocate through one VMA version. A PRIVATE SYSTEM include of core_vulkan,
-# never part of its installed interface: VMA stays behind the allocator's pimpl.
+# allocate through one VMA version. It defines GPUOpen::VulkanMemoryAllocator,
+# whose include directory core_vulkan reads as a PRIVATE SYSTEM include, never
+# part of its installed interface: VMA stays behind the allocator's pimpl.
 if(VKC_WITH_VULKAN)
   FetchContent_Declare(
     VulkanMemoryAllocator
@@ -24,9 +25,6 @@ if(VKC_WITH_VULKAN)
     GIT_TAG v3.4.0
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(VulkanMemoryAllocator)
-  set(VKC_VMA_INCLUDE_DIR
-      "${vulkanmemoryallocator_SOURCE_DIR}/include"
-      PARENT_SCOPE)
 endif()
 
 if(VKC_BUILD_TESTS)

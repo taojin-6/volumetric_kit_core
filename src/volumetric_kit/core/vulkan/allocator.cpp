@@ -9,6 +9,23 @@
 #include <string>
 #include <utility>
 
+// VMA is header-only, and this is the one translation unit that instantiates
+// it: here, in the allocator's own object, rather than in a file of its own.
+// A static link that also pulls in another VMA implementation -- a sibling's,
+// before it moves to this allocator -- then fails on duplicate symbols,
+// instead of leaving this allocator to run the other copy, possibly built
+// against other Vulkan headers and so other struct layouts. A shared core
+// hides VMA's symbols (CXX_VISIBILITY_PRESET hidden). VMA never reaches a
+// public header or a consumer.
+//
+// VMA_STATIC_VULKAN_FUNCTIONS resolves entry points against the link-time
+// loader the tier already links (vulkan.hpp, included above through
+// allocator.hpp, so the prototypes are in scope before VMA expands). Adopting
+// volk for iOS and Android would switch this to the dynamic-functions path,
+// here alone.
+#define VMA_STATIC_VULKAN_FUNCTIONS 1
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+#define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
 #include "queue_families.hpp"
@@ -135,6 +152,26 @@ VkImageAspectFlags aspect_for(VkFormat format) {
   }
 }
 
+// Whether a COLOR view of @p format must carry a sampler Y'CbCr conversion
+// (VUID-VkImageViewCreateInfo-format-06415): the core formats the registry
+// (vk.xml) gives a chroma attribute -- multi-planar, 4:2:2, and the RGBA
+// 4PACK16 ones -- such as a decoder's NV12 picture. The one- and
+// two-component R10X6 / R12X4 formats inside the 1.1 range need none.
+bool needs_ycbcr_conversion(VkFormat format) {
+  switch (format) {
+    case VK_FORMAT_R10X6_UNORM_PACK16:
+    case VK_FORMAT_R10X6G10X6_UNORM_2PACK16:
+    case VK_FORMAT_R12X4_UNORM_PACK16:
+    case VK_FORMAT_R12X4G12X4_UNORM_2PACK16:
+      return false;
+    default:
+      return (format >= VK_FORMAT_G8B8G8R8_422_UNORM &&
+              format <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM) ||
+             (format >= VK_FORMAT_G8_B8R8_2PLANE_444_UNORM &&
+              format <= VK_FORMAT_G16_B16R16_2PLANE_444_UNORM);
+  }
+}
+
 Status check_image_desc(const ImageDesc& desc) {
   if (desc.extent.width == 0 || desc.extent.height == 0) {
     return Status::invalid_argument("create_image: extent must be non-zero");
@@ -185,17 +222,22 @@ Status check_image_desc(const ImageDesc& desc) {
         "create_image: an image has no host accessor; copy it into a "
         "host-visible buffer to read it back");
   }
-  // VUID-VkImageViewCreateInfo-image-04441.
-  constexpr VkImageUsageFlags kViewCompatible =
-      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-      VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
-  if (desc.with_view && (desc.usage & kViewCompatible) == 0) {
+  // VUID-VkImageViewCreateInfo-image-04441 allows a view for nearly every
+  // usage but the transfers -- video, shading-rate and density-map usages
+  // included -- so only a transfer-only image is refused here: a list of the
+  // allowed bits would refuse the ones it missed.
+  constexpr VkImageUsageFlags kTransferOnly =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  if (desc.with_view && (desc.usage & ~kTransferOnly) == 0) {
     return Status::invalid_argument(
-        "create_image: a view needs a view-compatible usage (sampled, "
-        "storage, or an attachment); clear with_view for a transfer-only "
-        "image");
+        "create_image: a view needs a usage beyond transfer; clear with_view "
+        "for a transfer-only image");
+  }
+  if (desc.with_view && needs_ycbcr_conversion(desc.format)) {
+    return Status::invalid_argument(
+        "create_image: a multi-planar or 4:2:2 format's view needs a sampler "
+        "Y'CbCr conversion, which the default view cannot carry; clear "
+        "with_view and make the view with one");
   }
   return {};
 }
@@ -227,7 +269,7 @@ Result<Allocator> Allocator::create(VkInstance instance, const Device& device) {
   // bounds the instance's, so VMA never asks for more than either allows.
   const std::uint32_t usable = device.caps().api_version();
 
-  // With VMA_STATIC_VULKAN_FUNCTIONS (vma_impl.cpp) VMA resolves entry points
+  // With VMA_STATIC_VULKAN_FUNCTIONS (above) VMA resolves entry points
   // against the linked loader; the two seeds keep it happy across VMA builds.
   VmaVulkanFunctions functions{};
   functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
@@ -267,6 +309,18 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
   }
   if (desc.usage == 0) {
     return Status::invalid_argument("create_buffer: usage is zero");
+  }
+  // VMA aborts on this bit (an assert) unless the allocator was made with
+  // VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT, which needs the device's
+  // bufferDeviceAddress feature; refused here, as recon's MarchingCubes did,
+  // so the caller gets an error instead.
+  //
+  // TODO: allow it once DeviceRequirements can enable bufferDeviceAddress,
+  // making the allocator with VMA's flag on a device that has it.
+  if ((desc.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
+    return Status::invalid_argument(
+        "create_buffer: VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT is not "
+        "supported -- the allocator does not enable buffer device addresses");
   }
   if (desc.mapped && desc.memory == MemoryUsage::DeviceLocal) {
     return Status::invalid_argument(
@@ -363,9 +417,10 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
 
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = to_vma_usage(desc.memory);
-  if (desc.memory == MemoryUsage::DeviceLocal) {
-    alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  }
+  // Required for Auto too (HostVisible is refused above): an image is
+  // device-local, and Auto alone lets VMA place it in host memory once VRAM
+  // is full.
+  alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
   VkImage image = VK_NULL_HANDLE;
   VmaAllocation allocation = nullptr;
@@ -394,10 +449,14 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
   ImageInfo info;
   info.image = image;
   info.view = view;
+  info.flags = image_info.flags;
+  info.type = desc.type;
   info.format = desc.format;
   info.extent = image_info.extent;
   info.mip_levels = desc.mip_levels;
   info.array_layers = desc.array_layers;
+  info.samples = desc.samples;
+  info.tiling = desc.tiling;
   info.usage = desc.usage;
   info.layout = VK_IMAGE_LAYOUT_UNDEFINED;
   info.sharing = sharing.mode;

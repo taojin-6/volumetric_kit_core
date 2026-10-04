@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 #include <gtest/gtest.h>
@@ -44,6 +45,21 @@ constexpr std::uint32_t kEmptyCompute[] = {
 
 bool is_invalid(const Status& s) {
   return s.domain() == Status::Code::InvalidArgument;
+}
+
+// A distinct non-null handle of any kind, for a check that must fire before
+// Vulkan sees it: a handle is a pointer on 64-bit targets and a uint64_t on
+// 32-bit ones.
+char handle_storage[2];
+
+template <class Handle>
+Handle fake_handle(int index) {
+  char* address = &handle_storage[index];
+  if constexpr (std::is_pointer_v<Handle>) {
+    return reinterpret_cast<Handle>(address);
+  } else {
+    return static_cast<Handle>(reinterpret_cast<std::uintptr_t>(address));
+  }
 }
 
 // The counter, or a failure and 0.
@@ -117,6 +133,29 @@ TEST(VulkanObjects, EmptyObjectsReportRatherThanCrash) {
   EXPECT_FALSE(ShaderModule{}.valid());
   EXPECT_FALSE(Semaphore{}.valid());
   EXPECT_FALSE(DescriptorSetLayout{}.valid());
+}
+
+// A null resource is valid only under nullDescriptor, which the tier never
+// enables; each write stops at it before Vulkan is called.
+TEST(VulkanObjectsDeathTest, WritesRefuseANullResource) {
+  const DescriptorSet set(fake_handle<VkDevice>(0),
+                          fake_handle<VkDescriptorSet>(1));
+  ASSERT_TRUE(set.valid());
+  EXPECT_DEATH(set.write_storage_buffer(0, VK_NULL_HANDLE, 0, VK_WHOLE_SIZE),
+               "write_storage_buffer: the buffer is null");
+  EXPECT_DEATH(set.write_uniform_buffer(0, VK_NULL_HANDLE, 0, VK_WHOLE_SIZE),
+               "write_uniform_buffer: the buffer is null");
+  EXPECT_DEATH(set.write_combined_image_sampler(
+                   0, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+               "write_combined_image_sampler: the image view is null");
+  EXPECT_DEATH(
+      set.write_storage_image(0, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL),
+      "write_storage_image: the image view is null");
+  EXPECT_DEATH(DescriptorSet{}.write_storage_image(0, VK_NULL_HANDLE,
+                                                   VK_IMAGE_LAYOUT_GENERAL),
+               "write_storage_image on an empty set");
+  EXPECT_EQ(set.writes(), 0u);
 }
 
 // --- on a device
@@ -320,6 +359,7 @@ TEST_F(ResourcesTest, RecordsSubmitsAndReRecordsACommandBuffer) {
     // The pool's RESET_COMMAND_BUFFER flag lets begin() reset it in place.
     ASSERT_TRUE(cmd.begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT).ok());
     vkCmdFillBuffer(cmd.handle(), target.handle(), 0, VK_WHOLE_SIZE, pattern);
+    test::host_read_barrier(cmd.handle());
     ASSERT_TRUE(cmd.end().ok());
     const Status s = device().submit_and_wait(cmd.handle());
     ASSERT_TRUE(s.ok()) << s.message();
