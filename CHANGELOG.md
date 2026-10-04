@@ -58,6 +58,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     layout the owner last recorded with `Image::set_layout`.
   - Queue-family sharing for buffers and images: two or more distinct
     families give `VK_SHARING_MODE_CONCURRENT`; `check_queue_family_count`.
+  - External memory, from recon: `create_exported_buffer`, a device-only
+    storage buffer on dedicated memory exported as an opaque file descriptor
+    for CUDA to import, and `find_memory_type` for resources bound outside
+    the allocator.
   - `DescriptorSetLayout`, `DescriptorPool`, and `DescriptorSet` with storage
     buffer, uniform buffer, combined image sampler and storage image writes;
     a write naming a null buffer or view aborts via `VKC_CHECK`. A set from

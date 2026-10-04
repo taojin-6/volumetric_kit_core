@@ -389,6 +389,16 @@ rules after review, the same day.
   becomes `mapped_storage_buffer`, and its default host access becomes
   `SequentialWrite`: a caller that reads it passes `Random`, which a discrete
   GPU refuses. CHANGELOG.md lists each step.
+- **Exported memory follows the same rule** (V4's external memory).
+  `create_exported_buffer` -- recon's, the buffer CUDA imports as an opaque
+  file descriptor and a decoder writes -- allocates outside VMA, as exported
+  memory is dedicated to its resource, and places it as `DeviceOnly`: private
+  device memory wherever the buffer allows it, never host memory. A batch
+  takes it over from `VK_QUEUE_FAMILY_EXTERNAL` before a kernel reads it.
+  gfx's `ExternalHandleType`, a field every value but `None` refused, is not
+  carried over. `find_memory_type`, recon's search for a resource bound
+  outside the allocator, skips the same special types the placement masks
+  do. Opaque descriptors only: the family's CUDA interop is Linux.
 - **`PhysicalDeviceInfo::unified_memory`** tells the architectures apart:
   every heap is device-local, so every type is (the spec sets
   `DEVICE_LOCAL` on a type exactly when its heap has it). An APU whose driver

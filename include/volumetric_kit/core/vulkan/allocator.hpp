@@ -126,8 +126,9 @@ struct MemoryStats {
 
 /// @brief Parameters for @ref Allocator::create_buffer.
 ///
-/// TODO: V4 adds exportable memory here (gfx's `ExternalHandleType`), with the
-/// rest of the external-memory interop.
+/// Memory another API imports is not made here: exported memory is dedicated
+/// to its buffer, which @ref create_exported_buffer allocates outside VMA's
+/// pools.
 struct BufferDesc {
   /// Size in bytes; non-zero.
   VkDeviceSize size = 0;
