@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <string>
+#include <string_view>
 
 #include "volumetric_kit/core/base/log.hpp"
 

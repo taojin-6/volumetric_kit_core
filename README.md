@@ -97,8 +97,15 @@ vkc::Status run() {
 ## Development
 
 ```sh
-pre-commit install   # clang-format + cmake-format + hygiene hooks
+pre-commit install          # format + hygiene hooks on every commit
+pre-commit run --all-files  # format everything, as CI checks it
+cmake -S . -B build-tidy -DCMAKE_BUILD_TYPE=Debug -DVKC_CLANG_TIDY=ON
+cmake --build build-tidy    # lint: clang-tidy on every first-party file
 ```
+
+The formatters are pinned in `.pre-commit-config.yaml` (clang-format 22.1.8,
+as in recon, gfx and ios) and clang-tidy to the same release; see
+[CONTRIBUTING.md](CONTRIBUTING.md#format-and-lint).
 
 ## License
 

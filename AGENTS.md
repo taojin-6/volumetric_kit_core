@@ -99,10 +99,16 @@ cmake --build "$core_root/build" --parallel
 ctest --test-dir "$core_root/build" --output-on-failure
 pre-commit run --all-files --show-diff-on-failure
 git -C "$core_root" diff --check
+# clang-tidy (pinned: pip install clang-tidy==22.1.8); any finding fails:
+cmake -S "$core_root" -B "$core_root/build-tidy" \
+  -DCMAKE_BUILD_TYPE=Debug -DVKC_CLANG_TIDY=ON
+cmake --build "$core_root/build-tidy" --parallel
 ```
 
-- Use the pinned formatting tools in `.pre-commit-config.yaml`; CI runs the
-  same hooks. Set the build type explicitly and report it with measurements.
+- Use the pinned formatting tools in `.pre-commit-config.yaml` and the pinned
+  clang-tidy; CI runs both. Fix clang-tidy findings rather than suppressing
+  them; a suppression is a targeted `NOLINT(check)` with its reason. Set the
+  build type explicitly and report it with measurements.
 - For code changes, build affected targets and run relevant tests, with
   regression coverage for changed behavior. A change to an installed header or
   to the CMake package also needs the package-consumer check CI runs

@@ -288,9 +288,12 @@ class [[nodiscard]] Result {
 /// @endcode
 #define VKC_ASSIGN(decl, expr) VKC_ASSIGN_(decl, expr, __COUNTER__)
 #define VKC_ASSIGN_(decl, expr, id) VKC_ASSIGN_IMPL_(decl, expr, id)
+// `decl` is a declaration (`const int n`), which parentheses would break.
+// NOLINTBEGIN(bugprone-macro-parentheses)
 #define VKC_ASSIGN_IMPL_(decl, expr, id)                        \
   auto _vkc_result_##id = (expr);                               \
   if (!_vkc_result_##id.ok()) return _vkc_result_##id.status(); \
   decl = std::move(_vkc_result_##id).value()
+// NOLINTEND(bugprone-macro-parentheses)
 
 #include "volumetric_kit/core/base/impl/result.hpp"

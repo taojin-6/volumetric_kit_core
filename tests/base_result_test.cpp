@@ -111,7 +111,7 @@ TEST(Result, ReturnsNulloptForAnOptionalValue) {
   const Result<std::optional<int>> some = maybe(true);
   ASSERT_TRUE(some.ok());
   ASSERT_TRUE(some->has_value());
-  EXPECT_EQ(**some, 7);
+  EXPECT_EQ(some->value_or(-1), 7);
 }
 
 TEST(Result, ArrowAndConstAccessReachTheValue) {
@@ -124,7 +124,7 @@ TEST(Result, ArrowAndConstAccessReachTheValue) {
 TEST(Result, HoldsAndMovesOutAMoveOnlyValue) {
   Result<std::unique_ptr<int>> r = std::make_unique<int>(5);
   ASSERT_TRUE(r.ok());
-  std::unique_ptr<int> taken = *std::move(r);
+  const std::unique_ptr<int> taken = *std::move(r);
   ASSERT_NE(taken, nullptr);
   EXPECT_EQ(*taken, 5);
 }
@@ -183,7 +183,7 @@ Result<std::unique_ptr<int>> make_box(int v) {
 }
 
 Status take_box() {
-  VKC_ASSIGN(std::unique_ptr<int> box, make_box(9));
+  VKC_ASSIGN(const std::unique_ptr<int> box, make_box(9));
   if (*box != 9) return Status::invalid_argument("wrong value");
   return {};
 }

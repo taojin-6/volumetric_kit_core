@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace volumetric_kit::core {
@@ -21,7 +22,7 @@ struct LogState {
 };
 
 LogState& state() {
-  static LogState* s = new LogState();
+  static auto* s = new LogState();
   return *s;
 }
 
@@ -59,7 +60,7 @@ void default_sink(LogLevel level, std::string_view message) {
 
 void set_log_handler(LogHandler handler) {
   LogState& s = state();
-  std::lock_guard<std::mutex> lock(s.mutex);
+  const std::scoped_lock lock(s.mutex);
   s.handler = std::move(handler);
 }
 
@@ -70,7 +71,7 @@ void log_message(LogLevel level, std::string_view message) {
   LogHandler handler;
   {
     LogState& s = state();
-    std::lock_guard<std::mutex> lock(s.mutex);
+    const std::scoped_lock lock(s.mutex);
     handler = s.handler;
   }
   if (handler) {

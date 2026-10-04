@@ -25,6 +25,9 @@ option(VKC_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
 option(VKC_INSTALL "Generate install/export rules" ${PROJECT_IS_TOP_LEVEL})
 option(VKC_WARNINGS_AS_ERRORS "Treat first-party compiler warnings as errors"
        ${PROJECT_IS_TOP_LEVEL})
+# Lint first-party targets with clang-tidy as they compile (.clang-tidy); see
+# cmake/vkc_clang_tidy.cmake. Off by default: it slows the build.
+option(VKC_CLANG_TIDY "Run clang-tidy on first-party targets" OFF)
 
 # Semicolon list of sanitizers (e.g. "address;undefined"); empty = off. Applied
 # globally -- see cmake/vkc_sanitizers.cmake for why.
@@ -34,6 +37,7 @@ set(VKC_SANITIZE
 
 include(vkc_warnings)
 include(vkc_sanitizers)
+include(vkc_clang_tidy)
 
 # --- Dependencies + library tiers --------------------------------------------
 add_subdirectory(third_party)

@@ -25,8 +25,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - Tests (GoogleTest) and a package-consumer project CI builds against an
   installed copy and against the source tree.
 - CI on GitHub-hosted runners: Linux and macOS Debug/Release, Linux
-  `-fno-exceptions` and shared-library legs, ASan/UBSan/LSan, and the
-  pre-commit lint gate, behind one required check.
+  `-fno-exceptions` and shared-library legs, ASan/UBSan/LSan, and the lint
+  gate, behind one required check.
+- Formatting and lint: pinned clang-format and cmake-format hooks that fix
+  files in place, hygiene checks (YAML, merge-conflict markers, large files,
+  line endings), `.editorconfig`, and clang-tidy (`.clang-tidy`, pinned
+  22.1.8) run through the build with `-DVKC_CLANG_TIDY=ON`, locally and in CI.
 
 ### Migrating from a sibling's own copy
 

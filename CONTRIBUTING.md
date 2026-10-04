@@ -14,10 +14,36 @@ pre-commit install
 ```
 
 This wires the hooks in [`.pre-commit-config.yaml`](.pre-commit-config.yaml)
-(clang-format, cmake-format, trailing-whitespace, end-of-file-fixer) into
-`.git/hooks/`. They run on staged files at `git commit` and abort the commit if
-anything is reformatted. The hook lives in `.git/` and is **not** tracked, so
-each clone must run this once.
+into `.git/hooks/`. They run on staged files at `git commit`; the formatters
+(clang-format, cmake-format, whitespace, line endings) fix files in place and
+abort the commit so you can stage the result, and the checks (YAML syntax,
+merge-conflict markers, large files) report what to fix. The hook lives in
+`.git/` and is **not** tracked, so each clone must run this once.
+[`.editorconfig`](.editorconfig) gives editors the same whitespace rules.
+
+## Format and lint
+
+Format everything, the way CI checks it:
+
+```sh
+pre-commit run --all-files
+```
+
+Lint with clang-tidy, pinned to the same release as clang-format. It needs a
+compile database, so it runs through the build rather than as a hook: every
+first-party file is checked against [`.clang-tidy`](.clang-tidy) as it
+compiles, and any finding fails the build.
+
+```sh
+pipx install clang-tidy==22.1.8   # or: pip install --user clang-tidy==22.1.8
+cmake -S "$core_root" -B "$core_root/build-tidy" \
+  -DCMAKE_BUILD_TYPE=Debug -DVKC_CLANG_TIDY=ON
+cmake --build "$core_root/build-tidy" --parallel
+```
+
+Fix a finding rather than silencing it. When a check is wrong for a line, use a
+targeted `// NOLINT(check-name)` with the reason; when it is wrong for the
+codebase, turn it off in `.clang-tidy` with a comment saying why.
 
 ## Build and test
 
@@ -40,10 +66,11 @@ CMake package needs:
 
 ## Formatting and CI
 
-- clang-format is pinned (see `.pre-commit-config.yaml`) to the same version as
-  the sibling repos, so formatting is byte-identical across the family.
+- clang-format is pinned (see `.pre-commit-config.yaml`) to the release recon,
+  gfx and ios pin, so their formatting is byte-identical; clang-tidy is pinned
+  to the same release.
 - CI's single required check is `ci / required`; it passes only when every
-  build leg, lint and sanitizers pass.
+  build leg, lint (the pre-commit hooks and clang-tidy) and sanitizers pass.
 - Mark deferred work inline with a greppable `// TODO:` (or `# TODO:` in CMake
   and YAML), rather than tracking it only in prose or commits.
 
