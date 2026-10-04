@@ -106,6 +106,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     `discard(first, count)`; `settle` does both), `report_into` is for a
     timer used without scopes, and a null span name aborts (`VKC_CHECK`)
     rather than reading as `"gpu"`.
+- `vulkan` tier external memory (DECISIONS.md, "Where memory lives", V4):
+  - `create_exported_buffer`, from recon: a device-only storage buffer on
+    memory dedicated to it, from an `Allocator` and within its heap's budget,
+    exported as an opaque file descriptor for CUDA to import (as dedicated,
+    `cudaExternalMemoryDedicated`). `UniqueFd` owns the descriptor until an
+    import takes it. `find_memory_type`, for a resource bound outside the
+    allocator, never chooses a protected, lazily allocated or AMD
+    device-coherent or device-uncached type.
+  - `CommandBatch::release`, the releasing half of a queue-family ownership
+    transfer, recorded after every command of the batch: an exported buffer
+    goes back to `VK_QUEUE_FAMILY_EXTERNAL` once the kernels have read it.
+  - Migrating from recon's `create_exported_buffer(device, bytes)`: pass the
+    allocator, `create_exported_buffer(device, allocator, bytes)`, whose
+    budget now counts the memory. `fd` is a `UniqueFd`: give CUDA
+    `fd.get()`, set `cudaExternalMemoryDedicated`, and call `fd.release()`
+    once the import succeeds rather than `close` after one fails. Each frame,
+    synchronize the CUDA stream that wrote before submitting the batch that
+    acquires the buffer, and release it back in that batch, so CUDA writes
+    the next frame into a buffer Vulkan has handed over.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
   on and reach the log sink; a leg builds with no Vulkan installed.

@@ -62,7 +62,7 @@ It lands in five stages, each its own PR, merged before any sibling migrates:
 | V1 (landed) | `vulkan.hpp`, the `VkResult` helpers, `UniqueHandle`, `PhysicalDeviceInfo`, `DeviceRequirements` with `merge` and `check_device_support`, `Instance`, `Device` |
 | V2 (landed) | `Allocator`, `Buffer`, `Image`, descriptor layouts, pools and sets, `ShaderModule`, fences and semaphores, command pools and buffers |
 | V3 (landed) | `ComputePipeline`, `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`, `CommandBatch`, the compute helpers, and the shader build functions |
-| V4 (timers landed) | `QueryPool`, `GpuTimer`, `GpuStageScope`, `StageMetrics` (in `base`), timed `CommandBatch` commands and submits; external memory follows |
+| V4 (landed) | `QueryPool`, `GpuTimer`, `GpuStageScope`, `StageMetrics` (in `base`), timed `CommandBatch` commands and submits; `create_exported_buffer`, `UniqueFd`, `find_memory_type`, `CommandBatch::release` |
 | V5 | the shared-device bootstrap, replacing recon's example copy and ios's `SharedDevice` |
 
 V1's choices, from comparing the two cores on 2026-10-03:
@@ -255,8 +255,8 @@ V3's choices, from the same comparison (gfx has no compute):
   fixed: Make deletes a failed command's output, and Ninja and Xcode rerun
   it.
 
-V4's choices, timing first (external memory follows, on the placement
-rules in "Where memory lives"):
+V4's choices, timing first (external memory's are with the placement rules,
+in "Where memory lives"):
 
 - **One metrics vocabulary, in `base`.** recon's `StageMetrics` and gfx's
   `FrameMetrics::Section` were the same four fields; `StageRow`,
@@ -389,6 +389,31 @@ rules after review, the same day.
   becomes `mapped_storage_buffer`, and its default host access becomes
   `SequentialWrite`: a caller that reads it passes `Random`, which a discrete
   GPU refuses. CHANGELOG.md lists each step.
+- **Exported memory follows the same rule** (V4's external memory).
+  `create_exported_buffer` -- recon's, the buffer CUDA imports as an opaque
+  file descriptor and a decoder writes -- takes its memory from an
+  `Allocator`, placed by the `DeviceOnly` mask (`placement_types`) and
+  within its heap's budget. recon allocated it outside VMA, as exported
+  memory is dedicated to its resource; VMA's dedicated allocation takes the
+  export chained (`vmaAllocateDedicatedMemory`), and memory outside the
+  allocator was in no budget -- without `VK_EXT_memory_budget`, VMA's
+  estimate counts only its own allocations, so the allocator overcommitted
+  VRAM the decoder's buffers held. Its own fallback, any device-local type,
+  also let a discrete GPU's exported buffer into the BAR window.
+- **The descriptor is owned, and the host orders the APIs.** `UniqueFd`
+  closes the descriptor on every path until an import takes it
+  (`release`): an open one keeps the memory alive after Vulkan frees it, so
+  a leak pins a whole dedicated allocation. Each frame a batch takes the
+  buffer over from `VK_QUEUE_FAMILY_EXTERNAL` before its kernels read it and
+  hands it back after them (`CommandBatch::release`, recorded after every
+  command, so none runs on a buffer already handed back); CUDA's stream is
+  synchronized before the batch is submitted, and writes again once the
+  submit returns. External semaphores would order the two on the GPU; they
+  wait for a consumer that needs the overlap. gfx's `ExternalHandleType`, a
+  field every value but `None` refused, is not carried over.
+  `find_memory_type`, recon's search for a resource bound outside the
+  allocator, skips the same special types the placement masks do. Opaque
+  descriptors only: the family's CUDA interop is Linux.
 - **`PhysicalDeviceInfo::unified_memory`** tells the architectures apart:
   every heap is device-local, so every type is (the spec sets
   `DEVICE_LOCAL` on a type exactly when its heap has it). An APU whose driver

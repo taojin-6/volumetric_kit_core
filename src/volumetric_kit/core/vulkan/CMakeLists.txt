@@ -38,6 +38,7 @@ target_sources(
           gpu_timer.cpp
           device.cpp
           device_requirements.cpp
+          external_memory.cpp
           image.cpp
           instance.cpp
           physical_device_info.cpp

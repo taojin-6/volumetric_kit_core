@@ -407,31 +407,42 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
 }
 
 Status CommandBatch::acquire(const Buffer& buffer, std::uint32_t from) {
+  return transfer(Kind::Acquire, buffer, from);
+}
+
+Status CommandBatch::release(const Buffer& buffer, std::uint32_t to) {
+  return transfer(Kind::Release, buffer, to);
+}
+
+Status CommandBatch::transfer(Kind kind, const Buffer& buffer,
+                              std::uint32_t family) {
+  const std::string caller =
+      kind == Kind::Acquire ? "CommandBatch::acquire" : "CommandBatch::release";
   VKC_TRY(check(usable()));
   if (!buffer.valid()) {
-    return check(
-        Status::invalid_argument("CommandBatch::acquire: the buffer is empty"));
+    return check(Status::invalid_argument(caller + ": the buffer is empty"));
   }
   const std::uint32_t own = device_->queue_family();
-  const bool external = from == VK_QUEUE_FAMILY_EXTERNAL;
-  if (!external && from != VK_QUEUE_FAMILY_IGNORED &&
-      from >= device_->caps().queue_families().size()) {
-    return check(Status::invalid_argument(
-        "CommandBatch::acquire: queue family " + std::to_string(from) +
-        " is not one of the device's"));
+  const bool external = family == VK_QUEUE_FAMILY_EXTERNAL;
+  if (!external && family != VK_QUEUE_FAMILY_IGNORED &&
+      family >= device_->caps().queue_families().size()) {
+    return check(Status::invalid_argument(caller + ": queue family " +
+                                          std::to_string(family) +
+                                          " is not one of the device's"));
   }
   const bool concurrent = buffer.sharing_mode() == VK_SHARING_MODE_CONCURRENT;
-  if (from == VK_QUEUE_FAMILY_IGNORED || from == own ||
+  if (family == VK_QUEUE_FAMILY_IGNORED || family == own ||
       (concurrent && !external)) {
     return {};
   }
+  // A CONCURRENT buffer moves between outside Vulkan and every family at
+  // once, which Vulkan spells with this side's family ignored.
+  const std::uint32_t ours = concurrent ? VK_QUEUE_FAMILY_IGNORED : own;
   Op op;
-  op.kind = Kind::Acquire;
+  op.kind = kind;
   op.dst = buffer.handle();
-  op.value = from;
-  // A CONCURRENT buffer is taken from outside Vulkan for every family at
-  // once, which Vulkan spells with the destination ignored.
-  op.to_family = concurrent ? VK_QUEUE_FAMILY_IGNORED : own;
+  op.value = kind == Kind::Acquire ? family : ours;
+  op.to_family = kind == Kind::Acquire ? ours : family;
   ops_.push_back(std::move(op));
   return {};
 }
@@ -565,10 +576,13 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
   const auto touches = [](const Op& op, VkBuffer buffer) {
     return buffer != VK_NULL_HANDLE && (op.src == buffer || op.dst == buffer);
   };
-  const Op& b = ops_[i];
   // An acquire is a barrier of its own, and orders what reads its buffer
-  // after it.
-  if (b.kind == Kind::Acquire) return false;
+  // after it; a release is recorded after everything, past the last barrier.
+  const auto transfers = [](const Op& op) {
+    return op.kind == Kind::Acquire || op.kind == Kind::Release;
+  };
+  const Op& b = ops_[i];
+  if (transfers(b)) return false;
   // A fill or upload that starts past the end of the one before it, in the
   // same buffer, reads nothing another command writes and writes no byte the
   // run has: the run's first write there was checked against all of it. So
@@ -591,8 +605,7 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
       bool source_written = false;
       if (b.kind == Kind::Copy && !b.staged) {
         for (std::size_t j = first; j < i && !source_written; ++j) {
-          source_written =
-              ops_[j].kind != Kind::Acquire && written(ops_[j]) == b.src;
+          source_written = !transfers(ops_[j]) && written(ops_[j]) == b.src;
         }
       }
       if (!source_written) return false;
@@ -600,7 +613,7 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
   }
   for (std::size_t j = first; j < i; ++j) {
     const Op& a = ops_[j];
-    if (a.kind == Kind::Acquire) continue;
+    if (transfers(a)) continue;
     if (dispatches(a) || dispatches(b) || touches(a, written(b)) ||
         touches(b, written(a))) {
       return true;
@@ -628,6 +641,7 @@ void CommandBatch::record(VkCommandBuffer cmd,
   std::size_t first = 0;  // the first command since the last barrier
   for (std::size_t i = 0; i < ops_.size(); ++i) {
     const Op& op = ops_[i];
+    if (op.kind == Kind::Release) continue;  // after everything, below
     // Each command sees every write before it -- the ordering one submit per
     // dispatch would give for free.
     if (i > 0 && needs_barrier(first, i)) {
@@ -683,6 +697,8 @@ void CommandBatch::record(VkCommandBuffer cmd,
                              kInnerStages, 0, 0, nullptr, 1, &b, 0, nullptr);
         break;
       }
+      case Kind::Release:
+        break;  // skipped above
       case Kind::Dispatch:
       case Kind::DispatchIndirect: {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, op.pipeline);
@@ -721,6 +737,22 @@ void CommandBatch::record(VkCommandBuffer cmd,
     access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
   }
   barrier(cmd, stages, access);
+  // Each release last, so every command, whenever recorded, ran on the
+  // buffer first: it waits for them all and makes their writes available to
+  // the family the buffer goes to, whose acquire makes them visible.
+  for (const Op& op : ops_) {
+    if (op.kind != Kind::Release) continue;
+    VkBufferMemoryBarrier b{};
+    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.srcQueueFamilyIndex = op.value;
+    b.dstQueueFamilyIndex = op.to_family;
+    b.buffer = op.dst;
+    b.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(cmd, kInnerStages,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 1,
+                         &b, 0, nullptr);
+  }
 }
 
 Status CommandBatch::submit() {

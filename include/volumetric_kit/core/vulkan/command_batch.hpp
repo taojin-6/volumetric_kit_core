@@ -31,7 +31,7 @@ class Image;
 struct ComputeKernel;
 
 /// @brief Records one call's device work -- uploads, fills, copies, ownership
-///        acquires, dispatches, readbacks -- into a single command buffer,
+///        transfers, dispatches, readbacks -- into a single command buffer,
 ///        submitted once and waited on once by @ref submit.
 ///
 /// The commands run in the order they were recorded, each seeing every write
@@ -222,11 +222,12 @@ class VKC_VULKAN_API CommandBatch {
   /// Reading an `EXCLUSIVE` buffer that another family wrote is undefined
   /// without one, and so is reading memory an API outside Vulkan wrote --
   /// CUDA through an imported allocation -- which comes from
-  /// `VK_QUEUE_FAMILY_EXTERNAL`. For another Vulkan family, the writer
-  /// records the releasing half on its own queue, the whole buffer from
-  /// @p from to @ref Device::queue_family, and that work must have finished
-  /// before @ref submit, as a waited fence ensures: the batch waits on no
-  /// semaphore. Nothing is recorded when there is nothing to transfer: when
+  /// `VK_QUEUE_FAMILY_EXTERNAL`. The writer records the releasing half --
+  /// another Vulkan family's batch by @ref release, the whole buffer from
+  /// @p from to @ref Device::queue_family -- and its work must have finished
+  /// before @ref submit, as a waited fence or a synchronized CUDA stream
+  /// ensures: the batch waits on no semaphore. Nothing is recorded when there
+  /// is nothing to transfer: when
   /// @p from is `VK_QUEUE_FAMILY_IGNORED` or this device's family, or when a
   /// `CONCURRENT` buffer was written on another Vulkan family (it is shared
   /// already).
@@ -242,6 +243,34 @@ class VKC_VULKAN_API CommandBatch {
   ///         a @p from that is none of those; or a poisoned batch's first
   ///         refusal.
   Status acquire(const Buffer& buffer, std::uint32_t from);
+
+  /// @brief Hand @p buffer over to the queue family @p to once the batch's
+  ///        commands are done: the releasing half of a queue-family ownership
+  ///        transfer.
+  ///
+  /// Recorded after every command of the batch, whenever it is called, so a
+  /// command recorded after it still runs before the buffer leaves. Its
+  /// writes are made available to @p to, which takes the buffer over once
+  /// @ref submit has returned: another family by its own @ref acquire, an API
+  /// outside Vulkan from `VK_QUEUE_FAMILY_EXTERNAL` -- CUDA writing the next
+  /// picture into an exported buffer, which a later batch acquires back.
+  /// Nothing is recorded when there is nothing to transfer: when @p to is
+  /// `VK_QUEUE_FAMILY_IGNORED` or this device's family, or when a
+  /// `CONCURRENT` buffer goes to another Vulkan family (it is shared
+  /// already).
+  ///
+  /// @code
+  /// VKC_TRY(batch.acquire(frame, VK_QUEUE_FAMILY_EXTERNAL));  // CUDA wrote
+  /// VKC_TRY(batch.dispatch(convert, &push, sizeof(push), groups, max_groups));
+  /// VKC_TRY(batch.release(frame, VK_QUEUE_FAMILY_EXTERNAL));  // CUDA's again
+  /// @endcode
+  /// @param buffer  The buffer; it must stay alive until @ref submit returns.
+  /// @param to      The family that uses it next: one of the device's,
+  ///                `VK_QUEUE_FAMILY_EXTERNAL` or `VK_QUEUE_FAMILY_IGNORED`.
+  /// @return OK; @ref Status::Code::InvalidArgument for an empty @p buffer or
+  ///         a @p to that is none of those; or a poisoned batch's first
+  ///         refusal.
+  Status release(const Buffer& buffer, std::uint32_t to);
 
   /// @brief Record a 1-D dispatch of @p kernel over @p groups workgroups.
   ///
@@ -372,6 +401,7 @@ class VKC_VULKAN_API CommandBatch {
     DispatchIndirect,
     Readback,
     Acquire,
+    Release,
     ImageCopy
   };
   // What a command needs at submit, taken when it is recorded: handles and
@@ -384,7 +414,7 @@ class VKC_VULKAN_API CommandBatch {
     VkDeviceSize dst_offset = 0;
     VkDeviceSize bytes = 0;
     std::uint32_t value = 0;      // fill word, workgroup count, or from-family
-    std::uint32_t to_family = 0;  // an acquire's destination family
+    std::uint32_t to_family = 0;  // a transfer's destination family
     // A dispatch's kernel: its pipeline, the layout it binds and pushes
     // through, and its name, borrowed (a string literal) for the region.
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -418,6 +448,8 @@ class VKC_VULKAN_API CommandBatch {
 
   Status check(Status status);
   Status usable() const;
+  // An acquire from `family`, or a release to it.
+  Status transfer(Kind kind, const Buffer& buffer, std::uint32_t family);
   static Status check_dispatch(const ComputeKernel& kernel, const void* push,
                                std::uint32_t push_size);
   static Op dispatch_op(Kind kind, const ComputeKernel& kernel,

@@ -14,6 +14,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
+#include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
@@ -126,8 +127,9 @@ struct MemoryStats {
 
 /// @brief Parameters for @ref Allocator::create_buffer.
 ///
-/// TODO: V4 adds exportable memory here (gfx's `ExternalHandleType`), with the
-/// rest of the external-memory interop.
+/// Memory another API imports is not made here but by
+/// @ref create_exported_buffer, which allocates it through an allocator too,
+/// dedicated to its buffer.
 struct BufferDesc {
   /// Size in bytes; non-zero.
   VkDeviceSize size = 0;
@@ -303,7 +305,21 @@ class VKC_VULKAN_API Allocator {
   bool valid() const noexcept { return impl_ != nullptr; }
 
  private:
+  friend Result<ExportedBuffer> create_exported_buffer(const Device& device,
+                                                       Allocator& allocator,
+                                                       VkDeviceSize bytes);
+
   Allocator() = default;
+
+  // What create_exported_buffer needs of VMA, which this class's source alone
+  // includes: `buffer` -- the caller's, destroyed here on a failure -- bound
+  // to memory dedicated to it, made with `export_info` chained, placed as
+  // DeviceOnly is and within its heap's budget. `memory` and `memory_size`
+  // receive the allocation, for the caller to export.
+  Result<Buffer> bind_exported(VkBuffer buffer, VkDeviceSize size,
+                               VkBufferUsageFlags usage, void* export_info,
+                               VkDeviceMemory* memory,
+                               VkDeviceSize* memory_size);
 
   // The VMA handle stays out of this header. Shared, because every buffer
   // and image holds a reference so it can free through it.
