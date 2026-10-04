@@ -18,6 +18,7 @@
 
 #include "add_comp.spv.hpp"
 #include "fill_comp.spv.hpp"
+#include "memory_types.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -130,13 +131,19 @@ class ComputeTest : public test::VulkanDeviceTest {
 // dispatch, barrier, wait, read -- with no batch in the way.
 TEST_F(ComputeTest, RunsAPipelineBuiltByHand) {
   constexpr std::uint32_t kCount = 1000;
-  // Device-mapped, so the host reads the result in place: cheap on unified
-  // memory, a PCIe read on a discrete GPU, which a library would avoid with a
-  // CommandBatch readback -- here it keeps the chain free of batches.
-  Result<Buffer> made = mapped_storage_buffer(
-      allocator(), VkDeviceSize{kCount} * 4, HostAccess::Random);
+  constexpr VkDeviceSize kBytes = VkDeviceSize{kCount} * 4;
+  // The kernel writes device-only memory, copied into a staging buffer the
+  // host reads -- by hand, to keep the chain free of batches.
+  Result<Buffer> made = device_storage_buffer(allocator(), kBytes);
   ASSERT_TRUE(made.ok()) << made.status().message();
   const Buffer out = *std::move(made);
+  BufferDesc readback_desc;
+  readback_desc.size = kBytes;
+  readback_desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  readback_desc.memory = MemoryUsage::Staging;
+  readback_desc.host_access = HostAccess::Random;
+  Result<Buffer> readback = allocator().create_buffer(readback_desc);
+  ASSERT_TRUE(readback.ok()) << readback.status().message();
 
   Result<ShaderModule> shader = ShaderModule::create(
       device().handle(),
@@ -183,13 +190,16 @@ TEST_F(ComputeTest, RunsAPipelineBuiltByHand) {
     VkMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr,
-                         0, nullptr);
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0,
+                         nullptr, 0, nullptr);
+    const VkBufferCopy region{0, 0, kBytes};
+    vkCmdCopyBuffer(cmd, out.handle(), readback->handle(), 1, &region);
+    test::host_read_barrier(cmd);
   });
   ASSERT_TRUE(s.ok()) << s.message();
-  const auto* values = static_cast<const std::uint32_t*>(out.mapped());
+  const auto* values = static_cast<const std::uint32_t*>(readback->mapped());
   for (std::uint32_t i = 0; i < kCount; ++i) ASSERT_EQ(values[i], i);
 }
 
@@ -432,19 +442,24 @@ TEST_F(ComputeTest, MakesStorageBuffersWhereTheyBelong) {
   Result<Buffer> host =
       mapped_storage_buffer(allocator(), 64, HostAccess::SequentialWrite,
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-  ASSERT_TRUE(host.ok()) << host.status().message();
-  EXPECT_NE(host->mapped(), nullptr);
-  EXPECT_TRUE(host->is_device_local());  // the GPU reads it at VRAM speed
-  EXPECT_NE(host->usage() & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0U);
-  EXPECT_NE(host->usage() & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0U);
-
   const std::uint32_t words[4] = {1, 2, 3, 4};
   Result<Buffer> filled = upload_storage_buffer(allocator(), words, 16);
-  ASSERT_TRUE(filled.ok()) << filled.status().message();
-  EXPECT_TRUE(filled->is_device_local());
-  EXPECT_EQ(static_cast<const std::uint32_t*>(filled->mapped())[3], 4U);
   EXPECT_TRUE(
       is_invalid(upload_storage_buffer(allocator(), nullptr, 16).status()));
+  if (physical().device_mapped_memory()) {
+    ASSERT_TRUE(host.ok()) << host.status().message();
+    EXPECT_NE(host->mapped(), nullptr);
+    EXPECT_TRUE(host->is_device_local());  // the GPU reads it at VRAM speed
+    EXPECT_NE(host->usage() & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0U);
+    EXPECT_NE(host->usage() & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0U);
+    ASSERT_TRUE(filled.ok()) << filled.status().message();
+    EXPECT_TRUE(filled->is_device_local());
+    EXPECT_EQ(static_cast<const std::uint32_t*>(filled->mapped())[3], 4U);
+  } else {
+    // Refused, never placed in host memory: such a device stages instead.
+    EXPECT_EQ(host.status().domain(), Status::Code::Unsupported);
+    EXPECT_EQ(filled.status().domain(), Status::Code::Unsupported);
+  }
 
   Result<Buffer> resident = device_storage_buffer(allocator(), 64);
   ASSERT_TRUE(resident.ok()) << resident.status().message();
@@ -453,18 +468,9 @@ TEST_F(ComputeTest, MakesStorageBuffersWhereTheyBelong) {
   // Kernel memory is private wherever the device has private memory for it.
   VkMemoryRequirements needs{};
   vkGetBufferMemoryRequirements(device().handle(), resident->handle(), &needs);
-  const VkPhysicalDeviceMemoryProperties& memory =
-      physical().memory_properties();
-  bool has_private = false;
-  for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-    const VkMemoryPropertyFlags flags = memory.memoryTypes[i].propertyFlags;
-    has_private =
-        has_private || ((needs.memoryTypeBits & (1U << i)) != 0 &&
-                        (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0 &&
-                        (flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT |
-                                  VK_MEMORY_PROPERTY_PROTECTED_BIT)) == 0);
-  }
+  const bool has_private =
+      (detail::device_private_types(physical().memory_properties()) &
+       needs.memoryTypeBits) != 0;
   const std::optional<MemoryInfo> placed = resident->memory_info();
   if (!placed.has_value()) {
     FAIL() << "no memory info";
@@ -524,16 +530,19 @@ TEST_F(ComputeTest, ScratchGrownMidBatchStaysTheBatchsUntilItRuns) {
 
 TEST_F(ComputeTest, StorageInputBindsDeviceBuffersAndStagesHostBytes) {
   Result<Buffer> resident = device_storage_buffer(allocator(), 64);
-  Result<Buffer> mapped = mapped_storage_buffer(allocator(), 64);
   BufferDesc bare_desc;
   bare_desc.size = 64;
   bare_desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   bare_desc.memory = MemoryUsage::DeviceOnly;
   Result<Buffer> bare = allocator().create_buffer(bare_desc);
-  ASSERT_TRUE(resident.ok() && mapped.ok() && bare.ok());
+  ASSERT_TRUE(resident.ok() && bare.ok());
 
   EXPECT_TRUE(StorageInput(*resident).check("t", 64).ok());
-  EXPECT_TRUE(StorageInput(*mapped).check("t", 64).ok());  // zero-copy input
+  if (physical().device_mapped_memory()) {
+    Result<Buffer> mapped = mapped_storage_buffer(allocator(), 64);
+    ASSERT_TRUE(mapped.ok()) << mapped.status().message();
+    EXPECT_TRUE(StorageInput(*mapped).check("t", 64).ok());  // zero-copy input
+  }
   EXPECT_TRUE(is_invalid(StorageInput(*resident).check("t", 65)));
   EXPECT_TRUE(is_invalid(StorageInput(*bare).check("t", 4)));  // no STORAGE
   // A borrowed buffer in host memory, or whose memory nobody recorded, is
@@ -572,6 +581,30 @@ TEST_F(ComputeTest, StorageInputBindsDeviceBuffersAndStagesHostBytes) {
       StorageInput(words.data()).buffer(again, allocator(), 8, upload).ok());
   EXPECT_EQ(upload.handle(), reused);  // big enough: reused
   ASSERT_TRUE(again.submit().ok());
+}
+
+// An upload buffer a copy cannot write -- device-local, big enough, but
+// without TRANSFER_DST, as a device-mapped storage buffer is -- is replaced,
+// not kept for a batch upload that would refuse it.
+TEST_F(ComputeTest, StorageInputReplacesAnUploadACopyCannotWrite) {
+  BufferDesc desc;
+  desc.size = 64;
+  desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  desc.memory = MemoryUsage::DeviceOnly;
+  Result<Buffer> made = allocator().create_buffer(desc);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  Buffer upload = *std::move(made);
+  ASSERT_TRUE(upload.is_device_local());
+  VkBuffer unwritable = upload.handle();
+  const std::vector<std::uint32_t> words = {3, 1, 4, 1};
+  CommandBatch batch(device(), allocator());
+  const Result<VkBuffer> bound =
+      StorageInput(words.data()).buffer(batch, allocator(), 16, upload);
+  ASSERT_TRUE(bound.ok()) << bound.status().message();
+  EXPECT_NE(*bound, unwritable);
+  EXPECT_NE(upload.usage() & VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0U);
+  ASSERT_TRUE(batch.submit().ok());
+  EXPECT_EQ(read(upload, 4), words);
 }
 
 TEST_F(ComputeTest, StorageInputKeepsAnUploadItOutgrowsForTheBatch) {

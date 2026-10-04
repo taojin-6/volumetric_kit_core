@@ -197,6 +197,8 @@ Result<Device> Device::create(VkInstance instance,
   };
   // The spec requires enabling it wherever the device exposes it (MoltenVK).
   enable_if_offered(detail::kPortabilitySubset);
+  // The driver's own heap budgets, which an Allocator allocates within.
+  enable_if_offered(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
   for (const std::string& name : reqs.optional_extensions) {
     enable_if_offered(name);
   }

@@ -6,6 +6,7 @@
 
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <ios>
@@ -16,17 +17,16 @@
 
 #include <gtest/gtest.h>
 
+#include "memory_types.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "vulkan_device_fixture.hpp"
 
 namespace volumetric_kit::core {
 namespace {
-
-constexpr VkMemoryPropertyFlags kSpecial =
-    VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT | VK_MEMORY_PROPERTY_PROTECTED_BIT;
 
 class AllocatorTest : public test::VulkanDeviceTest {
  protected:
@@ -35,17 +35,9 @@ class AllocatorTest : public test::VulkanDeviceTest {
   std::uint32_t types_with(std::uint32_t requirements,
                            VkMemoryPropertyFlags required,
                            VkMemoryPropertyFlags excluded) const {
-    const VkPhysicalDeviceMemoryProperties& props =
-        physical().memory_properties();
-    std::uint32_t mask = 0;
-    for (std::uint32_t i = 0; i < props.memoryTypeCount; ++i) {
-      const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
-      if ((flags & required) == required &&
-          (flags & (excluded | kSpecial)) == 0) {
-        mask |= 1U << i;
-      }
-    }
-    return mask & requirements;
+    return detail::memory_types_with(physical().memory_properties(), required,
+                                     excluded) &
+           requirements;
   }
 
   // A device-only resource of these requirements landed in `memory`: device
@@ -70,12 +62,12 @@ class AllocatorTest : public test::VulkanDeviceTest {
   }
 
   Buffer make(VkDeviceSize size, VkBufferUsageFlags usage, MemoryUsage memory,
-              bool mapped = false) {
+              HostAccess access = HostAccess::SequentialWrite) {
     BufferDesc desc;
     desc.size = size;
     desc.usage = usage;
     desc.memory = memory;
-    desc.mapped = mapped;
+    desc.host_access = access;
     Result<Buffer> buffer = allocator().create_buffer(desc);
     EXPECT_TRUE(buffer.ok()) << buffer.status().message();
     return buffer.ok() ? *std::move(buffer) : Buffer{};
@@ -132,8 +124,6 @@ TEST_F(AllocatorTest, StagingMemoryIsSystemRamOnADiscreteGpu) {
   upload_desc.size = 1 << 16;
   upload_desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   upload_desc.memory = MemoryUsage::Staging;
-  upload_desc.mapped = true;
-  upload_desc.host_access = HostAccess::SequentialWrite;
   BufferDesc readback_desc = upload_desc;
   readback_desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   readback_desc.host_access = HostAccess::Random;
@@ -145,6 +135,7 @@ TEST_F(AllocatorTest, StagingMemoryIsSystemRamOnADiscreteGpu) {
       FAIL() << "no memory info";
     }
     EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0U);
+    EXPECT_NE(made->mapped(), nullptr);  // a staging buffer is always mapped
     VkMemoryRequirements needs{};
     vkGetBufferMemoryRequirements(device().handle(), made->handle(), &needs);
     const std::uint32_t system_ram =
@@ -160,20 +151,17 @@ TEST_F(AllocatorTest, StagingMemoryIsSystemRamOnADiscreteGpu) {
 // Device-local memory the host writes: VRAM through the BAR window on a
 // discrete GPU, the one pool on unified memory -- never host memory.
 TEST_F(AllocatorTest, DeviceMappedBufferIsDeviceLocalAndMapped) {
+  EXPECT_EQ(physical().device_mapped_memory(),
+            detail::device_mapped_types(physical().memory_properties()) != 0);
+  if (physical().unified_memory()) {
+    EXPECT_TRUE(physical().device_mapped_memory());
+  }
   BufferDesc desc;
   desc.size = 4096;
   desc.usage = kStorage | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
   desc.memory = MemoryUsage::DeviceMapped;
-  desc.mapped = true;
-  desc.host_access = HostAccess::SequentialWrite;
   Result<Buffer> made = allocator().create_buffer(desc);
-  const std::uint32_t mappable =
-      types_with(~0U,
-                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                 0);
-  if (mappable == 0) {
+  if (!physical().device_mapped_memory()) {
     EXPECT_EQ(made.status().domain(), Status::Code::Unsupported);
     return;
   }
@@ -190,8 +178,60 @@ TEST_F(AllocatorTest, DeviceMappedBufferIsDeviceLocalAndMapped) {
   std::memset(made->mapped(), 0x5A, 4096);  // the host writes it in place
 }
 
+// A device-mapped buffer the host reads is cached device-local memory, which
+// unified memory has; where there is none -- a discrete GPU's BAR window -- it
+// is refused rather than read across PCIe uncached.
+TEST_F(AllocatorTest, ADeviceMappedBufferTheHostReadsIsCached) {
+  BufferDesc desc;
+  desc.size = 4096;
+  desc.usage = kStorage;
+  desc.memory = MemoryUsage::DeviceMapped;
+  desc.host_access = HostAccess::Random;
+  Result<Buffer> made = allocator().create_buffer(desc);
+  const std::uint32_t cached =
+      types_with(~0U,
+                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                 0);
+  if (cached == 0) {
+    EXPECT_EQ(made.status().domain(), Status::Code::Unsupported);
+    return;
+  }
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const std::optional<MemoryInfo> memory = made->memory_info();
+  if (!memory.has_value()) {
+    FAIL() << "no memory info";
+  }
+  EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0U);
+  EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0U);
+}
+
+// Every allocation is made within its heap's budget: one larger than any
+// heap's budget is refused, not oversubscribed.
+TEST_F(AllocatorTest, AnAllocationPastTheHeapBudgetFails) {
+  const MemoryStats stats = allocator().memory_stats();
+  ASSERT_GT(stats.heap_count, 0U);
+  std::uint64_t largest = 0;
+  for (std::uint32_t h = 0; h < stats.heap_count; ++h) {
+    largest = std::max(largest, stats.heaps[h].budget_bytes);
+  }
+  ASSERT_GT(largest, 0U);
+  BufferDesc desc;
+  desc.size = largest + (VkDeviceSize{1} << 20);
+  desc.usage = kStorage;
+  const Result<Buffer> made = allocator().create_buffer(desc);
+  ASSERT_FALSE(made.ok()) << "a " << desc.size
+                          << "-byte buffer was allocated past the budget";
+  EXPECT_EQ(vk_result(made.status()),
+            std::optional<VkResult>(VK_ERROR_OUT_OF_DEVICE_MEMORY))
+      << made.status().message();
+}
+
 TEST_F(AllocatorTest, StagingBufferIsMappedAndCoherent) {
-  const Buffer buffer = make(256, kTransfer, MemoryUsage::Staging, true);
+  const Buffer buffer =
+      make(256, kTransfer, MemoryUsage::Staging, HostAccess::Random);
   ASSERT_NE(buffer.mapped(), nullptr);
   const std::optional<MemoryInfo> memory = buffer.memory_info();
   // An if, not ASSERT_TRUE: clang-tidy's optional-access check follows the
@@ -223,17 +263,6 @@ TEST_F(AllocatorTest, RefusesContradictoryBuffers) {
   BufferDesc no_usage = good;
   no_usage.usage = 0;
   EXPECT_EQ(domain(no_usage), Status::Code::InvalidArgument);
-  BufferDesc mapped_vram = good;
-  mapped_vram.memory = MemoryUsage::DeviceOnly;
-  mapped_vram.mapped = true;
-  EXPECT_EQ(domain(mapped_vram), Status::Code::InvalidArgument);
-  BufferDesc unmapped_host = good;
-  unmapped_host.memory = MemoryUsage::Staging;
-  unmapped_host.usage = kTransfer;
-  EXPECT_EQ(domain(unmapped_host), Status::Code::InvalidArgument);
-  BufferDesc unmapped_bar = good;
-  unmapped_bar.memory = MemoryUsage::DeviceMapped;
-  EXPECT_EQ(domain(unmapped_bar), Status::Code::InvalidArgument);
   // Host memory the GPU would read directly: a shader's storage or uniform
   // buffer, vertices, indirect commands -- each a PCIe read per access on a
   // discrete GPU.
@@ -244,7 +273,6 @@ TEST_F(AllocatorTest, RefusesContradictoryBuffers) {
         VkBufferUsageFlags{VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT}}) {
     BufferDesc host_read = good;
     host_read.memory = MemoryUsage::Staging;
-    host_read.mapped = true;
     host_read.usage = kTransfer | direct;
     EXPECT_EQ(domain(host_read), Status::Code::InvalidArgument)
         << "usage 0x" << std::hex << direct;
@@ -301,12 +329,11 @@ TEST_F(AllocatorTest, SharingFollowsTheDistinctFamilies) {
 // the path every kernel input takes.
 TEST_F(AllocatorTest, RoundTripsThroughDeviceOnlyMemory) {
   constexpr VkDeviceSize kBytes = 4096;
-  const Buffer upload =
-      make(kBytes, kTransfer, MemoryUsage::Staging, /*mapped=*/true);
+  const Buffer upload = make(kBytes, kTransfer, MemoryUsage::Staging);
   const Buffer resident =
       make(kBytes, kTransfer | kStorage, MemoryUsage::DeviceOnly);
   const Buffer readback =
-      make(kBytes, kTransfer, MemoryUsage::Staging, /*mapped=*/true);
+      make(kBytes, kTransfer, MemoryUsage::Staging, HostAccess::Random);
   ASSERT_TRUE(upload.valid() && resident.valid() && readback.valid());
 
   std::vector<std::uint8_t> data(kBytes);
@@ -409,14 +436,31 @@ TEST_F(AllocatorTest, MakesADeviceOnlyImageWithAView) {
   EXPECT_TRUE(image->is_device_local());
 }
 
-// An image is device-only: no other placement is taken.
-TEST_F(AllocatorTest, AnImageIsDeviceOnly) {
-  for (const MemoryUsage memory :
-       {MemoryUsage::DeviceMapped, MemoryUsage::Staging}) {
-    ImageDesc desc = color_image(16, 16);
-    desc.memory = memory;
-    EXPECT_EQ(allocator().create_image(desc).status().domain(),
-              Status::Code::InvalidArgument);
+// An image the device keeps out of private memory -- a linear one, which
+// Apple holds in shared storage -- is device-local all the same: the rest of
+// unified memory's one pool, and on a discrete GPU never the BAR window.
+TEST_F(AllocatorTest, ALinearImageIsDeviceLocal) {
+  ImageDesc desc = color_image(16, 16);
+  desc.tiling = VK_IMAGE_TILING_LINEAR;
+  desc.usage =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  desc.with_view = false;
+  const Result<Image> made = allocator().create_image(desc);
+  if (!made.ok()) {
+    // Only where no device-only type suits it, and memory is not unified.
+    EXPECT_EQ(made.status().domain(), Status::Code::Unsupported)
+        << made.status().message();
+    EXPECT_FALSE(physical().unified_memory());
+    return;
+  }
+  const std::optional<MemoryInfo> memory = made->memory_info();
+  if (!memory.has_value()) {
+    FAIL() << "no memory info";
+  }
+  EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0U);
+  if (!physical().unified_memory()) {
+    EXPECT_EQ(memory->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0U)
+        << "a device-only image landed in the BAR window";
   }
 }
 
@@ -497,9 +541,6 @@ TEST_F(AllocatorTest, RefusesContradictoryImages) {
   d.mip_levels = 2;
   EXPECT_TRUE(refused(d));
   d = good;
-  d.memory = MemoryUsage::Staging;
-  EXPECT_TRUE(refused(d));
-  d = good;
   d.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;  // and a view
   EXPECT_TRUE(refused(d));
   d = good;
@@ -537,10 +578,9 @@ TEST_F(AllocatorTest, RoundTripsThroughAnImage) {
   constexpr VkDeviceSize kBytes = VkDeviceSize{kW} * kH * 4;
   const Result<Image> made = allocator().create_image(color_image(kW, kH));
   ASSERT_TRUE(made.ok()) << made.status().message();
-  const Buffer upload =
-      make(kBytes, kTransfer, MemoryUsage::Staging, /*mapped=*/true);
+  const Buffer upload = make(kBytes, kTransfer, MemoryUsage::Staging);
   const Buffer readback =
-      make(kBytes, kTransfer, MemoryUsage::Staging, /*mapped=*/true);
+      make(kBytes, kTransfer, MemoryUsage::Staging, HostAccess::Random);
   std::vector<std::uint8_t> texels(kBytes);
   std::iota(texels.begin(), texels.end(), std::uint8_t{3});
   std::memcpy(upload.mapped(), texels.data(), kBytes);

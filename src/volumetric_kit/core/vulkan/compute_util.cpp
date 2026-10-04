@@ -42,7 +42,6 @@ Result<Buffer> mapped_storage_buffer(Allocator& allocator, VkDeviceSize bytes,
   desc.size = bytes;
   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | extra_usage;
   desc.memory = MemoryUsage::DeviceMapped;
-  desc.mapped = true;
   desc.host_access = access;
   desc.queue_families = queue_families;
   desc.queue_family_count = queue_family_count;
@@ -125,10 +124,19 @@ Result<VkBuffer> StorageInput::buffer(CommandBatch& batch, Allocator& allocator,
   if (host_ == nullptr) {
     return Status::invalid_argument("StorageInput: the host bytes are null");
   }
-  if (!upload.valid() || !upload.is_device_local() || upload.size() < bytes) {
+  // Kept only when it is what device_storage_buffer makes, near enough: big
+  // enough, device-local, bindable, and a copy's destination -- a
+  // device-mapped buffer is device-local too, without TRANSFER_DST.
+  constexpr VkBufferUsageFlags kUploadable =
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  if (!upload.valid() || !upload.is_device_local() || upload.size() < bytes ||
+      (upload.usage() & kUploadable) != kUploadable) {
     // What the batch recorded on the old one still runs on it.
     batch.retain(std::move(upload));
     upload = Buffer();
+    // TODO: on unified memory, write the bytes into a DeviceMapped buffer
+    // instead of staging a copy, once recon's iPad measurement settles which
+    // inputs gain (DECISIONS.md, "Unified memory").
     VKC_ASSIGN(upload, device_storage_buffer(allocator, bytes));
   }
   VKC_TRY(batch.upload(upload, 0, host_, bytes));

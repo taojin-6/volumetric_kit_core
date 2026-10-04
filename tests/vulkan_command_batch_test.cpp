@@ -175,7 +175,6 @@ class BatchTest : public test::VulkanDeviceTest {
     staging_desc.size = texels.size();
     staging_desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     staging_desc.memory = MemoryUsage::Staging;
-    staging_desc.mapped = true;
     Result<Buffer> staging = allocator().create_buffer(staging_desc);
     EXPECT_TRUE(staging.ok());
     if (!staging.ok()) return Image{};
@@ -234,6 +233,9 @@ class BatchOrderTest : public BatchTest,
                        public ::testing::WithParamInterface<bool> {};
 
 TEST_P(BatchOrderTest, RunsCommandsInTheOrderRecorded) {
+  if (!GetParam() && !physical().device_mapped_memory()) {
+    GTEST_SKIP() << "the device has no device-mapped memory";
+  }
   const Buffer buffer = make(GetParam(), kBytes);
   ASSERT_TRUE(buffer.valid());
 
@@ -866,10 +868,12 @@ TEST_F(BatchTest, RefusesBadArguments) {
   ASSERT_TRUE(bare_made.ok());
   const Buffer bare = *std::move(bare_made);
   // Device-mapped without the transfer bits: refused all the same, as a batch
-  // writes and reads nothing through a mapping.
+  // writes and reads nothing through a mapping. Where the device has no
+  // device-mapped memory, an empty buffer, refused too.
   Result<Buffer> mapped_made = mapped_storage_buffer(allocator(), kBytes);
-  ASSERT_TRUE(mapped_made.ok());
-  const Buffer mapped_bare = *std::move(mapped_made);
+  ASSERT_EQ(mapped_made.ok(), physical().device_mapped_memory());
+  const Buffer mapped_bare =
+      mapped_made.ok() ? *std::move(mapped_made) : Buffer{};
   const std::vector<std::uint32_t> p = pattern(1);
   std::vector<std::uint32_t> got(kCount, 0);
   const auto refuses = [&](auto&& call) {

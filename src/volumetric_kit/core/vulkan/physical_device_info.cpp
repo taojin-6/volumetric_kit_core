@@ -25,8 +25,9 @@ PhysicalDeviceInfo PhysicalDeviceInfo::query(
       std::min(detail::without_patch(info.properties_.apiVersion),
                detail::without_patch(instance_api_version));
   vkGetPhysicalDeviceMemoryProperties(physical, &info.memory_properties_);
-  info.unified_memory_ = detail::unified_memory(info.memory_properties_,
-                                                info.properties_.deviceType);
+  info.unified_memory_ = detail::unified_memory(info.memory_properties_);
+  info.device_mapped_memory_ =
+      detail::device_mapped_types(info.memory_properties_) != 0;
 
   std::uint32_t family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);

@@ -19,12 +19,12 @@ namespace volumetric_kit::core {
 ///
 /// @ref query captures the properties and limits, the memory heaps and types,
 /// the supported device extensions, the queue families, the core (1.0)
-/// features, and the three
-/// newer features the family's libraries require -- timeline semaphores and
-/// scalar block layout (Vulkan 1.2) and dynamic rendering (1.3). Format
-/// queries go to the driver live: they are cheap, and there are hundreds of
-/// formats. Device selection, @ref Device::create and @ref Device::adopt all
-/// read from one of these, so they agree on what a device supports.
+/// features, and the three newer features the family's libraries require --
+/// timeline semaphores and scalar block layout (Vulkan 1.2) and dynamic
+/// rendering (1.3). Format queries go to the driver live: they are cheap, and
+/// there are hundreds of formats. Device selection, @ref Device::create and
+/// @ref Device::adopt all read from one of these, so they agree on what a
+/// device supports.
 ///
 /// It also records the version usable on the device, which the spec bounds
 /// by the instance as well as the device: a 1.3 device on a 1.2 instance may
@@ -87,15 +87,27 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   }
   /// @brief Whether the GPU and the host share one memory.
   ///
-  /// True for an integrated or CPU device, and for one whose every heap is
-  /// device-local (Apple silicon, lavapipe); false for a discrete GPU, which
-  /// has host memory beside its VRAM. On unified memory a
-  /// `MemoryUsage::DeviceMapped` input costs a kernel no more than a
-  /// device-only one, so a library may skip a staging copy there; on a
-  /// discrete GPU, kernel data belongs in `MemoryUsage::DeviceOnly` memory,
-  /// reached from the host by staging.
-  /// @return Whether memory is unified.
+  /// True when every heap is device-local (Apple silicon, Intel and mobile
+  /// integrated GPUs, lavapipe); false for a discrete GPU, which has host
+  /// memory beside its VRAM, and for an APU whose driver reports a VRAM
+  /// carve-out beside host memory, whose device-local memory is the
+  /// carve-out. On unified memory a `MemoryUsage::DeviceMapped` input costs a
+  /// kernel no more than a device-only one, so a library may skip a staging
+  /// copy there; otherwise kernel data belongs in `MemoryUsage::DeviceOnly`
+  /// memory, reached from the host by staging.
+  /// @return Whether memory is unified; when it is,
+  ///         @ref device_mapped_memory is too.
   bool unified_memory() const noexcept { return unified_memory_; }
+  /// @brief Whether the device has device-local memory the host maps
+  ///        coherently, which `MemoryUsage::DeviceMapped` takes.
+  ///
+  /// True on unified memory and on a discrete GPU that exposes its BAR
+  /// window coherently (NVIDIA, AMD); false where it does not (MoltenVK on an
+  /// Intel Mac's AMD GPU), where an allocator refuses `DeviceMapped` with
+  /// `Unsupported`. Without it, data the host writes for shaders goes up by
+  /// staging -- a `CommandBatch` upload into `DeviceOnly` memory.
+  /// @return Whether `DeviceMapped` memory exists.
+  bool device_mapped_memory() const noexcept { return device_mapped_memory_; }
 
   /// @return The queue families, indexed by family.
   const std::vector<VkQueueFamilyProperties>& queue_families() const noexcept {
@@ -146,6 +158,7 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   VkPhysicalDeviceProperties properties_{};
   VkPhysicalDeviceMemoryProperties memory_properties_{};
   bool unified_memory_ = false;
+  bool device_mapped_memory_ = false;
   std::uint32_t api_version_ = 0;
   std::vector<VkQueueFamilyProperties> queue_families_;
   // Owned names, not VkExtensionProperties, so the info is self-contained and

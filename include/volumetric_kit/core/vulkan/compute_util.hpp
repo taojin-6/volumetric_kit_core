@@ -83,16 +83,23 @@ VKC_VULKAN_API Status check_storage_buffer_range(const char* what,
 ///
 /// The kernels reach it at device-local speed on every platform; on a
 /// discrete GPU it is VRAM through the BAR window, which the host writes
-/// across PCIe. Memory only the kernels touch is a @ref device_storage_buffer;
+/// across PCIe, and which without Resizable BAR is 256 MiB shared by every
+/// library on the device. Keep it to small data there, and stage a bulk
+/// input -- a @ref StorageInput of host bytes, or a @ref CommandBatch::upload
+/// into a @ref device_storage_buffer -- as on a device without device-mapped
+/// memory (@ref PhysicalDeviceInfo::device_mapped_memory), which refuses
+/// this. Memory only the kernels touch is a @ref device_storage_buffer;
 /// results the host reads come back by @ref CommandBatch::readback, as the
-/// host's reads of the BAR window cross PCIe uncached.
+/// host's reads of the BAR window cross PCIe uncached; and a buffer the host
+/// fills for a copy is a `MemoryUsage::Staging` one, never this.
 /// @param allocator           The allocator.
 /// @param bytes               Its size; non-zero.
 /// @param access              How the host touches it:
 ///                            @ref HostAccess::SequentialWrite for what it
-///                            writes once, the default; @ref HostAccess::Random
-///                            only on unified memory, where reading it back is
-///                            cheap.
+///                            writes, the default; @ref HostAccess::Random to
+///                            read it back too, which needs cached
+///                            device-local memory -- unified memory has it, a
+///                            discrete GPU does not.
 /// @param extra_usage         Usage beyond `STORAGE_BUFFER`, for a consumer
 ///                            that binds the allocation another way (a
 ///                            renderer reading it as vertices).
@@ -102,8 +109,8 @@ VKC_VULKAN_API Status check_storage_buffer_range(const char* what,
 ///                            buffer another library reads names both.
 /// @param queue_family_count  The length of @p queue_families.
 /// @return The buffer; @ref Status::Code::Unsupported on a device with no
-///         device-local memory the host can map; or the allocation's
-///         failure.
+///         device-local memory the host can map, or with no cached such
+///         memory for @ref HostAccess::Random; or the allocation's failure.
 VKC_VULKAN_API Result<Buffer> mapped_storage_buffer(
     Allocator& allocator, VkDeviceSize bytes,
     HostAccess access = HostAccess::SequentialWrite,
@@ -114,6 +121,10 @@ VKC_VULKAN_API Result<Buffer> mapped_storage_buffer(
 /// @brief A @ref mapped_storage_buffer of @p bytes, filled from @p src: a
 ///        device-local input the kernels read in place, with no copy on the
 ///        device.
+///
+/// For a small input, or any on unified memory. A bulk input on a discrete
+/// GPU, or any on a device this refuses, is staged instead: a
+/// @ref StorageInput of the host bytes.
 /// @param allocator  The allocator.
 /// @param src        At least @p bytes to copy in; non-null.
 /// @param bytes      Its size; non-zero.
@@ -246,8 +257,10 @@ class VKC_VULKAN_API StorageInput {
   /// @param bytes      The binding's range; non-zero, and checked by
   ///                   @ref check.
   /// @param upload     Receives the device buffer, reused when it holds
-  ///                   @p bytes already, so a member kept across calls only
-  ///                   grows; untouched for a device input.
+  ///                   @p bytes already -- a device-local storage buffer a
+  ///                   copy can write, as @ref device_storage_buffer makes --
+  ///                   so a member kept across calls only grows; replaced
+  ///                   otherwise; untouched for a device input.
   /// @return The handle to bind; @ref Status::Code::InvalidArgument for an
   ///         input @ref check refuses; or the allocation's or the upload's
   ///         failure.

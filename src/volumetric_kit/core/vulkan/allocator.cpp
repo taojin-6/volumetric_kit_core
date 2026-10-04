@@ -49,12 +49,8 @@ struct Allocator::Impl {
   // The device's queue-family count, so a sharing list naming a family the
   // device lacks is refused: Vulkan offers no way to ask afterwards.
   std::uint32_t queue_family_count = 0;
-  // The memory types each placement may use (memory_types.hpp), and every
-  // device-local type, for a DeviceOnly resource no private type suits.
-  std::uint32_t device_only_types = 0;
-  std::uint32_t device_mapped_types = 0;
-  std::uint32_t staging_types = 0;
-  std::uint32_t device_local_types = 0;
+  // The heaps and types each placement is cut from (memory_types.hpp).
+  VkPhysicalDeviceMemoryProperties memory{};
 
   Impl() = default;
   Impl(const Impl&) = delete;
@@ -66,33 +62,48 @@ struct Allocator::Impl {
 
 namespace {
 
-// A DeviceOnly placement: DEVICE_LOCAL required, and the device-only types
-// the only candidates. A mask, not a preference: VMA scores DEVICE_LOCAL
-// alone and DEVICE_LOCAL | HOST_VISIBLE the same for memory the host never
-// touches, breaking the tie by the driver's type order, and on a full heap
-// moves on to the next acceptable type -- the BAR window on a discrete GPU,
-// shared storage on Apple.
-void place_device_only(VmaAllocationCreateInfo& info, std::uint32_t types) {
-  info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  info.memoryTypeBits = types;  // never 0: every device has device-local memory
+// VMA's parameters for a resource of `needs` in `types`, the exact mask
+// detail::placement_types cut for it, less every type whose heap has no room
+// for it within its budget: VMA checks the budget for an allocation it puts
+// in a block, not for one it makes dedicated because it is large. The mask
+// alone decides the type: no usage, so VMA adds no preference of its own --
+// it scores DEVICE_LOCAL alone and DEVICE_LOCAL | HOST_VISIBLE the same for
+// memory the host never touches, breaking the tie by the driver's type
+// order -- and on a full heap it moves on only to another type of the mask.
+// VK_ERROR_OUT_OF_DEVICE_MEMORY when every heap is past its budget.
+VkResult allocation_info(const Allocator& allocator,
+                         const VkPhysicalDeviceMemoryProperties& memory,
+                         const VkMemoryRequirements& needs, std::uint32_t types,
+                         bool mapped, VmaAllocationCreateInfo& info) {
+  info = {};
+  info.usage = VMA_MEMORY_USAGE_UNKNOWN;
+  info.memoryTypeBits = detail::types_within_budget(memory, types, needs.size,
+                                                    allocator.memory_stats());
+  if (info.memoryTypeBits == 0) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  info.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+  if (mapped) info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
+  return VK_SUCCESS;
 }
 
-// Whether a DeviceOnly allocation that found no compatible type should retry
-// on every device-local type: the device has private types, but none the
-// resource's requirements allow.
-bool retry_device_local(VkResult made, MemoryUsage memory,
-                        const VmaAllocationCreateInfo& info,
-                        std::uint32_t device_local_types) {
-  return made == VK_ERROR_FEATURE_NOT_PRESENT &&
-         memory == MemoryUsage::DeviceOnly &&
-         info.memoryTypeBits != device_local_types;
-}
-
-// VMA's usage for a placement; the mask and required flags place_* set are
-// what bind it.
-VmaMemoryUsage to_vma_usage(MemoryUsage memory) {
-  return memory == MemoryUsage::Staging ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST
-                                        : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+// The refusal for a resource no type of its placement suits.
+Status unsuited(const char* caller, MemoryUsage memory) {
+  switch (memory) {
+    case MemoryUsage::DeviceOnly:
+      return Status::unsupported(
+          std::string(caller) +
+          ": no device-only memory type suits the resource; the rest of the "
+          "device-local memory is the BAR window");
+    case MemoryUsage::DeviceMapped:
+      return Status::unsupported(
+          std::string(caller) +
+          ": no device-local memory the host maps coherently (and cached, "
+          "for HostAccess::Random) suits the buffer; make it DeviceOnly and "
+          "upload through a CommandBatch, or read it back by one");
+    case MemoryUsage::Staging:
+      break;
+  }
+  return Status::unsupported(std::string(caller) +
+                             ": no host memory suits the staging buffer");
 }
 
 // The sharing a resource gets from its queue-family list: exclusive for none
@@ -241,11 +252,6 @@ Status check_image_desc(const ImageDesc& desc) {
         "create_image: a multisampled image is 2D, optimal-tiling and "
         "single-mip");
   }
-  if (desc.memory != MemoryUsage::DeviceOnly) {
-    return Status::invalid_argument(
-        "create_image: an image is device-only; it has no host accessor, so "
-        "copy it into a staging buffer to read it back");
-  }
   // VUID-VkImageViewCreateInfo-image-04441 allows a view for nearly every
   // usage but the transfers -- video, shading-rate and density-map usages
   // included -- so only a transfer-only image is refused here: a list of the
@@ -306,6 +312,14 @@ Result<Allocator> Allocator::create(VkInstance instance, const Device& device) {
   info.vulkanApiVersion =
       usable >= VK_API_VERSION_1_1 ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0;
   info.pVulkanFunctions = &functions;
+  // The driver's own budget, where the device enabled the extension (Device
+  // enables it where offered); VMA reads it through
+  // vkGetPhysicalDeviceMemoryProperties2, core in 1.1. Otherwise VMA's
+  // estimate: this allocator's usage against 80% of each heap.
+  if (info.vulkanApiVersion >= VK_API_VERSION_1_1 &&
+      device.extension_enabled(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+    info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+  }
 
   // Never EXTERNALLY_SYNCHRONIZED: several threads allocate from one
   // allocator.
@@ -314,12 +328,7 @@ Result<Allocator> Allocator::create(VkInstance instance, const Device& device) {
   impl->device = device.handle();
   impl->queue_family_count =
       static_cast<std::uint32_t>(device.caps().queue_families().size());
-  const VkPhysicalDeviceMemoryProperties& memory =
-      device.caps().memory_properties();
-  impl->device_only_types = detail::device_only_types(memory);
-  impl->device_mapped_types = detail::device_mapped_types(memory);
-  impl->staging_types = detail::staging_types(memory);
-  impl->device_local_types = detail::device_local_types(memory);
+  impl->memory = device.caps().memory_properties();
 
   Allocator allocator;
   allocator.impl_ = std::move(impl);
@@ -352,16 +361,6 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
         "create_buffer: VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT is not "
         "supported -- the allocator does not enable buffer device addresses");
   }
-  if (desc.mapped && desc.memory == MemoryUsage::DeviceOnly) {
-    return Status::invalid_argument(
-        "create_buffer: a device-only buffer is never mapped; stage through "
-        "a staging buffer, or make it DeviceMapped");
-  }
-  if (desc.memory != MemoryUsage::DeviceOnly && !desc.mapped) {
-    return Status::invalid_argument(
-        "create_buffer: a device-mapped or staging buffer must be mapped "
-        "(there is no separate map); set mapped");
-  }
   // The GPU reaches host memory only by a copy: a shader, vertex fetch or
   // indirect read of it would cross PCIe on every access on a discrete GPU.
   constexpr VkBufferUsageFlags kTransfer =
@@ -371,12 +370,6 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
         "create_buffer: a staging buffer is a copy's source or destination "
         "only; memory the GPU reads directly is DeviceOnly, or DeviceMapped "
         "when the host writes it");
-  }
-  if (desc.memory == MemoryUsage::DeviceMapped &&
-      impl_->device_mapped_types == 0) {
-    return Status::unsupported(
-        "create_buffer: the device has no device-local memory the host can "
-        "map; make the buffer DeviceOnly and upload through a CommandBatch");
   }
   VKC_ASSIGN(const Sharing sharing,
              sharing_for(desc.queue_families, desc.queue_family_count,
@@ -392,46 +385,41 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
     buffer_info.pQueueFamilyIndices = sharing.families;
   }
 
-  VmaAllocationCreateInfo alloc_info{};
-  alloc_info.usage = to_vma_usage(desc.memory);
-  switch (desc.memory) {
-    case MemoryUsage::DeviceOnly:
-      place_device_only(alloc_info, impl_->device_only_types);
-      break;
-    case MemoryUsage::DeviceMapped:
-      alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-      alloc_info.memoryTypeBits = impl_->device_mapped_types;
-      break;
-    case MemoryUsage::Staging:
-      alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-      alloc_info.memoryTypeBits = impl_->staging_types;
-      break;
-  }
-  if (desc.mapped) {
-    alloc_info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    alloc_info.flags |=
-        desc.host_access == HostAccess::SequentialWrite
-            ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-            : VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-    // Coherent, so mapped() is a plain pointer: writes need no flush.
-    alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  }
-
+  // The buffer first, so its placement is cut to the memory types its own
+  // requirements allow, rather than found wanting by an allocation.
   VkBuffer buffer = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreateBuffer(impl_->device, &buffer_info, nullptr, &buffer));
+  VkMemoryRequirements needs{};
+  vkGetBufferMemoryRequirements(impl_->device, buffer, &needs);
+  const std::uint32_t types = detail::placement_types(
+      impl_->memory, desc.memory, desc.host_access, needs.memoryTypeBits);
+  if (types == 0) {
+    vkDestroyBuffer(impl_->device, buffer, nullptr);
+    return unsuited("create_buffer", desc.memory);
+  }
+  // A device-mapped or staging buffer is mapped persistently, and its types
+  // are coherent, so mapped() is a plain pointer: writes need no flush.
+  const bool mapped = desc.memory != MemoryUsage::DeviceOnly;
+  VmaAllocationCreateInfo alloc_info{};
   VmaAllocation allocation = nullptr;
   VmaAllocationInfo out{};
-  VkResult made = vmaCreateBuffer(impl_->allocator, &buffer_info, &alloc_info,
-                                  &buffer, &allocation, &out);
-  if (retry_device_local(made, desc.memory, alloc_info,
-                         impl_->device_local_types)) {
-    // No device-only type suits this buffer: device-local memory, unmapped.
-    alloc_info.memoryTypeBits = impl_->device_local_types;
-    made = vmaCreateBuffer(impl_->allocator, &buffer_info, &alloc_info, &buffer,
-                           &allocation, &out);
+  const char* step = "create_buffer: past every candidate heap's budget";
+  VkResult made =
+      allocation_info(*this, impl_->memory, needs, types, mapped, alloc_info);
+  if (made == VK_SUCCESS) {
+    step = "vmaAllocateMemoryForBuffer";
+    made = vmaAllocateMemoryForBuffer(impl_->allocator, buffer, &alloc_info,
+                                      &allocation, &out);
   }
-  if (made != VK_SUCCESS) return vk_error(made, "vmaCreateBuffer");
-  if (desc.mapped && out.pMappedData == nullptr) {
+  if (made == VK_SUCCESS) {
+    step = "vmaBindBufferMemory";
+    made = vmaBindBufferMemory(impl_->allocator, allocation, buffer);
+  }
+  if (made != VK_SUCCESS) {
+    vmaDestroyBuffer(impl_->allocator, buffer, allocation);
+    return vk_error(made, step);
+  }
+  if (mapped && out.pMappedData == nullptr) {
     vmaDestroyBuffer(impl_->allocator, buffer, allocation);
     return vk_error(VK_ERROR_MEMORY_MAP_FAILED,
                     "create_buffer: mapping requested, and VMA returned no "
@@ -477,24 +465,37 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
   }
   image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-  VmaAllocationCreateInfo alloc_info{};
-  alloc_info.usage = to_vma_usage(desc.memory);
-  place_device_only(alloc_info, impl_->device_only_types);
-
   VkImage image = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreateImage(impl_->device, &image_info, nullptr, &image));
+  VkMemoryRequirements needs{};
+  vkGetImageMemoryRequirements(impl_->device, image, &needs);
+  // The host access is ignored for device-only memory.
+  const std::uint32_t types = detail::placement_types(
+      impl_->memory, MemoryUsage::DeviceOnly, HostAccess::SequentialWrite,
+      needs.memoryTypeBits);
+  if (types == 0) {
+    vkDestroyImage(impl_->device, image, nullptr);
+    return unsuited("create_image", MemoryUsage::DeviceOnly);
+  }
+  VmaAllocationCreateInfo alloc_info{};
   VmaAllocation allocation = nullptr;
   VmaAllocationInfo out{};
-  VkResult made = vmaCreateImage(impl_->allocator, &image_info, &alloc_info,
-                                 &image, &allocation, &out);
-  if (retry_device_local(made, desc.memory, alloc_info,
-                         impl_->device_local_types)) {
-    // No device-only type suits this image (a format a driver keeps in
-    // host-visible memory): device-local memory, which it still is.
-    alloc_info.memoryTypeBits = impl_->device_local_types;
-    made = vmaCreateImage(impl_->allocator, &image_info, &alloc_info, &image,
-                          &allocation, &out);
+  const char* step = "create_image: past every candidate heap's budget";
+  VkResult made = allocation_info(*this, impl_->memory, needs, types,
+                                  /*mapped=*/false, alloc_info);
+  if (made == VK_SUCCESS) {
+    step = "vmaAllocateMemoryForImage";
+    made = vmaAllocateMemoryForImage(impl_->allocator, image, &alloc_info,
+                                     &allocation, &out);
   }
-  if (made != VK_SUCCESS) return vk_error(made, "vmaCreateImage");
+  if (made == VK_SUCCESS) {
+    step = "vmaBindImageMemory";
+    made = vmaBindImageMemory(impl_->allocator, allocation, image);
+  }
+  if (made != VK_SUCCESS) {
+    vmaDestroyImage(impl_->allocator, image, allocation);
+    return vk_error(made, step);
+  }
 
   VkImageView view = VK_NULL_HANDLE;
   if (desc.with_view) {

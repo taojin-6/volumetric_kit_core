@@ -40,9 +40,9 @@ struct MemoryInfo {
 ///
 /// Made by @ref Allocator::create_buffer, or adopted from someone else's
 /// allocation. The allocation lives inside a type-erased deleter, so VMA never
-/// reaches this header. A buffer made `BufferDesc::mapped` exposes a
-/// persistent, host-coherent pointer through @ref mapped; one made
-/// `MemoryUsage::DeviceOnly` is never mapped.
+/// reaches this header. A `MemoryUsage::DeviceMapped` or `Staging` buffer
+/// exposes a persistent, host-coherent pointer through @ref mapped; a
+/// `MemoryUsage::DeviceOnly` one is never mapped.
 ///
 /// The buffer records what Vulkan cannot be asked afterwards -- its usage,
 /// sharing mode and memory type -- so a library handed a borrowed buffer can
