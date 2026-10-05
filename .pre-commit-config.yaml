@@ -49,7 +49,9 @@ repos:
         entry: '^\s*#\s*include\s*[<"]vulkan/'
         language: pygrep
         files: \.(h|hpp|hxx|inl|ipp|c|cc|cpp|cxx|cu|cuh|mm)$
-        exclude: ^include/volumetric_kit/core/vulkan/vulkan\.hpp$
+        # The reference test also includes Vulkan-Utility-Libraries' headers,
+        # which it checks format.hpp against.
+        exclude: ^(include/volumetric_kit/core/vulkan/vulkan\.hpp|tests/vulkan_format_reference_test\.cpp)$
 
 # pre-commit.ci (https://pre-commit.ci) runs these same hooks on every PR and
 # pushes the auto-fixes back to the branch. The `ci / required` check stays the

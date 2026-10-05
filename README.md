@@ -58,6 +58,9 @@ brew install vulkan-headers vulkan-loader molten-vk shaderc spirv-tools  # macOS
 sudo apt-get install libvulkan-dev mesa-vulkan-drivers glslc spirv-tools # Ubuntu
 ```
 
+Ubuntu 22.04 packages no `glslc`: install `glslang-tools` (`glslangValidator`)
+in its place.
+
 `VKC_WITH_VULKAN` builds it. It defaults ON at the top level and OFF in a
 subproject: a sibling that uses the tier sets it before fetching the core, so
 one that does not (calib's headless solver) needs no Vulkan installed.

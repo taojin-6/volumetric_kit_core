@@ -54,6 +54,16 @@ include(vkc_single_instance)
 # project that fetches the core can call them once it is added.
 if(VKC_WITH_VULKAN)
   include(vkc_shaders)
+  # The oldest Vulkan headers the tier supports (DECISIONS.md, "Vulkan headers
+  # come from the system"), checked at configure where FindVulkan reports a
+  # version: by the build (src/volumetric_kit/core/vulkan/) and by the installed
+  # package's find_dependency. vulkan.hpp checks the same as it compiles; keep
+  # the two in step.
+  if(APPLE)
+    set(VKC_VULKAN_MIN_VERSION 1.3.208)
+  else()
+    set(VKC_VULKAN_MIN_VERSION 1.3.204)
+  endif()
 endif()
 
 # --- Dependencies + library tiers --------------------------------------------

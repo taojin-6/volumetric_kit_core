@@ -147,8 +147,8 @@ Result<Instance> Instance::create(const InstanceConfig& config) {
       offered(extensions_offered, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
   // Portability enumeration is checked, not tried: a loader that lacks it
   // would fail a create, and report that through the chained messenger as an
-  // error. Guarded: headers older than 1.3.216 (Ubuntu 22.04's) do not
-  // define it.
+  // error. Guarded: headers older than 1.3.208 -- Ubuntu 22.04's 1.3.204
+  // among them -- do not define it; on Apple, vulkan.hpp requires it.
 #ifdef VK_KHR_portability_enumeration
   const bool portability = offered(
       extensions_offered, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);

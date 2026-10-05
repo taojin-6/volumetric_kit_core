@@ -19,6 +19,7 @@
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/format.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -55,17 +56,15 @@ Status has_usage(const Buffer& buffer, VkBufferUsageFlags bit,
   return {};
 }
 
-// The bytes of one texel of a format copy(Image) accepts -- an uncompressed
-// color format of 8-, 16- or 32-bit channels (command_batch.hpp) -- or 0 for
-// any other. Narrower by design than the public texel_bytes (format.hpp),
-// which sizes every flat-copyable format.
-VkDeviceSize copyable_texel_bytes(VkFormat format) {
+// Whether copy(Image) accepts @p format: an uncompressed color format of 8-,
+// 16- or 32-bit channels (command_batch.hpp). Narrower by design than the
+// formats texel_bytes (format.hpp) sizes, which give the copy its stride.
+bool copy_accepts(VkFormat format) {
   switch (format) {
     case VK_FORMAT_R8_UNORM:
     case VK_FORMAT_R8_SNORM:
     case VK_FORMAT_R8_UINT:
     case VK_FORMAT_R8_SINT:
-      return 1;
     case VK_FORMAT_R8G8_UNORM:
     case VK_FORMAT_R8G8_SNORM:
     case VK_FORMAT_R8G8_UINT:
@@ -75,7 +74,6 @@ VkDeviceSize copyable_texel_bytes(VkFormat format) {
     case VK_FORMAT_R16_UINT:
     case VK_FORMAT_R16_SINT:
     case VK_FORMAT_R16_SFLOAT:
-      return 2;
     case VK_FORMAT_R8G8B8A8_UNORM:
     case VK_FORMAT_R8G8B8A8_SNORM:
     case VK_FORMAT_R8G8B8A8_UINT:
@@ -91,7 +89,6 @@ VkDeviceSize copyable_texel_bytes(VkFormat format) {
     case VK_FORMAT_R32_UINT:
     case VK_FORMAT_R32_SINT:
     case VK_FORMAT_R32_SFLOAT:
-      return 4;
     case VK_FORMAT_R16G16B16A16_UNORM:
     case VK_FORMAT_R16G16B16A16_SNORM:
     case VK_FORMAT_R16G16B16A16_UINT:
@@ -100,13 +97,12 @@ VkDeviceSize copyable_texel_bytes(VkFormat format) {
     case VK_FORMAT_R32G32_UINT:
     case VK_FORMAT_R32G32_SINT:
     case VK_FORMAT_R32G32_SFLOAT:
-      return 8;
     case VK_FORMAT_R32G32B32A32_UINT:
     case VK_FORMAT_R32G32B32A32_SINT:
     case VK_FORMAT_R32G32B32A32_SFLOAT:
-      return 16;
+      return true;
     default:
-      return 0;
+      return false;
   }
 }
 
@@ -344,12 +340,12 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
     return check(
         Status::invalid_argument("CommandBatch::copy: the image is empty"));
   }
-  const VkDeviceSize texel = copyable_texel_bytes(src.format());
-  if (texel == 0) {
+  if (!copy_accepts(src.format())) {
     return check(Status::invalid_argument(
         "CommandBatch::copy: copies uncompressed 8-, 16- and 32-bit-channel "
         "color images only"));
   }
+  const VkDeviceSize texel = texel_bytes(src.format());
   if (src.samples() != VK_SAMPLE_COUNT_1_BIT) {
     return check(Status::invalid_argument(
         "CommandBatch::copy: a multisampled image cannot be copied"));

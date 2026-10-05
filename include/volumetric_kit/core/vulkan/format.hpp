@@ -5,15 +5,16 @@
 
 /// @file format.hpp
 /// @brief What a `VkFormat` implies for a view and a copy: its depth and
-///        stencil aspects, the aspect a default view covers, and the bytes of
-///        one texel.
+///        stencil aspects, the aspect a default view covers, whether a view
+///        needs a sampler Y'CbCr conversion, and the bytes of one texel.
 ///
 /// The tier's own image code and its consumers' share these, so the core
 /// needs no Vulkan-Utility-Libraries, whose format helpers require headers
 /// newer than some systems ship (DECISIONS.md, "Vulkan headers come from the
-/// system"). They cover the formats of core Vulkan and its KHR extensions;
-/// a vendor extension's format reads as no depth, no stencil and 0 bytes, so
-/// a caller refuses it rather than mis-sizes it.
+/// system"). They cover the formats of core Vulkan and its KHR extensions,
+/// whatever headers the core was built with; any other extension's format --
+/// a vendor's, or an EXT's -- reads as no depth, no stencil, no conversion and
+/// 0 bytes, so a caller refuses it rather than mis-sizes it.
 ///
 /// @code
 /// const std::uint32_t texel = texel_bytes(image.format());
@@ -50,12 +51,23 @@ VKC_VULKAN_API bool format_has_stencil(VkFormat format) noexcept;
 ///         `VK_IMAGE_ASPECT_COLOR_BIT` otherwise.
 VKC_VULKAN_API VkImageAspectFlags view_aspect(VkFormat format) noexcept;
 
+/// @brief Whether a COLOR view of an image of @p format must carry a sampler
+///        Y'CbCr conversion (VUID-VkImageViewCreateInfo-format-06415).
+///
+/// These are the formats the registry (vk.xml) gives a chroma attribute:
+/// multi-planar, 4:2:2, and the RGBA 4PACK16 ones -- such as a video
+/// decoder's NV12 picture. The one- and two-component R10X6 / R12X4 formats
+/// need none.
+/// @param format  Any format.
+/// @return `true` for a format whose view needs the conversion.
+VKC_VULKAN_API bool format_needs_ycbcr_conversion(VkFormat format) noexcept;
+
 /// @brief The bytes of one texel of an uncompressed, single-plane color
 ///        format: the stride of a tightly packed image-to-buffer copy.
 /// @param format  Any format.
 /// @return The texel's size, or 0 for a format a flat per-texel copy cannot
 ///         size -- undefined, depth/stencil, compressed, multi-planar or 4:2:2
-///         -- or one of a vendor extension.
+///         -- or one of an extension other than KHR.
 VKC_VULKAN_API std::uint32_t texel_bytes(VkFormat format) noexcept;
 
 }  // namespace volumetric_kit::core

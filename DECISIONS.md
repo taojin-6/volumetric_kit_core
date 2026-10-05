@@ -667,17 +667,26 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   points `Vulkan_INCLUDE_DIR` at it.
 - **The oldest supported headers are 1.3.204** -- Ubuntu 22.04's -- **and
   1.3.208 on Apple**, the first with `VK_KHR_portability_enumeration`, without
-  which the loader hides MoltenVK's devices. `vulkan.hpp` refuses older headers
-  as it compiles, and the build refuses them at configure where FindVulkan
-  reports a version. A CI leg builds and tests on Ubuntu 22.04's headers, so
-  nothing newer slips in unnoticed; a newer symbol is used behind its
-  extension's macro, as the portability bits are.
+  which the loader hides MoltenVK's devices. On Android the headers are the
+  NDK's, so the floor is NDK r25, the first to ship Vulkan 1.3's; older NDKs
+  ship 1.2's. `vulkan.hpp` refuses older headers as it compiles. At configure,
+  the build and the installed package's `find_dependency` refuse them where
+  FindVulkan reports a version (CMake 3.23 and newer), from one
+  `VKC_VULKAN_MIN_VERSION`. Two CI legs build and test on the floors --
+  Ubuntu 22.04's headers, and Khronos' 1.3.208 on macOS -- so nothing newer
+  slips into code either platform compiles. A newer symbol is used behind its
+  extension's macro, as the portability bits are, or by its registry value,
+  as `texel_bytes` takes VK_KHR_maintenance5's formats.
 - **Format metadata is the core's** (`format.hpp`): `format_has_depth`,
-  `format_has_stencil`, `view_aspect` and `texel_bytes`, for core and KHR
-  formats, checked against Vulkan-Utility-Libraries' `vkuFormat*` when written.
-  gfx vendored that library -- and with it the newer headers it needs -- for
-  five such helpers alone; with these it builds on the system's headers too.
-  A new format is a table entry here, not a version bump.
+  `format_has_stencil`, `view_aspect`, `format_needs_ycbcr_conversion` and
+  `texel_bytes`, for core and KHR formats whatever headers the core was built
+  with. A test checks them against Vulkan-Utility-Libraries' `vkuFormat*` for
+  every format the headers name, wherever that library's headers are
+  installed (macOS CI). gfx vendored that library -- and with it the newer
+  headers it needs -- for five such helpers alone; with these it builds on
+  the system's headers too. A new format is a table entry here, not a version
+  bump; the test fails on headers that name a core or KHR format the tables
+  lack.
 
 ## Open decisions
 

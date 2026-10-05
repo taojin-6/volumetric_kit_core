@@ -43,6 +43,23 @@ TEST(Format, ADefaultViewOfACombinedFormatIsItsDepth) {
             VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
+TEST(Format, ChromaFormatsNeedAYcbcrConversion) {
+  EXPECT_TRUE(
+      format_needs_ycbcr_conversion(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM));
+  EXPECT_TRUE(format_needs_ycbcr_conversion(VK_FORMAT_G8B8G8R8_422_UNORM));
+  EXPECT_TRUE(format_needs_ycbcr_conversion(
+      VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16));
+  EXPECT_TRUE(
+      format_needs_ycbcr_conversion(VK_FORMAT_G16_B16R16_2PLANE_444_UNORM));
+  // One and two components need none, though their values sit among those
+  // that do.
+  EXPECT_FALSE(format_needs_ycbcr_conversion(VK_FORMAT_R10X6_UNORM_PACK16));
+  EXPECT_FALSE(
+      format_needs_ycbcr_conversion(VK_FORMAT_R12X4G12X4_UNORM_2PACK16));
+  EXPECT_FALSE(format_needs_ycbcr_conversion(VK_FORMAT_R8G8B8A8_UNORM));
+  EXPECT_FALSE(format_needs_ycbcr_conversion(VK_FORMAT_D32_SFLOAT));
+}
+
 TEST(Format, TexelBytesOfUncompressedColorFormats) {
   EXPECT_EQ(texel_bytes(VK_FORMAT_R8_UNORM), 1U);
   EXPECT_EQ(texel_bytes(VK_FORMAT_R4G4_UNORM_PACK8), 1U);
@@ -60,6 +77,18 @@ TEST(Format, TexelBytesOfUncompressedColorFormats) {
   EXPECT_EQ(texel_bytes(VK_FORMAT_R32G32B32A32_SFLOAT), 16U);
   EXPECT_EQ(texel_bytes(VK_FORMAT_R64G64B64_SFLOAT), 24U);
   EXPECT_EQ(texel_bytes(VK_FORMAT_R64G64B64A64_SFLOAT), 32U);
+}
+
+// VK_KHR_maintenance5's formats (core in 1.4) by value, as a caller built on
+// newer headers than the core's passes them.
+TEST(Format, TexelBytesOfMaintenance5FormatsWhateverTheHeaders) {
+  // Values older headers do not name, which is what this checks.
+  // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+  const auto a8_unorm = static_cast<VkFormat>(1000470001);
+  // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+  const auto a1b5g5r5_unorm_pack16 = static_cast<VkFormat>(1000470000);
+  EXPECT_EQ(texel_bytes(a8_unorm), 1U);
+  EXPECT_EQ(texel_bytes(a1b5g5r5_unorm_pack16), 2U);
 }
 
 // A format a flat per-texel copy cannot size reads 0, so a caller refuses it

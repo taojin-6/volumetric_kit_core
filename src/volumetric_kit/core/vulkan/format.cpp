@@ -8,6 +8,20 @@
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
+namespace {
+
+// VK_KHR_maintenance5's formats (core in Vulkan 1.4), by their registry
+// values: headers that predate the extension -- Ubuntu 22.04's among them --
+// do not name them, and a core built on those still answers a caller built on
+// newer ones.
+constexpr std::int32_t kA1B5G5R5UnormPack16 = 1000470000;
+constexpr std::int32_t kA8Unorm = 1000470001;
+#ifdef VK_KHR_maintenance5
+static_assert(VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR == kA1B5G5R5UnormPack16);
+static_assert(VK_FORMAT_A8_UNORM_KHR == kA8Unorm);
+#endif
+
+}  // namespace
 
 bool format_has_depth(VkFormat format) noexcept {
   switch (format) {
@@ -41,10 +55,28 @@ VkImageAspectFlags view_aspect(VkFormat format) noexcept {
   return VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
+bool format_needs_ycbcr_conversion(VkFormat format) noexcept {
+  switch (format) {
+    case VK_FORMAT_R10X6_UNORM_PACK16:
+    case VK_FORMAT_R10X6G10X6_UNORM_2PACK16:
+    case VK_FORMAT_R12X4_UNORM_PACK16:
+    case VK_FORMAT_R12X4G12X4_UNORM_2PACK16:
+      return false;
+    default:
+      return (format >= VK_FORMAT_G8B8G8R8_422_UNORM &&
+              format <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM) ||
+             (format >= VK_FORMAT_G8_B8R8_2PLANE_444_UNORM &&
+              format <= VK_FORMAT_G16_B16R16_2PLANE_444_UNORM);
+  }
+}
+
 // By the registry's texel block sizes (vk.xml), for the formats whose block is
-// one texel of one plane. Checked against Vulkan-Utility-Libraries'
-// vkuFormatTexelBlockSize for every core and KHR format when written.
+// one texel of one plane. tests/vulkan_format_reference_test.cpp checks these
+// tables against Vulkan-Utility-Libraries for every format the headers name.
 std::uint32_t texel_bytes(VkFormat format) noexcept {
+  const auto value = static_cast<std::int32_t>(format);
+  if (value == kA8Unorm) return 1;
+  if (value == kA1B5G5R5UnormPack16) return 2;
   switch (format) {
     case VK_FORMAT_R4G4_UNORM_PACK8:
     case VK_FORMAT_R8_UNORM:
@@ -54,9 +86,6 @@ std::uint32_t texel_bytes(VkFormat format) noexcept {
     case VK_FORMAT_R8_UINT:
     case VK_FORMAT_R8_SINT:
     case VK_FORMAT_R8_SRGB:
-#ifdef VK_KHR_maintenance5
-    case VK_FORMAT_A8_UNORM_KHR:
-#endif
       return 1;
     case VK_FORMAT_R4G4B4A4_UNORM_PACK16:
     case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
@@ -83,9 +112,6 @@ std::uint32_t texel_bytes(VkFormat format) noexcept {
     case VK_FORMAT_R12X4_UNORM_PACK16:
     case VK_FORMAT_A4R4G4B4_UNORM_PACK16:
     case VK_FORMAT_A4B4G4R4_UNORM_PACK16:
-#ifdef VK_KHR_maintenance5
-    case VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR:
-#endif
       return 2;
     case VK_FORMAT_R8G8B8_UNORM:
     case VK_FORMAT_R8G8B8_SNORM:
