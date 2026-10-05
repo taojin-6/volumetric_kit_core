@@ -34,6 +34,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/format.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -306,23 +307,6 @@ VkImageViewType view_type_for(VkImageType type, std::uint32_t layers,
   }
 }
 
-VkImageAspectFlags aspect_for(VkFormat format) {
-  switch (format) {
-    case VK_FORMAT_D16_UNORM:
-    case VK_FORMAT_X8_D24_UNORM_PACK32:
-    case VK_FORMAT_D32_SFLOAT:
-    case VK_FORMAT_D16_UNORM_S8_UINT:
-    case VK_FORMAT_D24_UNORM_S8_UINT:
-    case VK_FORMAT_D32_SFLOAT_S8_UINT:
-      // A view of a combined depth/stencil image samples depth.
-      return VK_IMAGE_ASPECT_DEPTH_BIT;
-    case VK_FORMAT_S8_UINT:
-      return VK_IMAGE_ASPECT_STENCIL_BIT;
-    default:
-      return VK_IMAGE_ASPECT_COLOR_BIT;
-  }
-}
-
 // Whether a COLOR view of @p format must carry a sampler Y'CbCr conversion
 // (VUID-VkImageViewCreateInfo-format-06415): the core formats the registry
 // (vk.xml) gives a chroma attribute -- multi-planar, 4:2:2, and the RGBA
@@ -588,7 +572,7 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
     view_info.image = image;
     view_info.viewType = view_type_for(desc.type, desc.array_layers, desc.cube);
     view_info.format = desc.format;
-    view_info.subresourceRange.aspectMask = aspect_for(desc.format);
+    view_info.subresourceRange.aspectMask = view_aspect(desc.format);
     view_info.subresourceRange.levelCount = desc.mip_levels;
     view_info.subresourceRange.layerCount = desc.array_layers;
     const VkResult viewed =

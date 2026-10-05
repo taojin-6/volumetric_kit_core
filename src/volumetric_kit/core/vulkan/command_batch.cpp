@@ -55,9 +55,11 @@ Status has_usage(const Buffer& buffer, VkBufferUsageFlags bit,
   return {};
 }
 
-// The bytes of one texel of an uncompressed color format a copy reads with
-// the COLOR aspect, or 0 for any other format.
-VkDeviceSize texel_bytes(VkFormat format) {
+// The bytes of one texel of a format copy(Image) accepts -- an uncompressed
+// color format of 8-, 16- or 32-bit channels (command_batch.hpp) -- or 0 for
+// any other. Narrower by design than the public texel_bytes (format.hpp),
+// which sizes every flat-copyable format.
+VkDeviceSize copyable_texel_bytes(VkFormat format) {
   switch (format) {
     case VK_FORMAT_R8_UNORM:
     case VK_FORMAT_R8_SNORM:
@@ -342,7 +344,7 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
     return check(
         Status::invalid_argument("CommandBatch::copy: the image is empty"));
   }
-  const VkDeviceSize texel = texel_bytes(src.format());
+  const VkDeviceSize texel = copyable_texel_bytes(src.format());
   if (texel == 0) {
     return check(Status::invalid_argument(
         "CommandBatch::copy: copies uncompressed 8-, 16- and 32-bit-channel "

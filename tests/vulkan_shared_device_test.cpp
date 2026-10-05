@@ -127,11 +127,12 @@ TEST(QueuePlanChoice, OneQueueFamiliesGetTwoFamilies) {
 }
 
 TEST(QueuePlanChoice, FamiliesThatCannotComputeLeaveOneSharedQueue) {
-  // Several families need not mean two queues: a transfer or video family
-  // beside the one that does everything adds none.
-  const std::optional<detail::QueueCarving> carving = plan_for(
-      {family(kGraphics | kCompute | kTransfer, 1), family(kTransfer, 1),
-       family(VK_QUEUE_VIDEO_DECODE_BIT_KHR, 1)});
+  // Several families need not mean two queues: a transfer or sparse-binding
+  // family beside the one that does everything adds none. (A video family is
+  // the same case; its bit is not in the oldest headers the tier supports.)
+  const std::optional<detail::QueueCarving> carving =
+      plan_for({family(kGraphics | kCompute | kTransfer, 1),
+                family(kTransfer, 1), family(VK_QUEUE_SPARSE_BINDING_BIT, 1)});
   if (!carving.has_value()) {
     FAIL() << "no plan";
   }

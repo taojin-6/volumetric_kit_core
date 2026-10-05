@@ -27,6 +27,7 @@ if(VKC_WITH_VULKAN)
   foreach(
     _vkc_test
     vulkan_result
+    vulkan_format
     vulkan_unique_handle
     vulkan_requirements
     vulkan_queue_families

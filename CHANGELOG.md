@@ -67,6 +67,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - `EnabledFeatures`: the core features and the timeline, scalar and
   dynamic-rendering flags a device enabled, as a device records them and
   `AdoptedDevice::enabled_features` declares them.
+- `vulkan`: `format.hpp`, what a `VkFormat` implies for a view and a copy:
+  `format_has_depth`, `format_has_stencil`, `view_aspect` (the aspect a
+  default view covers) and `texel_bytes` (one texel of an uncompressed,
+  single-plane color format; 0 otherwise), for core and KHR formats. gfx can
+  replace Vulkan-Utility-Libraries' `vkuFormat*` with them.
 - `vulkan` tier foundation (`volumetric_kit::core_vulkan`, built with
   `VKC_WITH_VULKAN`), merged from recon's and gfx's cores (DECISIONS.md, "The
   vulkan tier"):
@@ -246,6 +251,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   said "a required core feature".
 - `Device` holds the record of what it enabled. Rebuild consumers after
   bumping their pin: `Device` changes size.
+- `vulkan`: **the oldest supported Vulkan headers are 1.3.204, and 1.3.208 on
+  Apple** (DECISIONS.md, "Vulkan headers come from the system"). Older headers
+  fail at configure where FindVulkan reports a version, and otherwise in
+  `vulkan.hpp`, with a message naming the version needed. On Apple, 1.3.204
+  through 1.3.207 used to build without portability enumeration and then find
+  no MoltenVK device. CI builds and tests on Ubuntu 22.04's headers.
 - `HeapStats` gains this allocator's own share beside the heap's figures:
   `reserved_bytes`, its blocks and dedicated memory with their free space,
   and `allocation_bytes`, its live allocations. `usage_bytes` and

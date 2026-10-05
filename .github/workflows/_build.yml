@@ -46,8 +46,13 @@ jobs:
         run: |
           sudo apt-get update
           # glslc and spirv-val compile and validate the compute tests' shaders.
+          # Ubuntu 22.04 packages no glslc; cmake/vkc_shaders.cmake then takes
+          # glslangValidator.
+          compiler=glslc
+          apt-cache show glslc > /dev/null 2>&1 || compiler=glslang-tools
           sudo apt-get install -y --no-install-recommends \
-            libvulkan-dev vulkan-tools vulkan-validationlayers glslc spirv-tools
+            libvulkan-dev vulkan-tools vulkan-validationlayers "$compiler" \
+            spirv-tools
           # lavapipe, Mesa's software Vulkan driver, installed WITH recommends:
           # without them its runtime libraries (LLVM) are stripped and it loads
           # as INCOMPATIBLE_DRIVER, which would skip every device test.
