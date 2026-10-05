@@ -4,9 +4,10 @@
 #pragma once
 
 // Internal to core_vulkan: the pieces of the requirements check that
-// check_device_support (selection, create) and Device::adopt share, and the
-// device selection and creation Device::create and SharedDevice share, so the
-// two ways of making a device cannot drift. Not installed.
+// check_device_support (selection, create), Device::adopt and
+// Device::check_enabled share, and the device selection and creation
+// Device::create and SharedDevice share, so the two ways of making a device
+// cannot drift. Not installed.
 
 #include <cstdint>
 #include <functional>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
@@ -28,10 +30,6 @@ inline constexpr const char* kPortabilitySubset = "VK_KHR_portability_subset";
 // "1.3" for a packed API version.
 std::string version_text(std::uint32_t version);
 
-// "<device> is a Vulkan 1.2 device", or, when the instance is what limits
-// it, "<device> reports Vulkan 1.3, but the instance negotiated 1.2".
-std::string usable_version_text(const PhysicalDeviceInfo& caps);
-
 // `version` with its patch zeroed, so versions compare as major.minor.
 inline std::uint32_t without_patch(std::uint32_t version) {
   return VK_MAKE_API_VERSION(VK_API_VERSION_VARIANT(version),
@@ -43,12 +41,13 @@ inline std::uint32_t without_patch(std::uint32_t version) {
 // duplicates and in that order.
 std::vector<std::string> required_extensions(const DeviceRequirements& reqs);
 
-// VkPhysicalDeviceFeatures is a contiguous block of VkBool32, so these walk
-// it as an array, and a new core feature needs no edit here.
+// VkPhysicalDeviceFeatures is a contiguous block of VkBool32, frozen at
+// Vulkan 1.0, so these walk it as an array.
 
-// Whether every VK_TRUE bit of `wanted` is VK_TRUE in `have`.
-bool features_subset(const VkPhysicalDeviceFeatures& wanted,
-                     const VkPhysicalDeviceFeatures& have);
+// The name of the first feature VK_TRUE in `wanted` and not in `have`, as
+// VkPhysicalDeviceFeatures spells it; null when `have` has them all.
+const char* first_missing_feature(const VkPhysicalDeviceFeatures& wanted,
+                                  const VkPhysicalDeviceFeatures& have);
 
 // Every feature VK_TRUE in `a` or `b`.
 VkPhysicalDeviceFeatures features_union(const VkPhysicalDeviceFeatures& a,
@@ -80,14 +79,12 @@ struct QueueRequest {
   std::uint32_t count = 1;
 };
 
-// What a device enabled of the features DeviceRequirements names: the
-// requirements' own, and any of the three flags the caller's feature chain
-// set itself.
-struct EnabledFeatures {
-  VkPhysicalDeviceFeatures features{};
-  bool timeline_semaphore = false;
-  bool scalar_block_layout = false;
-  bool dynamic_rendering = false;
+// A device create_device made, and what it enabled of the features
+// DeviceRequirements names: the requirements' own, and any of the three
+// flags the caller's feature chain set itself.
+struct CreatedDevice {
+  VkDevice device = VK_NULL_HANDLE;
+  EnabledFeatures enabled;
 };
 
 // The one vkCreateDevice path Device::create and SharedDevice share: on
@@ -96,12 +93,11 @@ struct EnabledFeatures {
 // written (DeviceRequirements::feature_chain) -- enabling `extensions`
 // (enabled_extensions(caps, reqs)) and the queues `queues` asks for: one
 // create info per distinct family, with the most queues any request asks of
-// it. `*enabled` receives the features it enabled.
-Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
-                               const DeviceRequirements& reqs,
-                               const std::vector<std::string>& extensions,
-                               const std::vector<QueueRequest>& queues,
-                               EnabledFeatures* enabled);
+// it.
+Result<CreatedDevice> create_device(const PhysicalDeviceInfo& caps,
+                                    const DeviceRequirements& reqs,
+                                    const std::vector<std::string>& extensions,
+                                    const std::vector<QueueRequest>& queues);
 
 // Instance::select_physical_device, with `accept` asked of each device that
 // meets `reqs` too: one it refuses is passed over, and its reason joins the

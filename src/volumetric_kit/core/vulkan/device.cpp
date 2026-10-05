@@ -64,7 +64,7 @@ struct FeatureChain {
   VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
   VkPhysicalDeviceScalarBlockLayoutFeatures scalar{};
   VkPhysicalDeviceDynamicRenderingFeatures dynamic{};
-  detail::EnabledFeatures enabled;
+  EnabledFeatures enabled;
 
   FeatureChain() = default;
   FeatureChain(const FeatureChain&) = delete;
@@ -121,7 +121,7 @@ struct FeatureChain {
       }
     }
 
-    enabled.features = reqs.features;
+    enabled.core = reqs.features;
     enabled.timeline_semaphore =
         reqs.timeline_semaphore ||
         (v12 != nullptr && v12->timelineSemaphore == VK_TRUE) ||
@@ -198,11 +198,10 @@ std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
   return enabled;
 }
 
-Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
-                               const DeviceRequirements& reqs,
-                               const std::vector<std::string>& extensions,
-                               const std::vector<QueueRequest>& queues,
-                               EnabledFeatures* enabled) {
+Result<CreatedDevice> create_device(const PhysicalDeviceInfo& caps,
+                                    const DeviceRequirements& reqs,
+                                    const std::vector<std::string>& extensions,
+                                    const std::vector<QueueRequest>& queues) {
   std::vector<const char*> extension_names;
   extension_names.reserve(extensions.size());
   for (const std::string& name : extensions) {
@@ -252,8 +251,7 @@ Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
   // the caller must not destroy whatever it holds.
   VkDevice device = VK_NULL_HANDLE;
   VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &device));
-  *enabled = chain.enabled;
-  return device;
+  return CreatedDevice{device, chain.enabled};
 }
 
 }  // namespace detail
@@ -288,18 +286,14 @@ Result<Device> Device::create(VkInstance instance,
   VKC_ASSIGN(const DeviceSupport support,
              check_device_support(caps, reqs, surface));
 
-  std::vector<std::string> enabled = detail::enabled_extensions(caps, reqs);
+  std::vector<std::string> extensions = detail::enabled_extensions(caps, reqs);
   std::vector<detail::QueueRequest> queues = {{support.queue_family, 1}};
   if (support.present_family) queues.push_back({*support.present_family, 1});
-  detail::EnabledFeatures features;
-  VKC_ASSIGN(VkDevice handle,
-             detail::create_device(caps, reqs, enabled, queues, &features));
+  VKC_ASSIGN(const detail::CreatedDevice created,
+             detail::create_device(caps, reqs, extensions, queues));
   Device device;
-  device.state_.device = handle;
-  device.state_.features = features.features;
-  device.state_.timeline_semaphore = features.timeline_semaphore;
-  device.state_.scalar_block_layout = features.scalar_block_layout;
-  device.state_.dynamic_rendering = features.dynamic_rendering;
+  device.state_.device = created.device;
+  device.state_.enabled = created.enabled;
   device.state_.physical = caps.handle();
   device.state_.owns_device = true;
   device.state_.queue_family = support.queue_family;
@@ -319,7 +313,7 @@ Result<Device> Device::create(VkInstance instance,
     }
   }
   device.caps_ = caps;
-  device.enabled_extensions_ = std::move(enabled);
+  device.enabled_extensions_ = std::move(extensions);
   device.resolve_entry_points(instance_debug_utils_enabled);
   return device;
 }
@@ -368,8 +362,8 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
   VKC_TRY(detail::check_physical_support(caps, reqs, required)
               .with_context("Device::adopt"));
   // ...and declared enabled by the creator, as Vulkan cannot be asked what a
-  // logical device enabled: recorded below, and checked like a created
-  // device's.
+  // logical device enabled: recorded below, and checked as the record a
+  // later check_enabled reads.
   std::vector<std::string> declared;
   if (adopted.enabled_extensions != nullptr) {
     for (std::uint32_t i = 0; i < adopted.enabled_extension_count; ++i) {
@@ -395,14 +389,10 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
     device.state_.present_family = adopted.present_family;
     device.state_.present_mutex = adopted.present_mutex;
   }
-  device.state_.features = adopted.enabled_features;
-  device.state_.timeline_semaphore = adopted.enabled_timeline_semaphore;
-  device.state_.scalar_block_layout = adopted.enabled_scalar_block_layout;
-  device.state_.dynamic_rendering = adopted.enabled_dynamic_rendering;
+  device.state_.enabled = adopted.enabled_features;
   device.caps_ = std::move(caps);
   device.enabled_extensions_ = std::move(declared);
-  VKC_TRY(device.check_enabled(reqs).with_context(
-      "Device::adopt (as AdoptedDevice declares it)"));
+  VKC_TRY(device.check_record(reqs, required).with_context("Device::adopt"));
   device.resolve_entry_points(adopted.enabled_debug_utils);
   return device;
 }
@@ -411,46 +401,65 @@ Status Device::check_enabled(const DeviceRequirements& reqs) const {
   if (state_.device == VK_NULL_HANDLE) {
     return Status::invalid_argument("Device::check_enabled: an empty device");
   }
-  if (caps_.api_version() < reqs.api_version) {
-    return Status::unsupported(
-        detail::usable_version_text(caps_) + "; Vulkan " +
-        detail::version_text(reqs.api_version) + " is required");
+  if (reqs.feature_chain != nullptr) {
+    return Status::invalid_argument(
+        "Device::check_enabled: a device keeps no record of a feature chain, "
+        "so DeviceRequirements::feature_chain cannot be checked; check its "
+        "features by other means, and pass the requirements without it");
   }
   if ((state_.queue_flags & reqs.queue_flags) != reqs.queue_flags) {
     return Status::unsupported(
-        "the device's queue family lacks a required capability "
-        "(DeviceRequirements::queue_flags)");
+        "Device::check_enabled: the device's queue family lacks a required "
+        "capability (DeviceRequirements::queue_flags)");
   }
   if (reqs.needs_present && !has_present()) {
-    return Status::unsupported("the device has no present queue");
+    return Status::unsupported(
+        "Device::check_enabled: the device has no present queue");
   }
-  for (const std::string& name : detail::required_extensions(reqs)) {
+  // What create and adopt hold requirements to: a record -- an adopted
+  // device's declaration -- may claim a feature the physical device lacks,
+  // or one its usable version does not make core.
+  const std::vector<std::string> required = detail::required_extensions(reqs);
+  VKC_TRY(detail::check_physical_support(caps_, reqs, required)
+              .with_context("Device::check_enabled"));
+  return check_record(reqs, required).with_context("Device::check_enabled");
+}
+
+Status Device::check_record(const DeviceRequirements& reqs,
+                            const std::vector<std::string>& required) const {
+  // An adopted device's record is its creator's declaration, so a refusal
+  // names the field to fix.
+  const bool declared = !state_.owns_device;
+  const auto missing = [declared](const std::string& what, const char* field) {
+    return Status::unsupported(
+        declared
+            ? what + " is not declared enabled (AdoptedDevice::" + field + ")"
+            : what + " was not enabled when the device was created");
+  };
+  for (const std::string& name : required) {
     if (!extension_enabled(name.c_str())) {
-      return Status::unsupported("the required extension " + name +
-                                 " is not enabled on the device");
+      return missing("the required extension " + name, "enabled_extensions");
     }
   }
-  if (!detail::features_subset(reqs.features, state_.features)) {
-    return Status::unsupported(
-        "a required core feature is not enabled on the device "
-        "(DeviceRequirements::features)");
+  if (const char* feature =
+          detail::first_missing_feature(reqs.features, state_.enabled.core)) {
+    return missing(std::string("the core feature ") + feature,
+                   "enabled_features.core");
   }
   struct Flag {
     bool wanted;
     bool enabled;
     const char* feature;
+    const char* field;
   };
   for (const Flag& flag :
-       {Flag{reqs.timeline_semaphore, state_.timeline_semaphore,
-             "timelineSemaphore"},
-        Flag{reqs.scalar_block_layout, state_.scalar_block_layout,
-             "scalarBlockLayout"},
-        Flag{reqs.dynamic_rendering, state_.dynamic_rendering,
-             "dynamicRendering"}}) {
-    if (flag.wanted && !flag.enabled) {
-      return Status::unsupported(std::string(flag.feature) +
-                                 " is not enabled on the device");
-    }
+       {Flag{reqs.timeline_semaphore, state_.enabled.timeline_semaphore,
+             "timelineSemaphore", "enabled_features.timeline_semaphore"},
+        Flag{reqs.scalar_block_layout, state_.enabled.scalar_block_layout,
+             "scalarBlockLayout", "enabled_features.scalar_block_layout"},
+        Flag{reqs.dynamic_rendering, state_.enabled.dynamic_rendering,
+             "dynamicRendering", "enabled_features.dynamic_rendering"}}) {
+    if (flag.wanted && !flag.enabled) return missing(flag.feature, flag.field);
   }
   return {};
 }

@@ -94,7 +94,8 @@ struct DeviceRequirements {
   ///          Device::create sets the bit in the caller's struct instead of
   ///          linking its own. The structs must outlive the create call.
   ///          @ref Device::adopt cannot inspect an opaque chain: the device's
-  ///          creator vouches for it.
+  ///          creator vouches for it. No device records one, so
+  ///          @ref Device::check_enabled refuses requirements that carry it.
   void* feature_chain = nullptr;
 };
 

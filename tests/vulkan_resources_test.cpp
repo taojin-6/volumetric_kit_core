@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -19,6 +20,7 @@
 #include "volumetric_kit/core/vulkan/command_pool.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/sync.hpp"
@@ -85,7 +87,6 @@ TEST(VulkanObjects, RefuseANullDevice) {
           .status()));
   EXPECT_TRUE(is_invalid(Fence::create(VK_NULL_HANDLE).status()));
   EXPECT_TRUE(is_invalid(Semaphore::create(VK_NULL_HANDLE).status()));
-  EXPECT_TRUE(is_invalid(TimelineSemaphore::create(VK_NULL_HANDLE).status()));
   EXPECT_TRUE(is_invalid(CommandPool::create(VK_NULL_HANDLE, 0).status()));
 }
 
@@ -326,7 +327,7 @@ TEST_F(ResourcesTest, MakesABinarySemaphore) {
 }
 
 TEST_F(ResourcesTest, TimelineCountsUpFromTheHostAndTheQueue) {
-  Result<TimelineSemaphore> made = TimelineSemaphore::create(vk(), 5);
+  Result<TimelineSemaphore> made = TimelineSemaphore::create(device(), 5);
   ASSERT_TRUE(made.ok()) << made.status().message();
   TimelineSemaphore timeline = *std::move(made);
   ASSERT_EQ(counter(timeline), 5u);
@@ -342,6 +343,25 @@ TEST_F(ResourcesTest, TimelineCountsUpFromTheHostAndTheQueue) {
   submit(VK_NULL_HANDLE, VK_NULL_HANDLE, timeline.handle(), 10);
   EXPECT_TRUE(timeline.wait(10).ok());
   EXPECT_EQ(counter(timeline), 10u);
+}
+
+// A device that did not enable timelineSemaphore gets no timeline semaphore,
+// even where the physical device supports one.
+TEST_F(ResourcesTest, TimelineNeedsADeviceThatEnabledIt) {
+  DeviceRequirements without;
+  without.timeline_semaphore = false;
+  Result<Device> made = Device::create(instance(), physical(), without);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const Status refused = TimelineSemaphore::create(*made).status();
+  EXPECT_EQ(refused.domain(), Status::Code::Unsupported);
+  EXPECT_NE(refused.message().find("timelineSemaphore"), std::string::npos)
+      << refused.message();
+
+  Device first = *std::move(made);
+  const Device second = std::move(first);
+  // Creating on the moved-from device is the point: it must be refused.
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_TRUE(is_invalid(TimelineSemaphore::create(first).status()));
 }
 
 // --- command pools and buffers -----------------------------------------------

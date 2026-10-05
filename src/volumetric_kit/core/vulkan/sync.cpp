@@ -6,6 +6,8 @@
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -66,11 +68,14 @@ Result<Semaphore> Semaphore::create(VkDevice device) {
 }
 
 Result<TimelineSemaphore> TimelineSemaphore::create(
-    VkDevice device, std::uint64_t initial_value) {
-  if (device == VK_NULL_HANDLE) {
-    return Status::invalid_argument(
-        "TimelineSemaphore::create: device is null");
-  }
+    const Device& device, std::uint64_t initial_value) {
+  // The feature alone: any queue, and the version the feature itself needs.
+  DeviceRequirements timeline;
+  timeline.api_version = VK_API_VERSION_1_0;
+  timeline.queue_flags = 0;
+  timeline.timeline_semaphore = true;
+  VKC_TRY(
+      device.check_enabled(timeline).with_context("TimelineSemaphore::create"));
   VkSemaphoreTypeCreateInfo type{};
   type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
   type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -79,10 +84,10 @@ Result<TimelineSemaphore> TimelineSemaphore::create(
   info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
   info.pNext = &type;
   VkSemaphore handle = VK_NULL_HANDLE;
-  VKC_VK_TRY(vkCreateSemaphore(device, &info, nullptr, &handle));
+  VKC_VK_TRY(vkCreateSemaphore(device.handle(), &info, nullptr, &handle));
   TimelineSemaphore semaphore;
   semaphore.handle_ =
-      UniqueHandle<VkSemaphore, vkDestroySemaphore>(device, handle);
+      UniqueHandle<VkSemaphore, vkDestroySemaphore>(device.handle(), handle);
   return semaphore;
 }
 

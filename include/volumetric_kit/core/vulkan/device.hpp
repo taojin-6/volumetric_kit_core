@@ -50,6 +50,34 @@ inline std::uint64_t debug_object_handle(Handle handle) noexcept {
   }
 }
 
+/// @brief What a logical device enabled of the features
+///        @ref DeviceRequirements names: its core features and the timeline,
+///        scalar and dynamic-rendering flags.
+///
+/// A @ref Device keeps one for @ref Device::check_enabled: what
+/// @ref Device::create enabled, or what an @ref AdoptedDevice declares.
+/// Every member defaults to off, so a creator that declares nothing fails
+/// @ref Device::adopt loudly: a device that *supports* a feature has not
+/// thereby enabled it, and using a feature that was not enabled is invalid
+/// usage the driver need not report.
+///
+/// @code
+/// EnabledFeatures enabled;
+/// enabled.core.shaderInt64 = VK_TRUE;  // as VkDeviceCreateInfo enabled them
+/// enabled.timeline_semaphore = true;
+/// handoff.enabled_features = enabled;
+/// @endcode
+struct EnabledFeatures {
+  /// The core (1.0) features.
+  VkPhysicalDeviceFeatures core{};
+  /// `timelineSemaphore`.
+  bool timeline_semaphore = false;
+  /// `scalarBlockLayout`.
+  bool scalar_block_layout = false;
+  /// `dynamicRendering`.
+  bool dynamic_rendering = false;
+};
+
 /// @brief A `VkDevice` someone else created, and what they enabled on it,
 ///        handed to @ref Device::adopt.
 ///
@@ -68,7 +96,7 @@ inline std::uint64_t debug_object_handle(Handle handle) noexcept {
 /// handoff.queue_family = compute_family;
 /// handoff.queue = compute_queue;
 /// handoff.submit_mutex = &compute_queue_mutex;  // shared with another library
-/// handoff.enabled_timeline_semaphore = true;
+/// handoff.enabled_features.timeline_semaphore = true;
 /// VKC_ASSIGN(Device borrowed, Device::adopt(handoff, reqs));
 /// @endcode
 struct AdoptedDevice {
@@ -106,18 +134,10 @@ struct AdoptedDevice {
   const char* const* enabled_extensions = nullptr;
   /// The length of @ref enabled_extensions.
   std::uint32_t enabled_extension_count = 0;
-  /// The core (1.0) features the creator enabled.
-  VkPhysicalDeviceFeatures enabled_features{};
-  /// Whether the creator enabled `timelineSemaphore`. Each of these flags
-  /// defaults to `false`, so a creator that declares nothing fails
-  /// @ref Device::adopt loudly: a device that *supports* a feature has not
-  /// thereby enabled it, and using an unenabled feature is invalid usage the
-  /// driver need not report.
-  bool enabled_timeline_semaphore = false;
-  /// Whether the creator enabled `scalarBlockLayout`.
-  bool enabled_scalar_block_layout = false;
-  /// Whether the creator enabled `dynamicRendering`.
-  bool enabled_dynamic_rendering = false;
+  /// The features the creator enabled, each off by default. The device
+  /// keeps them, so a later @ref Device::check_enabled holds a library's
+  /// requirements to this declaration too.
+  EnabledFeatures enabled_features;
   /// Whether the creator's *instance* enabled `VK_EXT_debug_utils`. Optional:
   /// `false` costs only the profiler labels.
   bool enabled_debug_utils = false;
@@ -280,13 +300,19 @@ class VKC_VULKAN_API Device {
   /// For a library handed a device it did not make: a device created for
   /// another library's requirements, or with the defaults, may lack a
   /// feature this one's shaders use, and using a feature that was not
-  /// enabled is invalid usage a driver need not report. Checks the usable
-  /// API version, the queue's capabilities, a present queue, every required
-  /// extension, and the core, timeline, scalar and dynamic-rendering
-  /// features as the device enabled them: for a created device, its
-  /// requirements and any of the three its feature chain set; for an adopted
-  /// one, what its creator declared. Optional extensions and
-  /// @ref DeviceRequirements::feature_chain are not checked.
+  /// enabled is invalid usage a driver need not report. Holds @p reqs to the
+  /// queue's capabilities and a present queue; to what @ref create and
+  /// @ref adopt hold them to -- the usable API version, and the physical
+  /// device's support for each required extension and feature, within the
+  /// version that makes it core; and to the device's record of what it
+  /// enabled (@ref EnabledFeatures): for a created device, its requirements
+  /// and any of the three flags its feature chain set; for an adopted one,
+  /// what its creator declared. Optional extensions are not checked.
+  ///
+  /// A device keeps no record of a feature chain, so requirements that carry
+  /// one are refused rather than passed unchecked: check those features by
+  /// other means, and pass the requirements without the chain, with any of
+  /// the three flags it set moved to their fields.
   ///
   /// @code
   /// // Before building a kernel on a device someone else made.
@@ -295,7 +321,8 @@ class VKC_VULKAN_API Device {
   /// @param reqs  The requirements.
   /// @return OK; @ref Status::Code::Unsupported naming the first requirement
   ///         the device does not meet; or @ref Status::Code::InvalidArgument
-  ///         for a moved-from device.
+  ///         for a moved-from device, or @p reqs with a
+  ///         @ref DeviceRequirements::feature_chain.
   Status check_enabled(const DeviceRequirements& reqs) const;
 
   /// @return The mutex every operation on @ref queue holds: the embedder's on
@@ -473,12 +500,8 @@ class VKC_VULKAN_API Device {
     PFN_vkCmdEndDebugUtilsLabelEXT end_label = nullptr;
     PFN_vkGetMemoryFdKHR get_memory_fd = nullptr;
     bool metal_objects = false;
-    // What the device enabled of the features DeviceRequirements names, for
-    // check_enabled.
-    VkPhysicalDeviceFeatures features{};
-    bool timeline_semaphore = false;
-    bool scalar_block_layout = false;
-    bool dynamic_rendering = false;
+    // What create enabled, or adopt's creator declared, for check_enabled.
+    EnabledFeatures enabled;
   };
 
   // The fence a submit signals and, made the first time a submit records
@@ -499,6 +522,13 @@ class VKC_VULKAN_API Device {
 
   Device() = default;
   void destroy() noexcept;
+  // The record half of check_enabled, which adopt runs on the declaration:
+  // whether the device enabled each of `required` (reqs'
+  // required_extensions) and each feature `reqs` names. A refusal names the
+  // AdoptedDevice field to fix when the record is an adopted device's
+  // declaration.
+  Status check_record(const DeviceRequirements& reqs,
+                      const std::vector<std::string>& required) const;
   // Resolves the debug-utils entry points (on the creator's word that the
   // instance enabled the extension), the memory-fd export and the
   // metal-objects flag, from enabled_extensions_.

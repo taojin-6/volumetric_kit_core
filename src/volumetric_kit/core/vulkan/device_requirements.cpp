@@ -43,8 +43,71 @@ const VkBool32* feature_bits(const VkPhysicalDeviceFeatures& features) {
   return reinterpret_cast<const VkBool32*>(&features);
 }
 
-}  // namespace
+// VkPhysicalDeviceFeatures' members in declaration order, which is the order
+// feature_bits walks them in. The struct is frozen at Vulkan 1.0 (later
+// features come in their own structs), so the list is complete.
+constexpr const char* kFeatureNames[] = {
+    "robustBufferAccess",
+    "fullDrawIndexUint32",
+    "imageCubeArray",
+    "independentBlend",
+    "geometryShader",
+    "tessellationShader",
+    "sampleRateShading",
+    "dualSrcBlend",
+    "logicOp",
+    "multiDrawIndirect",
+    "drawIndirectFirstInstance",
+    "depthClamp",
+    "depthBiasClamp",
+    "fillModeNonSolid",
+    "depthBounds",
+    "wideLines",
+    "largePoints",
+    "alphaToOne",
+    "multiViewport",
+    "samplerAnisotropy",
+    "textureCompressionETC2",
+    "textureCompressionASTC_LDR",
+    "textureCompressionBC",
+    "occlusionQueryPrecise",
+    "pipelineStatisticsQuery",
+    "vertexPipelineStoresAndAtomics",
+    "fragmentStoresAndAtomics",
+    "shaderTessellationAndGeometryPointSize",
+    "shaderImageGatherExtended",
+    "shaderStorageImageExtendedFormats",
+    "shaderStorageImageMultisample",
+    "shaderStorageImageReadWithoutFormat",
+    "shaderStorageImageWriteWithoutFormat",
+    "shaderUniformBufferArrayDynamicIndexing",
+    "shaderSampledImageArrayDynamicIndexing",
+    "shaderStorageBufferArrayDynamicIndexing",
+    "shaderStorageImageArrayDynamicIndexing",
+    "shaderClipDistance",
+    "shaderCullDistance",
+    "shaderFloat64",
+    "shaderInt64",
+    "shaderInt16",
+    "shaderResourceResidency",
+    "shaderResourceMinLod",
+    "sparseBinding",
+    "sparseResidencyBuffer",
+    "sparseResidencyImage2D",
+    "sparseResidencyImage3D",
+    "sparseResidency2Samples",
+    "sparseResidency4Samples",
+    "sparseResidency8Samples",
+    "sparseResidency16Samples",
+    "sparseResidencyAliased",
+    "variableMultisampleRate",
+    "inheritedQueries",
+};
+static_assert(sizeof(kFeatureNames) / sizeof(kFeatureNames[0]) == kFeatureCount,
+              "kFeatureNames must name every VkPhysicalDeviceFeatures member");
 
+// "<device> is a Vulkan 1.2 device", or, when the instance is what limits
+// it, "<device> reports Vulkan 1.3, but the instance negotiated 1.2".
 std::string usable_version_text(const PhysicalDeviceInfo& caps) {
   const std::string name = caps.properties().deviceName;
   const std::uint32_t reported = caps.properties().apiVersion;
@@ -55,14 +118,16 @@ std::string usable_version_text(const PhysicalDeviceInfo& caps) {
   return name + " is a Vulkan " + version_text(caps.api_version()) + " device";
 }
 
-bool features_subset(const VkPhysicalDeviceFeatures& wanted,
-                     const VkPhysicalDeviceFeatures& have) {
+}  // namespace
+
+const char* first_missing_feature(const VkPhysicalDeviceFeatures& wanted,
+                                  const VkPhysicalDeviceFeatures& have) {
   const VkBool32* want = feature_bits(wanted);
   const VkBool32* got = feature_bits(have);
   for (std::size_t i = 0; i < kFeatureCount; ++i) {
-    if (want[i] == VK_TRUE && got[i] != VK_TRUE) return false;
+    if (want[i] == VK_TRUE && got[i] != VK_TRUE) return kFeatureNames[i];
   }
-  return true;
+  return nullptr;
 }
 
 VkPhysicalDeviceFeatures features_union(const VkPhysicalDeviceFeatures& a,
@@ -92,11 +157,10 @@ Status check_physical_support(const PhysicalDeviceInfo& caps,
                                  extension);
     }
   }
-  if (!features_subset(reqs.features, caps.features())) {
-    return Status::unsupported(
-        name +
-        " does not support a required core feature (DeviceRequirements::"
-        "features)");
+  if (const char* feature =
+          first_missing_feature(reqs.features, caps.features())) {
+    return Status::unsupported(name + " does not support the core feature " +
+                               feature + " (DeviceRequirements::features)");
   }
   // Each is core from a version on, and enabled as core, never through its
   // extension: below that usable version the device may not enable it,

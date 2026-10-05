@@ -215,10 +215,7 @@ class VKC_VULKAN_API SharedDevice {
   // What vkCreateDevice was given, which the payloads declare.
   std::vector<std::string> extension_storage_;
   std::vector<const char*> extensions_;
-  VkPhysicalDeviceFeatures enabled_features_{};
-  bool enabled_timeline_semaphore_ = false;
-  bool enabled_scalar_block_layout_ = false;
-  bool enabled_dynamic_rendering_ = false;
+  EnabledFeatures enabled_features_;
 };
 
 }  // namespace volumetric_kit::core

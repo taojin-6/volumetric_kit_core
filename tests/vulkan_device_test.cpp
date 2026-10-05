@@ -300,6 +300,17 @@ TEST_F(DeviceTest, ChecksWhatTheDeviceEnabled) {
   EXPECT_EQ(made->check_enabled(wants_newer).domain(),
             Status::Code::Unsupported);
 
+  // A device keeps no record of a feature chain, so one is refused rather
+  // than passed unchecked.
+  VkPhysicalDeviceVulkan11Features v11{};
+  v11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+  DeviceRequirements wants_chain;
+  wants_chain.feature_chain = &v11;
+  const Status chained = made->check_enabled(wants_chain);
+  EXPECT_EQ(chained.domain(), Status::Code::InvalidArgument);
+  EXPECT_NE(chained.message().find("feature_chain"), std::string::npos)
+      << chained.message();
+
   if (physical().supports_scalar_block_layout()) {
     const Result<Device> scalar =
         Device::create(instance(), physical(), wants_scalar);
@@ -324,12 +335,61 @@ TEST_F(DeviceTest, ChecksFeaturesTheCallersChainEnabled) {
   EXPECT_TRUE(made->check_enabled(wants_scalar).ok());
 }
 
+// The version aggregates carry the flags too: what they set is recorded,
+// though the requirements' own fields stay off.
+TEST_F(DeviceTest, ChecksFeaturesTheCallersAggregatesEnabled) {
+  if (instance().api_version() < VK_API_VERSION_1_2) {
+    GTEST_SKIP() << "VkPhysicalDeviceVulkan12Features needs a 1.2 instance";
+  }
+  const PhysicalDeviceInfo& caps = physical();
+  VkPhysicalDeviceVulkan12Features v12{};
+  v12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  v12.timelineSemaphore = VK_TRUE;  // 1.2 core, so always supported
+  v12.scalarBlockLayout =
+      caps.supports_scalar_block_layout() ? VK_TRUE : VK_FALSE;
+  VkPhysicalDeviceVulkan13Features v13{};
+  v13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+  v13.dynamicRendering = VK_TRUE;
+  const bool dynamic = caps.supports_dynamic_rendering();
+  if (dynamic) v12.pNext = &v13;  // a 1.3 device: its usable version is 1.3
+  DeviceRequirements reqs;
+  reqs.timeline_semaphore = false;
+  reqs.feature_chain = &v12;
+  const Result<Device> made = Device::create(instance(), physical(), reqs);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+
+  DeviceRequirements wants;  // timeline_semaphore by default
+  wants.scalar_block_layout = v12.scalarBlockLayout == VK_TRUE;
+  wants.dynamic_rendering = dynamic;
+  const Status checked = made->check_enabled(wants);
+  EXPECT_TRUE(checked.ok()) << checked.message();
+}
+
+TEST_F(DeviceTest, NamesTheCoreFeatureTheDeviceDidNotEnable) {
+  if (physical().features().robustBufferAccess != VK_TRUE) {
+    GTEST_SKIP() << "the device has no robustBufferAccess";
+  }
+  DeviceRequirements robust;
+  robust.features.robustBufferAccess = VK_TRUE;
+  const Result<Device> plain = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(plain.ok()) << plain.status().message();
+  const Status refused = plain->check_enabled(robust);
+  EXPECT_EQ(refused.domain(), Status::Code::Unsupported);
+  EXPECT_NE(refused.message().find("robustBufferAccess"), std::string::npos)
+      << refused.message();
+
+  const Result<Device> made = Device::create(instance(), physical(), robust);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  EXPECT_TRUE(made->check_enabled(robust).ok());
+}
+
 TEST_F(DeviceTest, AMovedFromDeviceChecksNothing) {
   Result<Device> made = Device::create(instance(), physical(), {});
   ASSERT_TRUE(made.ok()) << made.status().message();
   Device first = *std::move(made);
   const Device second = std::move(first);
   EXPECT_TRUE(second.check_enabled({}).ok());
+  // Checking the moved-from device is the point: it must refuse.
   // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(first.check_enabled({}).domain(), Status::Code::InvalidArgument);
 }
@@ -558,8 +618,8 @@ AdoptedDevice handoff(const Instance& instance,
   adopted.enabled_extensions = raw.extensions.data();
   adopted.enabled_extension_count =
       static_cast<std::uint32_t>(raw.extensions.size());
-  adopted.enabled_timeline_semaphore = true;
-  adopted.enabled_scalar_block_layout = raw.scalar;
+  adopted.enabled_features.timeline_semaphore = true;
+  adopted.enabled_features.scalar_block_layout = raw.scalar;
   adopted.enabled_debug_utils = instance.debug_utils_enabled();
   return adopted;
 }
@@ -581,6 +641,13 @@ TEST_F(DeviceTest, AdoptsADeviceWithoutOwningIt) {
   }
   // The borrowed device is gone; the VkDevice is still the embedder's.
   EXPECT_EQ(vkDeviceWaitIdle(raw.device), VK_SUCCESS);
+
+  // adopt cannot inspect a feature chain: the creator vouches for it.
+  VkPhysicalDeviceVulkan11Features v11{};
+  v11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+  DeviceRequirements chained;
+  chained.feature_chain = &v11;
+  EXPECT_TRUE(Device::adopt(adopted, chained).ok());
 }
 
 TEST_F(DeviceTest, AdoptLocksItsOwnMutexOnAnUnsharedQueue) {
@@ -597,11 +664,29 @@ TEST_F(DeviceTest, AdoptRefusesWhatWasNotDeclared) {
   ASSERT_NO_FATAL_FAILURE(make_raw_device(physical(), &raw));
 
   AdoptedDevice no_timeline = handoff(instance(), physical(), raw);
-  no_timeline.enabled_timeline_semaphore = false;
+  no_timeline.enabled_features.timeline_semaphore = false;
   const Result<Device> refused = Device::adopt(no_timeline, {});
   EXPECT_EQ(refused.status().domain(), Status::Code::Unsupported);
-  EXPECT_NE(refused.status().message().find("timelineSemaphore"),
-            std::string::npos);
+  // Naming the declaration to fix, not the library's requirement.
+  EXPECT_NE(refused.status().message().find(
+                "timelineSemaphore is not declared enabled "
+                "(AdoptedDevice::enabled_features.timeline_semaphore)"),
+            std::string::npos)
+      << refused.status().message();
+
+  // A core feature is named too.
+  if (physical().features().robustBufferAccess == VK_TRUE) {
+    DeviceRequirements robust;
+    robust.features.robustBufferAccess = VK_TRUE;
+    const Result<Device> undeclared =
+        Device::adopt(handoff(instance(), physical(), raw), robust);
+    EXPECT_EQ(undeclared.status().domain(), Status::Code::Unsupported);
+    EXPECT_NE(undeclared.status().message().find(
+                  "robustBufferAccess is not declared enabled "
+                  "(AdoptedDevice::enabled_features.core)"),
+              std::string::npos)
+        << undeclared.status().message();
+  }
 
   // Supported by the physical device, but not enabled on this one.
   std::string undeclared;
@@ -617,15 +702,17 @@ TEST_F(DeviceTest, AdoptRefusesWhatWasNotDeclared) {
     const Result<Device> missing =
         Device::adopt(handoff(instance(), physical(), raw), reqs);
     EXPECT_EQ(missing.status().domain(), Status::Code::Unsupported);
-    EXPECT_NE(missing.status().message().find("is not enabled"),
-              std::string::npos)
+    EXPECT_NE(
+        missing.status().message().find(
+            "is not declared enabled (AdoptedDevice::enabled_extensions)"),
+        std::string::npos)
         << missing.status().message();
   }
 
   DeviceRequirements wants_scalar;
   wants_scalar.scalar_block_layout = true;
   AdoptedDevice no_scalar = handoff(instance(), physical(), raw);
-  no_scalar.enabled_scalar_block_layout = false;
+  no_scalar.enabled_features.scalar_block_layout = false;
   EXPECT_FALSE(Device::adopt(no_scalar, wants_scalar).ok());
   // What was declared is what a library handed the device checks later.
   const Result<Device> without_scalar = Device::adopt(no_scalar, {});
@@ -641,6 +728,29 @@ TEST_F(DeviceTest, AdoptRefusesWhatWasNotDeclared) {
   EXPECT_NE(too_old.status().message().find("instance negotiated 1.1"),
             std::string::npos)
       << too_old.status().message();
+}
+
+// A declaration adopt's own requirements never asked about is held, when a
+// later check asks, to what the device can use: what create and adopt would
+// refuse, check_enabled refuses too.
+TEST_F(DeviceTest, ChecksADeclarationAgainstWhatTheDeviceCanUse) {
+  RawDevice raw;
+  ASSERT_NO_FATAL_FAILURE(make_raw_device(physical(), &raw));
+  AdoptedDevice at_1_2 = handoff(instance(), physical(), raw);
+  at_1_2.instance_api_version = VK_API_VERSION_1_2;
+  at_1_2.enabled_features.dynamic_rendering = true;  // 1.3 core
+  const Result<Device> adopted = Device::adopt(at_1_2, {});
+  ASSERT_TRUE(adopted.ok()) << adopted.status().message();
+
+  DeviceRequirements renderer;
+  renderer.dynamic_rendering = true;
+  EXPECT_EQ(Device::adopt(at_1_2, renderer).status().domain(),
+            Status::Code::Unsupported);
+  const Status refused = adopted->check_enabled(renderer);
+  EXPECT_EQ(refused.domain(), Status::Code::Unsupported);
+  EXPECT_NE(refused.message().find("dynamicRendering needs Vulkan 1.3"),
+            std::string::npos)
+      << refused.message();
 }
 
 TEST_F(DeviceTest, AdoptRefusesMalformedHandoffs) {
