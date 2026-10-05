@@ -135,6 +135,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
             -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }} \
             -DVKC_WITH_VULKAN=${{ inputs.vulkan && 'ON' || 'OFF' }} \
+            -DVKC_WITH_CAMERA=ON \
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
           cmake --build build-consumer-subdir
           ./build-consumer-subdir/vkc_package_consumer

@@ -11,8 +11,11 @@ add_subdirectory(volumetric_kit/core/base)
 if(VKC_WITH_VULKAN)
   add_subdirectory(volumetric_kit/core/vulkan)
 endif()
-# TODO: add_subdirectory() for camera / sensor as those tiers land (see
-# DECISIONS.md "Tiers").
+if(VKC_WITH_CAMERA)
+  add_subdirectory(volumetric_kit/core/camera)
+endif()
+# TODO: add_subdirectory() for sensor as that tier lands (see DECISIONS.md
+# "Tiers").
 
 # --- volumetric_kit::core: umbrella ------------------------------------------
 # Consumers link `volumetric_kit::core` and get whatever tiers are built. The
@@ -26,6 +29,9 @@ target_link_libraries(volumetric_kit_core INTERFACE core_base)
 if(VKC_WITH_VULKAN)
   target_link_libraries(volumetric_kit_core INTERFACE core_vulkan)
 endif()
+if(VKC_WITH_CAMERA)
+  target_link_libraries(volumetric_kit_core INTERFACE core_camera)
+endif()
 
 # --- Install / export --------------------------------------------------------
 if(VKC_INSTALL)
@@ -36,6 +42,9 @@ if(VKC_INSTALL)
   set(_vkc_header_excludes)
   if(NOT VKC_WITH_VULKAN)
     list(APPEND _vkc_header_excludes PATTERN "vulkan" EXCLUDE)
+  endif()
+  if(NOT VKC_WITH_CAMERA)
+    list(APPEND _vkc_header_excludes PATTERN "camera" EXCLUDE)
   endif()
   install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/"

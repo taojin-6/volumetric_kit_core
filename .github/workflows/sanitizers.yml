@@ -71,6 +71,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD" \
-            -DVKC_WITH_VULKAN=ON -DVKC_SANITIZE="address;undefined"
+            -DVKC_WITH_VULKAN=ON -DVKC_WITH_CAMERA=ON \
+            -DVKC_SANITIZE="address;undefined"
           cmake --build build-consumer-sanitized
           ./build-consumer-sanitized/vkc_package_consumer

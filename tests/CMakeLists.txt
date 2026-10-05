@@ -18,6 +18,22 @@ foreach(_vkc_test base_result base_check base_log base_version
     TIMEOUT 60)
 endforeach()
 
+# camera: the geometry, the lens vocabulary and the rig calibration file. Pure
+# CPU, so these run on every machine, and on the -fno-exceptions leg they check
+# that the file is parsed without them.
+if(VKC_WITH_CAMERA)
+  foreach(_vkc_test camera_geometry camera_lens camera_rig_calibration)
+    add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
+    target_link_libraries(vkc_${_vkc_test}_test
+                          PRIVATE volumetric_kit::core_camera GTest::gtest_main)
+    vkc_target_warnings(vkc_${_vkc_test}_test)
+    gtest_discover_tests(
+      vkc_${_vkc_test}_test
+      PROPERTIES
+      TIMEOUT 60)
+  endforeach()
+endif()
+
 # vulkan: the VkResult helpers, the format helpers (vulkan_format, and
 # vulkan_format_reference against Vulkan-Utility-Libraries, skipped where its
 # headers are not installed), UniqueHandle, DeviceRequirements, the queue-family

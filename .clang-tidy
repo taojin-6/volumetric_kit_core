@@ -42,5 +42,9 @@ CheckOptions:
   # First-party code reaches Vulkan only through
   # volumetric_kit/core/vulkan/vulkan.hpp (the vulkan-include-umbrella hook
   # enforces it), so include-cleaner must not ask for Vulkan's own headers.
+  #
+  # nlohmann/json (the camera tier's private JSON parser) is included through
+  # its documented umbrella, nlohmann/json.hpp; its symbols live in internal
+  # detail/ headers that a consumer is not meant to include.
   - key: misc-include-cleaner.IgnoreHeaders
-    value: 'vulkan/.*;vk_video/.*'
+    value: 'vulkan/.*;vk_video/.*;nlohmann/.*'

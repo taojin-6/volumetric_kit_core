@@ -14,8 +14,9 @@ if(@VKC_WITH_VULKAN@)
   # vkc_compile_shaders / vkc_embed_shaders, as a fetching project gets them.
   include("${CMAKE_CURRENT_LIST_DIR}/vkc_shaders.cmake")
 endif()
-# TODO: as the camera / sensor tiers land, re-find their public dependencies
-# here (Eigen for camera).
+# The camera tier has no public dependency: nlohmann/json stays private.
+#
+# TODO: as the sensor tier lands, re-find its public dependencies here.
 
 include("${CMAKE_CURRENT_LIST_DIR}/volumetric_kit_coreTargets.cmake")
 

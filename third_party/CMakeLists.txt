@@ -2,12 +2,12 @@
 # Copyright (c) 2026 Tao Jin
 
 # Third-party dependencies. The base tier has none. The vulkan tier takes Vulkan
-# from the system (src/volumetric_kit/core/vulkan/) and vendors VMA here.
-# googletest is vendored too, and only when the test suite is built.
+# from the system (src/volumetric_kit/core/vulkan/) and vendors VMA here; the
+# camera tier vendors nlohmann/json. googletest is vendored too, and only when
+# the test suite is built.
 #
-# TODO: as tiers land, add their dependencies here, mirroring recon's hybrid
-# system/vendored strategy: Eigen for the camera tier, and the Orbbec SDK
-# (optional) for the sensor tier.
+# TODO: add the sensor tier's dependency as it lands, mirroring recon's hybrid
+# system/vendored strategy: the Orbbec SDK (optional, installed).
 
 include(FetchContent)
 
@@ -25,6 +25,28 @@ if(VKC_WITH_VULKAN)
     GIT_TAG v3.4.0
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(VulkanMemoryAllocator)
+endif()
+
+# --- nlohmann/json (header-only; parsed in one core_camera TU) ---------------
+# The rig calibration file is JSON. The release's source archive, hash-pinned,
+# under the FetchContent name and pin recon uses, so a build fetching both
+# resolves one copy. Only its include/ tree is read, so its CMake is not run
+# (SOURCE_SUBDIR names a directory the archive does not have), and core_camera
+# reads it as a PRIVATE SYSTEM include, never part of its installed interface.
+if(VKC_WITH_CAMERA)
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW) # extracted files get the extraction time
+  endif()
+  FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+    URL_HASH
+      SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
+    SOURCE_SUBDIR do-not-add-json-cmake)
+  FetchContent_MakeAvailable(nlohmann_json)
+  set(VKC_JSON_INCLUDE_DIR
+      "${nlohmann_json_SOURCE_DIR}/include"
+      PARENT_SCOPE)
 endif()
 
 if(VKC_BUILD_TESTS)

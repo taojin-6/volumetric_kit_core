@@ -7,7 +7,7 @@ project(
   volumetric_kit_core
   VERSION 0.0.1
   DESCRIPTION
-    "Shared foundation for the volumetric_kit family: error handling, and (staged) the Vulkan core, camera models and sensors"
+    "Shared foundation for the volumetric_kit family: error handling, and (staged) the Vulkan core, cameras and sensors"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_core"
   LANGUAGES CXX)
 
@@ -35,6 +35,12 @@ option(VKC_INSTALL "Generate install/export rules" ON)
 # ON before fetching the core, and one that does not (calib's headless solver)
 # then needs no Vulkan installed to build.
 option(VKC_WITH_VULKAN "Build the vulkan tier (needs a Vulkan SDK)"
+       ${PROJECT_IS_TOP_LEVEL})
+# The camera tier fetches nlohmann/json for the rig calibration file. ON by
+# default only at the top level, as the vulkan tier: a sibling that uses it
+# (calib, recon) sets it ON before fetching the core, and one that does not
+# (gfx) then fetches no JSON library.
+option(VKC_WITH_CAMERA "Build the camera tier (fetches nlohmann/json)"
        ${PROJECT_IS_TOP_LEVEL})
 # Lint first-party targets with clang-tidy as they compile (.clang-tidy); see
 # cmake/vkc_clang_tidy.cmake. Off by default: it slows the build.

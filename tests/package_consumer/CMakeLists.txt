@@ -56,6 +56,13 @@ if(TARGET volumetric_kit::core_vulkan)
                     smoke.comp)
 endif()
 
+# The camera tier, when the core has it: an installed core built with it, or a
+# subproject configured -DVKC_WITH_CAMERA=ON, as calib and recon do.
+if(TARGET volumetric_kit::core_camera)
+  target_compile_definitions(vkc_package_consumer
+                             PRIVATE VKC_CONSUMER_HAS_CAMERA)
+endif()
+
 install(TARGETS vkc_package_consumer_lib EXPORT vkc_package_consumerTargets)
 install(
   EXPORT vkc_package_consumerTargets
