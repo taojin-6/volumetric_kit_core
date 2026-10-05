@@ -37,7 +37,7 @@ uses (`gfx` never pulls in a camera model or a vendor SDK):
 | --- | --- | --- | --- |
 | `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, version | now |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
-| `camera` | `base` | camera models, the rig calibration file | with `calib`'s rational model |
+| `camera` | `base` | geometry, the lens vocabulary, the rig calibration file, camera models | in stages from 2026-10-04 (below) |
 | `sensor` | `camera`, `vulkan` | frame types, the capture interface, vendor drivers (Orbbec, behind an option) | after `camera` |
 
 - `vulkan` is seeded from `recon`'s core, which carries the measured memory
@@ -46,10 +46,11 @@ uses (`gfx` never pulls in a camera model or a vendor SDK):
   pipelines) stay in `gfx`; consumers migrate in the order `recon`, `gfx`
   (re-measuring its frame times, since its allocator semantics change), `ios`
   (deleting its `SharedDevice` copy).
-- `camera` starts with the rational model (k1–k6, p1, p2), matching the
-  factory calibration format that `recon`'s calibration file stores.
-  Fisheye (Kannala-Brandt) is planned, not built: the interface
-  returns unit 3D rays so it can be added without a break.
+- `camera` starts with `recon`'s rig calibration file and the rational lens
+  model (k1–k6, p1, p2) it stores, then the rational camera model, extending
+  `calib`'s five-coefficient Brown-Conrady one ("The camera tier", below).
+  Fisheye (Kannala-Brandt) is planned, not built: the camera model returns
+  unit 3D rays so it can be added without a break.
 - `sensor` moves `recon`'s sensor tier here, so `calib` and `recon` share one
   driver per device.
 
@@ -528,6 +529,57 @@ rules after review, the same day.
   device. VMA allocation tests separately cover buffer and image reuse under
   a reduced budget; hardware coverage remains a separate requirement.
 
+### The camera tier
+
+It lands in two stages, each its own PR:
+
+| Stage | Holds |
+| --- | --- |
+| C1 (landed) | `geometry.hpp` (vectors, `Mat3d`, `RigidTransform`, Rodrigues), `lens.hpp` (`ImageSize`, `PinholeIntrinsics`, `RationalDistortion`, the checks, `scale_intrinsics`, `distort_normalized`), `rig_calibration.hpp` (the file) |
+| C2 | `CameraModel`: the rational model's project and unproject (to unit rays), from `calib`'s Brown-Conrady code |
+
+C1's choices, from `recon`'s file reader and `calib`'s camera model on
+2026-10-04:
+
+- **Its own double-precision aggregates, not Eigen.** Calibration needs double
+  precision, which `recon`'s GLM vocabulary lacks. Eigen in these headers
+  would reach every consumer that links the tier (`recon` and `ios` through
+  `recon`'s sensor tier) for the few operations the file needs, and
+  fixed-size Eigen members can lay out differently between libraries built
+  with different flags. `calib` maps a `Mat3d` (row-major) with `Eigen::Map`;
+  `recon` casts into its float GPU layout.
+- **nlohmann/json, private**, at `recon`'s pin and under its FetchContent
+  name, so one build resolves one copy; it reaches no public header. It is
+  called without exceptions: the document is parsed with
+  `allow_exceptions = false`, and a failed parse is re-read through a SAX
+  consumer that records the parser's message, so `-fno-exceptions` builds
+  still say where the document went wrong. A serial is checked as UTF-8 by
+  the tier itself before it is written, because `dump()` aborts on anything
+  else without exceptions.
+- **`VKC_WITH_CAMERA` is opt-in for a subproject,** as `VKC_WITH_VULKAN` is:
+  `calib` and `recon` set it, and `gfx` fetches no JSON library.
+- **The file is `recon`'s, with two additions.** `pose` stays the OpenCV
+  extrinsic (world to camera, `rvec` and `tvec`); the record holds its inverse
+  as a `RigidTransform` in OpenCV's camera axes, where `recon` held a GLM
+  matrix. Each intrinsics block's `width` and `height`, which `recon`'s files
+  already wrote and its reader ignored, are read into `image_size`: both or
+  neither, and the same in both blocks. `distortion` gains `model`, `"rational"`
+  when absent and `Unsupported` for any other, so a fisheye file is refused
+  rather than misread. All eight coefficients are still required. Every
+  number is written in its shortest exact form, where `recon` wrote 9 digits.
+- **Pixel centres at integer coordinates**, OpenCV's and both siblings'
+  convention, and `scale_intrinsics` keeps them aligned with `recon`'s
+  half-pixel rule, `c' = (c + 0.5) s - 0.5`.
+- **What stays in the siblings.** `recon`'s `DepthCameraParams` and
+  `ColorCameraParams` are its shaders' parameter layout, and its
+  `cv_from_gl_camera` and GLSL mirror of `distort_normalized` belong to its
+  GPU path; `LensCamera` moves with the sensor tier. `calib`'s sensor and
+  lens profiles, targets and observations are its solver's vocabulary.
+- **Tests against OpenCV.** `distort_normalized` is checked against
+  `cv::projectPoints` with eight coefficients (OpenCV 5.0.0, values recorded
+  in the test), and Rodrigues at the angles where it is ill-conditioned:
+  zero, pi, and just short of pi in a matrix rounded through float.
+
 ### Naming
 
 - Repository and package `volumetric_kit_core`; namespace
@@ -553,7 +605,12 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
   `Vulkan` domain with a `VkResult`-typed `code()` becomes `Backend` with the
   `VkResult` in `detail()`; the vulkan tier supplies `vk_error`, `VKC_VK_TRY`
   and the `VkResult` name lookup. The base tier includes no GPU API. Which
-  backend set the detail is not recorded (an open decision below).
+  backend set the detail is not recorded, and need not be yet: every
+  `Backend` status in the family is a `VkResult`. That was decided at
+  `recon`'s migration, its CUDA interop being the one other backend: it never
+  calls `backend_error`, reporting a CUDA failure as `IoError` or
+  `Unsupported` with the CUDA code in the message, and `gfx` is Vulkan-only.
+  A backend that later wants `Backend` adds a domain per backend then.
   `backend_error` keeps `gfx`'s guard against a success code: a detail of `0`
   (`VK_SUCCESS`, `cudaSuccess`) aborts via `VKC_CHECK`.
 - **`with_context` adds context without losing the domain** (new). `recon`
@@ -709,12 +766,3 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   `DeviceMapped` memory the host writes in place and a kernel reads as a
   `StorageInput` device buffer, now exists. Which inputs take it, and on
   which architecture (`unified_memory()`), is the open part.
-- **Which backend a `Backend` status came from.** `Status` records the domain
-  and an `int64_t` detail, not the backend that set it, so `vk_result` reads a
-  CUDA status's `cudaError_t` as an unrelated `VkResult`:
-  `cudaErrorMemoryAllocation` (2) as `VK_TIMEOUT`, which a caller that retries
-  on `VK_TIMEOUT` would retry. Until then, `vk_result` is asked only of a
-  status from a Vulkan call. Recording it changes the base tier's API: a
-  backend tag set by `backend_error`, or a domain per backend (`Vulkan`,
-  `Cuda`); either lets `vk_result` return empty for a CUDA status. Decide at
-  `recon`'s migration, whose CUDA interop returns both kinds.

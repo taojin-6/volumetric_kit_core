@@ -95,7 +95,8 @@ iOS and Android. Windows and MSVC are unsupported
 
 Run from the task's worktree. The build requires CMake ≥ 3.21 and a C++17
 compiler; the vulkan tier also needs a Vulkan SDK (MoltenVK on Apple), or
-`-DVKC_WITH_VULKAN=OFF` to build without it.
+`-DVKC_WITH_VULKAN=OFF` to build without it. The camera tier fetches
+nlohmann/json on the first configure.
 
 ```sh
 core_root="$(git rev-parse --show-toplevel)"

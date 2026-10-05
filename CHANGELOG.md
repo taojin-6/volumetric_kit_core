@@ -52,6 +52,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- The `camera` tier (`volumetric_kit::core_camera`, built with
+  `VKC_WITH_CAMERA`, which a subproject sets ON as it does `VKC_WITH_VULKAN`).
+  It holds double-precision geometry (`Vec2d`, `Vec3d`, `Mat3d`,
+  `RigidTransform`, Rodrigues conversions); the lens vocabulary (`ImageSize`,
+  `PinholeIntrinsics`, `RationalDistortion`, their checks,
+  `scale_intrinsics` and `distort_normalized`); and the rig calibration file
+  (`parse_`, `read_`, `validate_`, `format_` and `write_rig_calibration`).
+  It fetches nlohmann/json privately. Migrating from `recon`'s
+  `sensor/rig_calibration.hpp` and `sensor/lens.hpp`:
+  - `sensor::RigCameraCalibration` → `RigCameraCalibration`. `cam_to_world`
+    (a GLM `Mat4f`) → `camera_to_world` (a `RigidTransform`, in the same
+    OpenCV camera axes): convert at the GPU boundary.
+  - `sensor::PinholeIntrinsics` and `sensor::LensDistortion` →
+    `PinholeIntrinsics` and `RationalDistortion`, in double. The fields and
+    coefficient order are unchanged.
+  - The reader fills `image_size` from the intrinsics blocks' `width` and
+    `height`, and refuses a block with only one of them, or two blocks that
+    disagree. A `distortion.model` other than `"rational"` is `Unsupported`.
+    The writer records both, and writes every number exactly.
+  - `parse_rig_calibration` takes a `std::string_view`, and
+    `read_rig_calibration` keeps the parser's error domain.
+
 - `Device::check_enabled(reqs)`: whether a device enabled everything `reqs`
   requires -- the queue's capabilities and presentation; what `create` and
   `adopt` check, the usable version and support for each required extension

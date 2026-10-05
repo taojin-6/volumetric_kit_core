@@ -23,7 +23,9 @@ buffers zero-copy on one shared device.
 > allocator with its buffers and images, descriptors, synchronization, compute
 > kernels, `CommandBatch`, the shader build functions, GPU timers, buffers
 > exported for CUDA to write, and the shared device a compute library and a
-> renderer both adopt. The `camera` and `sensor` tiers are planned; see
+> renderer both adopt. The `camera` tier's first stage is implemented: the
+> geometry, the lens vocabulary and the rig calibration file; its camera
+> models come next. The `sensor` tier is planned; see
 > [DECISIONS.md](DECISIONS.md#tiers) for what each holds and the order they land
 > in.
 
@@ -36,7 +38,7 @@ Claude Code; `CLAUDE.md` imports it.
 | --- | --- | --- | --- |
 | `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, stage metrics, version | implemented |
 | `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap | implemented |
-| `camera` | `volumetric_kit::core_camera` | camera models (rational first), rig calibration file | planned |
+| `camera` | `volumetric_kit::core_camera` | double-precision geometry, the lens vocabulary, the rig calibration file; camera models (rational first) next | partly implemented |
 | `sensor` | `volumetric_kit::core_sensor` | frame types, capture interface, vendor drivers (Orbbec) | planned |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no
@@ -64,6 +66,10 @@ in its place.
 `VKC_WITH_VULKAN` builds it. It defaults ON at the top level and OFF in a
 subproject: a sibling that uses the tier sets it before fetching the core, so
 one that does not (calib's headless solver) needs no Vulkan installed.
+
+The `camera` tier needs nothing installed: it fetches nlohmann/json, pinned,
+on the first configure. `VKC_WITH_CAMERA` builds it, with the same defaults,
+so a sibling that does not use it (gfx) fetches no JSON library.
 
 ## Build and test
 
@@ -119,7 +125,8 @@ target_link_libraries(your_target PRIVATE volumetric_kit::core_base)
 
 or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`.
 For the vulkan tier, set `VKC_WITH_VULKAN` ON before
-`FetchContent_MakeAvailable` and link `volumetric_kit::core_vulkan`. Either
+`FetchContent_MakeAvailable` and link `volumetric_kit::core_vulkan`; for the
+camera tier, `VKC_WITH_CAMERA` and `volumetric_kit::core_camera`. Either
 way, `vkc_embed_shaders` then compiles a target's GLSL and embeds the SPIR-V
 as headers (`cmake/vkc_shaders.cmake` documents its options):
 
