@@ -15,6 +15,8 @@
 
 namespace volumetric_kit::core {
 
+class Device;
+
 /// @brief A `VkFence`: the host waits on it for submitted work to finish.
 ///
 /// @warning The device passed to @ref create must outlive the fence.
@@ -104,24 +106,30 @@ class VKC_VULKAN_API Semaphore {
 /// Unlike a binary semaphore, the host reads, signals and waits on the value
 /// directly -- the basis for capping frames in flight and for host/GPU
 /// hand-offs between libraries. Needs the device's `timelineSemaphore`
-/// feature, which @ref DeviceRequirements asks for by default.
+/// feature, which @ref DeviceRequirements asks for by default, and which
+/// @ref create checks the device enabled.
 ///
 /// @warning The device passed to @ref create must outlive the semaphore.
 ///
 /// @code
-/// VKC_ASSIGN(TimelineSemaphore frames,
-///            TimelineSemaphore::create(device.handle()));
+/// VKC_ASSIGN(TimelineSemaphore frames, TimelineSemaphore::create(device));
 /// VKC_TRY(frames.signal(1));  // the host raises the counter
 /// VKC_TRY(frames.wait(1));    // returns once it reaches 1
 /// @endcode
 class VKC_VULKAN_API TimelineSemaphore {
  public:
   /// @brief Create a timeline semaphore.
+  ///
+  /// Takes the @ref Device, not its handle, to check
+  /// (@ref Device::check_enabled) that it enabled `timelineSemaphore`: a
+  /// timeline semaphore on a device that did not is invalid usage the driver
+  /// need not report.
   /// @param device         The device.
   /// @param initial_value  The counter's starting value.
-  /// @return The semaphore; @ref Status::Code::InvalidArgument for a null
-  ///         @p device; or a backend @ref Status.
-  static Result<TimelineSemaphore> create(VkDevice device,
+  /// @return The semaphore; @ref Status::Code::InvalidArgument for a
+  ///         moved-from @p device; @ref Status::Code::Unsupported when it did
+  ///         not enable `timelineSemaphore`; or a backend @ref Status.
+  static Result<TimelineSemaphore> create(const Device& device,
                                           std::uint64_t initial_value = 0);
 
   /// @brief Construct an empty semaphore; @ref valid is false.

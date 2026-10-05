@@ -52,6 +52,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- `Device::check_enabled(reqs)`: whether a device enabled everything `reqs`
+  requires -- the queue's capabilities and presentation; what `create` and
+  `adopt` check, the usable version and support for each required extension
+  and feature within the version that makes it core; and the device's record
+  of the extensions and the core, timeline, scalar and dynamic-rendering
+  features it enabled. A device records those features when created,
+  including the three flags its feature chain sets, or as its creator
+  declares them in the `AdoptedDevice` passed to `adopt`. A library handed a
+  device it did not make calls this before building kernels that need a
+  feature. Requirements that carry a `feature_chain` are refused
+  (`InvalidArgument`), as no device records one: check those features by
+  other means and pass the requirements without the chain.
+- `EnabledFeatures`: the core features and the timeline, scalar and
+  dynamic-rendering flags a device enabled, as a device records them and
+  `AdoptedDevice::enabled_features` declares them.
 - `vulkan` tier foundation (`volumetric_kit::core_vulkan`, built with
   `VKC_WITH_VULKAN`), merged from recon's and gfx's cores (DECISIONS.md, "The
   vulkan tier"):
@@ -214,6 +229,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
+- `AdoptedDevice` declares its features in one `EnabledFeatures`:
+  `handoff.enabled_features = features` → `handoff.enabled_features.core =
+  features`, and `handoff.enabled_timeline_semaphore`,
+  `enabled_scalar_block_layout` and `enabled_dynamic_rendering` →
+  `handoff.enabled_features.timeline_semaphore`, `.scalar_block_layout` and
+  `.dynamic_rendering`. `adopt`'s refusals name those fields.
+  `SharedDevice`'s payloads declare the features its device was created
+  with, including any its feature chain enabled.
+- `TimelineSemaphore::create` takes the `Device`, not its handle, and refuses
+  (`Unsupported`) a device that did not enable `timelineSemaphore`:
+  `TimelineSemaphore::create(device.handle(), value)` →
+  `TimelineSemaphore::create(device, value)`.
+- A missing core feature is named: selection, `create`, `adopt` and
+  `check_enabled` say which `VkPhysicalDeviceFeatures` member, where they
+  said "a required core feature".
+- `Device` holds the record of what it enabled. Rebuild consumers after
+  bumping their pin: `Device` changes size.
 - `HeapStats` gains this allocator's own share beside the heap's figures:
   `reserved_bytes`, its blocks and dedicated memory with their free space,
   and `allocation_bytes`, its live allocations. `usage_bytes` and

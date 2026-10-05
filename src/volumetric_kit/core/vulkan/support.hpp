@@ -4,9 +4,10 @@
 #pragma once
 
 // Internal to core_vulkan: the pieces of the requirements check that
-// check_device_support (selection, create) and Device::adopt share, and the
-// device selection and creation Device::create and SharedDevice share, so the
-// two ways of making a device cannot drift. Not installed.
+// check_device_support (selection, create), Device::adopt and
+// Device::check_enabled share, and the device selection and creation
+// Device::create and SharedDevice share, so the two ways of making a device
+// cannot drift. Not installed.
 
 #include <cstdint>
 #include <functional>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
@@ -39,12 +41,13 @@ inline std::uint32_t without_patch(std::uint32_t version) {
 // duplicates and in that order.
 std::vector<std::string> required_extensions(const DeviceRequirements& reqs);
 
-// VkPhysicalDeviceFeatures is a contiguous block of VkBool32, so these walk
-// it as an array, and a new core feature needs no edit here.
+// VkPhysicalDeviceFeatures is a contiguous block of VkBool32, frozen at
+// Vulkan 1.0, so these walk it as an array.
 
-// Whether every VK_TRUE bit of `wanted` is VK_TRUE in `have`.
-bool features_subset(const VkPhysicalDeviceFeatures& wanted,
-                     const VkPhysicalDeviceFeatures& have);
+// The name of the first feature VK_TRUE in `wanted` and not in `have`, as
+// VkPhysicalDeviceFeatures spells it; null when `have` has them all.
+const char* first_missing_feature(const VkPhysicalDeviceFeatures& wanted,
+                                  const VkPhysicalDeviceFeatures& have);
 
 // Every feature VK_TRUE in `a` or `b`.
 VkPhysicalDeviceFeatures features_union(const VkPhysicalDeviceFeatures& a,
@@ -76,6 +79,14 @@ struct QueueRequest {
   std::uint32_t count = 1;
 };
 
+// A device create_device made, and what it enabled of the features
+// DeviceRequirements names: the requirements' own, and any of the three
+// flags the caller's feature chain set itself.
+struct CreatedDevice {
+  VkDevice device = VK_NULL_HANDLE;
+  EnabledFeatures enabled;
+};
+
 // The one vkCreateDevice path Device::create and SharedDevice share: on
 // `caps`, for `reqs` -- its core features, timeline semaphores, scalar block
 // layout and dynamic rendering, then its feature chain, whose structs may be
@@ -83,10 +94,10 @@ struct QueueRequest {
 // (enabled_extensions(caps, reqs)) and the queues `queues` asks for: one
 // create info per distinct family, with the most queues any request asks of
 // it.
-Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
-                               const DeviceRequirements& reqs,
-                               const std::vector<std::string>& extensions,
-                               const std::vector<QueueRequest>& queues);
+Result<CreatedDevice> create_device(const PhysicalDeviceInfo& caps,
+                                    const DeviceRequirements& reqs,
+                                    const std::vector<std::string>& extensions,
+                                    const std::vector<QueueRequest>& queues);
 
 // Instance::select_physical_device, with `accept` asked of each device that
 // meets `reqs` too: one it refuses is passed over, and its reason joins the

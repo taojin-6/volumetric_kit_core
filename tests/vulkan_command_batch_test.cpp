@@ -1492,7 +1492,7 @@ TEST_F(BatchTest, BatchesOnSeveralThreadsShareADevice) {
   adopted.device = device().handle();
   adopted.queue_family = device().queue_family();
   adopted.queue = device().queue();
-  adopted.enabled_timeline_semaphore = true;
+  adopted.enabled_features.timeline_semaphore = true;
   Result<Device> borrowed = Device::adopt(adopted, {});
   ASSERT_TRUE(borrowed.ok()) << borrowed.status().message();
   run_threads(*borrowed);

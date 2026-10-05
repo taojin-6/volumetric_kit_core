@@ -119,20 +119,18 @@ Result<std::unique_ptr<SharedDevice>> SharedDevice::create(
   for (const std::string& name : shared->extension_storage_) {
     shared->extensions_.push_back(name.c_str());
   }
-  shared->enabled_features_ = merged.features;
-  shared->enabled_timeline_semaphore_ = merged.timeline_semaphore;
-  shared->enabled_scalar_block_layout_ = merged.scalar_block_layout;
-  shared->enabled_dynamic_rendering_ = merged.dynamic_rendering;
   shared->presents_ = presents;
 
   // Two queues from the renderer's family only under the first plan, where
   // the compute library's is its second.
   const bool two_queues = shared->plan_ == QueuePlan::TwoQueuesOneFamily;
   VKC_ASSIGN(
-      shared->device_,
+      const detail::CreatedDevice created,
       detail::create_device(caps, merged, shared->extension_storage_,
                             {{shared->graphics_family_, two_queues ? 2U : 1U},
                              {shared->compute_family_, 1}}));
+  shared->device_ = created.device;
+  shared->enabled_features_ = created.enabled;
   vkGetDeviceQueue(shared->device_, shared->graphics_family_, 0,
                    &shared->graphics_queue_);
   vkGetDeviceQueue(shared->device_, shared->compute_family_, two_queues ? 1 : 0,
@@ -190,9 +188,6 @@ AdoptedDevice SharedDevice::payload(std::uint32_t family, VkQueue queue,
   adopted.enabled_extension_count =
       static_cast<std::uint32_t>(extensions_.size());
   adopted.enabled_features = enabled_features_;
-  adopted.enabled_timeline_semaphore = enabled_timeline_semaphore_;
-  adopted.enabled_scalar_block_layout = enabled_scalar_block_layout_;
-  adopted.enabled_dynamic_rendering = enabled_dynamic_rendering_;
   adopted.enabled_debug_utils = instance_.debug_utils_enabled();
   return adopted;
 }

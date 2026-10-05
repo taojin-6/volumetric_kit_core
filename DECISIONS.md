@@ -78,8 +78,9 @@ V1's choices, from comparing the two cores on 2026-10-03:
   `Device::extension_enabled` reports what was enabled.
 - **One check.** `check_device_support` -- API version, queue family, present
   family, extensions, core features, the timeline / scalar / dynamic-rendering
-  features -- is what selection and create run, and adopt runs its
-  device-level half, so the three cannot drift as the copies did.
+  features -- is what selection and create run, and adopt and
+  `Device::check_enabled` run its device-level half, so the four cannot drift
+  as the copies did.
   `select_physical_device` returns the `PhysicalDeviceInfo` the check read,
   and `Device::create` takes it, so a device is queried once.
 - **Generic queue accessors.** `queue()`, `queue_family()`, `queue_flags()`,
@@ -103,6 +104,26 @@ V1's choices, from comparing the two cores on 2026-10-03:
   declaration alone. A distinct present queue gets its own mutex
   (`AdoptedDevice::present_mutex`), as ios's bootstrap hands out one per
   queue.
+- **A device records what it enabled, and a library checks it.** A library
+  handed a `Device` it did not make cannot ask Vulkan what was enabled, and
+  using a feature that was not enabled is invalid usage a driver need not
+  report: recon's `layout(scalar)` kernels ran without error on a device made
+  with the default requirements, which leave `scalarBlockLayout` off. So a
+  device keeps an `EnabledFeatures` -- what `create` enabled, its
+  requirements' and the three flags its feature chain set, or what `adopt`'s
+  creator declared -- and `Device::check_enabled(reqs)` holds a library's
+  requirements to it, after the queue, presentation and the device-level
+  check. That check comes first because a declaration may claim what adopt's
+  own requirements never asked about, which the physical device lacks or its
+  usable version does not make core: `check_enabled` is never weaker than
+  `create` or `adopt` would be with the same requirements. `adopt` runs the
+  record half on the declaration, a refusal naming the `AdoptedDevice` field
+  to fix, and `SharedDevice`'s payloads declare what its create actually
+  enabled. Requirements that carry a feature chain are refused, not passed:
+  no device records a chain, and passing what the check cannot see is the
+  silent invalid usage it exists to catch. The core's own feature-dependent
+  factory, `TimelineSemaphore::create`, takes the `Device` and runs the
+  check itself.
 - **The instance asks for 1.3, or the loader's lower version** (gfx's), never
   below 1.1. MoltenVK caps every device's reported version at the instance's
   request, so recon's 1.2 request would hide a 1.3 device from gfx.

@@ -266,6 +266,43 @@ TEST_F(SharedDeviceTest, BuildsOneDeviceBothLibrariesAdopt) {
   EXPECT_EQ(fusion.submit_mutex(), compute.submit_mutex);
 }
 
+// The payloads declare what create enabled, a feature the chain alone set
+// included, so a library that adopts one can check for it.
+TEST_F(SharedDeviceTest, PayloadsDeclareWhatTheFeatureChainEnabled) {
+  if (instance().api_version() < VK_API_VERSION_1_2) {
+    GTEST_SKIP() << "VkPhysicalDeviceVulkan12Features needs a 1.2 instance";
+  }
+  VkPhysicalDeviceVulkan12Features v12{};
+  v12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  v12.timelineSemaphore = VK_TRUE;  // 1.2 core, so always supported
+  SharedDeviceConfig config = windowless();
+  config.compute.timeline_semaphore = false;
+  config.compute.feature_chain = &v12;
+  config.graphics.timeline_semaphore = false;
+  Result<std::unique_ptr<SharedDevice>> made = SharedDevice::create(config);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const std::unique_ptr<SharedDevice> shared = *std::move(made);
+  const AdoptedDevice compute = shared->compute_payload();
+  EXPECT_TRUE(compute.enabled_features.timeline_semaphore);
+  EXPECT_TRUE(shared->graphics_payload().enabled_features.timeline_semaphore);
+
+  const DeviceRequirements timelines;  // timeline_semaphore by default
+  const Result<Device> fusion = Device::adopt(compute, timelines);
+  ASSERT_TRUE(fusion.ok()) << fusion.status().message();
+  EXPECT_TRUE(fusion->check_enabled(timelines).ok());
+
+  // A core feature create did not enable is refused, naming the declaration.
+  if (shared->physical().features().robustBufferAccess == VK_TRUE) {
+    DeviceRequirements robust;
+    robust.features.robustBufferAccess = VK_TRUE;
+    const Status refused = fusion->check_enabled(robust);
+    EXPECT_EQ(refused.domain(), Status::Code::Unsupported);
+    EXPECT_NE(refused.message().find("AdoptedDevice::enabled_features.core"),
+              std::string::npos)
+        << refused.message();
+  }
+}
+
 // Requirements left at their defaults ask for compute alone; the renderer's
 // queue does graphics all the same, and its adopt still passes.
 TEST_F(SharedDeviceTest, TheRenderersQueueDoesGraphicsWhateverItsFlags) {

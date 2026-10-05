@@ -57,12 +57,14 @@ class ScopeGuard {
 // The VkDeviceCreateInfo feature chain create_device builds: the
 // requirements' core features, timeline semaphores, scalar block layout and
 // dynamic rendering, then the caller's chain. Built in place -- its nodes point
-// at one another -- so it is never copied or moved once built.
+// at one another -- so it is never copied or moved once built. `enabled` is
+// what it enables, the caller's chain included.
 struct FeatureChain {
   VkPhysicalDeviceFeatures2 features2{};
   VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
   VkPhysicalDeviceScalarBlockLayoutFeatures scalar{};
   VkPhysicalDeviceDynamicRenderingFeatures dynamic{};
+  EnabledFeatures enabled;
 
   FeatureChain() = default;
   FeatureChain(const FeatureChain&) = delete;
@@ -118,6 +120,22 @@ struct FeatureChain {
           break;
       }
     }
+
+    enabled.core = reqs.features;
+    enabled.timeline_semaphore =
+        reqs.timeline_semaphore ||
+        (v12 != nullptr && v12->timelineSemaphore == VK_TRUE) ||
+        (their_timeline != nullptr &&
+         their_timeline->timelineSemaphore == VK_TRUE);
+    enabled.scalar_block_layout =
+        reqs.scalar_block_layout ||
+        (v12 != nullptr && v12->scalarBlockLayout == VK_TRUE) ||
+        (their_scalar != nullptr && their_scalar->scalarBlockLayout == VK_TRUE);
+    enabled.dynamic_rendering =
+        reqs.dynamic_rendering ||
+        (v13 != nullptr && v13->dynamicRendering == VK_TRUE) ||
+        (their_dynamic != nullptr &&
+         their_dynamic->dynamicRendering == VK_TRUE);
 
     auto* tail = reinterpret_cast<VkBaseOutStructure*>(&features2);
     auto link = [&tail](void* feature) {
@@ -180,10 +198,10 @@ std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
   return enabled;
 }
 
-Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
-                               const DeviceRequirements& reqs,
-                               const std::vector<std::string>& extensions,
-                               const std::vector<QueueRequest>& queues) {
+Result<CreatedDevice> create_device(const PhysicalDeviceInfo& caps,
+                                    const DeviceRequirements& reqs,
+                                    const std::vector<std::string>& extensions,
+                                    const std::vector<QueueRequest>& queues) {
   std::vector<const char*> extension_names;
   extension_names.reserve(extensions.size());
   for (const std::string& name : extensions) {
@@ -233,7 +251,7 @@ Result<VkDevice> create_device(const PhysicalDeviceInfo& caps,
   // the caller must not destroy whatever it holds.
   VkDevice device = VK_NULL_HANDLE;
   VKC_VK_TRY(vkCreateDevice(caps.handle(), &info, nullptr, &device));
-  return device;
+  return CreatedDevice{device, chain.enabled};
 }
 
 }  // namespace detail
@@ -268,13 +286,14 @@ Result<Device> Device::create(VkInstance instance,
   VKC_ASSIGN(const DeviceSupport support,
              check_device_support(caps, reqs, surface));
 
-  std::vector<std::string> enabled = detail::enabled_extensions(caps, reqs);
+  std::vector<std::string> extensions = detail::enabled_extensions(caps, reqs);
   std::vector<detail::QueueRequest> queues = {{support.queue_family, 1}};
   if (support.present_family) queues.push_back({*support.present_family, 1});
-  VKC_ASSIGN(VkDevice handle,
-             detail::create_device(caps, reqs, enabled, queues));
+  VKC_ASSIGN(const detail::CreatedDevice created,
+             detail::create_device(caps, reqs, extensions, queues));
   Device device;
-  device.state_.device = handle;
+  device.state_.device = created.device;
+  device.state_.enabled = created.enabled;
   device.state_.physical = caps.handle();
   device.state_.owns_device = true;
   device.state_.queue_family = support.queue_family;
@@ -294,7 +313,7 @@ Result<Device> Device::create(VkInstance instance,
     }
   }
   device.caps_ = caps;
-  device.enabled_extensions_ = std::move(enabled);
+  device.enabled_extensions_ = std::move(extensions);
   device.resolve_entry_points(instance_debug_utils_enabled);
   return device;
 }
@@ -343,7 +362,8 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
   VKC_TRY(detail::check_physical_support(caps, reqs, required)
               .with_context("Device::adopt"));
   // ...and declared enabled by the creator, as Vulkan cannot be asked what a
-  // logical device enabled.
+  // logical device enabled: recorded below, and checked as the record a
+  // later check_enabled reads.
   std::vector<std::string> declared;
   if (adopted.enabled_extensions != nullptr) {
     for (std::uint32_t i = 0; i < adopted.enabled_extension_count; ++i) {
@@ -351,33 +371,6 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
         declared.emplace_back(adopted.enabled_extensions[i]);
       }
     }
-  }
-  for (const std::string& name : required) {
-    if (std::find(declared.begin(), declared.end(), name) == declared.end()) {
-      return Status::unsupported(
-          "Device::adopt: the required extension " + name +
-          " is not declared enabled (AdoptedDevice::enabled_extensions)");
-    }
-  }
-  if (!detail::features_subset(reqs.features, adopted.enabled_features)) {
-    return Status::unsupported(
-        "Device::adopt: a required core feature is not declared enabled "
-        "(AdoptedDevice::enabled_features)");
-  }
-  if (reqs.timeline_semaphore && !adopted.enabled_timeline_semaphore) {
-    return Status::unsupported(
-        "Device::adopt: timelineSemaphore is not declared enabled "
-        "(AdoptedDevice::enabled_timeline_semaphore)");
-  }
-  if (reqs.scalar_block_layout && !adopted.enabled_scalar_block_layout) {
-    return Status::unsupported(
-        "Device::adopt: scalarBlockLayout is not declared enabled "
-        "(AdoptedDevice::enabled_scalar_block_layout)");
-  }
-  if (reqs.dynamic_rendering && !adopted.enabled_dynamic_rendering) {
-    return Status::unsupported(
-        "Device::adopt: dynamicRendering is not declared enabled "
-        "(AdoptedDevice::enabled_dynamic_rendering)");
   }
 
   Device device;
@@ -396,10 +389,79 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
     device.state_.present_family = adopted.present_family;
     device.state_.present_mutex = adopted.present_mutex;
   }
+  device.state_.enabled = adopted.enabled_features;
   device.caps_ = std::move(caps);
   device.enabled_extensions_ = std::move(declared);
+  VKC_TRY(device.check_record(reqs, required).with_context("Device::adopt"));
   device.resolve_entry_points(adopted.enabled_debug_utils);
   return device;
+}
+
+Status Device::check_enabled(const DeviceRequirements& reqs) const {
+  if (state_.device == VK_NULL_HANDLE) {
+    return Status::invalid_argument("Device::check_enabled: an empty device");
+  }
+  if (reqs.feature_chain != nullptr) {
+    return Status::invalid_argument(
+        "Device::check_enabled: a device keeps no record of a feature chain, "
+        "so DeviceRequirements::feature_chain cannot be checked; check its "
+        "features by other means, and pass the requirements without it");
+  }
+  if ((state_.queue_flags & reqs.queue_flags) != reqs.queue_flags) {
+    return Status::unsupported(
+        "Device::check_enabled: the device's queue family lacks a required "
+        "capability (DeviceRequirements::queue_flags)");
+  }
+  if (reqs.needs_present && !has_present()) {
+    return Status::unsupported(
+        "Device::check_enabled: the device has no present queue");
+  }
+  // What create and adopt hold requirements to: a record -- an adopted
+  // device's declaration -- may claim a feature the physical device lacks,
+  // or one its usable version does not make core.
+  const std::vector<std::string> required = detail::required_extensions(reqs);
+  VKC_TRY(detail::check_physical_support(caps_, reqs, required)
+              .with_context("Device::check_enabled"));
+  return check_record(reqs, required).with_context("Device::check_enabled");
+}
+
+Status Device::check_record(const DeviceRequirements& reqs,
+                            const std::vector<std::string>& required) const {
+  // An adopted device's record is its creator's declaration, so a refusal
+  // names the field to fix.
+  const bool declared = !state_.owns_device;
+  const auto missing = [declared](const std::string& what, const char* field) {
+    return Status::unsupported(
+        declared
+            ? what + " is not declared enabled (AdoptedDevice::" + field + ")"
+            : what + " was not enabled when the device was created");
+  };
+  for (const std::string& name : required) {
+    if (!extension_enabled(name.c_str())) {
+      return missing("the required extension " + name, "enabled_extensions");
+    }
+  }
+  if (const char* feature =
+          detail::first_missing_feature(reqs.features, state_.enabled.core)) {
+    return missing(std::string("the core feature ") + feature,
+                   "enabled_features.core");
+  }
+  struct Flag {
+    bool wanted;
+    bool enabled;
+    const char* feature;
+    const char* field;
+  };
+  for (const Flag& flag :
+       {Flag{reqs.timeline_semaphore, state_.enabled.timeline_semaphore,
+             "timelineSemaphore", "enabled_features.timeline_semaphore"},
+        Flag{reqs.scalar_block_layout, state_.enabled.scalar_block_layout,
+             "scalarBlockLayout", "enabled_features.scalar_block_layout"},
+        Flag{reqs.dynamic_rendering, state_.enabled.dynamic_rendering,
+             "dynamicRendering", "enabled_features.dynamic_rendering"}}) {
+    if (flag.wanted && !flag.enabled) return missing(flag.feature, flag.field);
+  }
+  return {};
 }
 
 void Device::resolve_entry_points(bool instance_debug_utils) noexcept {
