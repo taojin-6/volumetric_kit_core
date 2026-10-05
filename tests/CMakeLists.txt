@@ -18,15 +18,19 @@ foreach(_vkc_test base_result base_check base_log base_version
     TIMEOUT 60)
 endforeach()
 
-# vulkan: the VkResult helpers, UniqueHandle, DeviceRequirements, the
-# queue-family reduction and the memory-type masks need no device; the device
-# tests skip without one, unless VKC_REQUIRE_VULKAN_DEVICE is set (CI sets it
-# beside lavapipe), and fail on a validation error under VKC_TEST_VALIDATION=1
+# vulkan: the VkResult helpers, the format helpers (vulkan_format, and
+# vulkan_format_reference against Vulkan-Utility-Libraries, skipped where its
+# headers are not installed), UniqueHandle, DeviceRequirements, the queue-family
+# reduction and the memory-type masks need no device; the device tests skip
+# without one, unless VKC_REQUIRE_VULKAN_DEVICE is set (CI sets it beside
+# lavapipe), and fail on a validation error under VKC_TEST_VALIDATION=1
 # (tests/vulkan_fixture.hpp).
 if(VKC_WITH_VULKAN)
   foreach(
     _vkc_test
     vulkan_result
+    vulkan_format
+    vulkan_format_reference
     vulkan_unique_handle
     vulkan_requirements
     vulkan_queue_families

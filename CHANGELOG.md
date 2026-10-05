@@ -67,6 +67,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - `EnabledFeatures`: the core features and the timeline, scalar and
   dynamic-rendering flags a device enabled, as a device records them and
   `AdoptedDevice::enabled_features` declares them.
+- `vulkan`: `format.hpp`, what a `VkFormat` implies for a view and a copy:
+  `format_has_depth`, `format_has_stencil`, `view_aspect` (the aspect a
+  default view covers), `format_needs_ycbcr_conversion` (a view needs a
+  sampler Y'CbCr conversion) and `texel_bytes` (one texel of an uncompressed,
+  single-plane color format; 0 otherwise), for core and KHR formats whatever
+  headers the core was built with. gfx can replace Vulkan-Utility-Libraries'
+  `vkuFormat*` with them ("Migrating from a sibling's own copy", below).
 - `vulkan` tier foundation (`volumetric_kit::core_vulkan`, built with
   `VKC_WITH_VULKAN`), merged from recon's and gfx's cores (DECISIONS.md, "The
   vulkan tier"):
@@ -246,6 +253,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   said "a required core feature".
 - `Device` holds the record of what it enabled. Rebuild consumers after
   bumping their pin: `Device` changes size.
+- `vulkan`: **the oldest supported Vulkan headers are 1.3.204, and 1.3.208 on
+  Apple** (DECISIONS.md, "Vulkan headers come from the system"); on Android,
+  take NDK r25 or newer, whose headers are Vulkan 1.3's. Older headers fail at
+  configure where FindVulkan reports a version (CMake 3.23 and newer) -- in
+  the build, and in the installed package's `find_dependency` -- and otherwise
+  in `vulkan.hpp`, with a message naming the version needed. On Apple, 1.3.204
+  through 1.3.207 used to build without portability enumeration and then find
+  no MoltenVK device. CI builds and tests on Ubuntu 22.04's headers and, on
+  macOS, on 1.3.208's.
 - `HeapStats` gains this allocator's own share beside the heap's figures:
   `reserved_bytes`, its blocks and dedicated memory with their free space,
   and `allocation_bytes`, its live allocations. `usage_bytes` and
@@ -311,6 +327,14 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
   `recon`'s `named_failure()` in `core/compute_kernel.cpp` becomes
   `why.with_context(name)`, which keeps the domain and detail with no switch;
   `recon`'s own `to_string` in `core/result.cpp` goes with its `Status`.
+- `gfx`: `impl/vk_format.hpp` → `volumetric_kit/core/vulkan/format.hpp`:
+  `aspect_mask_for` → `view_aspect`, `texel_size` → `texel_bytes`, and
+  `format_has_depth` / `format_has_stencil` → the core's of the same name.
+  They answer as before for core and KHR formats, but a vendor or EXT
+  extension's format now reads as nothing -- `texel_bytes` returns 0 where
+  `texel_size` gave its size -- so an offscreen readback or texture upload of
+  one is refused. With no `vkuFormat*` left, gfx needs neither
+  Vulkan-Utility-Libraries nor its pinned headers.
 - `recon` / `gfx`: `Status` and `Result` are now `[[nodiscard]]`; a call site
   that drops one now warns.
 - `recon` / `gfx`: `Status::backend_error(0, …)` (a success code) now aborts,

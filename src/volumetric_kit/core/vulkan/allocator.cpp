@@ -34,6 +34,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/format.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -306,43 +307,6 @@ VkImageViewType view_type_for(VkImageType type, std::uint32_t layers,
   }
 }
 
-VkImageAspectFlags aspect_for(VkFormat format) {
-  switch (format) {
-    case VK_FORMAT_D16_UNORM:
-    case VK_FORMAT_X8_D24_UNORM_PACK32:
-    case VK_FORMAT_D32_SFLOAT:
-    case VK_FORMAT_D16_UNORM_S8_UINT:
-    case VK_FORMAT_D24_UNORM_S8_UINT:
-    case VK_FORMAT_D32_SFLOAT_S8_UINT:
-      // A view of a combined depth/stencil image samples depth.
-      return VK_IMAGE_ASPECT_DEPTH_BIT;
-    case VK_FORMAT_S8_UINT:
-      return VK_IMAGE_ASPECT_STENCIL_BIT;
-    default:
-      return VK_IMAGE_ASPECT_COLOR_BIT;
-  }
-}
-
-// Whether a COLOR view of @p format must carry a sampler Y'CbCr conversion
-// (VUID-VkImageViewCreateInfo-format-06415): the core formats the registry
-// (vk.xml) gives a chroma attribute -- multi-planar, 4:2:2, and the RGBA
-// 4PACK16 ones -- such as a decoder's NV12 picture. The one- and
-// two-component R10X6 / R12X4 formats inside the 1.1 range need none.
-bool needs_ycbcr_conversion(VkFormat format) {
-  switch (format) {
-    case VK_FORMAT_R10X6_UNORM_PACK16:
-    case VK_FORMAT_R10X6G10X6_UNORM_2PACK16:
-    case VK_FORMAT_R12X4_UNORM_PACK16:
-    case VK_FORMAT_R12X4G12X4_UNORM_2PACK16:
-      return false;
-    default:
-      return (format >= VK_FORMAT_G8B8G8R8_422_UNORM &&
-              format <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM) ||
-             (format >= VK_FORMAT_G8_B8R8_2PLANE_444_UNORM &&
-              format <= VK_FORMAT_G16_B16R16_2PLANE_444_UNORM);
-  }
-}
-
 Status check_image_desc(const ImageDesc& desc) {
   if (desc.extent.width == 0 || desc.extent.height == 0) {
     return Status::invalid_argument("create_image: extent must be non-zero");
@@ -399,7 +363,7 @@ Status check_image_desc(const ImageDesc& desc) {
         "create_image: a view needs a usage beyond transfer; clear with_view "
         "for a transfer-only image");
   }
-  if (desc.with_view && needs_ycbcr_conversion(desc.format)) {
+  if (desc.with_view && format_needs_ycbcr_conversion(desc.format)) {
     return Status::invalid_argument(
         "create_image: a multi-planar or 4:2:2 format's view needs a sampler "
         "Y'CbCr conversion, which the default view cannot carry; clear "
@@ -588,7 +552,7 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
     view_info.image = image;
     view_info.viewType = view_type_for(desc.type, desc.array_layers, desc.cube);
     view_info.format = desc.format;
-    view_info.subresourceRange.aspectMask = aspect_for(desc.format);
+    view_info.subresourceRange.aspectMask = view_aspect(desc.format);
     view_info.subresourceRange.levelCount = desc.mip_levels;
     view_info.subresourceRange.layerCount = desc.array_layers;
     const VkResult viewed =

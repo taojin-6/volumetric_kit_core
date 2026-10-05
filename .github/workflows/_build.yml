@@ -25,6 +25,11 @@ on:
       vulkan:
         type: boolean
         default: true
+      # A Vulkan-Headers tag (e.g. v1.3.208) to build against in place of the
+      # system's headers; empty takes the system's.
+      vulkan_headers:
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -46,8 +51,13 @@ jobs:
         run: |
           sudo apt-get update
           # glslc and spirv-val compile and validate the compute tests' shaders.
+          # Ubuntu 22.04 packages no glslc; cmake/vkc_shaders.cmake then takes
+          # glslangValidator.
+          compiler=glslc
+          apt-cache show glslc > /dev/null 2>&1 || compiler=glslang-tools
           sudo apt-get install -y --no-install-recommends \
-            libvulkan-dev vulkan-tools vulkan-validationlayers glslc spirv-tools
+            libvulkan-dev vulkan-tools vulkan-validationlayers "$compiler" \
+            spirv-tools
           # lavapipe, Mesa's software Vulkan driver, installed WITH recommends:
           # without them its runtime libraries (LLVM) are stripped and it loads
           # as INCOMPATIBLE_DRIVER, which would skip every device test.
@@ -66,14 +76,28 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: '1'
           HOMEBREW_NO_INSTALL_CLEANUP: '1'
         run: |
+          # vulkan-utility-libraries: tests/vulkan_format_reference_test.cpp
+          # checks format.hpp against it.
           brew install vulkan-headers vulkan-loader molten-vk shaderc \
-            spirv-tools vulkan-validationlayers vulkan-tools
+            spirv-tools vulkan-validationlayers vulkan-tools \
+            vulkan-utility-libraries
           # The layer's manifest names its library without a path; the Test
           # step alone searches Homebrew's lib for it, as job-wide its
           # libraries would shadow those of every later tool.
           echo "VKC_LAYER_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
           echo "VK_LAYER_PATH=$(brew --prefix)/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
           DYLD_LIBRARY_PATH="$(brew --prefix)/lib" vulkaninfo --summary
+
+      # Vulkan_ROOT puts the tagged headers ahead of the system's for every
+      # find_package(Vulkan) in the job -- the build's and both consumers' --
+      # while the loader still comes from the system.
+      - name: Pin Vulkan headers
+        if: inputs.vulkan && inputs.vulkan_headers != ''
+        run: |
+          git clone --quiet --depth 1 --branch "${{ inputs.vulkan_headers }}" \
+            https://github.com/KhronosGroup/Vulkan-Headers.git \
+            "$RUNNER_TEMP/Vulkan-Headers"
+          echo "Vulkan_ROOT=$RUNNER_TEMP/Vulkan-Headers" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |

@@ -18,6 +18,15 @@ if(NOT Vulkan_FOUND)
       "(macOS: brew install vulkan-headers vulkan-loader molten-vk; Ubuntu: "
       "apt install libvulkan-dev), or configure with -DVKC_WITH_VULKAN=OFF.")
 endif()
+# The oldest headers the tier supports (VKC_VULKAN_MIN_VERSION, top-level
+# CMakeLists.txt), checked here rather than through find_package's version so
+# the message names the headers found.
+if(Vulkan_VERSION AND Vulkan_VERSION VERSION_LESS VKC_VULKAN_MIN_VERSION)
+  message(
+    FATAL_ERROR
+      "volumetric_kit_core needs Vulkan headers ${VKC_VULKAN_MIN_VERSION} or "
+      "newer; found ${Vulkan_VERSION} at ${Vulkan_INCLUDE_DIRS}")
+endif()
 
 set(_vkc_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 
@@ -37,6 +46,7 @@ target_sources(
           compute_pipeline.cpp
           compute_util.cpp
           descriptor.cpp
+          format.cpp
           gpu_timer.cpp
           device.cpp
           device_requirements.cpp

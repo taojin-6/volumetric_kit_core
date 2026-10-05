@@ -47,7 +47,9 @@ GPU (calib's headless solver) links only the tiers it uses.
 The `base` tier needs only a C++17 compiler -- GCC or Clang; Windows and MSVC
 are not supported ([DECISIONS.md](DECISIONS.md#platforms)) -- and CMake ≥
 3.21. googletest is fetched, pinned, when tests are built. The `vulkan` tier
-also needs a Vulkan SDK's headers and loader (MoltenVK on Apple), and its
+also needs a Vulkan SDK's headers and loader (MoltenVK on Apple) -- headers
+1.3.204 or newer, 1.3.208 on Apple
+([DECISIONS.md](DECISIONS.md#vulkan-headers-come-from-the-system)) -- and its
 tests a GLSL compiler (`glslc`, or `glslangValidator`); `spirv-val`
 validates the shaders when found:
 
@@ -55,6 +57,9 @@ validates the shaders when found:
 brew install vulkan-headers vulkan-loader molten-vk shaderc spirv-tools  # macOS
 sudo apt-get install libvulkan-dev mesa-vulkan-drivers glslc spirv-tools # Ubuntu
 ```
+
+Ubuntu 22.04 packages no `glslc`: install `glslang-tools` (`glslangValidator`)
+in its place.
 
 `VKC_WITH_VULKAN` builds it. It defaults ON at the top level and OFF in a
 subproject: a sibling that uses the tier sets it before fetching the core, so

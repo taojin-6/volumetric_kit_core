@@ -147,8 +147,8 @@ V1's choices, from comparing the two cores on 2026-10-03:
   traits keyed on the handle type cannot tell `VkFence` from `VkSemaphore` on
   32-bit targets, where both are `uint64_t`.
 - **Vulkan from the system** (`find_package(Vulkan)`, `Vulkan::Vulkan`
-  PUBLIC), as recon and ios use it; gfx compiles against pinned
-  Vulkan-Headers instead (an open decision below).
+  PUBLIC), as recon and ios use it, and gfx too once it builds on this tier
+  ("Vulkan headers come from the system", below).
 - **`VKC_WITH_VULKAN` is opt-in for a subproject.** ON at the top level, OFF
   when fetched: recon and gfx set it, and calib, which fetches the core for
   its error types, then needs no Vulkan installed. An installed core ships the
@@ -652,6 +652,42 @@ no MSVC flags: an exported buffer's memory is a file descriptor
 from `__builtin_FILE`/`__builtin_LINE`. Supporting Windows would be a new
 decision, landing with its CI leg.
 
+### Vulkan headers come from the system
+
+The vulkan tier compiles against the headers `find_package(Vulkan)` finds --
+the system's, or a Vulkan SDK's -- and the core vendors none. This settles
+the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
+1.4.357, and both in one build would have mixed two header versions.
+
+- **The application decides the headers, not a library.** VMA, Dear ImGui's
+  Vulkan backend and volk build against what their consumer provides. A pin
+  vendored here would force one version on every application that links recon
+  or gfx, and mix two versions in one that also includes `<vulkan/vulkan.h>`
+  from elsewhere (GLFW, ImGui). An application that wants a reproducible pin
+  points `Vulkan_INCLUDE_DIR` at it.
+- **The oldest supported headers are 1.3.204** -- Ubuntu 22.04's -- **and
+  1.3.208 on Apple**, the first with `VK_KHR_portability_enumeration`, without
+  which the loader hides MoltenVK's devices. On Android the headers are the
+  NDK's, so the floor is NDK r25, the first to ship Vulkan 1.3's; older NDKs
+  ship 1.2's. `vulkan.hpp` refuses older headers as it compiles. At configure,
+  the build and the installed package's `find_dependency` refuse them where
+  FindVulkan reports a version (CMake 3.23 and newer), from one
+  `VKC_VULKAN_MIN_VERSION`. Two CI legs build and test on the floors --
+  Ubuntu 22.04's headers, and Khronos' 1.3.208 on macOS -- so nothing newer
+  slips into code either platform compiles. A newer symbol is used behind its
+  extension's macro, as the portability bits are, or by its registry value,
+  as `texel_bytes` takes VK_KHR_maintenance5's formats.
+- **Format metadata is the core's** (`format.hpp`): `format_has_depth`,
+  `format_has_stencil`, `view_aspect`, `format_needs_ycbcr_conversion` and
+  `texel_bytes`, for core and KHR formats whatever headers the core was built
+  with. A test checks them against Vulkan-Utility-Libraries' `vkuFormat*` for
+  every format the headers name, wherever that library's headers are
+  installed (macOS CI). gfx vendored that library -- and with it the newer
+  headers it needs -- for five such helpers alone; with these it builds on
+  the system's headers too. A new format is a table entry here, not a version
+  bump; the test fails on headers that name a core or KHR format the tables
+  lack.
+
 ## Open decisions
 
 - **Discrete GPU CI for the vulkan tier.** Hosted Linux uses lavapipe;
@@ -666,10 +702,6 @@ decision, landing with its CI leg.
   tested only through the memory-type masks, against recorded layouts. On a
   public repository those legs must run only same-repository code, as
   `recon`'s guard does.
-- **Vulkan headers for gfx.** The tier uses the system's headers; gfx pins
-  Vulkan-Headers 1.4.357 and links the loader privately. Both in one build
-  would mix two header versions. Decide at gfx's migration: gfx adopts the
-  system headers, or the core vendors the same pin.
 - **Unified memory.** `recon` deliberately runs the staged path on unified
   memory too, pending measurements of staging cost. The vulkan tier inherits that
   rule until the measurement says otherwise. On unified memory a staged
