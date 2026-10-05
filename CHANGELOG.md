@@ -9,6 +9,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Fixed
 
+- `vk_result` returns empty for a backend status whose detail is outside
+  `int32_t`, `VkResult`'s range, instead of converting it to `VkResult`. That
+  conversion was undefined and in practice truncated the detail, so a failure
+  whose detail was 2^40 read as `VK_SUCCESS`. A backend status therefore no
+  longer always yields a `VkResult`: check the optional before dereferencing
+  it. A 32-bit code stored without sign extension (from a `uint32_t`) is
+  outside the range too; store a `VkResult` with `vk_error`. `vk_result` still
+  cannot tell a CUDA status from a Vulkan one: ask it only of a status from a
+  Vulkan call.
 - At a heap's budget, buffer and image allocations still take free space in
   the allocator's existing VMA blocks, so a falling budget no longer rejects
   a suballocation that needs no additional device memory. With budget room,

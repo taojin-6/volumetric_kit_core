@@ -23,6 +23,7 @@
 /// @endcode
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -48,10 +49,27 @@ inline Status vk_error(VkResult result, std::string_view what) {
 /// @brief The `VkResult` a backend @ref Status carries.
 /// @param status  Any status.
 /// @return Its @ref Status::detail as a `VkResult` when its domain is
-///         `Code::Backend`; empty for any other domain, success included.
+///         `Code::Backend` and the detail is in `int32_t`'s range, which is
+///         `VkResult`'s; empty otherwise, success included. A 32-bit code
+///         stored without sign extension (from a `uint32_t`) is outside that
+///         range: store a `VkResult` with @ref vk_error.
+///
+/// The domain does not say *which* backend failed: a CUDA failure is a backend
+/// status too, whose `cudaError_t` detail this reads as an unrelated
+/// `VkResult` (`cudaErrorMemoryAllocation`, 2, as `VK_TIMEOUT`). Ask it only of
+/// a status from a Vulkan call.
 inline std::optional<VkResult> vk_result(const Status& status) noexcept {
+  // TODO: return empty for a CUDA status once Status records which backend
+  // failed (DECISIONS.md, "Open decisions").
   if (status.domain() != Status::Code::Backend) return std::nullopt;
-  return static_cast<VkResult>(status.detail());
+  // Converting a code outside VkResult's range, int32_t's, to the enum would
+  // be undefined.
+  const std::int64_t code = status.detail();
+  if (code < std::numeric_limits<std::int32_t>::min() ||
+      code > std::numeric_limits<std::int32_t>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<VkResult>(code);
 }
 
 /// @brief The name of a `VkResult`, e.g. `"VK_ERROR_DEVICE_LOST"`.
