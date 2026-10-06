@@ -5,7 +5,8 @@
 
 /// @file command_batch.hpp
 /// @brief One call's uploads, fills, copies, dispatches and readbacks,
-///        recorded into one command buffer and submitted with one fence wait.
+///        recorded into one command buffer and submitted with one fence wait
+///        -- or submitted without it, ordered by timeline semaphores.
 ///
 /// The host reaches device memory through this and nothing else: kernel
 /// memory is @ref MemoryUsage::DeviceOnly and unmapped on every platform, so
@@ -14,25 +15,121 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 
 class Allocator;
-class Device;
 class Image;
 struct ComputeKernel;
 
+/// @brief A @ref CommandBatch submitted without waiting: what
+///        @ref CommandBatch::submit_async returns.
+///
+/// Holds the batch's staging and readback memory until a @ref wait sees its
+/// work complete; that wait fills every readback destination, once, and
+/// frees them. Until then everything the batch recorded -- buffers, images in
+/// their layouts, the dispatched kernels' pipelines -- and every readback
+/// destination must stay alive. So must each dispatched kernel's descriptor
+/// set, unwritten and unfreed, until a wait sees the work complete: that wait
+/// refuses the batch if one was rewritten through any copy, or freed, since
+/// the submit. Destroying an unfinished one waits for its work, with no
+/// limit, as @ref Device::PendingSubmit says -- so set every value it waits
+/// for on every path -- and leaves its readback destinations unwritten. Used
+/// from one thread at a time, which need not be the one that submitted it:
+/// no call -- @ref wait, @ref ready, @ref in_flight, a move -- may overlap
+/// another on the same batch.
+///
+/// @warning The batch's @ref Device and @ref Allocator must outlive it.
+///
+/// @code
+/// VKC_ASSIGN(PendingBatch fused,
+///            batch.submit_async({{&prepared, n}}, {{&fused_timeline, n}}));
+/// // ... record and submit the next stage, which waits for fused_timeline ...
+/// VKC_TRY(fused.wait());  // the batch's readbacks are written now
+/// @endcode
+class VKC_VULKAN_API PendingBatch {
+ public:
+  /// @brief Construct an empty pending batch: @ref ready, nothing to wait for.
+  PendingBatch() noexcept = default;
+  /// Waits for the work if it is unfinished, as @ref Device::PendingSubmit
+  /// does.
+  ~PendingBatch() = default;
+  PendingBatch(const PendingBatch&) = delete;
+  PendingBatch& operator=(const PendingBatch&) = delete;
+  PendingBatch(PendingBatch&& other) noexcept;
+  /// Waits for this one's own unfinished work, its readbacks unwritten,
+  /// before taking @p other's.
+  PendingBatch& operator=(PendingBatch&& other) noexcept;
+
+  /// @return Whether @ref wait would return without blocking: the work has
+  ///         completed or failed, or there is none. Never blocks, and writes
+  ///         no readback.
+  bool ready() const { return submit_.ready(); }
+
+  /// @brief Wait until the work completes, or the timeout passes, then write
+  ///        every readback destination and free the batch's staging.
+  /// @param timeout_ns  The longest wait, in nanoseconds.
+  /// @return As @ref Device::PendingSubmit::wait: OK once complete -- the
+  ///         destinations written by the first such call only -- a
+  ///         `VK_TIMEOUT` status with the work still pending; the failure,
+  ///         which leaves the destinations unwritten; or, once complete,
+  ///         @ref Status::Code::InvalidArgument when a dispatched kernel's
+  ///         descriptor set was rewritten or freed since the submit -- the
+  ///         work may have run on the later binding, so the destinations are
+  ///         left unwritten. Every later call returns a failure again.
+  Status wait(std::uint64_t timeout_ns = UINT64_MAX);
+
+  /// @return Whether the device may still run the work, as
+  ///         @ref Device::PendingSubmit::in_flight says: what the batch
+  ///         recorded must stay alive while it does.
+  bool in_flight() const noexcept { return submit_.in_flight(); }
+
+ private:
+  friend class CommandBatch;
+
+  // Where a readback lands: its slice of the readback memory, and the
+  // caller's destination.
+  struct Readback {
+    void* dst = nullptr;
+    VkDeviceSize offset = 0;
+    VkDeviceSize bytes = 0;
+  };
+  // A dispatched kernel's set, and its write count at the submit.
+  struct UsedSet {
+    DescriptorSet set;
+    std::uint64_t writes = 0;
+  };
+
+  // Copies each readback's slice of `memory` to its destination: the one
+  // write-out both submits make.
+  static void write_readbacks(const void* memory,
+                              const std::vector<Readback>& readbacks);
+
+  Device::PendingSubmit submit_;
+  // The batch's staging and readback memory, which the submit's keep_alive
+  // shares; readback_memory_ is the mapping inside it.
+  std::shared_ptr<void> retained_;
+  const void* readback_memory_ = nullptr;
+  std::vector<Readback> readbacks_;
+  std::vector<UsedSet> sets_;
+  Status failed_;  // a failed wait's, returned again
+};
+
 /// @brief Records one call's device work -- uploads, fills, copies, ownership
 ///        transfers, dispatches, readbacks -- into a single command buffer,
-///        submitted once and waited on once by @ref submit.
+///        submitted once and waited on once by @ref submit, or submitted by
+///        @ref submit_async and waited on through its @ref PendingBatch.
 ///
 /// The commands run in the order they were recorded, each seeing every write
 /// before it: a barrier precedes any command that could see an earlier one's
@@ -65,11 +162,15 @@ struct ComputeKernel;
 ///
 /// **A batch records handles, not objects.** Every @ref Buffer and @ref Image
 /// recorded, each dispatched kernel's pipeline, and every readback
-/// destination must stay alive until @ref submit returns -- the objects may
-/// move meanwhile -- and an image must stay in the layout it was copied in.
-/// The one recorded thing a caller may change before then is a dispatch's
-/// descriptor set, so @ref submit checks it and refuses the batch if it was
-/// rewritten through any copy, or freed with its pool. A buffer its owner
+/// destination must stay alive until the work completes -- until @ref submit
+/// returns, or a wait of @ref submit_async's @ref PendingBatch sees it
+/// complete; the objects may move meanwhile -- and an image must stay in the
+/// layout it was copied in. The one recorded thing a caller may change
+/// before the batch is submitted is a dispatch's descriptor set, so both
+/// submits check it and refuse the batch if it was rewritten through any
+/// copy, or freed with its pool; from the submit until the work completes it
+/// must not change either, and @ref submit_async's @ref PendingBatch checks
+/// that at its wait. A buffer its owner
 /// replaces before then -- a grown upload or scratch buffer -- goes to
 /// @ref retain. If the fence wait fails, the device may still run the batch:
 /// it keeps the batch's staging with its command buffer until it is destroyed
@@ -84,6 +185,7 @@ struct ComputeKernel;
 /// @ref submit resolves it once the fence has signalled, for the scope to
 /// publish when it closes. The command keeps the scope's @ref GpuSpanTag, not
 /// the scope: one that closes before @ref submit leaves the command untimed.
+/// @ref submit_async runs every command untimed.
 ///
 /// @code
 /// CommandBatch batch(device, allocator);
@@ -228,8 +330,9 @@ class VKC_VULKAN_API CommandBatch {
   /// `VK_QUEUE_FAMILY_EXTERNAL`. The writer records the releasing half --
   /// another Vulkan family's batch by @ref release, the whole buffer from
   /// @p from to @ref Device::queue_family -- and its work must have finished
-  /// before @ref submit, as a waited fence or a synchronized CUDA stream
-  /// ensures: the batch waits on no semaphore. Nothing is recorded when there
+  /// before the submit, as a waited fence or a synchronized CUDA stream
+  /// ensures, or, for another Vulkan family's, set a timeline value
+  /// @ref submit_async waits for. Nothing is recorded when there
   /// is nothing to transfer: when
   /// @p from is `VK_QUEUE_FAMILY_IGNORED` or this device's family, or when a
   /// `CONCURRENT` buffer was written on another Vulkan family (it is shared
@@ -254,7 +357,8 @@ class VKC_VULKAN_API CommandBatch {
   /// Recorded after every command of the batch, whenever it is called, so a
   /// command recorded after it still runs before the buffer leaves. Its
   /// writes are made available to @p to, which takes the buffer over once
-  /// @ref submit has returned: another family by its own @ref acquire, an API
+  /// the work has completed, or after a timeline value @ref submit_async
+  /// sets: another family by its own @ref acquire, an API
   /// outside Vulkan from `VK_QUEUE_FAMILY_EXTERNAL` -- CUDA writing the next
   /// picture into an exported buffer, which a later batch acquires back.
   /// Nothing is recorded when there is nothing to transfer: when @p to is
@@ -350,12 +454,14 @@ class VKC_VULKAN_API CommandBatch {
                            VkDeviceSize offset, GpuStageScope* stage = nullptr);
 
   /// @brief Read @p bytes of @p src at @p offset, as they stand at this point
-  ///        in the batch, into @p dst once @ref submit has waited.
+  ///        in the batch, into @p dst once the work has completed.
   /// @param src     Needs `TRANSFER_SRC` usage.
   /// @param offset  The byte offset into @p src.
   /// @param bytes   How many; 0 records nothing.
-  /// @param dst     Host memory of at least @p bytes, written by @ref submit;
-  ///                it must stay valid until then.
+  /// @param dst     Host memory of at least @p bytes, written by @ref submit,
+  ///                or by the wait of @ref submit_async's @ref PendingBatch
+  ///                that sees the work complete; it must stay valid until
+  ///                then.
   /// @return OK; @ref Status::Code::InvalidArgument for a range past @p src,
   ///         a missing usage bit, a null @p dst, or a batch with no
   ///         allocator; or a poisoned batch's first refusal.
@@ -363,7 +469,7 @@ class VKC_VULKAN_API CommandBatch {
                   void* dst);
 
   /// @brief Keep @p buffer alive as the batch's own, freed with its staging
-  ///        once @ref submit has waited.
+  ///        once the work has completed.
   ///
   /// For a buffer the recorded commands use that its owner replaces before
   /// @ref submit -- an upload or scratch buffer grown mid-call, as
@@ -387,14 +493,60 @@ class VKC_VULKAN_API CommandBatch {
   /// reached the device; and the timer retired if the device may still run
   /// it, with its query pool kept beside the staging until then. Each timer's
   /// queries are reset once, ahead of its spans. An empty batch submits
-  /// nothing. A batch is submitted at most once.
+  /// nothing. A batch is submitted at most once, by this or
+  /// @ref submit_async.
   /// @return OK; the first refusal a recording call returned;
   ///         @ref Status::Code::InvalidArgument for a second submit, a
   ///         moved-from batch, or a set rewritten through any copy, or freed,
   ///         after its dispatch was recorded; or a staging or Vulkan failure.
   Status submit();
 
-  /// @return Whether @ref submit has run, whatever it returned.
+  /// @brief Submit everything recorded as one command buffer, after every
+  ///        value in @p wait, setting every value in @p signal once it
+  ///        completes, and return without waiting for it.
+  ///
+  /// The work orders against other submissions -- the stages of a pipeline,
+  /// another library's on a shared device -- only through the values, as
+  /// @ref Device::submit_pending says: nothing recorded starts before every
+  /// wait is met and sees the writes of the submissions that met them, and a
+  /// value set means every command has completed, its writes available. The
+  /// host reads the readbacks, and frees the staging, through the returned
+  /// @ref PendingBatch, whose wait does what @ref submit does after its own.
+  /// An empty batch with no value to wait for or set submits nothing; one
+  /// with values still submits, so a stage with no work still passes its
+  /// value on.
+  ///
+  /// Two rules from @ref Device::submit_pending matter most here. Submit the
+  /// batch that sets a value before any that waits for it: the batch ends in
+  /// a barrier every later command on the queue waits for, so a batch
+  /// waiting for a value only a later one sets hangs the queue. And until a
+  /// value the host sets is set, work held for it holds every later wait on
+  /// the queue -- @ref submit, @ref Device::wait_idle -- with it.
+  ///
+  /// Every command runs untimed, its @ref GpuStageScope ignored: a span is
+  /// read after its own submit, and while this one is pending a later window
+  /// on the same timer may reset its queries. The stage's device row is
+  /// missing, not wrong.
+  ///
+  /// @code
+  /// VKC_ASSIGN(PendingBatch prepared, prep.submit_async({}, {{&frames, n}}));
+  /// VKC_ASSIGN(PendingBatch fused, fuse.submit_async({{&frames, n}}, {}));
+  /// VKC_TRY(fused.wait());
+  /// @endcode
+  /// @param wait    Values to reach before anything recorded starts.
+  /// @param signal  Values to set once everything recorded completes, as
+  ///                @ref Device::submit_pending allows them.
+  /// @return The pending batch; what @ref submit refuses, for the same
+  ///         reasons; what @ref Device::submit_pending refuses for the
+  ///         values; or a staging or Vulkan failure. A refusal of the values
+  ///         comes first and leaves the batch unsubmitted, for a submit with
+  ///         corrected ones; any other refusal or failure leaves it
+  ///         submitted. None runs any of it.
+  Result<PendingBatch> submit_async(const std::vector<TimelinePoint>& wait,
+                                    const std::vector<TimelinePoint>& signal);
+
+  /// @return Whether @ref submit or @ref submit_async has run, whatever it
+  ///         returned.
   bool submitted() const noexcept { return submitted_; }
 
  private:
@@ -453,6 +605,16 @@ class VKC_VULKAN_API CommandBatch {
 
   Status check(Status status);
   Status usable() const;
+  // The two submits' common start: refuses a moved-from batch, a second
+  // submit and a poisoned batch, marking the batch submitted.
+  Status begin_submit();
+  // Refuses a dispatch whose set was rewritten or freed since it was
+  // recorded, naming `call`.
+  Status check_sets(const char* call) const;
+  // Places every readback in one host buffer, at its own slice, listed in
+  // `*slices`; null, and none, when there is none.
+  Result<const Buffer*> place_readbacks(
+      std::vector<PendingBatch::Readback>* slices);
   // An acquire from `family`, or a release to it.
   Status transfer(Kind kind, const Buffer& buffer, std::uint32_t family);
   static Status check_dispatch(const ComputeKernel& kernel, const void* push,

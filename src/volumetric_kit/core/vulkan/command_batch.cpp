@@ -8,11 +8,13 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "command_batch_barriers.hpp"
+#include "timeline_points.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -22,6 +24,8 @@
 #include "volumetric_kit/core/vulkan/format.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
@@ -738,7 +742,7 @@ void CommandBatch::record(VkCommandBuffer cmd,
   }
 }
 
-Status CommandBatch::submit() {
+Status CommandBatch::begin_submit() {
   if (device_ == nullptr) {
     return Status::invalid_argument("CommandBatch: the batch is moved-from");
   }
@@ -746,39 +750,65 @@ Status CommandBatch::submit() {
     return Status::invalid_argument("CommandBatch: already submitted");
   }
   submitted_ = true;
-  if (!status_.ok()) return status_;
-  if (ops_.empty()) return {};
+  return status_;
+}
+
+namespace {
+
+// Refuses `set` if it was freed with its pool, or rewritten through any copy,
+// since it had made `writes`: `call` names the refusing call, `since` when.
+Status check_set(const DescriptorSet& set, std::uint64_t writes,
+                 const char* call, const char* since) {
+  if (!set.valid()) {
+    return Status::invalid_argument(
+        std::string(call) +
+        ": a kernel's descriptor set was freed, with its pool, " + since);
+  }
+  if (set.writes() != writes) {
+    return Status::invalid_argument(
+        std::string(call) + ": a kernel's descriptor set was rewritten " +
+        since);
+  }
+  return {};
+}
+
+}  // namespace
+
+Status CommandBatch::check_sets(const char* call) const {
   // The set is bound only now, so a write since its dispatch was recorded
   // would run that dispatch on the later binding, and a set whose pool is
   // gone would bind freed memory.
   for (const Op& op : ops_) {
     if (op.set_handle == VK_NULL_HANDLE) continue;  // not a dispatch
-    if (!op.set.valid()) {
-      return Status::invalid_argument(
-          "CommandBatch::submit: a kernel's descriptor set was freed, with "
-          "its pool, after its dispatch was recorded");
-    }
-    if (op.set.writes() != op.set_writes) {
-      return Status::invalid_argument(
-          "CommandBatch::submit: a kernel's descriptor set was rewritten "
-          "after its dispatch was recorded");
-    }
+    VKC_TRY(check_set(op.set, op.set_writes, call,
+                      "after its dispatch was recorded"));
   }
+  return {};
+}
 
-  // Every readback lands in one host buffer, each at its own slice.
+Result<const Buffer*> CommandBatch::place_readbacks(
+    std::vector<PendingBatch::Readback>* slices) {
   VkDeviceSize readback_bytes = 0;
   for (Op& op : ops_) {
     if (op.kind != Kind::Readback) continue;
     op.dst_offset = readback_bytes;
     readback_bytes += op.bytes;
+    slices->push_back({op.host_dst, op.dst_offset, op.bytes});
   }
-  const Buffer* readbacks = nullptr;
-  if (readback_bytes > 0) {
-    VKC_ASSIGN(readbacks, stage(readback_bytes, /*upload=*/false));
-    for (Op& op : ops_) {
-      if (op.kind == Kind::Readback) op.dst = readbacks->handle();
-    }
+  if (readback_bytes == 0) return static_cast<const Buffer*>(nullptr);
+  VKC_ASSIGN(const Buffer* readbacks, stage(readback_bytes, /*upload=*/false));
+  for (Op& op : ops_) {
+    if (op.kind == Kind::Readback) op.dst = readbacks->handle();
   }
+  return readbacks;
+}
+
+Status CommandBatch::submit() {
+  VKC_TRY(begin_submit());
+  if (ops_.empty()) return {};
+  VKC_TRY(check_sets("CommandBatch::submit"));
+  std::vector<PendingBatch::Readback> slices;
+  VKC_ASSIGN(const Buffer* readbacks, place_readbacks(&slices));
 
   // Each timer the commands name, counted now: recording then allocates
   // nothing, so no exception leaves a span its command buffer never ran.
@@ -810,14 +840,103 @@ Status CommandBatch::submit() {
   VKC_TRY(submitted);
 
   if (readbacks != nullptr) {
-    const auto* base = static_cast<const unsigned char*>(readbacks->mapped());
-    for (const Op& op : ops_) {
-      if (op.kind != Kind::Readback) continue;
-      std::memcpy(op.host_dst, base + op.dst_offset,
-                  static_cast<std::size_t>(op.bytes));
-    }
+    PendingBatch::write_readbacks(readbacks->mapped(), slices);
   }
   return {};
+}
+
+Result<PendingBatch> CommandBatch::submit_async(
+    const std::vector<TimelinePoint>& wait,
+    const std::vector<TimelinePoint>& signal) {
+  // The values first, before the batch is marked submitted, so a refused one
+  // can be corrected and the batch submitted again. Device::submit_pending
+  // checks them again, for its own callers.
+  if (device_ != nullptr && !submitted_) {
+    VKC_TRY(detail::check_timeline_points(*device_, wait, signal,
+                                          "CommandBatch::submit_async"));
+  }
+  VKC_TRY(begin_submit());
+  if (ops_.empty() && wait.empty() && signal.empty()) return PendingBatch{};
+  VKC_TRY(check_sets("CommandBatch::submit_async"));
+  PendingBatch pending;
+  VKC_ASSIGN(const Buffer* readbacks, place_readbacks(&pending.readbacks_));
+  // Each set as it stands now, for the wait to check it stayed so.
+  for (const Op& op : ops_) {
+    if (op.set_handle != VK_NULL_HANDLE) {
+      pending.sets_.push_back({op.set, op.set_writes});
+    }
+  }
+
+  const auto retained = std::make_shared<Retained>();
+  retained->staging = std::exchange(staging_, {});
+  // Untimed: no timer run is counted, so record() opens no span.
+  // TODO: time these commands, on queries a later window cannot reset while
+  // the batch is pending.
+  std::vector<TimerRun> untimed;
+  VKC_ASSIGN(Device::PendingSubmit submitted,
+             device_->submit_pending(
+                 [&](VkCommandBuffer cmd) { record(cmd, untimed); }, wait,
+                 signal, retained));
+
+  pending.submit_ = std::move(submitted);
+  pending.retained_ = retained;
+  if (readbacks != nullptr) pending.readback_memory_ = readbacks->mapped();
+  return pending;
+}
+
+PendingBatch::PendingBatch(PendingBatch&& other) noexcept
+    : submit_(std::move(other.submit_)),
+      retained_(std::exchange(other.retained_, nullptr)),
+      readback_memory_(std::exchange(other.readback_memory_, nullptr)),
+      readbacks_(std::exchange(other.readbacks_, {})),
+      sets_(std::exchange(other.sets_, {})),
+      failed_(std::exchange(other.failed_, Status{})) {}
+
+PendingBatch& PendingBatch::operator=(PendingBatch&& other) noexcept {
+  if (this != &other) {
+    // Waits for this one's own work first, which keeps what it uses.
+    submit_ = std::move(other.submit_);
+    retained_ = std::exchange(other.retained_, nullptr);
+    readback_memory_ = std::exchange(other.readback_memory_, nullptr);
+    readbacks_ = std::exchange(other.readbacks_, {});
+    sets_ = std::exchange(other.sets_, {});
+    failed_ = std::exchange(other.failed_, Status{});
+  }
+  return *this;
+}
+
+void PendingBatch::write_readbacks(const void* memory,
+                                   const std::vector<Readback>& readbacks) {
+  const auto* base = static_cast<const unsigned char*>(memory);
+  for (const Readback& readback : readbacks) {
+    std::memcpy(readback.dst, base + readback.offset,
+                static_cast<std::size_t>(readback.bytes));
+  }
+}
+
+Status PendingBatch::wait(std::uint64_t timeout_ns) {
+  if (!failed_.ok()) return failed_;
+  Status waited = submit_.wait(timeout_ns);
+  if (!waited.ok() &&
+      vk_result(waited) == std::optional<VkResult>(VK_TIMEOUT)) {
+    return waited;  // still pending, for a later wait
+  }
+  // Complete: a set changed meanwhile may have been bound by the work, so
+  // what it wrote is not trusted.
+  for (std::size_t i = 0; waited.ok() && i < sets_.size(); ++i) {
+    waited = check_set(sets_[i].set, sets_[i].writes, "PendingBatch::wait",
+                       "while the batch was pending");
+  }
+  if (waited.ok() && readback_memory_ != nullptr) {
+    write_readbacks(readback_memory_, readbacks_);
+  }
+  // Written once; on a failed wait the device keeps what the work uses.
+  readbacks_.clear();
+  sets_.clear();
+  readback_memory_ = nullptr;
+  retained_.reset();
+  failed_ = waited;
+  return waited;
 }
 
 void CommandBatch::retain(Buffer buffer) {

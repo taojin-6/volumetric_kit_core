@@ -6,6 +6,7 @@
 /// @file sync.hpp
 /// @brief Fences, binary semaphores and timeline semaphores.
 
+#include <atomic>
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
@@ -16,6 +17,10 @@
 namespace volumetric_kit::core {
 
 class Device;
+
+namespace detail {
+struct TimelineSubmits;  // the submits' record of the values they set
+}  // namespace detail
 
 /// @brief A `VkFence`: the host waits on it for submitted work to finish.
 ///
@@ -134,14 +139,16 @@ class VKC_VULKAN_API TimelineSemaphore {
 
   /// @brief Construct an empty semaphore; @ref valid is false.
   TimelineSemaphore() noexcept = default;
-  TimelineSemaphore(TimelineSemaphore&&) noexcept = default;
-  TimelineSemaphore& operator=(TimelineSemaphore&&) noexcept = default;
+  TimelineSemaphore(TimelineSemaphore&& other) noexcept;
+  TimelineSemaphore& operator=(TimelineSemaphore&& other) noexcept;
   TimelineSemaphore(const TimelineSemaphore&) = delete;
   TimelineSemaphore& operator=(const TimelineSemaphore&) = delete;
   ~TimelineSemaphore() = default;
 
   /// @return The semaphore (`VK_NULL_HANDLE` when empty).
   VkSemaphore handle() const noexcept { return handle_.get(); }
+  /// @return The `VkDevice` it was made on (`VK_NULL_HANDLE` when empty).
+  VkDevice device() const noexcept { return handle_.device(); }
   /// @return Whether this owns a semaphore.
   bool valid() const noexcept { return handle_.valid(); }
 
@@ -172,7 +179,31 @@ class VKC_VULKAN_API TimelineSemaphore {
   Status wait(std::uint64_t value, std::uint64_t timeout_ns = UINT64_MAX) const;
 
  private:
+  friend struct detail::TimelineSubmits;
+
   UniqueHandle<VkSemaphore, vkDestroySemaphore> handle_;
+  // The highest value a submit (Device::submit_pending) that reached a queue
+  // sets: a later submit must set a higher one, as a queue's signals run in
+  // submission order. Raised through a const semaphore, which a TimelinePoint
+  // borrows.
+  mutable std::atomic<std::uint64_t> submitted_{0};
+};
+
+/// @brief A value of a @ref TimelineSemaphore: one a submission waits for
+///        before it starts, or sets once it completes
+///        (@ref Device::submit_pending, @ref CommandBatch::submit_async).
+///
+/// The semaphore is borrowed, and must outlive every submission that names
+/// it: one still waiting or running when it is destroyed is undefined.
+///
+/// @code
+/// // The fuse waits for frame n's prep, and says when it is done.
+/// VKC_ASSIGN(PendingBatch fused,
+///            fuse.submit_async({{&prepared, n}}, {{&fused_timeline, n}}));
+/// @endcode
+struct TimelinePoint {
+  const TimelineSemaphore* semaphore = nullptr;  ///< The timeline.
+  std::uint64_t value = 0;                       ///< The value on it.
 };
 
 }  // namespace volumetric_kit::core

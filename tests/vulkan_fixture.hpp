@@ -21,9 +21,11 @@
 #include <atomic>
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -50,6 +52,10 @@ class VulkanTest : public ::testing::Test {
     validation_errors_ = 0;
     allowed_validation_errors_ = 0;
     validation_errors_allowed_ = false;
+    {
+      const std::scoped_lock lock(warnings_mutex_);
+      warnings_.clear();
+    }
     set_log_handler([this](LogLevel level, std::string_view source,
                            std::string_view message) {
       const bool validation_error =
@@ -65,6 +71,10 @@ class VulkanTest : public ::testing::Test {
         std::cerr << '[' << source
                   << (level == LogLevel::Error ? " error] " : " warning] ")
                   << message << '\n';
+        if (level == LogLevel::Warning) {
+          const std::scoped_lock lock(warnings_mutex_);
+          warnings_.emplace_back(message);
+        }
       }
     });
     InstanceConfig config;
@@ -108,6 +118,11 @@ class VulkanTest : public ::testing::Test {
   int allowed_validation_errors() const {
     return allowed_validation_errors_.load();
   }
+  // The warnings logged since the test began.
+  std::vector<std::string> warnings() const {
+    const std::scoped_lock lock(warnings_mutex_);
+    return warnings_;
+  }
 
  private:
   void no_device(const std::string& why) {
@@ -120,6 +135,8 @@ class VulkanTest : public ::testing::Test {
   std::atomic<int> validation_errors_{0};
   std::atomic<int> allowed_validation_errors_{0};
   std::atomic<bool> validation_errors_allowed_{false};
+  mutable std::mutex warnings_mutex_;
+  std::vector<std::string> warnings_;
   std::optional<Instance> instance_;
   PhysicalDeviceInfo physical_;
 };
