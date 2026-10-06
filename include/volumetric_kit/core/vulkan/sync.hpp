@@ -142,6 +142,8 @@ class VKC_VULKAN_API TimelineSemaphore {
 
   /// @return The semaphore (`VK_NULL_HANDLE` when empty).
   VkSemaphore handle() const noexcept { return handle_.get(); }
+  /// @return The `VkDevice` it was made on (`VK_NULL_HANDLE` when empty).
+  VkDevice device() const noexcept { return handle_.device(); }
   /// @return Whether this owns a semaphore.
   bool valid() const noexcept { return handle_.valid(); }
 
@@ -173,6 +175,23 @@ class VKC_VULKAN_API TimelineSemaphore {
 
  private:
   UniqueHandle<VkSemaphore, vkDestroySemaphore> handle_;
+};
+
+/// @brief A value of a @ref TimelineSemaphore: one a submission waits for
+///        before it starts, or sets once it completes
+///        (@ref Device::submit_pending, @ref CommandBatch::submit_async).
+///
+/// The semaphore is borrowed, and must outlive every submission that names
+/// it: one still waiting or running when it is destroyed is undefined.
+///
+/// @code
+/// // The fuse waits for frame n's prep, and says when it is done.
+/// VKC_ASSIGN(PendingBatch fused,
+///            fuse.submit_async({{&prepared, n}}, {{&fused_timeline, n}}));
+/// @endcode
+struct TimelinePoint {
+  const TimelineSemaphore* semaphore = nullptr;  ///< The timeline.
+  std::uint64_t value = 0;                       ///< The value on it.
 };
 
 }  // namespace volumetric_kit::core

@@ -378,6 +378,55 @@ the surface was made:
   logical device enabled. They are core `AdoptedDevice`s, so recon and gfx
   adopt through the core's `Device` once they migrate.
 
+### Submits that do not wait
+
+recon plans (2026-10-06) to pipeline a live rig's compute stages -- prepare a
+set of frames, fuse it, mesh and texture it -- over a ring of sets in flight.
+`CommandBatch::submit` and `Device::submit_single_time` each wait on a fence,
+so the GPU idles while the host records the next call, and the host while the
+GPU runs it. `CommandBatch::submit_async` and `Device::submit_pending` submit
+without the wait:
+
+- **A pending handle holds the work until a wait sees it complete.**
+  `PendingBatch` and `Device::PendingSubmit` keep the command buffer, the fence
+  and the `keep_alive` -- a batch's staging and readback memory -- and give the
+  command back to the device once a wait sees the fence signalled. A failed
+  wait leaves them to the device, as a failed `submit_single_time` wait does.
+  Destroying an unfinished handle waits for it: what the work uses is never
+  freed under it, and a command is not parked with the device until the
+  device is destroyed.
+- **Timeline values order the work.** A submission waits for
+  `TimelinePoint`s (a `TimelineSemaphore` and a value) before anything it
+  records starts, and sets others once it completes. The wait's stage mask is
+  `ALL_COMMANDS`: it covers every command a batch records, and is valid on a
+  queue of any capabilities. The semaphore carries the memory dependency, on
+  one queue or across queues; across queue families an `EXCLUSIVE` buffer
+  still needs its ownership transfer. An empty batch with values still
+  submits, so a stage with no work passes its value on.
+- **Every refusal comes before a command buffer is taken**: a null or empty
+  semaphore, one made on another `VkDevice`, a value to set that does not
+  advance its counter (a stale value, not a race, as for
+  `TimelineSemaphore::signal`), and any value on a device that did not enable
+  `timelineSemaphore` -- an adopted device may share a `VkDevice` on which
+  another library made semaphores.
+- **A readback lands at the wait, once.** The work completing writes nothing
+  the host can see, so a destination is never written while the host may be
+  reading an earlier one.
+- **A pending batch's commands are untimed.** A span is read after its own
+  submit, and while a batch is pending, a later window on its timer may reset
+  the queries the batch will write. The stage's device row is missing, not
+  wrong, until spans get queries a later window cannot reset.
+- **`submit` keeps its path and cost.** It still waits through
+  `submit_single_time`; the two submits share only their checks and the
+  readback layout.
+
+Verified on an Apple GPU (MoltenVK) under validation with synchronization
+checks: work held by a wait the host has not met does not run, a chain runs
+in its timeline's order, and the handles move, self-move and wait on
+destruction. A narrower wait mask (`TOP_OF_PIPE`) passed them too, as
+MoltenVK held the work anyway: the mask rests on the rule above, not on those
+tests.
+
 ### Where memory lives
 
 Everything the GPU reads or writes directly is device-local, on both memory

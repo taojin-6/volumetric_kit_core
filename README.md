@@ -21,7 +21,8 @@ buffers zero-copy on one shared device.
 > implemented -- the instance, device selection against a library's
 > requirements, the logical device every sibling creates or adopts, the VMA
 > allocator with its buffers and images, descriptors, synchronization, compute
-> kernels, `CommandBatch`, the shader build functions, GPU timers, buffers
+> kernels, `CommandBatch` (waited on, or ordered by timeline semaphores and
+> waited on later), the shader build functions, GPU timers, buffers
 > exported for CUDA to write, and the shared device a compute library and a
 > renderer both adopt. The `camera` and `sensor` tiers are planned; see
 > [DECISIONS.md](DECISIONS.md#tiers) for what each holds and the order they land

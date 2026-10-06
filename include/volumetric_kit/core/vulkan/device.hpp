@@ -20,6 +20,7 @@
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
@@ -404,6 +405,58 @@ class VKC_VULKAN_API Device {
                             GpuStageScope& stage,
                             std::shared_ptr<void> keep_alive = nullptr) const;
 
+  class PendingSubmit;
+
+  /// @brief Record a one-time command buffer and submit it after every value
+  ///        in @p wait, setting every value in @p signal once it completes,
+  ///        without waiting for it: @ref submit_single_time, with the wait
+  ///        left to the @ref PendingSubmit it returns.
+  ///
+  /// Nothing the buffer records starts before every value in @p wait is
+  /// reached: the wait blocks all commands (`ALL_COMMANDS`), which is valid on
+  /// any queue, whatever its capabilities. The values the submissions that
+  /// reach them set make their writes available, and the wait makes them
+  /// visible to this one, on this queue or another; across queue families,
+  /// an `EXCLUSIVE` buffer still needs its ownership transfer. A value in
+  /// @p signal is set only once everything recorded has completed, its writes
+  /// available to whatever waits for it. A wait may precede the submission
+  /// that will reach its value, but the host must then make sure one does --
+  /// or signal it (@ref TimelineSemaphore::signal) -- or the work never runs.
+  ///
+  /// What the work uses -- buffers, images, pipelines, descriptor sets, and
+  /// the semaphores named -- must stay alive and unchanged until it
+  /// completes. With @p wait and @p signal empty it needs no timeline
+  /// semaphores, and is @ref submit_single_time without the wait.
+  ///
+  /// @code
+  /// VKC_ASSIGN(Device::PendingSubmit pending,
+  ///            device.submit_pending(record, {{&uploaded, n}}, {{&done, n}}));
+  /// // ... other host work, while the device runs it ...
+  /// VKC_TRY(pending.wait());
+  /// @endcode
+  /// @param record      Records into the command buffer it is given.
+  /// @param wait        Values to reach before anything recorded starts.
+  /// @param signal      Values to set once everything recorded completes; each
+  ///                    above its semaphore's current value.
+  /// @param keep_alive  Optional; what the work uses that the caller would
+  ///                    otherwise free: held by the @ref PendingSubmit until
+  ///                    a wait sees the work complete, or by the device if
+  ///                    the wait fails, as @ref submit_single_time says.
+  /// @return The submission; @ref Status::Code::InvalidArgument for a
+  ///         moved-from device, a null or empty semaphore, one made on
+  ///         another `VkDevice`, or a value to set that is not above its
+  ///         semaphore's current one; @ref Status::Code::Unsupported for a
+  ///         timeline value on a device that did not enable
+  ///         `timelineSemaphore`; or the failed step's backend @ref Status.
+  ///         All refusals come before the command buffer is taken. A submit
+  ///         that loses the device leaves the work to it, as a failed wait
+  ///         does.
+  Result<PendingSubmit> submit_pending(
+      const std::function<void(VkCommandBuffer)>& record,
+      const std::vector<TimelinePoint>& wait,
+      const std::vector<TimelinePoint>& signal,
+      std::shared_ptr<void> keep_alive = nullptr) const;
+
   /// @brief Submit an already-recorded, ended command buffer to @ref queue
   ///        and wait for it, on a kept fence.
   /// @param cmd  A command buffer in the executable state, allocated from a
@@ -508,7 +561,8 @@ class VKC_VULKAN_API Device {
   // into it, a command buffer on a pool of its own (submit_and_wait records
   // nothing). A pool must be externally synchronized, so each submit takes
   // one no other holds: a free one, or a new one when all are in use. It
-  // comes back once its wait is done; `made_` keeps every one, so destroy()
+  // comes back once its wait is done -- a PendingSubmit's, for
+  // submit_pending -- and `made_` keeps every one, so destroy()
   // frees them all, and one left to the device after a failed wait is
   // `pending` there and waited for first, with what its work uses kept in
   // `keep_alive` until then. The fence names it.
@@ -558,6 +612,71 @@ class VKC_VULKAN_API Device {
   mutable std::mutex commands_mutex_;  // guards made_ and free_commands_
   mutable std::vector<Command> made_;
   mutable std::vector<Command> free_commands_;
+};
+
+/// @brief Work a @ref Device has and the host has not yet waited on: what
+///        @ref Device::submit_pending returns.
+///
+/// Holds the command buffer and fence the work runs on, and its
+/// `keep_alive`, until a @ref wait sees it complete: then the command buffer
+/// and fence go back to the device for the next submit, and the `keep_alive`
+/// is released. A wait that fails leaves them to the device, which may still
+/// run the work, as a failed wait of @ref Device::submit_single_time does.
+/// Destroying an unfinished one waits for it first, so what the work uses is
+/// never freed under it; an empty one (default, or moved from) has nothing
+/// to wait for.
+///
+/// It may be waited on from a thread other than the one that submitted it,
+/// but not from two at once.
+///
+/// @warning The @ref Device must outlive it, and must not move meanwhile.
+///
+/// @code
+/// VKC_ASSIGN(Device::PendingSubmit pending,
+///            device.submit_pending(record, {}, {{&done, frame}}));
+/// if (pending.ready()) VKC_TRY(pending.wait());  // returns at once
+/// @endcode
+class VKC_VULKAN_API Device::PendingSubmit {
+ public:
+  /// @brief Construct an empty submission: @ref ready, nothing to wait for.
+  PendingSubmit() noexcept = default;
+  /// Waits for the work if it is unfinished.
+  ~PendingSubmit();
+  PendingSubmit(const PendingSubmit&) = delete;
+  PendingSubmit& operator=(const PendingSubmit&) = delete;
+  PendingSubmit(PendingSubmit&& other) noexcept;
+  /// Waits for this one's own unfinished work before taking @p other's.
+  PendingSubmit& operator=(PendingSubmit&& other) noexcept;
+
+  /// @return Whether @ref wait would return without blocking: the work has
+  ///         completed, failed, or the submission is empty. Never blocks.
+  bool ready() const;
+
+  /// @brief Wait until the work completes, or the timeout passes.
+  /// @param timeout_ns  The longest wait, in nanoseconds.
+  /// @return OK once it has completed, and on every later call, as on an
+  ///         empty submission; a backend @ref Status carrying `VK_TIMEOUT`
+  ///         when the timeout passes first, the work still pending, for a
+  ///         later wait; or the failure (device lost), after which the work is
+  ///         the device's, and every later call returns the same failure.
+  Status wait(std::uint64_t timeout_ns = UINT64_MAX);
+
+  /// @return Whether the device may still run the work: until a wait sees it
+  ///         complete, and for good after one that failed.
+  bool in_flight() const noexcept { return running_ || !failed_.ok(); }
+
+ private:
+  friend class Device;
+
+  // Waits for unfinished work, logging a failure: the destructor's and a
+  // move assignment's, which cannot return one.
+  void finish() noexcept;
+
+  const Device* device_ = nullptr;
+  Command command_;
+  std::shared_ptr<void> keep_alive_;
+  bool running_ = false;  // submitted; no wait has seen it complete or fail
+  Status failed_;         // a failed wait's status, returned again
 };
 
 }  // namespace volumetric_kit::core
