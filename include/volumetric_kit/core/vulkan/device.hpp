@@ -419,9 +419,24 @@ class VKC_VULKAN_API Device {
   /// visible to this one, on this queue or another; across queue families,
   /// an `EXCLUSIVE` buffer still needs its ownership transfer. A value in
   /// @p signal is set only once everything recorded has completed, its writes
-  /// available to whatever waits for it. A wait may precede the submission
-  /// that will reach its value, but the host must then make sure one does --
-  /// or signal it (@ref TimelineSemaphore::signal) -- or the work never runs.
+  /// available to whatever waits for it.
+  ///
+  /// **Submit what sets a value before what waits for it.** This device has
+  /// one queue, and work submitted to it later may wait behind earlier work:
+  /// every @ref CommandBatch ends in a barrier all later commands on the
+  /// queue wait for. So a wait for a value that only a later submission on
+  /// this queue sets can hang the queue. A wait may precede only a value the
+  /// host sets (@ref TimelineSemaphore::signal), or another queue's work.
+  ///
+  /// **Work held for the host holds the queue.** A fence covers everything
+  /// submitted before it, so until the host sets a value this work waits
+  /// for, a later @ref submit_single_time, @ref CommandBatch::submit or
+  /// @ref wait_idle on this queue -- and, on a queue shared with another
+  /// library, that library's own fence waits -- does not return. A thread
+  /// that waits on the queue before it sets that value deadlocks, and
+  /// @ref wait_idle holds @ref submit_mutex while it waits, blocking every
+  /// other thread's submit too. Set such a value before anything else waits
+  /// on the queue, or submit the work once it is set.
   ///
   /// What the work uses -- buffers, images, pipelines, descriptor sets, and
   /// the semaphores named -- must stay alive and unchanged until it
@@ -436,19 +451,22 @@ class VKC_VULKAN_API Device {
   /// @endcode
   /// @param record      Records into the command buffer it is given.
   /// @param wait        Values to reach before anything recorded starts.
-  /// @param signal      Values to set once everything recorded completes; each
-  ///                    above its semaphore's current value.
+  /// @param signal      Values to set once everything recorded completes, one
+  ///                    per semaphore; each above its semaphore's current
+  ///                    value, every value an earlier submit sets on it, and
+  ///                    every value this one waits for on it.
   /// @param keep_alive  Optional; what the work uses that the caller would
   ///                    otherwise free: held by the @ref PendingSubmit until
   ///                    a wait sees the work complete, or by the device if
   ///                    the wait fails, as @ref submit_single_time says.
   /// @return The submission; @ref Status::Code::InvalidArgument for a
   ///         moved-from device, a null or empty semaphore, one made on
-  ///         another `VkDevice`, or a value to set that is not above its
-  ///         semaphore's current one; @ref Status::Code::Unsupported for a
-  ///         timeline value on a device that did not enable
-  ///         `timelineSemaphore`; or the failed step's backend @ref Status.
-  ///         All refusals come before the command buffer is taken. A submit
+  ///         another `VkDevice`, or a value to set that @p signal does not
+  ///         allow; @ref Status::Code::Unsupported for a timeline value on a
+  ///         device that did not enable `timelineSemaphore`; or the failed
+  ///         step's backend @ref Status. All refusals come before the
+  ///         command buffer is taken. The value checks catch a stale value,
+  ///         not a race, as @ref TimelineSemaphore::signal says. A submit
   ///         that loses the device leaves the work to it, as a failed wait
   ///         does.
   Result<PendingSubmit> submit_pending(
@@ -562,10 +580,11 @@ class VKC_VULKAN_API Device {
   // nothing). A pool must be externally synchronized, so each submit takes
   // one no other holds: a free one, or a new one when all are in use. It
   // comes back once its wait is done -- a PendingSubmit's, for
-  // submit_pending -- and `made_` keeps every one, so destroy()
-  // frees them all, and one left to the device after a failed wait is
-  // `pending` there and waited for first, with what its work uses kept in
-  // `keep_alive` until then. The fence names it.
+  // submit_pending -- and `made_` keeps every one, so destroy() frees them
+  // all. One whose work may still run is `pending` there and waited for
+  // first: one a PendingSubmit holds, until a wait sees its work complete,
+  // and one left to the device after a failed wait, with what its work uses
+  // kept in `keep_alive` until then. The fence names it.
   struct Command {
     VkFence fence = VK_NULL_HANDLE;
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -596,6 +615,22 @@ class VKC_VULKAN_API Device {
   void give_back(const Command& command) const noexcept;
   void leave_to_device(const Command& command,
                        std::shared_ptr<void> keep_alive) const noexcept;
+  // Marks `command` pending while a PendingSubmit holds its work, so
+  // destroy() waits for it; and clears the mark once a wait has seen the work
+  // complete, giving the command back if `reusable`.
+  void hold_running(const Command& command) const noexcept;
+  void release_running(const Command& command, bool reusable) const noexcept;
+  // Takes a command and records `record` into its buffer, begun one-time and
+  // ended. A failure, or a `record` that throws, gives the command back, its
+  // buffer reset if recording had begun.
+  Result<Command> record_one_time(
+      const std::function<void(VkCommandBuffer)>& record) const;
+  // Submits `submit`, which must signal `command.fence`. A submit the queue
+  // refused ran nothing, and leaves `command` the caller's to give back. One
+  // that lost the device promises nothing, so it is a failed wait: `command`,
+  // and `*keep_alive` with it, are left to the device, and `*left` is set.
+  Status submit_command(const VkSubmitInfo& submit, const Command& command,
+                        std::shared_ptr<void>* keep_alive, bool* left) const;
   // Submits `cmd` signalling `command.fence`, waits, and resets the fence.
   // `*reusable` says whether `command` may be given back: not after a failed
   // wait, which leaves it, and `keep_alive` with it, to the device; nor after
@@ -626,8 +661,18 @@ class VKC_VULKAN_API Device {
 /// never freed under it; an empty one (default, or moved from) has nothing
 /// to wait for.
 ///
-/// It may be waited on from a thread other than the one that submitted it,
-/// but not from two at once.
+/// **Set every value the work waits for, on every path, before it goes.**
+/// Work submitted to Vulkan cannot be withdrawn, and freeing what it uses
+/// while it may still run is undefined, so the wait on destruction has no
+/// limit: a value the host was to set, skipped by an early return, hangs the
+/// destroying thread. A scope guard declared after the handle, which sets
+/// the value as the scope closes, keeps an error path from doing so. One
+/// that has waited a second for a value not yet reached logs a warning
+/// naming it, then waits on.
+///
+/// It may be used from a thread other than the one that submitted it, but
+/// from one at a time: no call -- @ref wait, @ref ready, @ref in_flight, a
+/// move -- may overlap another on the same submission.
 ///
 /// @warning The @ref Device must outlive it, and must not move meanwhile.
 ///
@@ -669,12 +714,16 @@ class VKC_VULKAN_API Device::PendingSubmit {
   friend class Device;
 
   // Waits for unfinished work, logging a failure: the destructor's and a
-  // move assignment's, which cannot return one.
+  // move assignment's, which cannot return one. Warns, once a wait has run a
+  // while, of a value the work still waits for.
   void finish() noexcept;
 
   const Device* device_ = nullptr;
   Command command_;
   std::shared_ptr<void> keep_alive_;
+  // What the work waits for, named by the warning finish() gives; the
+  // semaphores outlive the work, as TimelinePoint says.
+  std::vector<TimelinePoint> waits_;
   bool running_ = false;  // submitted; no wait has seen it complete or fail
   Status failed_;         // a failed wait's status, returned again
 };

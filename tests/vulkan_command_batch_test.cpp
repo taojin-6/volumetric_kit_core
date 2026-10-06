@@ -1399,8 +1399,11 @@ TEST_F(BatchTest, MovesCarryTheRecordedCommands) {
 // Device::submit_pending and CommandBatch::submit_async, ordered by timeline
 // values: work the host has not released stays back, a chain runs in the
 // timeline's order, an empty batch still passes its value on, readbacks land
-// at the wait, refusals run nothing, and the pending handles move and wait as
-// the RAII rules say.
+// at the wait, refusals run nothing -- a refused value leaving the batch to
+// submit again -- a value an earlier submit sets bounds a later one, a set
+// rewritten while pending is refused at the wait, and the pending handles
+// move and wait as the RAII rules say: a destroyed one warns of a value it
+// still waits for, and a device waits for work a handle still holds.
 class PendingTest : public BatchTest {
  protected:
   void SetUp() override {
@@ -1451,6 +1454,10 @@ bool timed_out(const Status& s) {
   return vk_result(s) == std::optional<VkResult>(VK_TIMEOUT);
 }
 
+// Longer than any of these waits should take, so a broken one fails the test
+// rather than hanging it.
+constexpr std::uint64_t kLongWaitNs = 10'000'000'000;
+
 TEST_F(PendingTest, HoldsTheWorkBackUntilItsWaitIsMet) {
   upload(a_, pattern(10));
   std::vector<std::uint32_t> out(kCount, 0xDEADBEEFU);
@@ -1466,12 +1473,14 @@ TEST_F(PendingTest, HoldsTheWorkBackUntilItsWaitIsMet) {
   // The dispatch cannot start, however long the host waits.
   EXPECT_FALSE(pending.ready());
   EXPECT_TRUE(timed_out(pending.wait(1'000'000)));
+  EXPECT_TRUE(pending.in_flight());  // a timeout leaves it pending
   EXPECT_EQ(out[0], 0xDEADBEEFU);
 
   ASSERT_TRUE(timeline_.signal(1).ok());
   ASSERT_TRUE(pending.wait().ok());
   EXPECT_EQ(out, plus(pattern(10), 5));
   EXPECT_TRUE(pending.ready());
+  EXPECT_FALSE(pending.in_flight());
   EXPECT_TRUE(pending.wait().ok());  // and on every later wait
 }
 
@@ -1479,20 +1488,25 @@ TEST_F(PendingTest, HoldsTheWorkBackUntilItsWaitIsMet) {
 // the first wrote: it ran after it, as the value it waits for orders.
 TEST_F(PendingTest, RunsAChainInTheTimelinesOrder) {
   upload(a_, pattern(0));
+  std::vector<std::uint32_t> out(kCount, 0xDEADBEEFU);
+  // Both declared before the guard, which releases them as the scope closes
+  // however a failed assertion leaves it.
+  PendingBatch adding;
+  PendingBatch reading;
+  const Release release{this, 1};
+
   CommandBatch first(device(), allocator());
   ASSERT_TRUE(add_to(first, a_, 3).ok());
   Result<PendingBatch> added =
       first.submit_async({{&timeline_, 1}}, {{&timeline_, 2}});
   ASSERT_TRUE(added.ok()) << added.status().message();
-  PendingBatch adding = *std::move(added);
+  adding = *std::move(added);
 
-  std::vector<std::uint32_t> out(kCount, 0xDEADBEEFU);
   CommandBatch second(device(), allocator());
   ASSERT_TRUE(second.readback(a_, 0, kBytes, out.data()).ok());
   Result<PendingBatch> read_back = second.submit_async({{&timeline_, 2}}, {});
   ASSERT_TRUE(read_back.ok()) << read_back.status().message();
-  PendingBatch reading = *std::move(read_back);
-  const Release release{this, 1};
+  reading = *std::move(read_back);
   EXPECT_FALSE(reading.ready());
 
   ASSERT_TRUE(timeline_.signal(1).ok());
@@ -1538,22 +1552,42 @@ TEST_F(PendingTest, WritesReadbacksAtTheWait) {
 
 TEST_F(PendingTest, ARefusedSubmitRunsNothing) {
   upload(a_, pattern(1));
+  // A refused value leaves the batch unsubmitted, named in the refusal.
   const auto refuses = [&](const std::vector<TimelinePoint>& wait,
                            const std::vector<TimelinePoint>& signal) {
     CommandBatch batch(device(), allocator());
     EXPECT_TRUE(batch.fill(a_, 0, kBytes, 0U).ok());
     const Status refused = batch.submit_async(wait, signal).status();
-    EXPECT_TRUE(batch.submitted());
-    EXPECT_TRUE(is_invalid(batch.submit_async({}, {}).status()));
+    EXPECT_FALSE(batch.submitted());
+    EXPECT_NE(refused.message().find("CommandBatch::submit_async"),
+              std::string::npos)
+        << refused.message();
     return is_invalid(refused);
   };
   const TimelineSemaphore empty;
   EXPECT_TRUE(refuses({{nullptr, 1}}, {}));
   EXPECT_TRUE(refuses({}, {{&empty, 1}}));
   EXPECT_TRUE(refuses({}, {{&timeline_, 0}}));  // does not advance it
+  // One submit's signals run in no set order, so one semaphore set twice may
+  // go backwards.
+  EXPECT_TRUE(refuses({}, {{&timeline_, 1}, {&timeline_, 2}}));
+  // The counter has reached what the submit waits for before it sets a
+  // value, so a value not above that cannot advance it.
+  EXPECT_TRUE(refuses({{&timeline_, 5}}, {{&timeline_, 5}}));
   ASSERT_TRUE(timeline_.signal(4).ok());
   EXPECT_TRUE(refuses({}, {{&timeline_, 4}}));
   EXPECT_EQ(read(a_), pattern(1));  // no fill ran
+
+  // Corrected, the same batch submits.
+  CommandBatch corrected(device(), allocator());
+  ASSERT_TRUE(corrected.fill(a_, 0, kBytes, 7U).ok());
+  EXPECT_TRUE(
+      is_invalid(corrected.submit_async({}, {{&timeline_, 4}}).status()));
+  Result<PendingBatch> retried = corrected.submit_async({}, {{&timeline_, 5}});
+  ASSERT_TRUE(retried.ok()) << retried.status().message();
+  ASSERT_TRUE(retried->wait().ok());
+  EXPECT_EQ(read(a_), std::vector<std::uint32_t>(kCount, 7U));
+  EXPECT_EQ(counter(), 5u);
 
   // A poisoned batch returns its first refusal, as submit does.
   CommandBatch poisoned(device(), allocator());
@@ -1563,6 +1597,69 @@ TEST_F(PendingTest, ARefusedSubmitRunsNothing) {
   CommandBatch once(device(), allocator());
   ASSERT_TRUE(once.submit().ok());
   EXPECT_TRUE(is_invalid(once.submit_async({}, {}).status()));
+}
+
+// A queue's signals run in submission order, so a value an earlier submit has
+// still to set bounds what a later one may set.
+TEST_F(PendingTest, RefusesAValueAnEarlierSubmitSets) {
+  PendingBatch setting;
+  PendingBatch after;
+  const Release release{this, 1};
+  CommandBatch first(device(), allocator());
+  Result<PendingBatch> made =
+      first.submit_async({{&timeline_, 1}}, {{&timeline_, 3}});
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  setting = *std::move(made);
+
+  CommandBatch second(device(), allocator());
+  EXPECT_TRUE(is_invalid(second.submit_async({}, {{&timeline_, 3}}).status()));
+  EXPECT_TRUE(is_invalid(second.submit_async({}, {{&timeline_, 2}}).status()));
+  EXPECT_TRUE(is_invalid(
+      device()
+          .submit_pending([](VkCommandBuffer) {}, {}, {{&timeline_, 3}})
+          .status()));
+  // Above it, and after it, the chain runs.
+  Result<PendingBatch> next =
+      second.submit_async({{&timeline_, 3}}, {{&timeline_, 4}});
+  ASSERT_TRUE(next.ok()) << next.status().message();
+  after = *std::move(next);
+  ASSERT_TRUE(timeline_.signal(1).ok());
+  ASSERT_TRUE(after.wait(kLongWaitNs).ok());
+  EXPECT_EQ(counter(), 4u);
+}
+
+// Until a wait sees the work complete, a dispatched kernel's set must stay as
+// it was submitted: the wait refuses one rewritten since, and writes no
+// readback, since the work may have run on the later binding.
+TEST_F(PendingTest, RefusesASetRewrittenWhileItIsPending) {
+  upload(a_, pattern(0));
+  std::vector<std::uint32_t> out(kCount, 0xDEADBEEFU);
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(add_to(batch, a_, 1).ok());
+  ASSERT_TRUE(batch.readback(a_, 0, kBytes, out.data()).ok());
+  Result<PendingBatch> made = batch.submit_async({}, {{&timeline_, 1}});
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  // After the work completed, so the device never sees the write -- but
+  // before a wait saw it complete.
+  ASSERT_TRUE(timeline_.wait(1, kLongWaitNs).ok());
+  add_.set.write_storage_buffer(0, b_.handle(), 0, VK_WHOLE_SIZE);
+  const Status refused = made->wait();
+  EXPECT_TRUE(is_invalid(refused));
+  EXPECT_NE(refused.message().find("PendingBatch::wait"), std::string::npos)
+      << refused.message();
+  EXPECT_EQ(out[0], 0xDEADBEEFU);
+  EXPECT_TRUE(is_invalid(made->wait()));  // and on every later wait
+  EXPECT_FALSE(made->in_flight());
+
+  // Rewritten before the submit, it is the submit's refusal, named so.
+  CommandBatch early(device(), allocator());
+  ASSERT_TRUE(add_to(early, a_, 1).ok());
+  ASSERT_TRUE(add_to(early, b_, 2).ok());  // rewrites the kernel's set
+  const Status named = early.submit_async({}, {}).status();
+  EXPECT_TRUE(is_invalid(named));
+  EXPECT_NE(named.message().find("CommandBatch::submit_async"),
+            std::string::npos)
+      << named.message();
 }
 
 // A device adopted without timelineSemaphore may share a VkDevice whose
@@ -1602,9 +1699,11 @@ TEST_F(PendingTest, IsInFlightUntilAWaitSeesItComplete) {
   EXPECT_TRUE(pending.in_flight());
   EXPECT_FALSE(pending.ready());
 
-  // Waited on from another thread than the one that submitted it.
+  // Waited on from another thread than the one that submitted it, for a
+  // bounded time, so a failed signal fails the test rather than the join
+  // hanging it.
   Status waited;
-  std::thread waiter([&] { waited = pending.wait(); });
+  std::thread waiter([&] { waited = pending.wait(kLongWaitNs); });
   const Status signalled = timeline_.signal(1);
   waiter.join();
   ASSERT_TRUE(signalled.ok()) << signalled.message();
@@ -1670,6 +1769,61 @@ TEST_F(PendingTest, MovesCarryTheWorkAndWaitForWhatTheyDrop) {
   EXPECT_EQ(counter(), 8u);
   fourth.join();
   EXPECT_EQ(read(a_), plus(pattern(0), 4));
+}
+
+// Destroying work held for a value no one has set yet waits for it -- what
+// the work uses is never freed under it -- and, once it has waited a second,
+// warns which value it waits for.
+TEST_F(PendingTest, WarnsOfAValueADestroyedHandleStillWaitsFor) {
+  std::thread releaser;
+  {
+    CommandBatch batch(device(), allocator());
+    Result<PendingBatch> made =
+        batch.submit_async({{&timeline_, 1}}, {{&timeline_, 2}});
+    ASSERT_TRUE(made.ok()) << made.status().message();
+    const PendingBatch pending = *std::move(made);
+    releaser = std::thread([this] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+      EXPECT_TRUE(timeline_.signal(1).ok());
+    });
+  }
+  releaser.join();
+  EXPECT_EQ(counter(), 2u);  // it ran before the destructor returned
+  int named = 0;
+  for (const std::string& warning : warnings()) {
+    if (warning.find("Device::PendingSubmit") == std::string::npos) continue;
+    ++named;
+    EXPECT_NE(warning.find("timeline value 1 (the counter is at 0)"),
+              std::string::npos)
+        << warning;
+  }
+  EXPECT_EQ(named, 1);
+}
+
+// A device destroyed under a handle never waited on -- a misuse its warning
+// forbids -- still waits for the work before it frees the command buffer and
+// fence the work runs on. Freeing either while it may run is what the
+// validation layer would report.
+TEST_F(PendingTest, ADeviceWaitsForWorkAHandleStillHolds) {
+  // The handle outlives its device here with its destructor never run, as a
+  // leaked one would.
+  union Unwaited {
+    explicit Unwaited(Device::PendingSubmit&& p) : pending(std::move(p)) {}
+    Unwaited(const Unwaited&) = delete;
+    Unwaited& operator=(const Unwaited&) = delete;
+    Unwaited(Unwaited&&) = delete;
+    Unwaited& operator=(Unwaited&&) = delete;
+    ~Unwaited() {}  // never destroys `pending`
+    Device::PendingSubmit pending;
+  };
+  Result<Device> made = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  std::optional<Device> other(*std::move(made));
+  Result<Device::PendingSubmit> submitted =
+      other->submit_pending([](VkCommandBuffer) {}, {}, {});
+  ASSERT_TRUE(submitted.ok()) << submitted.status().message();
+  const Unwaited unwaited(*std::move(submitted));
+  other.reset();
 }
 
 #ifdef VKC_TEST_EXCEPTIONS

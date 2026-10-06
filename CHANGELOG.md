@@ -57,9 +57,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   (a `TimelineSemaphore` and a value) is reached, and it sets those in
   `signal` once it completes, so a pipeline's stages chain on the device
   rather than each waiting on the host. It returns a `PendingBatch`: `ready`
-  polls, and `wait` writes the readbacks and frees the staging; destroying an
-  unfinished one waits for it. Its commands run untimed. Everything the batch
-  recorded must stay alive and unchanged until the work completes.
+  polls, `in_flight` says whether the device may still run the work, and
+  `wait` writes the readbacks and frees the staging -- refusing the batch if
+  a dispatched set was rewritten while it was pending. Destroying an
+  unfinished one waits for it with no limit, warning after a second of a
+  value it still waits for, so set every value the host owns on every path.
+  Submit a batch that sets a value before any that waits for it: on the
+  device's one queue, a batch waiting for a value only a later one sets
+  hangs the queue. Its commands run untimed. Everything the batch recorded
+  must stay alive and unchanged until the work completes. A refused value
+  leaves the batch unsubmitted, to submit again with a corrected one.
   `Device::submit_pending` does the same for a command buffer you record,
   returning a `Device::PendingSubmit`, and `TimelineSemaphore::device()` names
   the `VkDevice` a semaphore was made on. Existing callers need no change:

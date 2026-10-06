@@ -392,9 +392,24 @@ without the wait:
   and the `keep_alive` -- a batch's staging and readback memory -- and give the
   command back to the device once a wait sees the fence signalled. A failed
   wait leaves them to the device, as a failed `submit_single_time` wait does.
-  Destroying an unfinished handle waits for it: what the work uses is never
-  freed under it, and a command is not parked with the device until the
-  device is destroyed.
+  Destroying an unfinished handle waits for it, with no limit: what the work
+  uses is never freed under it, and a command is not parked with the device
+  until the device is destroyed. Submitted work cannot be withdrawn, so the
+  only alternatives -- returning while it may still run, or leaking
+  everything it uses, the caller's buffers included -- trade a hang for
+  undefined behaviour or a leak the library cannot see. The cost falls on
+  work held for a value the host sets: an early return that skips setting it
+  hangs the thread destroying the handle, so a caller sets every such value
+  on every path (a scope guard declared after the handle). A handle that has
+  waited a second for a value not yet reached logs a warning naming it, so
+  the hang is not silent. Until a wait sees the work complete, the device
+  also counts it as running: a device destroyed under a handle never waited
+  on -- a misuse the handle's warning forbids -- waits for the work before
+  it frees the command buffer and fence.
+- **Used from one thread at a time.** A handle may move to another thread,
+  but no call -- a wait, `ready`, `in_flight`, a move -- may overlap another
+  on it: making a poll safe beside a blocking wait would take atomics or a
+  lock on every call, for a pattern the ring of stages does not use.
 - **Timeline values order the work.** A submission waits for
   `TimelinePoint`s (a `TimelineSemaphore` and a value) before anything it
   records starts, and sets others once it completes. The wait's stage mask is
@@ -403,29 +418,56 @@ without the wait:
   one queue or across queues; across queue families an `EXCLUSIVE` buffer
   still needs its ownership transfer. An empty batch with values still
   submits, so a stage with no work passes its value on.
+- **Submit what sets a value before what waits for it, and set host values
+  before waiting on the queue.** The device has one queue, and every
+  `CommandBatch` ends in a barrier all later commands on it wait for, so a
+  batch waiting for a value only a later batch sets hangs the queue. A wait
+  may come first only for a value the host or another queue sets. Until it is
+  met, the held work also holds every later fence and queue wait on the
+  queue: a later `submit`, `submit_single_time` or `wait_idle` -- and, on a
+  shared queue, the other library's frame fences -- waits for it, and
+  `wait_idle` holds the queue's mutex meanwhile. Neither can be checked: the
+  library cannot know who will set a value, or when. So `submit_pending`
+  says both rules, and recon's ring of stages submits each stage after the
+  one it waits for.
 - **Every refusal comes before a command buffer is taken**: a null or empty
-  semaphore, one made on another `VkDevice`, a value to set that does not
-  advance its counter (a stale value, not a race, as for
-  `TimelineSemaphore::signal`), and any value on a device that did not enable
-  `timelineSemaphore` -- an adopted device may share a `VkDevice` on which
-  another library made semaphores.
+  semaphore, one made on another `VkDevice`, any value on a device that did
+  not enable `timelineSemaphore` -- an adopted device may share a `VkDevice`
+  on which another library made semaphores -- and a value to set that would
+  not advance its counter when the signal runs: one semaphore set twice in a
+  submit (its signals run in no set order), a value not above one the submit
+  waits for on the same semaphore, or not above both the counter and every
+  value an earlier submit sets, as a queue's signals run in submission order.
+  Each `TimelineSemaphore` keeps the highest value a submit that reached a
+  queue sets. As for `TimelineSemaphore::signal`, these catch a stale value,
+  not a race. `submit_async` checks the values before it marks the batch
+  submitted, so a refused value can be corrected and the batch submitted
+  again; every other refusal leaves it submitted, as `submit`'s do.
 - **A readback lands at the wait, once.** The work completing writes nothing
   the host can see, so a destination is never written while the host may be
   reading an earlier one.
+- **A dispatched set is checked again at the wait.** `submit` returns only
+  once the work completes, so its check covered the set's whole use. A
+  pending batch's set is in use until a wait sees the work complete, so that
+  wait refuses the batch, writing no readback, if the set was rewritten or
+  freed since the submit. It cannot tell a write after the work completed
+  from one during it, so the rule is the one it can check: a set stays as it
+  was until the wait.
 - **A pending batch's commands are untimed.** A span is read after its own
   submit, and while a batch is pending, a later window on its timer may reset
   the queries the batch will write. The stage's device row is missing, not
   wrong, until spans get queries a later window cannot reset.
 - **`submit` keeps its path and cost.** It still waits through
-  `submit_single_time`; the two submits share only their checks and the
-  readback layout.
+  `submit_single_time`; the two submits share only their checks, the
+  readback layout and write-out, and the device's recording and submitting
+  of a one-time command buffer.
 
-Verified on an Apple GPU (MoltenVK) under validation with synchronization
-checks: work held by a wait the host has not met does not run, a chain runs
-in its timeline's order, and the handles move, self-move and wait on
-destruction. A narrower wait mask (`TOP_OF_PIPE`) passed them too, as
-MoltenVK held the work anyway: the mask rests on the rule above, not on those
-tests.
+Verified through MoltenVK on a unified-memory GPU, under validation with
+synchronization checks: work held by a wait the host has not met does not
+run, a chain runs in its timeline's order, and the handles move, self-move
+and wait on destruction. A narrower wait mask (`TOP_OF_PIPE`) passed them too,
+as MoltenVK held the work anyway: the mask rests on the rule above, not on
+those tests.
 
 ### Where memory lives
 

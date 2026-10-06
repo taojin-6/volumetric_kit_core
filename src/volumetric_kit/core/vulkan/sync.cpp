@@ -3,8 +3,15 @@
 
 #include "volumetric_kit/core/vulkan/sync.hpp"
 
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "timeline_points.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
@@ -69,13 +76,8 @@ Result<Semaphore> Semaphore::create(VkDevice device) {
 
 Result<TimelineSemaphore> TimelineSemaphore::create(
     const Device& device, std::uint64_t initial_value) {
-  // The feature alone: any queue, and the version the feature itself needs.
-  DeviceRequirements timeline;
-  timeline.api_version = VK_API_VERSION_1_0;
-  timeline.queue_flags = 0;
-  timeline.timeline_semaphore = true;
-  VKC_TRY(
-      device.check_enabled(timeline).with_context("TimelineSemaphore::create"));
+  VKC_TRY(device.check_enabled(detail::timeline_requirements())
+              .with_context("TimelineSemaphore::create"));
   VkSemaphoreTypeCreateInfo type{};
   type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
   type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -89,6 +91,19 @@ Result<TimelineSemaphore> TimelineSemaphore::create(
   semaphore.handle_ =
       UniqueHandle<VkSemaphore, vkDestroySemaphore>(device.handle(), handle);
   return semaphore;
+}
+
+TimelineSemaphore::TimelineSemaphore(TimelineSemaphore&& other) noexcept
+    : handle_(std::move(other.handle_)),
+      submitted_(other.submitted_.exchange(0)) {}
+
+TimelineSemaphore& TimelineSemaphore::operator=(
+    TimelineSemaphore&& other) noexcept {
+  if (this != &other) {
+    handle_ = std::move(other.handle_);
+    submitted_ = other.submitted_.exchange(0);
+  }
+  return *this;
 }
 
 Result<std::uint64_t> TimelineSemaphore::value() const {
@@ -137,5 +152,97 @@ Status TimelineSemaphore::wait(std::uint64_t value,
   if (result != VK_SUCCESS) return vk_error(result, "vkWaitSemaphores");
   return {};
 }
+
+namespace detail {
+
+// TimelineSemaphore's record of the values submits set, read and raised only
+// by the two functions below.
+struct TimelineSubmits {
+  static std::uint64_t highest(const TimelineSemaphore& semaphore) noexcept {
+    return semaphore.submitted_.load();
+  }
+  static void raise(const TimelineSemaphore& semaphore,
+                    std::uint64_t value) noexcept {
+    std::uint64_t seen = semaphore.submitted_.load();
+    while (seen < value &&
+           !semaphore.submitted_.compare_exchange_weak(seen, value)) {
+    }
+  }
+};
+
+DeviceRequirements timeline_requirements() {
+  DeviceRequirements timeline;
+  timeline.api_version = VK_API_VERSION_1_0;
+  timeline.queue_flags = 0;
+  timeline.timeline_semaphore = true;
+  return timeline;
+}
+
+Status check_timeline_points(const Device& device,
+                             const std::vector<TimelinePoint>& wait,
+                             const std::vector<TimelinePoint>& signal,
+                             const char* call) {
+  if (wait.empty() && signal.empty()) return {};
+  const auto refuse = [call](const char* why) {
+    return Status::invalid_argument(std::string(call) + ": " + why);
+  };
+  for (const std::vector<TimelinePoint>* points : {&wait, &signal}) {
+    for (const TimelinePoint& point : *points) {
+      if (point.semaphore == nullptr || !point.semaphore->valid()) {
+        return refuse("a timeline semaphore is null or empty");
+      }
+    }
+  }
+  // A device adopted without the feature may share a VkDevice whose
+  // semaphores another library made.
+  VKC_TRY(device.check_enabled(timeline_requirements()).with_context(call));
+  for (const std::vector<TimelinePoint>* points : {&wait, &signal}) {
+    for (const TimelinePoint& point : *points) {
+      if (point.semaphore->device() != device.handle()) {
+        return refuse("a timeline semaphore was made on another VkDevice");
+      }
+    }
+  }
+  // A value to set must advance its counter when the signal runs
+  // (VUID-VkSubmitInfo-pSignalSemaphores-03242). As for
+  // TimelineSemaphore::signal, this catches a stale value, not a race.
+  for (std::size_t i = 0; i < signal.size(); ++i) {
+    const TimelineSemaphore& semaphore = *signal[i].semaphore;
+    const std::uint64_t value = signal[i].value;
+    // One submit's signals run in no set order, so a second value for the
+    // same semaphore may go backwards.
+    for (std::size_t j = 0; j < i; ++j) {
+      if (signal[j].semaphore->handle() == semaphore.handle()) {
+        return refuse("a timeline semaphore is set twice in one submit");
+      }
+    }
+    // Set only once every wait is met, so the counter has reached each value
+    // waited for on the same semaphore by then.
+    for (const TimelinePoint& waited : wait) {
+      if (waited.semaphore->handle() == semaphore.handle() &&
+          value <= waited.value) {
+        return refuse(
+            "a value to set must exceed the value the submit waits for on "
+            "the same semaphore");
+      }
+    }
+    // An earlier submit's signal, on this queue, runs first.
+    VKC_ASSIGN(const std::uint64_t current, semaphore.value());
+    if (value <= std::max(current, TimelineSubmits::highest(semaphore))) {
+      return refuse(
+          "a value to set must exceed its semaphore's current one, and every "
+          "value an earlier submit sets");
+    }
+  }
+  return {};
+}
+
+void note_signals(const std::vector<TimelinePoint>& signal) noexcept {
+  for (const TimelinePoint& point : signal) {
+    TimelineSubmits::raise(*point.semaphore, point.value);
+  }
+}
+
+}  // namespace detail
 
 }  // namespace volumetric_kit::core

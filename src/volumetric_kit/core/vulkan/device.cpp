@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "support.hpp"
+#include "timeline_points.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -515,9 +516,10 @@ Device::~Device() { destroy(); }
 void Device::destroy() noexcept {
   bool unfinished = false;
   for (Command& command : made_) {
-    // One left to the device after a failed wait is waited for first, and
-    // leaked if the device may still run it. A lost device's is freed: its
-    // children must still be destroyed.
+    // One whose work may still run -- a PendingSubmit's, or one left to the
+    // device after a failed wait -- is waited for first, and leaked if the
+    // device may still run it. A lost device's is freed: its children must
+    // still be destroyed.
     if (command.pending) {
       const VkResult waited = vkWaitForFences(state_.device, 1, &command.fence,
                                               VK_TRUE, UINT64_MAX);
@@ -676,34 +678,87 @@ void Device::leave_to_device(const Command& command,
   }
 }
 
+void Device::hold_running(const Command& command) const noexcept {
+  const std::scoped_lock lock(commands_mutex_);
+  for (Command& made : made_) {
+    if (made.fence == command.fence) {
+      made.pending = true;
+      break;
+    }
+  }
+}
+
+// take_command reserved room in free_commands_, as for give_back.
+// NOLINTNEXTLINE(bugprone-exception-escape)
+void Device::release_running(const Command& command,
+                             bool reusable) const noexcept {
+  const std::scoped_lock lock(commands_mutex_);
+  for (Command& made : made_) {
+    if (made.fence == command.fence) {
+      made.pending = false;
+      break;
+    }
+  }
+  if (reusable) free_commands_.push_back(command);
+}
+
+Result<Device::Command> Device::record_one_time(
+    const std::function<void(VkCommandBuffer)>& record) const {
+  VKC_ASSIGN(Command command, take_command(/*record=*/true));
+  VkCommandBuffer cmd = command.buffer;
+  bool recording = false;
+  ScopeGuard give_back_command([&] {
+    // A buffer abandoned mid-recording cannot be begun again until reset;
+    // one that will not reset is not reused.
+    if (recording && vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) return;
+    give_back(command);
+  });
+  VkCommandBufferBeginInfo begin{};
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  VKC_VK_TRY(vkBeginCommandBuffer(cmd, &begin));
+  recording = true;
+  record(cmd);
+  VKC_VK_TRY(vkEndCommandBuffer(cmd));
+  give_back_command.release();
+  return command;
+}
+
+Status Device::submit_command(const VkSubmitInfo& submit,
+                              const Command& command,
+                              std::shared_ptr<void>* keep_alive,
+                              bool* left) const {
+  *left = false;
+  const VkResult submitted = queue_submit(1, &submit, command.fence);
+  if (submitted == VK_SUCCESS) return {};
+  if (submitted == VK_ERROR_DEVICE_LOST) {
+    // The submit may still be pending, so its buffer and fence must not go to
+    // another submit, nor what it uses be freed; destroy() waits for them
+    // before freeing them.
+    leave_to_device(command, std::move(*keep_alive));
+    *left = true;
+  }
+  return vk_error(submitted, "vkQueueSubmit");
+}
+
 Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
                               std::shared_ptr<void> keep_alive,
                               bool* reusable) const {
-  *reusable = true;
   VkSubmitInfo submit{};
   submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   submit.commandBufferCount = 1;
   submit.pCommandBuffers = &cmd;
-  // A failed submit leaves the buffer and fence as they were -- except one
-  // that loses the device, which promises nothing, so it is treated as a
-  // failed wait.
-  const VkResult submitted = queue_submit(1, &submit, command.fence);
-  if (submitted != VK_SUCCESS && submitted != VK_ERROR_DEVICE_LOST) {
-    return vk_error(submitted, "vkQueueSubmit");
-  }
+  bool left = false;
+  const Status submitted = submit_command(submit, command, &keep_alive, &left);
+  *reusable = !left;
+  VKC_TRY(submitted);
   const VkResult waited =
-      submitted == VK_SUCCESS
-          ? vkWaitForFences(state_.device, 1, &command.fence, VK_TRUE,
-                            UINT64_MAX)
-          : submitted;
+      vkWaitForFences(state_.device, 1, &command.fence, VK_TRUE, UINT64_MAX);
   if (waited != VK_SUCCESS) {
-    // The submit may still be pending, so its buffer and fence must not go to
-    // another submit, nor what it uses be freed; destroy() waits for them
-    // before freeing them.
+    // As a submit that lost the device: the work may still run.
     leave_to_device(command, std::move(keep_alive));
     *reusable = false;
-    return vk_error(
-        waited, submitted == VK_SUCCESS ? "vkWaitForFences" : "vkQueueSubmit");
+    return vk_error(waited, "vkWaitForFences");
   }
   // One that will not reset is not reused; destroy() still frees it.
   if (vkResetFences(state_.device, 1, &command.fence) != VK_SUCCESS) {
@@ -716,29 +771,11 @@ Status Device::submit_single_time(
     const std::function<void(VkCommandBuffer)>& record,
     std::shared_ptr<void> keep_alive, bool* in_flight) const {
   if (in_flight != nullptr) *in_flight = false;
-  VKC_ASSIGN(const Command command, take_command(/*record=*/true));
-  VkCommandBuffer cmd = command.buffer;
-  bool recording = false;
-  ScopeGuard give_back_command([&] {
-    // A buffer abandoned mid-recording cannot be begun again until reset;
-    // one that will not reset is not reused.
-    if (recording && vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) return;
-    give_back(command);
-  });
-
-  VkCommandBufferBeginInfo begin{};
-  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  VKC_VK_TRY(vkBeginCommandBuffer(cmd, &begin));
-  recording = true;
-  record(cmd);
-  VKC_VK_TRY(vkEndCommandBuffer(cmd));
-  recording = false;
-
+  VKC_ASSIGN(const Command command, record_one_time(record));
   bool reusable = true;
   Status status =
-      submit_waiting(cmd, command, std::move(keep_alive), &reusable);
-  if (!reusable) give_back_command.release();
+      submit_waiting(command.buffer, command, std::move(keep_alive), &reusable);
+  if (reusable) give_back(command);
   // Failed and not reusable: left to the device, which may still run it. (A
   // fence that will not reset is not reusable either, but after success.)
   if (in_flight != nullptr) *in_flight = !status.ok() && !reusable;
@@ -774,55 +811,6 @@ Status Device::submit_single_time(
   return submitted;
 }
 
-namespace {
-
-// The refusals submit_pending makes before it takes a command buffer.
-Status check_timeline_points(const Device& device,
-                             const std::vector<TimelinePoint>& wait,
-                             const std::vector<TimelinePoint>& signal) {
-  if (wait.empty() && signal.empty()) return {};
-  for (const std::vector<TimelinePoint>* points : {&wait, &signal}) {
-    for (const TimelinePoint& point : *points) {
-      if (point.semaphore == nullptr || !point.semaphore->valid()) {
-        return Status::invalid_argument(
-            "Device::submit_pending: a timeline semaphore is null or empty");
-      }
-    }
-  }
-  // The feature alone, as TimelineSemaphore::create asks for it: a device
-  // adopted without it may share a VkDevice whose semaphores another library
-  // made.
-  DeviceRequirements timeline;
-  timeline.api_version = VK_API_VERSION_1_0;
-  timeline.queue_flags = 0;
-  timeline.timeline_semaphore = true;
-  VKC_TRY(
-      device.check_enabled(timeline).with_context("Device::submit_pending"));
-  for (const std::vector<TimelinePoint>* points : {&wait, &signal}) {
-    for (const TimelinePoint& point : *points) {
-      if (point.semaphore->device() != device.handle()) {
-        return Status::invalid_argument(
-            "Device::submit_pending: a timeline semaphore was made on another "
-            "VkDevice");
-      }
-    }
-  }
-  // A value to set must advance its counter
-  // (VUID-VkSubmitInfo-pSignalSemaphores-03242). As for
-  // TimelineSemaphore::signal, this catches a stale value, not a race.
-  for (const TimelinePoint& point : signal) {
-    VKC_ASSIGN(const std::uint64_t current, point.semaphore->value());
-    if (point.value <= current) {
-      return Status::invalid_argument(
-          "Device::submit_pending: a value to set must exceed its semaphore's "
-          "current one");
-    }
-  }
-  return {};
-}
-
-}  // namespace
-
 Result<Device::PendingSubmit> Device::submit_pending(
     const std::function<void(VkCommandBuffer)>& record,
     const std::vector<TimelinePoint>& wait,
@@ -832,7 +820,8 @@ Result<Device::PendingSubmit> Device::submit_pending(
     return Status::invalid_argument(
         "Device::submit_pending: the device is moved-from");
   }
-  VKC_TRY(check_timeline_points(*this, wait, signal));
+  VKC_TRY(detail::check_timeline_points(*this, wait, signal,
+                                        "Device::submit_pending"));
   std::vector<VkSemaphore> wait_semaphores;
   std::vector<std::uint64_t> wait_values;
   for (const TimelinePoint& point : wait) {
@@ -849,24 +838,12 @@ Result<Device::PendingSubmit> Device::submit_pending(
     signal_semaphores.push_back(point.semaphore->handle());
     signal_values.push_back(point.value);
   }
+  // Made before the submit, so nothing after it allocates.
+  PendingSubmit pending;
+  pending.waits_ = wait;
 
-  VKC_ASSIGN(const Command command, take_command(/*record=*/true));
+  VKC_ASSIGN(const Command command, record_one_time(record));
   VkCommandBuffer cmd = command.buffer;
-  bool recording = false;
-  ScopeGuard give_back_command([&] {
-    // As submit_single_time's: a buffer abandoned mid-recording is reset.
-    if (recording && vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) return;
-    give_back(command);
-  });
-  VkCommandBufferBeginInfo begin{};
-  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  VKC_VK_TRY(vkBeginCommandBuffer(cmd, &begin));
-  recording = true;
-  record(cmd);
-  VKC_VK_TRY(vkEndCommandBuffer(cmd));
-  recording = false;
-
   VkTimelineSemaphoreSubmitInfo values{};
   values.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
   values.waitSemaphoreValueCount = static_cast<std::uint32_t>(wait.size());
@@ -885,19 +862,16 @@ Result<Device::PendingSubmit> Device::submit_pending(
   submit.pCommandBuffers = &cmd;
   submit.signalSemaphoreCount = static_cast<std::uint32_t>(signal.size());
   submit.pSignalSemaphores = signal_semaphores.data();
-  const VkResult submitted = queue_submit(1, &submit, command.fence);
-  // A refused submit leaves the buffer and fence as they were, for the guard
-  // to give back.
-  if (submitted != VK_SUCCESS && submitted != VK_ERROR_DEVICE_LOST) {
-    return vk_error(submitted, "vkQueueSubmit");
+  bool left = false;
+  const Status submitted = submit_command(submit, command, &keep_alive, &left);
+  if (!submitted.ok()) {
+    if (!left) give_back(command);
+    return submitted;
   }
-  give_back_command.release();
-  if (submitted == VK_ERROR_DEVICE_LOST) {
-    // One that loses the device promises nothing: a failed wait.
-    leave_to_device(command, std::move(keep_alive));
-    return vk_error(submitted, "vkQueueSubmit");
-  }
-  PendingSubmit pending;
+  detail::note_signals(signal);
+  // Pending until a wait sees the work complete, so a device destroyed under
+  // a handle that was never waited on still waits for the work first.
+  hold_running(command);
   pending.device_ = this;
   pending.command_ = command;
   pending.keep_alive_ = std::move(keep_alive);
@@ -911,6 +885,7 @@ Device::PendingSubmit::PendingSubmit(PendingSubmit&& other) noexcept
     : device_(std::exchange(other.device_, nullptr)),
       command_(std::exchange(other.command_, Command{})),
       keep_alive_(std::exchange(other.keep_alive_, nullptr)),
+      waits_(std::exchange(other.waits_, {})),
       running_(std::exchange(other.running_, false)),
       failed_(std::exchange(other.failed_, Status{})) {}
 
@@ -921,18 +896,36 @@ Device::PendingSubmit& Device::PendingSubmit::operator=(
     device_ = std::exchange(other.device_, nullptr);
     command_ = std::exchange(other.command_, Command{});
     keep_alive_ = std::exchange(other.keep_alive_, nullptr);
+    waits_ = std::exchange(other.waits_, {});
     running_ = std::exchange(other.running_, false);
     failed_ = std::exchange(other.failed_, Status{});
   }
   return *this;
 }
 
-// Only a failure's message allocates, so only memory exhaustion can throw,
-// and a destructor has no caller to report it to: terminating is the answer.
+// Only a message allocates, so only memory exhaustion can throw, and a
+// destructor has no caller to report it to: terminating is the answer.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 void Device::PendingSubmit::finish() noexcept {
   if (!running_) return;
-  const Status waited = wait();
+  // Long enough that work merely queued behind other work rarely warns.
+  constexpr std::uint64_t kStallNs = 1'000'000'000;
+  Status waited = wait(kStallNs);
+  if (vk_result(waited) == std::optional<VkResult>(VK_TIMEOUT)) {
+    for (const TimelinePoint& point : waits_) {
+      const Result<std::uint64_t> reached = point.semaphore->value();
+      if (reached.ok() && *reached < point.value) {
+        log_message(LogLevel::Warning, kLogSource,
+                    "Device::PendingSubmit: destroying work that has waited "
+                    "a second for timeline value " +
+                        std::to_string(point.value) + " (the counter is at " +
+                        std::to_string(*reached) +
+                        "); it blocks until the value is set");
+        break;
+      }
+    }
+    waited = wait();
+  }
   if (!waited.ok()) {
     log_message(LogLevel::Error, kLogSource,
                 "Device::PendingSubmit: the wait on destruction failed (" +
@@ -954,15 +947,18 @@ Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) {
   if (waited != VK_SUCCESS) {
     // The work may still run, so its buffer and fence must not go to another
     // submit, nor what it uses be freed: the device's, as a failed wait of
-    // submit_single_time leaves them.
+    // submit_single_time leaves them. It stays pending there.
     device_->leave_to_device(command_, std::move(keep_alive_));
     failed_ = vk_error(waited, "vkWaitForFences");
-  } else if (vkResetFences(device_->handle(), 1, &command_.fence) ==
-             VK_SUCCESS) {
-    device_->give_back(command_);
-  }  // One whose fence will not reset is not reused; destroy() frees it.
+  } else {
+    // One whose fence will not reset is not reused; destroy() frees it.
+    device_->release_running(
+        command_,
+        vkResetFences(device_->handle(), 1, &command_.fence) == VK_SUCCESS);
+  }
   keep_alive_.reset();
   command_ = Command{};
+  waits_.clear();
   device_ = nullptr;
   return failed_;
 }
