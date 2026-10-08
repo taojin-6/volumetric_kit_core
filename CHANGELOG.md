@@ -15,9 +15,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   whose detail was 2^40 read as `VK_SUCCESS`. A backend status therefore no
   longer always yields a `VkResult`: check the optional before dereferencing
   it. A 32-bit code stored without sign extension (from a `uint32_t`) is
-  outside the range too; store a `VkResult` with `vk_error`. `vk_result` still
-  cannot tell a CUDA status from a Vulkan one: ask it only of a status from a
-  Vulkan call.
+  outside the range too; store a `VkResult` with `vk_error`.
 - A log handler that throws out of a failed `VKC_CHECK`, in a build with
   exceptions, no longer leaves the thread's next failed check reading the
   first one's destroyed message and bypassing the handler: every failed check
@@ -267,6 +265,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
+- **`Status::backend_error` takes the backend whose call failed**
+  (DECISIONS.md, "Merging the three `Status`/`Result` types"):
+  `backend_error(detail, message)` → `backend_error(Status::Backend::<b>,
+  detail, message)`, with `<b>` one of `Vulkan`, `Cuda`, `NvJpeg`, `Ffmpeg`,
+  `VideoToolbox` and `Other`. `Status::backend()` returns it (empty for any
+  other domain), `to_string(Status::Backend)` names it, and misusing an error
+  `Result` prints it (`Backend Cuda 2: …`). `vk_result` returns empty for a
+  status from any backend but `Vulkan`, so a CUDA or nvJPEG code no longer
+  reads as an unrelated `VkResult` (`2` as `VK_TIMEOUT`). `vk_error` sets
+  `Vulkan`, so Vulkan failures built with it, and callers of `vk_result` on
+  them -- `gfx`'s `swapchain_stale`, `ios`'s `RendererErrors.mm` -- need no
+  change. The calls to migrate, in `recon`'s
+  `src/volumetric_kit/recon/sensor/video/` (none in `gfx`, `calib` or `ios`):
+  - `cuda_pictures.cpp`, `cuda_error` (a `CUresult`): `Cuda`.
+  - `jpeg_decoder.cpp`, `nvjpeg_error` (an `nvjpegStatus_t`): `NvJpeg`.
+  - `ffmpeg.cpp`, `ffmpeg_error` (`AVERROR_EXTERNAL`): `Ffmpeg`.
+  - `vt_jpeg.cpp`, its fallback for an unclassified `OSStatus`:
+    `VideoToolbox`.
 - `AdoptedDevice` declares its features in one `EnabledFeatures`:
   `handoff.enabled_features = features` → `handoff.enabled_features.core =
   features`, and `handoff.enabled_timeline_semaphore`,
@@ -349,8 +365,7 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
 - `gfx`: `Status::Code::Vulkan` and `Status::code()` → `Status::Code::Backend`
   and `Status::detail()` (the `VkResult` as `int64_t`). The
   `Status::error(VkResult, message)` factory is gone: use
-  `Status::backend_error(static_cast<std::int64_t>(result), message)` until
-  the vulkan tier lands, then `vk_error`. `vk_error`, `VG_VK_TRY` and
+  `vk_error(result, message)`. `vk_error`, `VG_VK_TRY` and
   `to_string(VkResult)` move to the vulkan tier.
 - `recon` / `gfx` / `ios`: the new `Status::Code::Numerical` breaks every
   exhaustive `switch` over the codes (an error under `-Werror=switch`). Add a
@@ -368,8 +383,9 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
   Vulkan-Utility-Libraries nor its pinned headers.
 - `recon` / `gfx`: `Status` and `Result` are now `[[nodiscard]]`; a call site
   that drops one now warns.
-- `recon` / `gfx`: `Status::backend_error(0, …)` (a success code) now aborts,
-  as `gfx`'s `Status::error(VK_SUCCESS, …)` did; test the call's result first.
+- `recon` / `gfx`: `Status::backend_error(backend, 0, …)` (a success code)
+  now aborts, as `gfx`'s `Status::error(VK_SUCCESS, …)` did; test the call's
+  result first.
 - All three: `Result::value() &&` and `operator*() &&` return `T` by value, not
   `T&&`. `auto&& x = std::move(r).value();` still works (the temporary's life
   is extended); code that relied on moving out of the `Result` in place, then

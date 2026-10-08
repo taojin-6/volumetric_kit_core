@@ -642,13 +642,21 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
 - **Codes:** `Ok`, `InvalidArgument`, `NotFound`, `Unsupported`, `OutOfMemory`,
   `IoError` (all three), `Numerical` (`calib`'s solver failures), and `Backend`
   (`recon`'s).
-- **Backend detail is a neutral `int64_t`** (`recon`'s design). `gfx`'s
-  `Vulkan` domain with a `VkResult`-typed `code()` becomes `Backend` with the
-  `VkResult` in `detail()`; the vulkan tier supplies `vk_error`, `VKC_VK_TRY`
-  and the `VkResult` name lookup. The base tier includes no GPU API. Which
-  backend set the detail is not recorded (an open decision below).
+- **Backend detail is a neutral `int64_t`, tagged with its backend**
+  (`recon`'s design, plus the tag). `gfx`'s `Vulkan` domain with a
+  `VkResult`-typed `code()` becomes `Backend` with the `VkResult` in
+  `detail()`; the vulkan tier supplies `vk_error`, `VKC_VK_TRY`, `vk_result`
+  and the `VkResult` name lookup. The base tier includes no GPU API. `backend_error` requires the backend (`Status::Backend`: `Vulkan`,
+  `Cuda`, `NvJpeg`, `Ffmpeg`, `VideoToolbox`, `Other`), because backends
+  number their codes independently -- `2` is `VK_TIMEOUT`,
+  `CUDA_ERROR_OUT_OF_MEMORY` and `NVJPEG_STATUS_INVALID_PARAMETER` -- and one
+  call can return two backends' codes (`recon`'s CUDA interop fails with a
+  `VkResult` or a `CUresult`). `vk_result` reads only a `Vulkan` status, so a
+  decoder running out of memory never reads as a wait to retry. A tag, not a
+  domain per backend: the domain stays what a caller branches on whichever
+  library failed, and a new backend breaks no `switch` over the domains.
   `backend_error` keeps `gfx`'s guard against a success code: a detail of `0`
-  (`VK_SUCCESS`, `cudaSuccess`) aborts via `VKC_CHECK`.
+  (success in every listed backend) aborts via `VKC_CHECK`.
 - **`with_context` adds context without losing the domain** (new). `recon`
   rebuilt a `Status` with a switch over every code to prefix a kernel's name;
   each such switch breaks when a code is added, as `Numerical` now is.
@@ -837,12 +845,3 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   `DeviceMapped` memory the host writes in place and a kernel reads as a
   `StorageInput` device buffer, now exists. Which inputs take it, and on
   which architecture (`unified_memory()`), is the open part.
-- **Which backend a `Backend` status came from.** `Status` records the domain
-  and an `int64_t` detail, not the backend that set it, so `vk_result` reads a
-  CUDA status's `cudaError_t` as an unrelated `VkResult`:
-  `cudaErrorMemoryAllocation` (2) as `VK_TIMEOUT`, which a caller that retries
-  on `VK_TIMEOUT` would retry. Until then, `vk_result` is asked only of a
-  status from a Vulkan call. Recording it changes the base tier's API: a
-  backend tag set by `backend_error`, or a domain per backend (`Vulkan`,
-  `Cuda`); either lets `vk_result` return empty for a CUDA status. Decide at
-  `recon`'s migration, whose CUDA interop returns both kinds.

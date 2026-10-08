@@ -56,8 +56,8 @@ machine.
 ## Error handling
 
 Mobile consumers build with `-fno-exceptions`. Fallible calls return `Status`
-(success, or an error domain plus a message, and a backend code for `Backend`)
-or `Result<T>` (a value or a `Status`). Propagate with `VKC_TRY` /
+(success, or an error domain plus a message, and for `Backend` the backend and
+its code) or `Result<T>` (a value or a `Status`). Propagate with `VKC_TRY` /
 `VKC_ASSIGN`. Programmer errors (reading an error `Result`'s value) fail fast
 via `VKC_CHECK`, which logs through the sink and aborts; never throw.
 
