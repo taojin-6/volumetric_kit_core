@@ -11,8 +11,6 @@ add_subdirectory(volumetric_kit/core/base)
 if(VKC_WITH_VULKAN)
   add_subdirectory(volumetric_kit/core/vulkan)
 endif()
-# TODO: add_subdirectory() for camera / sensor as those tiers land (see
-# DECISIONS.md "Tiers").
 
 # --- volumetric_kit::core: umbrella ------------------------------------------
 # Consumers link `volumetric_kit::core` and get whatever tiers are built. The

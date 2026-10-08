@@ -7,7 +7,7 @@ project(
   volumetric_kit_core
   VERSION 0.0.1
   DESCRIPTION
-    "Shared foundation for the volumetric_kit family: error handling, and (staged) the Vulkan core, camera models and sensors"
+    "Shared foundation for the volumetric_kit family: error handling and the Vulkan core"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_core"
   LANGUAGES CXX)
 

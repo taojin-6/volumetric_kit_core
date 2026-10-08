@@ -7,15 +7,16 @@ do not duplicate rules there or create a circular reference.
 ## Project and boundaries
 
 `volumetric_kit_core` is the shared foundation of the `volumetric_kit` family:
-`calib`, `recon`, `gfx` and `ios` all depend on it. Implemented and planned
-tiers are listed in [README.md](README.md#tiers); why each exists and the order
-they land in are in [DECISIONS.md](DECISIONS.md#tiers).
+`calib`, `recon`, `gfx` and `ios` all depend on it. Its tiers are listed in
+[README.md](README.md#tiers); why each exists, and why cameras and sensors are
+not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 
 - Everything here is consumed by four repositories. A public API change needs a
   CHANGELOG entry that says how to migrate, and the consumers move by bumping
   their pin -- never by tracking `main`.
 - Code belongs here only when two or more siblings need it. A renderer-only
-  piece stays in `gfx`; a reconstruction kernel stays in `recon`.
+  piece stays in `gfx`; a reconstruction kernel stays in `recon`; camera
+  models and sensors stay in `recon` and `calib`.
 - The `base` tier has no dependencies and includes no GPU API. GPU API types
   appear only in the `vulkan` tier and above.
 - The siblings sit beside this checkout (`../volumetric_kit_recon/` and so on
@@ -39,8 +40,7 @@ they land in are in [DECISIONS.md](DECISIONS.md#tiers).
 - Headers: `include/volumetric_kit/core/<tier>/…`, e.g.
   `#include "volumetric_kit/core/base/result.hpp"`
 - CMake: `find_package(volumetric_kit_core)`; targets
-  `volumetric_kit::core_base`, `…_vulkan`, `…_camera`, `…_sensor`; umbrella
-  `volumetric_kit::core`.
+  `volumetric_kit::core_base`, `…_vulkan`; umbrella `volumetric_kit::core`.
 - Test support: `volumetric_kit::core_test_policy` and `…_test_support` in
   `tests/support/`, headers `volumetric_kit/core/testing/…`, namespace
   `volumetric_kit::core::test` (README.md, "Use it in your project").
@@ -49,9 +49,8 @@ they land in are in [DECISIONS.md](DECISIONS.md#tiers).
 
 ## Architecture
 
-`base` → {`vulkan`, `camera`} → `sensor`. A tier depends only on the tiers its
-row in DECISIONS.md names. `base` is pure CPU, so its tests run on every
-machine.
+`base` → `vulkan`. A tier depends only on the tiers its row in DECISIONS.md
+names. `base` is pure CPU, so its tests run on every machine.
 
 ## Error handling
 
