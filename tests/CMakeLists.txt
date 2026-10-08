@@ -3,6 +3,16 @@
 
 include(GoogleTest)
 
+# Sets <out> to a regex matching <text> in a configure's output, however CMake
+# wraps the message's lines.
+function(_vkc_message_regex out text)
+  string(REGEX REPLACE "([][.()*+?^$|])" "\\\\\\1" text "${text}")
+  string(REPLACE " " "[ \n]+" text "${text}")
+  set(${out}
+      "${text}"
+      PARENT_SCOPE)
+endfunction()
+
 # base: Status / Result / VKC_TRY / VKC_ASSIGN, VKC_CHECK, the log sink, and the
 # version API. Pure CPU, so these run on every machine. The timeout turns a
 # deadlock in the log sink's locking into a failure instead of a hung job.
@@ -225,6 +235,31 @@ if(VKC_WITH_VULKAN)
   set_tests_properties(vkc_testing_policy_needs_no_googletest PROPERTIES TIMEOUT
                                                                          300)
 
+  # vkc_embed_shaders refuses a symbol another call already emits
+  # (cmake/vkc_shaders.cmake): two libraries embedding fill.comp under
+  # SYMBOL_PREFIX a_ both must fail the configure, and under a_ and b_ must not.
+  # Configure only.
+  _vkc_message_regex(
+    _vkc_clash "'a_fill_comp_spv', which vkc_embed_shaders(vkc_first_library)")
+  foreach(_vkc_prefix a_ b_)
+    set(_vkc_name vkc_embed_shaders_prefixes_a_${_vkc_prefix})
+    add_test(
+      NAME ${_vkc_name}
+      COMMAND
+        "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/shader_symbols" -B
+        "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DVKC_SECOND_PREFIX=${_vkc_prefix}")
+    if(_vkc_prefix STREQUAL "a_")
+      set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                                   "${_vkc_clash}")
+    else()
+      set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
+                                                   "${_vkc_clash}")
+    endif()
+  endforeach()
+
   # Flipping VKC_WITH_VULKAN in a build directory reconfigures, either way:
   # whether the test support is built follows the tier and the tests, not a
   # default cached by the first configure. Configure only, in order, with the
@@ -276,6 +311,105 @@ foreach(_vkc_shared OFF ON)
   endif()
 endforeach()
 
-# package_consumer/ is not added here: CI configures it as a separate project
-# against an installed copy (find_package) and against the source tree
-# (add_subdirectory), the two ways the sibling repos consume this one.
+# vkc_require_core and vkc_core_version (cmake/vkc_require_core.cmake), as a
+# sibling calls them: the package consumer, on the core as a subproject (its
+# base tier alone) and, with install rules, as an installed package (this build,
+# installed to a stage). Requiring this version must configure and read it back;
+# requiring the next minor, or the vulkan tier from a core without it, must fail
+# naming what was found and the fix. Configure only.
+math(EXPR _vkc_next_minor "${PROJECT_VERSION_MINOR} + 1")
+set(_vkc_too_new "${PROJECT_VERSION_MAJOR}.${_vkc_next_minor}.0")
+set(_vkc_stage "${CMAKE_CURRENT_BINARY_DIR}/require_core_stage")
+set(_vkc_consumes subdirectory)
+if(VKC_INSTALL)
+  list(APPEND _vkc_consumes find_package)
+  add_test(NAME vkc_require_core_install
+           COMMAND "${CMAKE_COMMAND}" --install "${PROJECT_BINARY_DIR}"
+                   --config "$<CONFIG>" --prefix "${_vkc_stage}")
+  set_tests_properties(vkc_require_core_install
+                       PROPERTIES FIXTURES_SETUP vkc_require_core_stage)
+endif()
+_vkc_message_regex(
+  _vkc_read
+  "volumetric_kit_core ${PROJECT_VERSION} (MAJOR.MINOR ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})"
+)
+foreach(_vkc_consume IN LISTS _vkc_consumes)
+  if(_vkc_consume STREQUAL "subdirectory")
+    set(_vkc_core "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+                  -DVKC_WITH_VULKAN=OFF)
+    set(_vkc_has_vulkan OFF)
+    set(_vkc_origin "the core at")
+    set(_vkc_fix "pin v${_vkc_too_new} or newer")
+    set(_vkc_tier_fix "set VKC_WITH_VULKAN ON before")
+  else()
+    set(_vkc_core "-DCMAKE_PREFIX_PATH=${_vkc_stage}")
+    set(_vkc_has_vulkan ${VKC_WITH_VULKAN})
+    set(_vkc_origin "the core installed at")
+    set(_vkc_fix "install volumetric_kit_core ${_vkc_too_new} or newer")
+    set(_vkc_tier_fix "install one built with VKC_WITH_VULKAN ON")
+  endif()
+  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan)
+    set(_vkc_name vkc_require_core_${_vkc_consume}_${_vkc_require})
+    if(_vkc_require STREQUAL "vulkan")
+      set(_vkc_args -DVKC_CONSUMER_REQUIRE=${PROJECT_VERSION}
+                    -DVKC_CONSUMER_REQUIRE_VULKAN=ON)
+    else()
+      set(_vkc_args -DVKC_CONSUMER_REQUIRE=${_vkc_require})
+    endif()
+    add_test(
+      NAME ${_vkc_name}
+      COMMAND
+        "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/package_consumer" -B
+        "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        -DVKC_CONSUME=${_vkc_consume} ${_vkc_core} ${_vkc_args})
+    if(_vkc_require STREQUAL _vkc_too_new)
+      _vkc_message_regex(
+        _vkc_head
+        "needs volumetric_kit_core ${_vkc_too_new} or newer, but ${_vkc_origin}"
+      )
+      _vkc_message_regex(_vkc_tail "is ${PROJECT_VERSION}: ${_vkc_fix}")
+      set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
+    elseif(_vkc_require STREQUAL "vulkan" AND NOT _vkc_has_vulkan)
+      _vkc_message_regex(
+        _vkc_head
+        "needs volumetric_kit_core's vulkan tier, which ${_vkc_origin}")
+      _vkc_message_regex(_vkc_tail "was built without: ${_vkc_tier_fix}")
+      set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
+    else()
+      # The version read back, and a configure that finished.
+      set(_vkc_pass "${_vkc_read}.+Generating done")
+      set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
+                                                   "CMake Error")
+    endif()
+    set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                                 "${_vkc_pass}")
+    if(_vkc_consume STREQUAL "find_package")
+      set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
+                                                   vkc_require_core_stage)
+    endif()
+  endforeach()
+endforeach()
+
+# The same functions misused, or called before the core is added, must say so.
+function(_vkc_call_test name call message)
+  add_test(NAME ${name}
+           COMMAND "${CMAKE_COMMAND}" "-DVKC_CALL=${call}" -P
+                   "${CMAKE_CURRENT_SOURCE_DIR}/require_core_call.cmake")
+  _vkc_message_regex(_regex "${message}")
+  set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${_regex}")
+endfunction()
+_vkc_call_test(
+  vkc_require_core_usage
+  "vkc_require_core(0.1.0 VULKAN TOOLS)"
+  "vkc_require_core(0.1.0 VULKAN TOOLS): use vkc_require_core(<min-version> [VULKAN])"
+)
+_vkc_call_test(
+  vkc_core_version_usage "vkc_core_version(_v MAJOR)"
+  "vkc_core_version(_v MAJOR): use vkc_core_version(<out> [MAJOR_MINOR])")
+_vkc_call_test(vkc_core_version_before_core "vkc_core_version(_v)"
+               "vkc_core_version(_v): no volumetric_kit::core_base here")
+
+# Beyond these configure tests, CI builds and runs package_consumer/ against an
+# installed copy (find_package) and against the source tree (add_subdirectory),
+# the two ways the sibling repos consume this one.

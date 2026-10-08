@@ -31,14 +31,12 @@ described by hand.
 ### Tiers
 
 One repository, one CMake target per tier, so a consumer links only what it
-uses (`gfx` never pulls in a camera model or a vendor SDK):
+uses (`calib`'s headless solver needs no Vulkan):
 
 | Tier | Depends on | Holds | Lands |
 | --- | --- | --- | --- |
 | `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, version | now |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
-| `camera` | `base` | camera models, the rig calibration file | with `calib`'s rational model |
-| `sensor` | `camera`, `vulkan` | frame types, the capture interface, vendor drivers (Orbbec, behind an option) | after `camera` |
 
 - `vulkan` is seeded from `recon`'s core, which carries the measured memory
   rules and the compute pieces `calib` also needs, then gains what `gfx`
@@ -46,12 +44,14 @@ uses (`gfx` never pulls in a camera model or a vendor SDK):
   pipelines) stay in `gfx`; consumers migrate in the order `recon`, `gfx`
   (re-measuring its frame times, since its allocator semantics change), `ios`
   (deleting its `SharedDevice` copy).
-- `camera` starts with the rational model (k1–k6, p1, p2), matching the
-  factory calibration format that `recon`'s calibration file stores.
-  Fisheye (Kannala-Brandt) is planned, not built: the interface
-  returns unit 3D rays so it can be added without a break.
-- `sensor` moves `recon`'s sensor tier here, so `calib` and `recon` share one
-  driver per device.
+- **No camera or sensor tier.** Camera models, the rig's calibration file,
+  frame types, the capture interface and vendor drivers stay out of the
+  core. Core PR #14 proposed a camera tier and was closed; `recon`'s
+  DECISIONS.md (2026-10-06, "The family's camera vocabulary is recon's
+  `camera` tier", amended the same day) makes `recon`'s `camera` and `sensor`
+  tiers the library `calib` and `ios` build on for cameras and sensors, while
+  `calib` keeps its own camera model. Moving either here is a new decision,
+  in `recon`'s DECISIONS.md as well as this one.
 
 ### The vulkan tier
 
@@ -761,6 +761,26 @@ application that fetches several siblings (`ios`) declares
 `volumetric_kit_core` first, so FetchContent resolves one copy for all of
 them. A public API change here lands with a CHANGELOG entry that says how to
 migrate.
+
+- **The version moves with the API.** `project(VERSION)` is the core's one
+  version: the generated `version.hpp`, the package version file, the soname
+  and `vkc_require_core` / `vkc_core_version` all take it. Before 1.0, a PR
+  that changes the public API or ABI bumps the minor version (`0.1.0` →
+  `0.2.0`), and one that changes only behaviour a sibling relies on bumps the
+  patch. The PR moves the CHANGELOG's `[Unreleased]` entries under the new
+  version, and its merge commit is tagged `v<version>`. A version then names
+  one API, whether a sibling pins the tag or the SHA.
+- **Each sibling requires the oldest core it builds with**, and the tiers it
+  uses, by calling `vkc_require_core(<version> [VULKAN])` after
+  `FetchContent_MakeAvailable` or `find_package`. Its pin yields to an
+  application's, and FetchContent may find an installed core instead, so the
+  check reads the version the linked `core_base` carries rather than trusting
+  the request. A core too old for the sibling fails the configure instead of
+  the compile deep in the sibling's sources -- or of nothing, when what
+  changed is behaviour ([README.md](README.md#use-it-in-your-project) says
+  what the failure names, and what a core older than 0.1.0 does). It checks
+  a minimum only: before 1.0 a newer minor may break the API, which the
+  sibling's next re-pin meets.
 
 Tests and `-Werror` default ON only at the top level, but install rules
 (`VKC_INSTALL`) default ON everywhere: a sibling that installs and exports its

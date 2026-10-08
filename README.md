@@ -24,21 +24,18 @@ buffers zero-copy on one shared device.
 > kernels, `CommandBatch` (waited on, or ordered by timeline semaphores and
 > waited on later), the shader build functions, GPU timers, buffers
 > exported for CUDA to write, and the shared device a compute library and a
-> renderer both adopt. The `camera` and `sensor` tiers are planned; see
-> [DECISIONS.md](DECISIONS.md#tiers) for what each holds and the order they land
-> in.
+> renderer both adopt. Camera models and sensors are not core tiers: they stay
+> in recon and calib ([DECISIONS.md](DECISIONS.md#tiers)).
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and
 Claude Code; `CLAUDE.md` imports it.
 
 ## Tiers
 
-| Tier | Target | Holds | Status |
-| --- | --- | --- | --- |
-| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, stage metrics, version | implemented |
-| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap | implemented |
-| `camera` | `volumetric_kit::core_camera` | camera models (rational first), rig calibration file | planned |
-| `sensor` | `volumetric_kit::core_sensor` | frame types, capture interface, vendor drivers (Orbbec) | planned |
+| Tier | Target | Holds |
+| --- | --- | --- |
+| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, stage metrics, version |
+| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no
 GPU (calib's headless solver) links only the tiers it uses.
@@ -107,7 +104,7 @@ in the process.
 ## Use it in your project
 
 Pin a release tag or a commit SHA -- never `main` -- so every consumer builds
-the same core:
+the same core, and require the oldest version your project builds with:
 
 ```cmake
 include(FetchContent)
@@ -116,15 +113,22 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/taojin-6/volumetric_kit_core.git
   GIT_TAG <tag-or-sha>)
 FetchContent_MakeAvailable(volumetric_kit_core)
+vkc_require_core(0.1.0)
 
 target_link_libraries(your_target PRIVATE volumetric_kit::core_base)
 ```
 
-or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`.
-For the vulkan tier, set `VKC_WITH_VULKAN` ON before
-`FetchContent_MakeAvailable` and link `volumetric_kit::core_vulkan`. Either
-way, `vkc_embed_shaders` then compiles a target's GLSL and embeds the SPIR-V
-as headers (`cmake/vkc_shaders.cmake` documents its options):
+or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`
+followed by the same `vkc_require_core`. It fails the configure, naming the
+version found, the version required and how to move the pin, when the core is
+older -- an installed one, or one an application declared first (below). A
+core older than 0.1.0 has no `vkc_require_core`, so the call stops as an
+unknown command: move the first-declared pin, or the installed core, to 0.1.0
+or newer. For the vulkan tier, set `VKC_WITH_VULKAN` ON before
+`FetchContent_MakeAvailable`, require it with `vkc_require_core(0.1.0 VULKAN)`
+and link `volumetric_kit::core_vulkan`. Either way, `vkc_embed_shaders` then
+compiles a target's GLSL and embeds the SPIR-V as headers
+(`cmake/vkc_shaders.cmake` documents its options):
 
 ```cmake
 vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp)
@@ -133,7 +137,8 @@ vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp
 
 A consumer that installs and exports its own targets installs the core beside
 them (the core's install rules stay on in a subproject), and its package config
-must `find_dependency(volumetric_kit_core)`. One that links the core into a
+must `find_dependency(volumetric_kit_core <MAJOR.MINOR>)`, the version
+`vkc_core_version(<var> MAJOR_MINOR)` reads. One that links the core into a
 shared library or framework builds the core shared too
 (`BUILD_SHARED_LIBS=ON`): the log handler is process-global, and each binary
 linking a static core gets its own (DECISIONS.md, "One instance per process").
@@ -153,9 +158,9 @@ support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
   (`volumetric_kit/core/testing/vulkan_policy.hpp`).
 
 An application that fetches several siblings (as `ios` fetches `recon` and
-`gfx`) declares `volumetric_kit_core` **first**. FetchContent keeps the first
-declaration of a name, so every sibling then builds against that one copy
-rather than each pinning its own.
+`gfx`) declares `volumetric_kit_core` **first**, at least as new as every
+sibling requires. FetchContent keeps the first declaration of a name, so every
+sibling then builds against that one copy rather than each pinning its own.
 
 ```cpp
 #include "volumetric_kit/core/base/result.hpp"

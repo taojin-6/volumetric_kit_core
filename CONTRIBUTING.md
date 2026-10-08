@@ -76,7 +76,9 @@ executed successfully.
 Four repositories build on this one. A change to an installed header or to the
 CMake package needs:
 
-- a CHANGELOG entry under `[Unreleased]` that says how a consumer migrates;
+- a CHANGELOG entry that says how a consumer migrates, and the version bump
+  that releases it (DECISIONS.md, "Consumers pin, and an application declares
+  the core first");
 - the package-consumer check CI runs (`tests/package_consumer/`);
 - the consumers' migration as tasks in their own repositories, each bumping its
   pin.

@@ -26,6 +26,12 @@ vkc::Result<int> parse_positive(int x);
 namespace {
 
 vkc::Status run() {
+  // The version vkc_require_core read (CMakeLists.txt) is the headers' and the
+  // linked library's.
+  if (std::string_view(VKC_VERSION_STRING) != VKC_CONSUMER_CORE_VERSION ||
+      std::string_view(vkc::version_string()) != VKC_CONSUMER_CORE_VERSION) {
+    return vkc::Status::invalid_argument("the core's versions disagree");
+  }
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");
   if (parse_positive(-1).ok()) return vkc::Status::numerical("accepted -1");
