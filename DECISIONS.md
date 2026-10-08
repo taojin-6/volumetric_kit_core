@@ -645,8 +645,9 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
 - **Backend detail is a neutral `int64_t`, tagged with its backend**
   (`recon`'s design, plus the tag). `gfx`'s `Vulkan` domain with a
   `VkResult`-typed `code()` becomes `Backend` with the `VkResult` in
-  `detail()`; the vulkan tier supplies `vk_error`, `VKC_VK_TRY`, `vk_result`
-  and the `VkResult` name lookup. The base tier includes no GPU API. `backend_error` requires the backend (`Status::Backend`: `Vulkan`,
+  `detail()`; the vulkan tier supplies `vk_error`, `VKC_VK_TRY`, `vk_result`,
+  `is_timeout` and the `VkResult` name lookup. The base tier includes no GPU
+  API. `backend_error` requires the backend (`Status::Backend`: `Vulkan`,
   `Cuda`, `NvJpeg`, `Ffmpeg`, `VideoToolbox`, `Other`), because backends
   number their codes independently -- `2` is `VK_TIMEOUT`,
   `CUDA_ERROR_OUT_OF_MEMORY` and `NVJPEG_STATUS_INVALID_PARAMETER` -- and one

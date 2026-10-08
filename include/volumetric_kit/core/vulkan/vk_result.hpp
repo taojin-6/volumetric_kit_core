@@ -12,7 +12,7 @@
 /// (domain `Code::Backend`), tagged with the backend, so it includes no GPU
 /// API. This header is the one place the vulkan tier turns a `VkResult` into
 /// that `Status` -- with @ref vk_error and @ref VKC_VK_TRY -- and reads it back
-/// with @ref vk_result and @ref to_string(VkResult).
+/// with @ref vk_result, @ref is_timeout and @ref to_string(VkResult).
 ///
 /// @code
 /// Status init(VkDevice device, VkFence* fence) {
@@ -67,6 +67,24 @@ inline std::optional<VkResult> vk_result(const Status& status) noexcept {
     return std::nullopt;
   }
   return static_cast<VkResult>(code);
+}
+
+/// @brief Whether a wait ran out of time with the work still pending.
+/// @param status  Any status, e.g. from `Fence::wait` or `PendingBatch::wait`.
+/// @return `true` exactly when @p status is a Vulkan failure carrying
+///         `VK_TIMEOUT`; `false` for success, any other failure, and another
+///         backend's code `2`.
+///
+/// @code
+/// Status waited = pending.wait(0);
+/// while (is_timeout(waited)) {
+///   do_other_work();  // the batch is still running
+///   waited = pending.wait(0);
+/// }
+/// VKC_TRY(waited);
+/// @endcode
+inline bool is_timeout(const Status& status) noexcept {
+  return vk_result(status) == std::optional<VkResult>(VK_TIMEOUT);
 }
 
 /// @brief The name of a `VkResult`, e.g. `"VK_ERROR_DEVICE_LOST"`.

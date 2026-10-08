@@ -49,8 +49,17 @@ TEST(VkResult, AnotherBackendsStatusCarriesNoResult) {
     for (const VkResult code : {VK_TIMEOUT, VK_ERROR_DEVICE_LOST}) {
       const Status s = Status::backend_error(backend, code, "not Vulkan");
       EXPECT_EQ(vk_result(s), std::nullopt) << to_string(backend);
+      EXPECT_FALSE(is_timeout(s)) << to_string(backend);
     }
   }
+}
+
+TEST(VkResult, IsTimeoutOnlyForAVulkanTimeout) {
+  EXPECT_TRUE(is_timeout(vk_error(VK_TIMEOUT, "vkWaitForFences")));
+  EXPECT_FALSE(is_timeout(Status{}));
+  EXPECT_FALSE(is_timeout(Status::io_error("read")));
+  EXPECT_FALSE(is_timeout(vk_error(VK_ERROR_DEVICE_LOST, "vkWaitForFences")));
+  EXPECT_FALSE(is_timeout(vk_error(VK_NOT_READY, "vkGetFenceStatus")));
 }
 
 // A Vulkan status with any detail, as vk_error cannot build one.

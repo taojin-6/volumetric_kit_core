@@ -56,8 +56,9 @@ class VKC_VULKAN_API Fence {
   /// @brief Wait until the fence is signaled, or the timeout passes.
   /// @param timeout_ns  The longest wait, in nanoseconds.
   /// @return OK once signaled; @ref Status::Code::InvalidArgument for an
-  ///         empty fence; a backend @ref Status carrying `VK_TIMEOUT` when
-  ///         the timeout passes first, or the failure (device lost).
+  ///         empty fence; a backend @ref Status carrying `VK_TIMEOUT`
+  ///         (@ref is_timeout) when the timeout passes first, or the failure
+  ///         (device lost).
   Status wait(std::uint64_t timeout_ns = UINT64_MAX) const;
   /// @brief Return the fence to unsignaled.
   /// @return OK; @ref Status::Code::InvalidArgument for an empty fence; or a
@@ -175,7 +176,7 @@ class VKC_VULKAN_API TimelineSemaphore {
   /// @param timeout_ns  The longest wait, in nanoseconds.
   /// @return OK once reached; @ref Status::Code::InvalidArgument for an
   ///         empty semaphore; a backend @ref Status carrying `VK_TIMEOUT`
-  ///         when the timeout passes first, or the failure.
+  ///         (@ref is_timeout) when the timeout passes first, or the failure.
   Status wait(std::uint64_t value, std::uint64_t timeout_ns = UINT64_MAX) const;
 
  private:

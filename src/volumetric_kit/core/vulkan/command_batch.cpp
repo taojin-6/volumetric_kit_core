@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -917,10 +916,7 @@ void PendingBatch::write_readbacks(const void* memory,
 Status PendingBatch::wait(std::uint64_t timeout_ns) {
   if (!failed_.ok()) return failed_;
   Status waited = submit_.wait(timeout_ns);
-  if (!waited.ok() &&
-      vk_result(waited) == std::optional<VkResult>(VK_TIMEOUT)) {
-    return waited;  // still pending, for a later wait
-  }
+  if (is_timeout(waited)) return waited;  // still pending, for a later wait
   // Complete: a set changed meanwhile may have been bound by the work, so
   // what it wrote is not trusted.
   for (std::size_t i = 0; waited.ok() && i < sets_.size(); ++i) {
