@@ -61,20 +61,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
-- `vkc_require_core(<version>)`, which fails the configure when the core a
-  project got is older than `<version>`, naming both versions and how to move
-  the pin (DECISIONS.md, "Consumers pin, and an application declares the
-  core first"). It is defined once the core is added or found. A sibling
-  calls it after `FetchContent_MakeAvailable(volumetric_kit_core)` or
-  `find_package(volumetric_kit_core)` with the oldest version it builds with.
-  In the re-pins: gfx replaces the `format.hpp` probe in
-  `cmake/vg_core.cmake` and its package config with it, keeping its own check
-  for the vulkan tier; recon (`third_party/CMakeLists.txt`) and calib add it.
-- `volumetric_kit::core_base` carries the core's version as the
-  `VKC_CORE_VERSION` target property, built here or installed. recon's, gfx's
-  and calib's `src/CMakeLists.txt` read from it the MAJOR.MINOR their package
-  config re-finds, in place of `core_base`'s `VERSION`, which an installed
-  `core_base` lacks.
+- `vkc_require_core(<version> [VULKAN])`, which fails the configure when the
+  core a project got is older than `<version>`, or with `VULKAN` lacks the
+  vulkan tier, naming what it found and how to fix the pin (DECISIONS.md,
+  "Consumers pin, and an application declares the core first"), and
+  `vkc_core_version(<var> [MAJOR_MINOR])`, which reads the core's version.
+  Both are defined once the core is added or found, and read the
+  `VKC_CORE_VERSION` that `volumetric_kit::core_base` now carries, built here
+  or installed. In the re-pins, recon, gfx and calib call `vkc_require_core`
+  after `FetchContent_MakeAvailable(volumetric_kit_core)` with the oldest
+  version they build with, recon and gfx adding `VULKAN`: it replaces recon's
+  `core_vulkan` check in `third_party/CMakeLists.txt`, and gfx's
+  `cmake/vg_core.cmake` and the `format.hpp` probe in its package config.
+  Each replaces the block in its `src/CMakeLists.txt` that derives the
+  MAJOR.MINOR its package config re-finds the core at with
+  `vkc_core_version(<var> MAJOR_MINOR)`.
 - `vulkan`: `is_timeout(status)`, whether a wait ran out of time with the work
   still pending -- a `Vulkan` status carrying `VK_TIMEOUT`, as the waits of
   `Fence`, `TimelineSemaphore`, `Device::PendingSubmit` and `PendingBatch`

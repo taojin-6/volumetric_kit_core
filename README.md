@@ -121,11 +121,14 @@ target_link_libraries(your_target PRIVATE volumetric_kit::core_base)
 or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`
 followed by the same `vkc_require_core`. It fails the configure, naming the
 version found, the version required and how to move the pin, when the core is
-older -- an installed one, or one an application declared first (below).
-For the vulkan tier, set `VKC_WITH_VULKAN` ON before
-`FetchContent_MakeAvailable` and link `volumetric_kit::core_vulkan`. Either
-way, `vkc_embed_shaders` then compiles a target's GLSL and embeds the SPIR-V
-as headers (`cmake/vkc_shaders.cmake` documents its options):
+older -- an installed one, or one an application declared first (below). A
+core older than 0.1.0 has no `vkc_require_core`, so the call stops as an
+unknown command: move the first-declared pin, or the installed core, to 0.1.0
+or newer. For the vulkan tier, set `VKC_WITH_VULKAN` ON before
+`FetchContent_MakeAvailable`, require it with `vkc_require_core(0.1.0 VULKAN)`
+and link `volumetric_kit::core_vulkan`. Either way, `vkc_embed_shaders` then
+compiles a target's GLSL and embeds the SPIR-V as headers
+(`cmake/vkc_shaders.cmake` documents its options):
 
 ```cmake
 vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp)
@@ -134,7 +137,8 @@ vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp
 
 A consumer that installs and exports its own targets installs the core beside
 them (the core's install rules stay on in a subproject), and its package config
-must `find_dependency(volumetric_kit_core)`. One that links the core into a
+must `find_dependency(volumetric_kit_core <MAJOR.MINOR>)`, the version
+`vkc_core_version(<var> MAJOR_MINOR)` reads. One that links the core into a
 shared library or framework builds the core shared too
 (`BUILD_SHARED_LIBS=ON`): the log handler is process-global, and each binary
 linking a static core gets its own (DECISIONS.md, "One instance per process").
