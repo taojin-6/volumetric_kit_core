@@ -173,8 +173,8 @@ class VulkanTest : public ::testing::Test {
   ///         is met only where the layer is installed.
   virtual Validation validation() const { return Validation::Off; }
 
-  /// @brief Install the log handler, then borrow the shared instance and
-  ///        select the physical device; skips or fails without one.
+  /// @brief Borrow the shared instance, install the log handler, and select
+  ///        the physical device; skips or fails without either.
   void SetUp() override;
 
   /// @return Whether the base `SetUp` stopped short -- it skipped the test,
