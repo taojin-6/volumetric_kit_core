@@ -90,11 +90,8 @@ class [[nodiscard]] Status {
                       ///< @ref backend and @ref detail.
   };
 
-  /// @brief The backend whose call failed, for a @ref Code::Backend status.
-  ///
-  /// Backends number their codes independently, so a code means nothing
-  /// without its backend: `2` is `VK_TIMEOUT`, `CUDA_ERROR_OUT_OF_MEMORY` and
-  /// `NVJPEG_STATUS_INVALID_PARAMETER`.
+  /// @brief The backend whose call failed, for a @ref Code::Backend status;
+  ///        it says how to read @ref detail.
   enum class Backend : std::uint8_t {
     Vulkan,        ///< A `VkResult`.
     Cuda,          ///< A CUDA driver `CUresult` or runtime `cudaError_t`.
@@ -108,8 +105,7 @@ class [[nodiscard]] Status {
   Status() = default;
 
   /// @brief Build a backend failure (domain @ref Code::Backend).
-  /// @param backend  Which backend's call failed; it says how to read
-  ///                 @p detail.
+  /// @param backend  Which backend's call failed.
   /// @param detail   The backend's code for the failure, widened to `int64_t`
   ///                 so this tier stays free of GPU APIs.
   /// @param message  Human-readable context, e.g. the failing call.

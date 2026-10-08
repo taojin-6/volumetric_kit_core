@@ -82,12 +82,13 @@ class VKC_VULKAN_API PendingBatch {
   /// @param timeout_ns  The longest wait, in nanoseconds.
   /// @return As @ref Device::PendingSubmit::wait: OK once complete -- the
   ///         destinations written by the first such call only -- a
-  ///         `VK_TIMEOUT` status with the work still pending; the failure,
-  ///         which leaves the destinations unwritten; or, once complete,
-  ///         @ref Status::Code::InvalidArgument when a dispatched kernel's
-  ///         descriptor set was rewritten or freed since the submit -- the
-  ///         work may have run on the later binding, so the destinations are
-  ///         left unwritten. Every later call returns a failure again.
+  ///         `VK_TIMEOUT` status (@ref is_timeout) with the work still
+  ///         pending; the failure, which leaves the destinations unwritten;
+  ///         or, once complete, @ref Status::Code::InvalidArgument when a
+  ///         dispatched kernel's descriptor set was rewritten or freed since
+  ///         the submit -- the work may have run on the later binding, so the
+  ///         destinations are left unwritten. Every later call returns a
+  ///         failure again.
   Status wait(std::uint64_t timeout_ns = UINT64_MAX);
 
   /// @return Whether the device may still run the work, as
