@@ -104,7 +104,7 @@ in the process.
 ## Use it in your project
 
 Pin a release tag or a commit SHA -- never `main` -- so every consumer builds
-the same core:
+the same core, and require the oldest version your project builds with:
 
 ```cmake
 include(FetchContent)
@@ -113,11 +113,15 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/taojin-6/volumetric_kit_core.git
   GIT_TAG <tag-or-sha>)
 FetchContent_MakeAvailable(volumetric_kit_core)
+vkc_require_core(0.1.0)
 
 target_link_libraries(your_target PRIVATE volumetric_kit::core_base)
 ```
 
-or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`.
+or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`
+followed by the same `vkc_require_core`. It fails the configure, naming the
+version found, the version required and how to move the pin, when the core is
+older -- an installed one, or one an application declared first (below).
 For the vulkan tier, set `VKC_WITH_VULKAN` ON before
 `FetchContent_MakeAvailable` and link `volumetric_kit::core_vulkan`. Either
 way, `vkc_embed_shaders` then compiles a target's GLSL and embeds the SPIR-V
@@ -150,9 +154,9 @@ support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
   (`volumetric_kit/core/testing/vulkan_policy.hpp`).
 
 An application that fetches several siblings (as `ios` fetches `recon` and
-`gfx`) declares `volumetric_kit_core` **first**. FetchContent keeps the first
-declaration of a name, so every sibling then builds against that one copy
-rather than each pinning its own.
+`gfx`) declares `volumetric_kit_core` **first**, at least as new as every
+sibling requires. FetchContent keeps the first declaration of a name, so every
+sibling then builds against that one copy rather than each pinning its own.
 
 ```cpp
 #include "volumetric_kit/core/base/result.hpp"

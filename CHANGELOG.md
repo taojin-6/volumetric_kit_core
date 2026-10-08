@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-08
+
 ### Fixed
 
 - `vkc_embed_shaders` refuses a symbol another call in the build already
@@ -59,6 +61,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- `vkc_require_core(<version>)`, which fails the configure when the core a
+  project got is older than `<version>`, naming both versions and how to move
+  the pin (DECISIONS.md, "Consumers pin, and an application declares the
+  core first"). It is defined once the core is added or found. A sibling
+  calls it after `FetchContent_MakeAvailable(volumetric_kit_core)` or
+  `find_package(volumetric_kit_core)` with the oldest version it builds with.
+  In the re-pins: gfx replaces the `format.hpp` probe in
+  `cmake/vg_core.cmake` and its package config with it, keeping its own check
+  for the vulkan tier; recon (`third_party/CMakeLists.txt`) and calib add it.
+- `volumetric_kit::core_base` carries the core's version as the
+  `VKC_CORE_VERSION` target property, built here or installed. recon's, gfx's
+  and calib's `src/CMakeLists.txt` read from it the MAJOR.MINOR their package
+  config re-finds, in place of `core_base`'s `VERSION`, which an installed
+  `core_base` lacks.
 - `vulkan`: `is_timeout(status)`, whether a wait ran out of time with the work
   still pending -- a `Vulkan` status carrying `VK_TIMEOUT`, as the waits of
   `Fence`, `TimelineSemaphore`, `Device::PendingSubmit` and `PendingBatch`
@@ -274,6 +290,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
+- The version is 0.1.0 (was 0.0.1), and from here on moves with the API
+  (DECISIONS.md, "Consumers pin, and an application declares the core
+  first"). The soname becomes `0.1`: rebuild consumers after bumping their
+  pin. An installed sibling's `find_dependency(volumetric_kit_core 0.0)` no
+  longer accepts it; the re-pinned sibling's own config asks for `0.1`.
 - **`Status::backend_error` takes the backend whose call failed**
   (DECISIONS.md, "Merging the three `Status`/`Result` types"):
   `backend_error(detail, message)` → `backend_error(Status::Backend::<b>,
@@ -453,3 +474,6 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
     `QueuePlan::kTwoQueuesOneFamily`, `kTwoFamilies`, `kSharedQueue` →
     `TwoQueuesOneFamily`, `TwoFamilies`, `SharedQueue`. `release_surface()`,
     `wait_idle()` and `summary()` keep their names (recon gains the last two).
+
+[Unreleased]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/taojin-6/volumetric_kit_core/releases/tag/v0.1.0

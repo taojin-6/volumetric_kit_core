@@ -16,5 +16,7 @@ if(@VKC_WITH_VULKAN@)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/volumetric_kit_coreTargets.cmake")
+# vkc_require_core, as a fetching project gets it.
+include("${CMAKE_CURRENT_LIST_DIR}/vkc_require_core.cmake")
 
 check_required_components(volumetric_kit_core)

@@ -762,6 +762,24 @@ application that fetches several siblings (`ios`) declares
 them. A public API change here lands with a CHANGELOG entry that says how to
 migrate.
 
+- **The version moves with the API.** `project(VERSION)` is the core's one
+  version: the generated `version.hpp`, the package version file, the soname
+  and `vkc_require_core` all take it. Before 1.0, a PR that changes the
+  public API or ABI bumps the minor version (`0.1.0` → `0.2.0`), and one that
+  changes only behaviour a sibling relies on bumps the patch. The PR moves
+  the CHANGELOG's `[Unreleased]` entries under the new version, and its merge
+  commit is tagged `v<version>`. A version then names one API, whether a
+  sibling pins the tag or the SHA.
+- **Each sibling requires the oldest core it builds with**, by calling
+  `vkc_require_core(<version>)` after `FetchContent_MakeAvailable` or
+  `find_package`. Its pin yields to an application's, and FetchContent may
+  find an installed core instead, so the check reads the version the linked
+  `core_base` carries rather than trusting the request. A core that is too
+  old fails the configure, naming both versions and the pin to move, instead
+  of the compile deep in the sibling's sources -- or of nothing, when what
+  changed is behaviour. It checks a minimum only: before 1.0 a newer minor
+  may break the API, which the sibling's next re-pin meets.
+
 Tests and `-Werror` default ON only at the top level, but install rules
 (`VKC_INSTALL`) default ON everywhere: a sibling that installs and exports its
 own targets links the core PUBLIC, so CMake refuses to generate its export

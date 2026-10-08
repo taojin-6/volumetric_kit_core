@@ -311,6 +311,60 @@ foreach(_vkc_shared OFF ON)
   endif()
 endforeach()
 
-# package_consumer/ is not added here: CI configures it as a separate project
-# against an installed copy (find_package) and against the source tree
-# (add_subdirectory), the two ways the sibling repos consume this one.
+# vkc_require_core (cmake/vkc_require_core.cmake), as a sibling calls it: the
+# package consumer, on the core as a subproject (its base tier alone) and as an
+# installed package (this build, installed to a stage), requiring this version,
+# which must configure, and the next minor, which must fail naming both and the
+# fix. Configure only.
+math(EXPR _vkc_next_minor "${PROJECT_VERSION_MINOR} + 1")
+set(_vkc_too_new "${PROJECT_VERSION_MAJOR}.${_vkc_next_minor}.0")
+set(_vkc_stage "${CMAKE_CURRENT_BINARY_DIR}/require_core_stage")
+add_test(NAME vkc_require_core_install
+         COMMAND "${CMAKE_COMMAND}" --install "${PROJECT_BINARY_DIR}" --config
+                 "$<CONFIG>" --prefix "${_vkc_stage}")
+set_tests_properties(vkc_require_core_install PROPERTIES FIXTURES_SETUP
+                                                         vkc_require_core_stage)
+_vkc_message_regex(_vkc_needs "needs volumetric_kit_core")
+foreach(_vkc_consume subdirectory find_package)
+  if(_vkc_consume STREQUAL "subdirectory")
+    set(_vkc_core "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+                  -DVKC_WITH_VULKAN=OFF)
+    set(_vkc_origin "the core at")
+    set(_vkc_fix "pin v${_vkc_too_new} or newer")
+  else()
+    set(_vkc_core "-DCMAKE_PREFIX_PATH=${_vkc_stage}")
+    set(_vkc_origin "the core installed at")
+    set(_vkc_fix "install volumetric_kit_core ${_vkc_too_new} or newer")
+  endif()
+  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new})
+    set(_vkc_name vkc_require_core_${_vkc_consume}_${_vkc_require})
+    add_test(
+      NAME ${_vkc_name}
+      COMMAND
+        "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/package_consumer" -B
+        "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        -DVKC_CONSUME=${_vkc_consume} ${_vkc_core}
+        -DVKC_CONSUMER_REQUIRE=${_vkc_require})
+    if(_vkc_require STREQUAL _vkc_too_new)
+      _vkc_message_regex(
+        _vkc_head
+        "needs volumetric_kit_core ${_vkc_too_new} or newer, but ${_vkc_origin}"
+      )
+      _vkc_message_regex(_vkc_tail "is ${PROJECT_VERSION}: ${_vkc_fix}")
+      set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                                   "${_vkc_head}.+${_vkc_tail}")
+    else()
+      set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
+                                                   "${_vkc_needs}")
+    endif()
+    if(_vkc_consume STREQUAL "find_package")
+      set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
+                                                   vkc_require_core_stage)
+    endif()
+  endforeach()
+endforeach()
+
+# Beyond these configure tests, CI builds and runs package_consumer/ against an
+# installed copy (find_package) and against the source tree (add_subdirectory),
+# the two ways the sibling repos consume this one.
