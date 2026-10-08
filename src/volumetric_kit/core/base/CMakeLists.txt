@@ -38,8 +38,8 @@ configure_file(
 # same minor), so the soname carries MAJOR.MINOR and two releases installed to
 # one prefix are told apart by the loader rather than by a crash.
 #
-# VKC_CORE_VERSION: the version vkc_require_core reads, exported so an installed
-# core_base carries it too.
+# VKC_CORE_VERSION: the version vkc_require_core and vkc_core_version read,
+# exported so an installed core_base carries it too.
 #
 # TODO: from 1.0, SOVERSION ${PROJECT_VERSION_MAJOR} alone, and so the soname
 # check in tests/package_consumer/.

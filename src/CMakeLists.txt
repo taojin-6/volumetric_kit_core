@@ -56,7 +56,7 @@ if(VKC_INSTALL)
   write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/volumetric_kit_coreConfigVersion.cmake"
     COMPATIBILITY SameMinorVersion)
-  # vkc_require_core, which the package config includes.
+  # vkc_require_core / vkc_core_version, which the package config includes.
   install(
     FILES "${CMAKE_CURRENT_BINARY_DIR}/volumetric_kit_coreConfig.cmake"
           "${CMAKE_CURRENT_BINARY_DIR}/volumetric_kit_coreConfigVersion.cmake"
