@@ -12,7 +12,8 @@
 # The second mirrors FetchContent: the core is not the top-level project, so its
 # tests and -Werror must stay off, while its install rules stay on -- without
 # them the export below fails CMake's generate step. -DVKC_CONSUMER_GTEST=OFF
-# stands in for a sibling without googletest.
+# stands in for a sibling without googletest, and -DVKC_CONSUMER_REQUIRE for one
+# needing a newer core.
 cmake_minimum_required(VERSION 3.21)
 project(vkc_package_consumer LANGUAGES CXX)
 
@@ -23,9 +24,12 @@ set(VKC_CONSUME
     CACHE STRING "find_package or subdirectory")
 option(VKC_CONSUMER_GTEST "Provide googletest, and a GPU test on the fixtures"
        ON)
+set(VKC_CONSUMER_REQUIRE
+    "0.1.0"
+    CACHE STRING "The oldest volumetric_kit_core this consumer builds with")
 
 if(VKC_CONSUME STREQUAL "find_package")
-  find_package(volumetric_kit_core 0.0 REQUIRED CONFIG)
+  find_package(volumetric_kit_core REQUIRED CONFIG)
   foreach(_target core_test_policy core_test_support)
     if(TARGET volumetric_kit::${_target})
       message(FATAL_ERROR "an installed core must not export ${_target}")
@@ -50,11 +54,44 @@ else()
   message(FATAL_ERROR "VKC_CONSUME must be find_package or subdirectory")
 endif()
 
+# As a sibling checks the core it got, whichever way it came.
+vkc_require_core(${VKC_CONSUMER_REQUIRE})
+
+# One version throughout: the one vkc_require_core read is an installed core's
+# package version file's and soname's, and (main.cpp) the headers' and the
+# linked library's.
+get_target_property(_vkc_version volumetric_kit::core_base VKC_CORE_VERSION)
+get_target_property(_vkc_imported volumetric_kit::core_base IMPORTED)
+if(_vkc_imported)
+  if(NOT volumetric_kit_core_VERSION STREQUAL _vkc_version)
+    message(
+      FATAL_ERROR "the package version file says ${volumetric_kit_core_VERSION}"
+                  ", core_base ${_vkc_version}")
+  endif()
+  get_target_property(_vkc_type volumetric_kit::core_base TYPE)
+  if(_vkc_type STREQUAL "SHARED_LIBRARY")
+    # Before 1.0 the soname carries MAJOR.MINOR.
+    get_target_property(_vkc_configs volumetric_kit::core_base
+                        IMPORTED_CONFIGURATIONS)
+    list(GET _vkc_configs 0 _vkc_config)
+    get_target_property(_vkc_soname volumetric_kit::core_base
+                        IMPORTED_SONAME_${_vkc_config})
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+" _vkc_major_minor "${_vkc_version}")
+    string(REPLACE "." "\\." _vkc_pattern "${_vkc_major_minor}")
+    if(NOT _vkc_soname MATCHES "\\.${_vkc_pattern}(\\.|$)")
+      message(FATAL_ERROR "core_base's soname, ${_vkc_soname}, is not version "
+                          "${_vkc_major_minor}")
+    endif()
+  endif()
+endif()
+
 add_library(vkc_package_consumer_lib STATIC parse.cpp)
 target_link_libraries(vkc_package_consumer_lib PUBLIC volumetric_kit::core)
 
 add_executable(vkc_package_consumer main.cpp)
 target_link_libraries(vkc_package_consumer PRIVATE vkc_package_consumer_lib)
+target_compile_definitions(
+  vkc_package_consumer PRIVATE "VKC_CONSUMER_CORE_VERSION=\"${_vkc_version}\"")
 # The vulkan tier, when the core has it: an installed core built with it, or a
 # subproject configured -DVKC_WITH_VULKAN=ON, as recon and gfx will.
 if(TARGET volumetric_kit::core_vulkan)
