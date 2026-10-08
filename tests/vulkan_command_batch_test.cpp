@@ -30,6 +30,7 @@
 #include "batch_visibility_vert.spv.hpp"
 #include "command_batch_barriers.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
@@ -42,8 +43,6 @@
 #include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
-#include "vulkan_device_fixture.hpp"
-#include "vulkan_fixture.hpp"
 
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
 #include <stdexcept>
@@ -103,7 +102,7 @@ class BatchTest : public test::VulkanDeviceTest {
  protected:
   void SetUp() override {
     VulkanDeviceTest::SetUp();
-    if (IsSkipped() || HasFatalFailure()) return;
+    if (base_setup_incomplete()) return;
     max_groups_ = physical().limits().maxComputeWorkGroupCount[0];
     range_.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     range_.size = sizeof(Push);
@@ -519,35 +518,9 @@ INSTANTIATE_TEST_SUITE_P(FinalBarrierAndPublicBatch, BatchGraphicsTest,
                          ::testing::Bool());
 
 // The visibility tests above check nothing without synchronization
-// validation, which the layer runs only when VK_LAYER_ENABLES asks for it.
-// Under VKC_TEST_SYNC_VALIDATION=1, a deliberate hazard must be reported.
-using SyncValidationTest = test::VulkanDeviceTest;
-
-TEST_F(SyncValidationTest, ReportsADeliberateHazard) {
-  if (!test::env_set("VKC_TEST_SYNC_VALIDATION")) {
-    GTEST_SKIP() << "VKC_TEST_SYNC_VALIDATION is not set";
-  }
-  ASSERT_TRUE(test::env_set("VKC_TEST_VALIDATION"))
-      << "VKC_TEST_SYNC_VALIDATION needs VKC_TEST_VALIDATION";
-  BufferDesc desc;
-  desc.size = 64;
-  desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-  Result<Buffer> made = allocator().create_buffer(desc);
-  ASSERT_TRUE(made.ok()) << made.status().message();
-  const Buffer buffer = *std::move(made);
-  allow_validation_errors();
-  // Two writes of the same bytes with no barrier between: write after write,
-  // which only synchronization validation reports.
-  const Status submitted =
-      device().submit_single_time([&](VkCommandBuffer cmd) {
-        vkCmdFillBuffer(cmd, buffer.handle(), 0, desc.size, 1);
-        vkCmdFillBuffer(cmd, buffer.handle(), 0, desc.size, 2);
-      });
-  ASSERT_TRUE(submitted.ok()) << submitted.message();
-  EXPECT_GT(allowed_validation_errors(), 0)
-      << "synchronization validation is off: set VK_LAYER_ENABLES="
-         "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT";
-}
+// validation and its shader-access checks: VKC_TEST_SYNC_VALIDATION=1 runs
+// them under both, and testing_vulkan_fixture_test.cpp fails unless a hazard
+// is reported there.
 
 // --- in order, over both memory kinds ----------------------------------------
 
@@ -1408,7 +1381,7 @@ class PendingTest : public BatchTest {
  protected:
   void SetUp() override {
     BatchTest::SetUp();
-    if (IsSkipped() || HasFatalFailure()) return;
+    if (base_setup_incomplete()) return;
     Result<TimelineSemaphore> timeline = TimelineSemaphore::create(device());
     ASSERT_TRUE(timeline.ok()) << timeline.status().message();
     timeline_ = *std::move(timeline);

@@ -41,6 +41,9 @@ they land in are in [DECISIONS.md](DECISIONS.md#tiers).
 - CMake: `find_package(volumetric_kit_core)`; targets
   `volumetric_kit::core_base`, `…_vulkan`, `…_camera`, `…_sensor`; umbrella
   `volumetric_kit::core`.
+- Test support: `volumetric_kit::core_test_support` in `tests/support/`,
+  headers `volumetric_kit/core/testing/…`, namespace
+  `volumetric_kit::core::test`; never installed.
 - Macros/export: `VKC_*` (e.g. `VKC_TRY`, `VKC_CHECK`, `VKC_BASE_API`). Never
   `VK_*`, which Vulkan owns.
 
@@ -121,8 +124,9 @@ cmake --build "$core_root/build-tidy" --parallel
   (`tests/package_consumer/`, both `find_package` and `add_subdirectory`).
 - The vulkan tier's device tests skip without a device. Run them with
   `VKC_REQUIRE_VULKAN_DEVICE=1` so a skip fails, and `VKC_TEST_VALIDATION=1`
-  so a validation error fails (CONTRIBUTING.md, "GPU tests"); report which
-  device they ran on. Distinguish a skipped device test from a passed one.
+  and `VKC_TEST_SYNC_VALIDATION=1` so a validation error fails
+  (CONTRIBUTING.md, "GPU tests"); report which device they ran on.
+  Distinguish a skipped device test from a passed one.
 - Documentation-only changes need formatting, link, and consistency checks;
   no build is needed. Hooks can be scoped with `pre-commit run --files`.
 

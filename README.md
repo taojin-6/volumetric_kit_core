@@ -82,18 +82,20 @@ the top-level project; `VKC_INSTALL` defaults ON everywhere (see below).
 the consumer's targets that link the core.
 
 The vulkan tier's device tests run on the best device present and skip when
-there is none. Two environment variables tighten them, and CI sets both:
+there is none. Three environment variables tighten them, and CI sets all
+three:
 
 - `VKC_REQUIRE_VULKAN_DEVICE=1` fails a device test that has no device, so a
   runner cannot pass by skipping;
 - `VKC_TEST_VALIDATION=1` enables the Khronos validation layer and fails any
-  test that triggers a validation error, or that runs without validation.
+  test that triggers a validation error, or that runs without validation;
+- `VKC_TEST_SYNC_VALIDATION=1` adds synchronization validation and, where
+  the layer supports them, shader-access checks; a test fails unless they
+  report a deliberate hazard.
 
-CI also enables synchronization validation, checked by a test that commits a
-deliberate hazard (`VKC_TEST_SYNC_VALIDATION=1`), and requests shader-access
-checks where the layer supports them. Linux uses a software Vulkan driver;
-macOS requires an available device. Discrete DRAM/VRAM hardware coverage
-remains planned (DECISIONS.md, "Open decisions").
+Linux CI uses a software Vulkan driver; macOS requires an available device.
+Discrete DRAM/VRAM hardware coverage remains planned (DECISIONS.md, "Open
+decisions").
 
 `Allocator::memory_stats()` reports each heap's usage against its budget
 (`usage_bytes`, `budget_bytes`) beside this allocator's own share: its
@@ -135,6 +137,15 @@ must `find_dependency(volumetric_kit_core)`. One that links the core into a
 shared library or framework builds the core shared too
 (`BUILD_SHARED_LIBS=ON`): the log handler is process-global, and each binary
 linking a static core gets its own (DECISIONS.md, "One instance per process").
+
+A sibling's Vulkan tests build on the fixtures the core's own use, which
+apply the variables above (`volumetric_kit/core/testing/vulkan_fixture.hpp`):
+set `VKC_BUILD_TEST_SUPPORT` ON before `FetchContent_MakeAvailable`, provide
+googletest (`GTest::gtest`), link `volumetric_kit::core_test_support`, and
+derive from `test::VulkanTest` (an instance and a physical device) or
+`test::VulkanDeviceTest` (plus a device and an allocator). The tests in a
+process share the instance and device. The target is built from source only:
+an installed core has none.
 
 An application that fetches several siblings (as `ios` fetches `recon` and
 `gfx`) declares `volumetric_kit_core` **first**. FetchContent keeps the first

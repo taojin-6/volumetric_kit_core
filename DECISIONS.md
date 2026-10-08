@@ -158,7 +158,9 @@ V1's choices, from comparing the two cores on 2026-10-03:
   device fails instead of skipping; the sanitizer job adds the validation
   layer (`VKC_TEST_VALIDATION=1`), so ASan, UBSan, LSan and validation check
   the same run. Under it, a test fails if validation is off or does not reach
-  the log sink, and counts errors the layer reports at `vkDestroyInstance`.
+  the log sink, and the run fails on errors the layer reports as the shared
+  devices and instances are destroyed ("One Vulkan test fixture for the
+  family", below).
 
 V2's choices, from the same comparison:
 
@@ -692,6 +694,37 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
   A returning call on a replaced handler wakes waiters even when other calls
   remain: a handler replacing itself waits only for calls on other threads,
   leaving its own active callbacks to return afterwards.
+
+### One Vulkan test fixture for the family
+
+`volumetric_kit::core_test_support` (`tests/support/`) holds the GoogleTest
+fixtures every sibling's Vulkan tests derive from, so the policy that makes a
+GPU test mean something is written once: a missing device skips or, under
+`VKC_REQUIRE_VULKAN_DEVICE`, fails; `VKC_TEST_VALIDATION` and
+`VKC_TEST_SYNC_VALIDATION` turn the layer on and fail a test that runs
+without it; and a `"vulkan"` error fails the running test. core, gfx and recon
+each kept a harness, with three spellings of the require variable, and
+recon's never loaded the layer.
+
+- **One instance and device per process**, as gfx's fixture already shared
+  them (gfx DECISIONS.md, "GPU tests share a device per process", for the
+  driver costs and limits behind it): one instance per validation level, one
+  device per level and equal requirements. A test makes its own objects on
+  them; one it leaks is reported as the shared device is destroyed, failing
+  the run rather than the test. Requirements carrying a `feature_chain`
+  cannot be compared, so a fixture asking for one fails rather than share.
+- **From source, against the consumer's googletest.** Neither installed nor
+  exported, so an installed core carries no googletest; a sibling sets
+  `VKC_BUILD_TEST_SUPPORT` before fetching the core. Static, so the shared
+  objects are the test binary's own.
+- **The layer's settings through its environment variables**, which it reads
+  as an instance is created: set while a fixture's instance is made, and for
+  the whole run under `VKC_TEST_SYNC_VALIDATION`, so an instance a test makes
+  itself (through `test::instance_config()`) runs the same checks.
+  `VK_LAYER_ENABLES` is set too, for layers older than the settings variable.
+- **A fixture may ask for more** (`validation()`), met wherever the layer is
+  installed -- elsewhere the test runs without it -- so barrier-heavy tests
+  run under synchronization validation locally as well as in CI.
 
 ### One instance per process
 

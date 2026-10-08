@@ -21,10 +21,9 @@ endforeach()
 # vulkan: the VkResult helpers, the format helpers (vulkan_format, and
 # vulkan_format_reference against Vulkan-Utility-Libraries, skipped where its
 # headers are not installed), UniqueHandle, DeviceRequirements, the queue-family
-# reduction and the memory-type masks need no device; the device tests skip
-# without one, unless VKC_REQUIRE_VULKAN_DEVICE is set (CI sets it beside
-# lavapipe), and fail on a validation error under VKC_TEST_VALIDATION=1
-# (tests/vulkan_fixture.hpp).
+# reduction and the memory-type masks need no device; the device tests run on
+# core_test_support's fixtures (support/), which skip without a device and fail
+# on a validation error as the environment asks.
 if(VKC_WITH_VULKAN)
   foreach(
     _vkc_test
@@ -43,10 +42,12 @@ if(VKC_WITH_VULKAN)
     vulkan_command_batch
     vulkan_timer
     vulkan_external_memory
-    vulkan_shared_device)
+    vulkan_shared_device
+    testing_vulkan_fixture)
     add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
-    target_link_libraries(vkc_${_vkc_test}_test
-                          PRIVATE volumetric_kit::core_vulkan GTest::gtest_main)
+    target_link_libraries(
+      vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_test_support
+                                    GTest::gtest_main)
     vkc_target_warnings(vkc_${_vkc_test}_test)
     gtest_discover_tests(
       vkc_${_vkc_test}_test
@@ -104,6 +105,78 @@ if(VKC_WITH_VULKAN)
   foreach(_vkc_test vulkan_compute vulkan_command_batch vulkan_timer)
     target_link_libraries(vkc_${_vkc_test}_test PRIVATE vkc_test_shaders)
   endforeach()
+endif()
+
+# core_test_support's fixture in processes of their own, each entry with the
+# environment it probes, read from the output: a run without a device fails
+# under VKC_REQUIRE_VULKAN_DEVICE and skips without it; one whose layer cannot
+# be found fails under VKC_TEST_VALIDATION; two tests in one process share the
+# device; and a buffer a test never destroys fails the run as the shared device
+# goes (LeakSanitizer off: the leak is the point).
+if(VKC_WITH_VULKAN)
+  add_executable(vkc_testing_vulkan_fixture_probe
+                 testing_vulkan_fixture_probe.cpp)
+  target_link_libraries(
+    vkc_testing_vulkan_fixture_probe PRIVATE volumetric_kit::core_test_support
+                                             GTest::gtest_main)
+  vkc_target_warnings(vkc_testing_vulkan_fixture_probe)
+
+  set(_vkc_probe "$<TARGET_FILE:vkc_testing_vulkan_fixture_probe>")
+  set(_vkc_no_driver "${CMAKE_CURRENT_BINARY_DIR}/no_such_driver.json")
+  set(_vkc_no_layers "${CMAKE_CURRENT_BINARY_DIR}/no_layers")
+  file(MAKE_DIRECTORY "${_vkc_no_layers}")
+  set(_vkc_without_driver
+      --unset=VKC_TEST_VALIDATION --unset=VKC_TEST_SYNC_VALIDATION
+      "VK_DRIVER_FILES=${_vkc_no_driver}" "VK_ICD_FILENAMES=${_vkc_no_driver}")
+  set(_vkc_skipped "\\[  SKIPPED \\]")
+
+  add_test(
+    NAME vkc_testing_requires_a_device
+    COMMAND
+      "${CMAKE_COMMAND}" -E env ${_vkc_without_driver}
+      VKC_REQUIRE_VULKAN_DEVICE=1 "${_vkc_probe}"
+      --gtest_filter=Probe.GetsADevice)
+  set_tests_properties(
+    vkc_testing_requires_a_device PROPERTIES PASS_REGULAR_EXPRESSION
+                                             "VKC_REQUIRE_VULKAN_DEVICE is set")
+
+  add_test(
+    NAME vkc_testing_skips_without_a_device
+    COMMAND
+      "${CMAKE_COMMAND}" -E env ${_vkc_without_driver}
+      --unset=VKC_REQUIRE_VULKAN_DEVICE "${_vkc_probe}"
+      --gtest_filter=Probe.GetsADevice)
+  set_tests_properties(
+    vkc_testing_skips_without_a_device
+    PROPERTIES PASS_REGULAR_EXPRESSION "${_vkc_skipped} Probe.GetsADevice")
+
+  add_test(
+    NAME vkc_testing_requires_the_layer
+    COMMAND
+      "${CMAKE_COMMAND}" -E env --unset=VKC_TEST_SYNC_VALIDATION
+      --unset=VK_ADD_LAYER_PATH --unset=VK_INSTANCE_LAYERS
+      --unset=VK_LOADER_LAYERS_ENABLE "VK_LAYER_PATH=${_vkc_no_layers}"
+      VKC_TEST_VALIDATION=1 "${_vkc_probe}" --gtest_filter=Probe.GetsADevice)
+  set_tests_properties(
+    vkc_testing_requires_the_layer
+    PROPERTIES PASS_REGULAR_EXPRESSION "validation is off"
+               SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
+
+  add_test(
+    NAME vkc_testing_shares_the_device
+    COMMAND
+      "${_vkc_probe}"
+      --gtest_filter=Probe.MakesAFence:Probe.DestroysTheFenceOnTheSameDevice)
+  set_tests_properties(vkc_testing_shares_the_device
+                       PROPERTIES SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
+
+  add_test(NAME vkc_testing_reports_a_leak
+           COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0
+                   "${_vkc_probe}" --gtest_filter=LeakProbe.LeavesABuffer)
+  set_tests_properties(
+    vkc_testing_reports_a_leak
+    PROPERTIES PASS_REGULAR_EXPRESSION "an object a test never destroyed"
+               SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
 endif()
 
 # The one-instance warning (cmake/vkc_single_instance.cmake): configure a

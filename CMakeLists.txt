@@ -36,6 +36,17 @@ option(VKC_INSTALL "Generate install/export rules" ON)
 # then needs no Vulkan installed to build.
 option(VKC_WITH_VULKAN "Build the vulkan tier (needs a Vulkan SDK)"
        ${PROJECT_IS_TOP_LEVEL})
+# volumetric_kit::core_test_support, the Vulkan test fixture (tests/support/):
+# built for this repository's own tests, and for a sibling's when it sets this
+# ON before fetching the core. It needs the vulkan tier.
+if(VKC_BUILD_TESTS AND VKC_WITH_VULKAN)
+  set(_vkc_test_support_default ON)
+else()
+  set(_vkc_test_support_default OFF)
+endif()
+option(VKC_BUILD_TEST_SUPPORT
+       "Build volumetric_kit::core_test_support (needs GTest::gtest)"
+       ${_vkc_test_support_default})
 # Lint first-party targets with clang-tidy as they compile (.clang-tidy); see
 # cmake/vkc_clang_tidy.cmake. Off by default: it slows the build.
 option(VKC_CLANG_TIDY "Run clang-tidy on first-party targets" OFF)
@@ -69,6 +80,15 @@ endif()
 # --- Dependencies + library tiers --------------------------------------------
 add_subdirectory(third_party)
 add_subdirectory(src)
+
+if(VKC_BUILD_TEST_SUPPORT)
+  if(NOT VKC_WITH_VULKAN)
+    message(FATAL_ERROR "VKC_BUILD_TEST_SUPPORT needs VKC_WITH_VULKAN")
+  endif()
+  add_subdirectory(tests/support)
+elseif(VKC_BUILD_TESTS AND VKC_WITH_VULKAN)
+  message(FATAL_ERROR "the vulkan tier's tests need VKC_BUILD_TEST_SUPPORT")
+endif()
 
 if(VKC_BUILD_TESTS)
   enable_testing()

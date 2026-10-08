@@ -35,13 +35,13 @@ jobs:
   build:
     runs-on: ${{ inputs.os }}
     timeout-minutes: 30
+    # The test fixture's policy (core_test_support): no device, the layer
+    # missing, or a validation error fails a test; synchronization validation
+    # and shader-access checks are on, and a test fails unless they report a
+    # deliberate hazard.
     env:
       VKC_REQUIRE_VULKAN_DEVICE: '1'
       VKC_TEST_VALIDATION: '1'
-      # The enables spelling also works with the older layer on Ubuntu 24.04.
-      VK_LAYER_ENABLES: VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
-      VK_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC: '1'
-      # A test checks the variable above took effect (tests/vulkan_fixture.hpp).
       VKC_TEST_SYNC_VALIDATION: '1'
     steps:
       - uses: actions/checkout@v7

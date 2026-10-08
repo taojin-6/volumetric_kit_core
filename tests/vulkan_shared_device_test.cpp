@@ -22,20 +22,19 @@
 
 #include "queue_plan.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
-#include "vulkan_fixture.hpp"
 
 namespace volumetric_kit::core {
 namespace {
 
 SharedDeviceConfig windowless() {
   SharedDeviceConfig config;
-  config.instance.app_name = "volumetric_kit_core shared device test";
-  config.instance.enable_validation = test::env_set("VKC_TEST_VALIDATION");
+  config.instance = test::instance_config();
   config.compute = DeviceRequirements{};  // a compute queue, timelines
   config.graphics.queue_flags = VK_QUEUE_GRAPHICS_BIT;
   return config;
@@ -175,7 +174,7 @@ TEST(QueuePlanChoice, TheRenderersFamilyPresentsItself) {
 
 // --- on a device -------------------------------------------------------------
 
-// VulkanTest skips without a device and counts validation errors from the
+// VulkanTest skips without a device and fails on validation errors from the
 // shared device's instance too: they reach the same log sink.
 using SharedDeviceTest = test::VulkanTest;
 

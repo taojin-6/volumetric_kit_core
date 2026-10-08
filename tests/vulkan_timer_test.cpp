@@ -23,6 +23,7 @@
 #include "add_comp.spv.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
+#include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
@@ -34,7 +35,6 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/query_pool.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
-#include "vulkan_device_fixture.hpp"
 
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
 #include <stdexcept>
@@ -126,7 +126,7 @@ class TimerTest : public test::VulkanDeviceTest {
  protected:
   void SetUp() override {
     VulkanDeviceTest::SetUp();
-    if (IsSkipped() || HasFatalFailure()) return;
+    if (base_setup_incomplete()) return;
     Result<Buffer> made = device_storage_buffer(allocator(), kFillBytes);
     ASSERT_TRUE(made.ok()) << made.status().message();
     target_ = *std::move(made);
