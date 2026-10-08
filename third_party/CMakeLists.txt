@@ -4,10 +4,6 @@
 # Third-party dependencies. The base tier has none. The vulkan tier takes Vulkan
 # from the system (src/volumetric_kit/core/vulkan/) and vendors VMA here.
 # googletest is vendored too, and only when the test suite is built.
-#
-# TODO: as tiers land, add their dependencies here, mirroring recon's hybrid
-# system/vendored strategy: Eigen for the camera tier, and the Orbbec SDK
-# (optional) for the sensor tier.
 
 include(FetchContent)
 

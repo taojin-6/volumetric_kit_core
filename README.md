@@ -24,21 +24,18 @@ buffers zero-copy on one shared device.
 > kernels, `CommandBatch` (waited on, or ordered by timeline semaphores and
 > waited on later), the shader build functions, GPU timers, buffers
 > exported for CUDA to write, and the shared device a compute library and a
-> renderer both adopt. The `camera` and `sensor` tiers are planned; see
-> [DECISIONS.md](DECISIONS.md#tiers) for what each holds and the order they land
-> in.
+> renderer both adopt. Camera models and sensors are not core tiers: they stay
+> in recon and calib ([DECISIONS.md](DECISIONS.md#tiers)).
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and
 Claude Code; `CLAUDE.md` imports it.
 
 ## Tiers
 
-| Tier | Target | Holds | Status |
-| --- | --- | --- | --- |
-| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, stage metrics, version | implemented |
-| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap | implemented |
-| `camera` | `volumetric_kit::core_camera` | camera models (rational first), rig calibration file | planned |
-| `sensor` | `volumetric_kit::core_sensor` | frame types, capture interface, vendor drivers (Orbbec) | planned |
+| Tier | Target | Holds |
+| --- | --- | --- |
+| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, stage metrics, version |
+| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no
 GPU (calib's headless solver) links only the tiers it uses.
