@@ -138,5 +138,10 @@ jobs:
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
           cmake --build build-consumer-subdir
           ./build-consumer-subdir/vkc_package_consumer
+          # A sibling's GPU test on the core's test fixture.
+          if [ "${{ inputs.vulkan }}" = true ]; then
+            DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
+              ./build-consumer-subdir/vkc_package_consumer_gpu_test
+          fi
           # Like a sibling's install: its exported library plus the core.
           cmake --install build-consumer-subdir --prefix "$PWD/stage-consumer"

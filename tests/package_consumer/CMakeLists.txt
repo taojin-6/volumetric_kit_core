@@ -3,7 +3,8 @@
 
 # A stand-in for a sibling repo: consumes volumetric_kit_core the two ways the
 # family does, and -- as calib, recon and gfx do -- installs and exports its own
-# library, which links the core PUBLIC. CI configures it twice:
+# library, which links the core PUBLIC, and builds a GPU test on the core's test
+# fixture. CI configures it twice:
 #
 # -DVKC_CONSUME=find_package -DCMAKE_PREFIX_PATH=<install prefix>
 # -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR=<checkout>
@@ -22,7 +23,14 @@ set(VKC_CONSUME
 
 if(VKC_CONSUME STREQUAL "find_package")
   find_package(volumetric_kit_core 0.0 REQUIRED CONFIG)
+  if(TARGET volumetric_kit::core_test_support)
+    message(FATAL_ERROR "an installed core must not export core_test_support")
+  endif()
 elseif(VKC_CONSUME STREQUAL "subdirectory")
+  # A sibling with GPU tests asks for the core's test fixture before adding it.
+  if(VKC_WITH_VULKAN)
+    set(VKC_BUILD_TEST_SUPPORT ON)
+  endif()
   add_subdirectory("${VKC_SOURCE_DIR}" volumetric_kit_core)
   foreach(_option VKC_BUILD_TESTS VKC_WARNINGS_AS_ERRORS)
     if(${_option})
@@ -54,6 +62,25 @@ if(TARGET volumetric_kit::core_vulkan)
   endif()
   vkc_embed_shaders(vkc_package_consumer SYMBOL_PREFIX vkc_consumer_ SHADERS
                     smoke.comp)
+endif()
+
+# A GPU test on the core's fixture, linking the googletest the consumer provides
+# -- fetched after the core, as the fixture's link to GTest::gtest resolves when
+# the build is generated. Never installed.
+if(TARGET volumetric_kit::core_test_support)
+  include(FetchContent)
+  set(BUILD_GMOCK OFF)
+  set(INSTALL_GTEST OFF)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.17.0
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(googletest)
+  add_executable(vkc_package_consumer_gpu_test gpu_test.cpp)
+  target_link_libraries(
+    vkc_package_consumer_gpu_test PRIVATE volumetric_kit::core_test_support
+                                          GTest::gtest_main)
 endif()
 
 install(TARGETS vkc_package_consumer_lib EXPORT vkc_package_consumerTargets)
