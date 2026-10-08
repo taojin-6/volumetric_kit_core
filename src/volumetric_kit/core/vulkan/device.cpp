@@ -16,7 +16,6 @@
 #include <vector>
 
 #include "support.hpp"
-#include "timeline_points.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -24,6 +23,7 @@
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
@@ -820,8 +820,7 @@ Result<Device::PendingSubmit> Device::submit_pending(
     return Status::invalid_argument(
         "Device::submit_pending: the device is moved-from");
   }
-  VKC_TRY(detail::check_timeline_points(*this, wait, signal,
-                                        "Device::submit_pending"));
+  VKC_TRY(check_timeline_points(*this, wait, signal, "Device::submit_pending"));
   std::vector<VkSemaphore> wait_semaphores;
   std::vector<std::uint64_t> wait_values;
   for (const TimelinePoint& point : wait) {
@@ -868,7 +867,7 @@ Result<Device::PendingSubmit> Device::submit_pending(
     if (!left) give_back(command);
     return submitted;
   }
-  detail::note_signals(signal);
+  note_timeline_signals(signal);
   // Pending until a wait sees the work complete, so a device destroyed under
   // a handle that was never waited on still waits for the work first.
   hold_running(command);

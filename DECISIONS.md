@@ -443,6 +443,15 @@ without the wait:
   not a race. `submit_async` checks the values before it marks the batch
   submitted, so a refused value can be corrected and the batch submitted
   again; every other refusal leaves it submitted, as `submit`'s do.
+- **The checks and the record are public** (`check_timeline_points`,
+  `note_timeline_signals`), so a library that submits to the queue itself --
+  gfx's frame loop, whose submit carries the present's semaphore -- refuses
+  what the core's submits refuse, and its values join the record they check
+  against. A submission a present waits for may wait only for a value already
+  reached or submitted to be set (`VUID-vkQueuePresentKHR-pWaitSemaphores-03268`),
+  which `TimelineWaits::Submitted` checks against the same record; the core's
+  own submits keep `TimelineWaits::Any`, as the rule above lets them wait for
+  a value the host sets later.
 - **A readback lands at the wait, once.** The work completing writes nothing
   the host can see, so a destination is never written while the host may be
   reading an earlier one.

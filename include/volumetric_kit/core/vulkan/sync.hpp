@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
@@ -182,10 +183,10 @@ class VKC_VULKAN_API TimelineSemaphore {
   friend struct detail::TimelineSubmits;
 
   UniqueHandle<VkSemaphore, vkDestroySemaphore> handle_;
-  // The highest value a submit (Device::submit_pending) that reached a queue
-  // sets: a later submit must set a higher one, as a queue's signals run in
-  // submission order. Raised through a const semaphore, which a TimelinePoint
-  // borrows.
+  // The highest value a submit that reached a queue sets, as
+  // note_timeline_signals records it: a later submit must set a higher one, as
+  // a queue's signals run in submission order. Raised through a const
+  // semaphore, which a TimelinePoint borrows.
   mutable std::atomic<std::uint64_t> submitted_{0};
 };
 
@@ -205,5 +206,64 @@ struct TimelinePoint {
   const TimelineSemaphore* semaphore = nullptr;  ///< The timeline.
   std::uint64_t value = 0;                       ///< The value on it.
 };
+
+/// @brief Which values a submission may wait for, as
+///        @ref check_timeline_points checks them.
+enum class TimelineWaits {
+  /// Any value, one the host or a later submission sets included, as
+  /// @ref Device::submit_pending allows.
+  Any,
+  /// Only a value already reached, or one a submission that reached a queue
+  /// sets (@ref note_timeline_signals): what a submission that a present
+  /// waits for needs (`VUID-vkQueuePresentKHR-pWaitSemaphores-03268`).
+  Submitted,
+};
+
+/// @brief Check the timeline values a submission to @p device waits for and
+///        sets, as @ref Device::submit_pending and
+///        @ref CommandBatch::submit_async check theirs, for a library that
+///        submits to the device's queue itself.
+///
+/// After such a submission reaches the queue, pass its @p signal to
+/// @ref note_timeline_signals, so later checks -- these and the core's own
+/// submits' -- know the values it sets. The value checks catch a stale value,
+/// not a race, as @ref TimelineSemaphore::signal says.
+///
+/// @code
+/// VKC_TRY(check_timeline_points(device, wait, signal, "Renderer::submit",
+///                               TimelineWaits::Submitted));
+/// // ... fill VkTimelineSemaphoreSubmitInfo from wait and signal ...
+/// if (device.queue_submit(1, &submit, fence) == VK_SUCCESS) {
+///   note_timeline_signals(signal);
+/// }
+/// @endcode
+/// @param device  The device the submission goes to.
+/// @param wait    Values the submission waits for.
+/// @param signal  Values it sets once it completes, one per semaphore.
+/// @param call    The caller's name, which a refusal's message begins with.
+/// @param waits   Which values @p wait may hold.
+/// @return OK; @ref Status::Code::InvalidArgument for a null or empty
+///         semaphore, one made on another `VkDevice`, a value to set that
+///         would not advance its counter -- one semaphore set twice, a value
+///         not above one waited for on the same semaphore, or not above both
+///         its counter and every value a recorded submission sets -- or, with
+///         @ref TimelineWaits::Submitted, a value to wait for above both its
+///         counter and every value a recorded submission sets;
+///         @ref Status::Code::Unsupported for a value on a device that did not
+///         enable `timelineSemaphore`; or a backend @ref Status from reading
+///         a counter. OK for no values at all, on any device.
+VKC_VULKAN_API Status check_timeline_points(
+    const Device& device, const std::vector<TimelinePoint>& wait,
+    const std::vector<TimelinePoint>& signal, const char* call,
+    TimelineWaits waits = TimelineWaits::Any);
+
+/// @brief Record that a submission which reached a queue sets each value in
+///        @p signal, so @ref check_timeline_points refuses a later one that
+///        would not exceed it, and, with @ref TimelineWaits::Submitted,
+///        accepts a wait for it.
+/// @param signal  The submission's values to set, which
+///                @ref check_timeline_points accepted.
+VKC_VULKAN_API void note_timeline_signals(
+    const std::vector<TimelinePoint>& signal) noexcept;
 
 }  // namespace volumetric_kit::core
