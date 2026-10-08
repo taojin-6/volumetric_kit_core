@@ -701,9 +701,10 @@ class VKC_VULKAN_API Device::PendingSubmit {
   /// @param timeout_ns  The longest wait, in nanoseconds.
   /// @return OK once it has completed, and on every later call, as on an
   ///         empty submission; a backend @ref Status carrying `VK_TIMEOUT`
-  ///         when the timeout passes first, the work still pending, for a
-  ///         later wait; or the failure (device lost), after which the work is
-  ///         the device's, and every later call returns the same failure.
+  ///         (@ref is_timeout) when the timeout passes first, the work still
+  ///         pending, for a later wait; or the failure (device lost), after
+  ///         which the work is the device's, and every later call returns the
+  ///         same failure.
   Status wait(std::uint64_t timeout_ns = UINT64_MAX);
 
   /// @return Whether the device may still run the work: until a wait sees it

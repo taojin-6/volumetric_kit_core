@@ -77,6 +77,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   policy refuses pre-commit.ci's pushes. On a host set up before these
   scripts, run `setup-runners.sh` once, for either repository, so every
   runner on it gets its share of the cores.
+- `vulkan`: `is_timeout(status)`, whether a wait ran out of time with the work
+  still pending -- a `Vulkan` status carrying `VK_TIMEOUT`, as the waits of
+  `Fence`, `TimelineSemaphore`, `Device::PendingSubmit` and `PendingBatch`
+  return. Use it in place of `vk_result(status) == VK_TIMEOUT`.
 - `volumetric_kit::core_test_policy` and `volumetric_kit::core_test_support`,
   the test support for the family's Vulkan tests: the policy
   `VKC_REQUIRE_VULKAN_DEVICE`, `VKC_TEST_VALIDATION` and
