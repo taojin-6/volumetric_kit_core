@@ -52,6 +52,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- `check_timeline_points(device, wait, signal, call, waits)` and
+  `note_timeline_signals(signal)` (`sync.hpp`): the timeline-value refusals
+  `Device::submit_pending` and `CommandBatch::submit_async` make, and their
+  record of the values a submit that reached a queue sets, for a library that
+  submits to the queue itself. With `TimelineWaits::Submitted` the check also
+  refuses a wait for a value neither reached nor in that record, as a
+  submission a present waits for needs. Nothing to migrate: the core's own
+  submits check and record as before.
 - `CommandBatch::submit_async(wait, signal)`: submit a batch without waiting
   for it. Nothing it records starts before every `TimelinePoint` in `wait`
   (a `TimelineSemaphore` and a value) is reached, and it sets those in

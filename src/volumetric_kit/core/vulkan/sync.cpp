@@ -11,7 +11,6 @@
 #include <utility>
 #include <vector>
 
-#include "timeline_points.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
@@ -20,6 +19,21 @@
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
+
+namespace {
+
+// What a timeline semaphore needs of a device: the feature alone, on any
+// queue, at the version the feature itself needs. TimelineSemaphore::create
+// checks it, and so does check_timeline_points for a submit that names one.
+DeviceRequirements timeline_requirements() {
+  DeviceRequirements timeline;
+  timeline.api_version = VK_API_VERSION_1_0;
+  timeline.queue_flags = 0;
+  timeline.timeline_semaphore = true;
+  return timeline;
+}
+
+}  // namespace
 
 Result<Fence> Fence::create(VkDevice device, bool signaled) {
   if (device == VK_NULL_HANDLE) {
@@ -76,7 +90,7 @@ Result<Semaphore> Semaphore::create(VkDevice device) {
 
 Result<TimelineSemaphore> TimelineSemaphore::create(
     const Device& device, std::uint64_t initial_value) {
-  VKC_TRY(device.check_enabled(detail::timeline_requirements())
+  VKC_TRY(device.check_enabled(timeline_requirements())
               .with_context("TimelineSemaphore::create"));
   VkSemaphoreTypeCreateInfo type{};
   type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -170,18 +184,12 @@ struct TimelineSubmits {
   }
 };
 
-DeviceRequirements timeline_requirements() {
-  DeviceRequirements timeline;
-  timeline.api_version = VK_API_VERSION_1_0;
-  timeline.queue_flags = 0;
-  timeline.timeline_semaphore = true;
-  return timeline;
-}
+}  // namespace detail
 
 Status check_timeline_points(const Device& device,
                              const std::vector<TimelinePoint>& wait,
                              const std::vector<TimelinePoint>& signal,
-                             const char* call) {
+                             const char* call, TimelineWaits waits) {
   if (wait.empty() && signal.empty()) return {};
   const auto refuse = [call](const char* why) {
     return Status::invalid_argument(std::string(call) + ": " + why);
@@ -203,9 +211,26 @@ Status check_timeline_points(const Device& device,
       }
     }
   }
+  // The newest value a semaphore is reached or submitted to reach. As for
+  // TimelineSemaphore::signal, comparing against it catches a stale value,
+  // not a race.
+  const auto settled =
+      [](const TimelineSemaphore& semaphore) -> Result<std::uint64_t> {
+    VKC_ASSIGN(const std::uint64_t current, semaphore.value());
+    return std::max(current, detail::TimelineSubmits::highest(semaphore));
+  };
+  if (waits == TimelineWaits::Submitted) {
+    for (const TimelinePoint& point : wait) {
+      VKC_ASSIGN(const std::uint64_t reachable, settled(*point.semaphore));
+      if (point.value > reachable) {
+        return refuse(
+            "a value to wait for is neither reached nor set by a submit that "
+            "reached a queue");
+      }
+    }
+  }
   // A value to set must advance its counter when the signal runs
-  // (VUID-VkSubmitInfo-pSignalSemaphores-03242). As for
-  // TimelineSemaphore::signal, this catches a stale value, not a race.
+  // (VUID-VkSubmitInfo-pSignalSemaphores-03242).
   for (std::size_t i = 0; i < signal.size(); ++i) {
     const TimelineSemaphore& semaphore = *signal[i].semaphore;
     const std::uint64_t value = signal[i].value;
@@ -227,8 +252,8 @@ Status check_timeline_points(const Device& device,
       }
     }
     // An earlier submit's signal, on this queue, runs first.
-    VKC_ASSIGN(const std::uint64_t current, semaphore.value());
-    if (value <= std::max(current, TimelineSubmits::highest(semaphore))) {
+    VKC_ASSIGN(const std::uint64_t reachable, settled(semaphore));
+    if (value <= reachable) {
       return refuse(
           "a value to set must exceed its semaphore's current one, and every "
           "value an earlier submit sets");
@@ -237,12 +262,10 @@ Status check_timeline_points(const Device& device,
   return {};
 }
 
-void note_signals(const std::vector<TimelinePoint>& signal) noexcept {
+void note_timeline_signals(const std::vector<TimelinePoint>& signal) noexcept {
   for (const TimelinePoint& point : signal) {
-    TimelineSubmits::raise(*point.semaphore, point.value);
+    detail::TimelineSubmits::raise(*point.semaphore, point.value);
   }
 }
-
-}  // namespace detail
 
 }  // namespace volumetric_kit::core

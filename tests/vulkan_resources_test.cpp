@@ -10,6 +10,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -362,6 +363,94 @@ TEST_F(ResourcesTest, TimelineNeedsADeviceThatEnabledIt) {
   // Creating on the moved-from device is the point: it must be refused.
   // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_TRUE(is_invalid(TimelineSemaphore::create(first).status()));
+}
+
+// A library that submits to the queue itself checks its values as the core's
+// submits do, and records the ones it set: a later value at or below them is
+// refused, by its next check and by the core's own submits.
+TEST_F(ResourcesTest, ChecksAndRecordsTheValuesOfASubmitMadeOutsideTheCore) {
+  Result<TimelineSemaphore> made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  TimelineSemaphore timeline = *std::move(made);
+  const std::vector<TimelinePoint> signal = {{&timeline, 5}};
+  ASSERT_TRUE(check_timeline_points(device(), {}, signal, "Test::submit").ok());
+
+  // Held until the host sets 1, so 5 is submitted but not reached.
+  const std::uint64_t wait_value = 1;
+  const std::uint64_t signal_value = 5;
+  VkSemaphore handle = timeline.handle();
+  const VkPipelineStageFlags stages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+  VkTimelineSemaphoreSubmitInfo values{};
+  values.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+  values.waitSemaphoreValueCount = 1;
+  values.pWaitSemaphoreValues = &wait_value;
+  values.signalSemaphoreValueCount = 1;
+  values.pSignalSemaphoreValues = &signal_value;
+  VkSubmitInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  info.pNext = &values;
+  info.waitSemaphoreCount = 1;
+  info.pWaitSemaphores = &handle;
+  info.pWaitDstStageMask = &stages;
+  info.signalSemaphoreCount = 1;
+  info.pSignalSemaphores = &handle;
+  ASSERT_EQ(device().queue_submit(1, &info, VK_NULL_HANDLE), VK_SUCCESS);
+  note_timeline_signals(signal);
+
+  const Status refused =
+      check_timeline_points(device(), {}, {{&timeline, 5}}, "Test::submit");
+  EXPECT_TRUE(is_invalid(refused));
+  EXPECT_EQ(refused.message().rfind("Test::submit: ", 0), 0u)
+      << refused.message();
+  EXPECT_TRUE(is_invalid(
+      check_timeline_points(device(), {}, {{&timeline, 4}}, "Test::submit")));
+  EXPECT_TRUE(is_invalid(
+      device()
+          .submit_pending([](VkCommandBuffer) {}, {}, {{&timeline, 4}})
+          .status()));
+  EXPECT_TRUE(
+      check_timeline_points(device(), {}, {{&timeline, 6}}, "Test::submit")
+          .ok());
+
+  EXPECT_TRUE(timeline.signal(1).ok());
+  EXPECT_TRUE(timeline.wait(5).ok());
+}
+
+// With TimelineWaits::Submitted a wait must be for a value already reached,
+// or one a submit that reached the queue sets; the default takes any value,
+// as one the host sets later is.
+TEST_F(ResourcesTest, RefusesAWaitNothingIsSubmittedToSet) {
+  Result<TimelineSemaphore> made = TimelineSemaphore::create(device(), 2);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  TimelineSemaphore timeline = *std::move(made);
+  made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  TimelineSemaphore gate = *std::move(made);
+  const auto check = [&](std::uint64_t value) {
+    return check_timeline_points(device(), {{&timeline, value}}, {},
+                                 "Test::submit", TimelineWaits::Submitted);
+  };
+
+  EXPECT_TRUE(check(2).ok());  // reached
+  const Status refused = check(3);
+  EXPECT_TRUE(is_invalid(refused));
+  EXPECT_EQ(refused.message().rfind("Test::submit: ", 0), 0u)
+      << refused.message();
+  EXPECT_TRUE(
+      check_timeline_points(device(), {{&timeline, 3}}, {}, "Test::submit")
+          .ok());
+
+  // Submitted to be set, behind a value the host holds back.
+  Result<Device::PendingSubmit> pending = device().submit_pending(
+      [](VkCommandBuffer) {}, {{&gate, 1}}, {{&timeline, 4}});
+  ASSERT_TRUE(pending.ok()) << pending.status().message();
+  EXPECT_TRUE(check(4).ok());
+  EXPECT_TRUE(is_invalid(check(5)));
+  EXPECT_EQ(counter(timeline), 2u);
+
+  EXPECT_TRUE(gate.signal(1).ok());
+  EXPECT_TRUE(pending->wait().ok());
+  EXPECT_EQ(counter(timeline), 4u);
 }
 
 // --- command pools and buffers -----------------------------------------------
