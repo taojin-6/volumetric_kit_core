@@ -9,6 +9,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Fixed
 
+- `vkc_embed_shaders` refuses a symbol another call in the build already
+  emits. Two targets embedding shaders of one name under one `SYMBOL_PREFIX`
+  used to configure and link: the linker merged their arrays into one, while
+  each target kept its own size, so one dispatched the other's SPIR-V. Give
+  each library a prefix of its own; no sibling's shaders clash today.
 - `vk_result` returns empty for a backend status whose detail is outside
   `int32_t`, `VkResult`'s range, instead of converting it to `VkResult`. That
   conversion was undefined and in practice truncated the detail, so a failure
