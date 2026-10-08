@@ -3,6 +3,16 @@
 
 include(GoogleTest)
 
+# Sets <out> to a regex matching <text> in a configure's output, however CMake
+# wraps the message's lines.
+function(_vkc_message_regex out text)
+  string(REGEX REPLACE "([.()])" "\\\\\\1" text "${text}")
+  string(REPLACE " " "[ \n]+" text "${text}")
+  set(${out}
+      "${text}"
+      PARENT_SCOPE)
+endfunction()
+
 # base: Status / Result / VKC_TRY / VKC_ASSIGN, VKC_CHECK, the log sink, and the
 # version API. Pure CPU, so these run on every machine. The timeout turns a
 # deadlock in the log sink's locking into a failure instead of a hung job.
@@ -224,6 +234,31 @@ if(VKC_WITH_VULKAN)
       "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}")
   set_tests_properties(vkc_testing_policy_needs_no_googletest PROPERTIES TIMEOUT
                                                                          300)
+
+  # vkc_embed_shaders refuses a symbol another call already emits
+  # (cmake/vkc_shaders.cmake): two libraries embedding fill.comp under
+  # SYMBOL_PREFIX a_ both must fail the configure, and under a_ and b_ must not.
+  # Configure only.
+  _vkc_message_regex(
+    _vkc_clash "'a_fill_comp_spv', which vkc_embed_shaders(vkc_first_library)")
+  foreach(_vkc_prefix a_ b_)
+    set(_vkc_name vkc_embed_shaders_prefixes_a_${_vkc_prefix})
+    add_test(
+      NAME ${_vkc_name}
+      COMMAND
+        "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/shader_symbols" -B
+        "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DVKC_SECOND_PREFIX=${_vkc_prefix}")
+    if(_vkc_prefix STREQUAL "a_")
+      set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                                   "${_vkc_clash}")
+    else()
+      set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
+                                                   "${_vkc_clash}")
+    endif()
+  endforeach()
 
   # Flipping VKC_WITH_VULKAN in a build directory reconfigures, either way:
   # whether the test support is built follows the tier and the tests, not a

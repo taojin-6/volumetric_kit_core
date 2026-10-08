@@ -86,7 +86,8 @@ endfunction()
 #
 # SYMBOL_PREFIX is required: the arrays are inline variables, which the linker
 # merges by name, so two libraries in one binary embedding a fill.comp each
-# under one name would share one of the two shaders.
+# under one name would share one of the two shaders. A symbol another call in
+# the build already emits is refused, so each library takes a prefix of its own.
 function(vkc_embed_shaders target)
   cmake_parse_arguments(ARG "" "SYMBOL_PREFIX;TARGET_ENV"
                         "INCLUDE_DIRS;SPIRV_VAL_ARGS;SHADERS" ${ARGN})
@@ -131,13 +132,23 @@ function(vkc_embed_shaders target)
           "another shader of this target does; rename one")
     endif()
     set_property(GLOBAL APPEND PROPERTY _vkc_embed_headers "${_header}")
+    # Across targets too: the header check above cannot see two targets' shaders
+    # of one name, whose headers lie in two include directories.
+    set(_symbol "${ARG_SYMBOL_PREFIX}${_stem}_spv")
+    get_property(_owner GLOBAL PROPERTY _vkc_embed_symbol_${_symbol})
+    if(_owner)
+      message(
+        FATAL_ERROR
+          "vkc_embed_shaders(${target}): '${_name}' embeds as '${_symbol}', "
+          "which vkc_embed_shaders(${_owner}) already emits, and the linker "
+          "would merge the two: give each library its own SYMBOL_PREFIX")
+    endif()
+    set_property(GLOBAL PROPERTY _vkc_embed_symbol_${_symbol} "${target}")
     add_custom_command(
       OUTPUT "${_header}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${_inc_dir}"
-      COMMAND
-        ${CMAKE_COMMAND} "-DSPV=${_spv_dir}/${_name}.spv"
-        "-DSYMBOL=${ARG_SYMBOL_PREFIX}${_stem}_spv" "-DOUT=${_header}" -P
-        "${_script}"
+      COMMAND ${CMAKE_COMMAND} "-DSPV=${_spv_dir}/${_name}.spv"
+              "-DSYMBOL=${_symbol}" "-DOUT=${_header}" -P "${_script}"
       DEPENDS "${_spv_dir}/${_name}.spv" "${_script}"
       COMMENT "Embedding ${_name}.spv"
       VERBATIM)
