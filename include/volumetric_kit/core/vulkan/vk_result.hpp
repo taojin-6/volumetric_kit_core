@@ -53,10 +53,9 @@ inline Status vk_error(VkResult result, std::string_view what) {
 /// @return Its @ref Status::detail as a `VkResult` when its backend is
 ///         `Vulkan` and the detail is in `int32_t`'s range, which is
 ///         `VkResult`'s; empty otherwise -- for success, another domain, and
-///         another backend's failure, whose code (`CUDA_ERROR_OUT_OF_MEMORY`,
-///         2) would read as an unrelated `VkResult` (`VK_TIMEOUT`). A 32-bit
-///         code stored without sign extension (from a `uint32_t`) is outside
-///         that range: store a `VkResult` with @ref vk_error.
+///         another backend's failure. A 32-bit code stored without sign
+///         extension (from a `uint32_t`) is outside that range: store a
+///         `VkResult` with @ref vk_error.
 inline std::optional<VkResult> vk_result(const Status& status) noexcept {
   if (status.backend() != Status::Backend::Vulkan) return std::nullopt;
   // Converting a code outside VkResult's range, int32_t's, to the enum would
@@ -72,8 +71,8 @@ inline std::optional<VkResult> vk_result(const Status& status) noexcept {
 /// @brief Whether a wait ran out of time with the work still pending.
 /// @param status  Any status, e.g. from `Fence::wait` or `PendingBatch::wait`.
 /// @return `true` exactly when @p status is a Vulkan failure carrying
-///         `VK_TIMEOUT`; `false` for success, any other failure, and another
-///         backend's code `2`.
+///         `VK_TIMEOUT`; `false` for success, any other failure, and any
+///         non-Vulkan status.
 ///
 /// @code
 /// Status waited = pending.wait(0);

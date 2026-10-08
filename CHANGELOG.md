@@ -276,11 +276,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `VideoToolbox` and `Other`. `Status::backend()` returns it (empty for any
   other domain), `to_string(Status::Backend)` names it, and misusing an error
   `Result` prints it (`Backend Cuda 2: …`). `vk_result` returns empty for a
-  status from any backend but `Vulkan`, so a CUDA or nvJPEG code no longer
-  reads as an unrelated `VkResult` (`2` as `VK_TIMEOUT`). `vk_error` sets
-  `Vulkan`, so Vulkan failures built with it, and callers of `vk_result` on
-  them -- `gfx`'s `swapchain_stale`, `ios`'s `RendererErrors.mm` -- need no
-  change. The calls to migrate, in `recon`'s
+  status from any backend but `Vulkan`. `vk_error` sets `Vulkan`, so Vulkan
+  failures built with it, and callers of `vk_result` on them -- `gfx`'s
+  `swapchain_stale`, `ios`'s `RendererErrors.mm` -- need no change. The calls
+  to migrate, in `recon`'s
   `src/volumetric_kit/recon/sensor/video/` (none in `gfx`, `calib` or `ios`):
   - `cuda_pictures.cpp`, `cuda_error` (a `CUresult`): `Cuda`.
   - `jpeg_decoder.cpp`, `nvjpeg_error` (an `nvjpegStatus_t`): `NvJpeg`.
