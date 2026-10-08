@@ -35,10 +35,9 @@ jobs:
   build:
     runs-on: ${{ inputs.os }}
     timeout-minutes: 30
-    # The test fixture's policy (core_test_support): no device, the layer
-    # missing, or a validation error fails a test; synchronization validation
-    # and shader-access checks are on, and a test fails unless they report a
-    # deliberate hazard.
+    # The test policy (README.md, "Build and test"): no device, the layer
+    # missing, or a validation error fails a test, under synchronization
+    # validation and, where the layer has them, shader-access checks.
     env:
       VKC_REQUIRE_VULKAN_DEVICE: '1'
       VKC_TEST_VALIDATION: '1'
@@ -138,10 +137,12 @@ jobs:
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
           cmake --build build-consumer-subdir
           ./build-consumer-subdir/vkc_package_consumer
-          # A sibling's GPU test on the core's test fixture.
+          # A sibling's GPU tests on the core's test support.
           if [ "${{ inputs.vulkan }}" = true ]; then
             DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
               ./build-consumer-subdir/vkc_package_consumer_gpu_test
+            DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
+              ./build-consumer-subdir/vkc_package_consumer_policy_test
           fi
           # Like a sibling's install: its exported library plus the core.
           cmake --install build-consumer-subdir --prefix "$PWD/stage-consumer"

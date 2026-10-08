@@ -1,28 +1,44 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// core_test_support's fixture: the policy the environment sets, and a
-// validation error failing the test that commits it. What only a process of
-// its own can show -- a missing device or layer, the shared device, a leak
-// reported as the process ends -- runs from testing_vulkan_fixture_probe.cpp.
+// core_test_support's fixture and the policy under it: what the environment
+// asks, the layer's settings, the log capture and exit codes, and a
+// validation error or hazard failing the test that commits it. What only a
+// process of its own can show -- a missing device or layer, the shared
+// device, a leak reported as the process ends -- runs from
+// testing_vulkan_fixture_probe.cpp.
 
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <gtest/gtest-spi.h>
 #include <gtest/gtest.h>
 
+#include "fill_comp.spv.hpp"
+#include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/compute_kernel.hpp"
+#include "volumetric_kit/core/vulkan/compute_util.hpp"
+#include "volumetric_kit/core/vulkan/descriptor.hpp"
+#include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 namespace {
+
+const char* env(const char* name) {
+  return std::getenv(name);  // NOLINT(concurrency-mt-unsafe): the test thread
+}
 
 // --- the environment ---------------------------------------------------------
 
@@ -31,6 +47,8 @@ TEST(RequestedValidation, FollowsTheEnvironment) {
   const test::ScopedEnv no_sync("VKC_TEST_SYNC_VALIDATION", nullptr);
   EXPECT_EQ(test::requested_validation(), test::Validation::Off);
   EXPECT_FALSE(test::instance_config().enable_validation);
+  // A level of its own, whatever the environment asks.
+  EXPECT_TRUE(test::instance_config(test::Validation::Sync).enable_validation);
   {
     const test::ScopedEnv on("VKC_TEST_VALIDATION", "1");
     EXPECT_EQ(test::requested_validation(), test::Validation::On);
@@ -57,6 +75,91 @@ TEST(DeviceRequired, FollowsTheEnvironment) {
   EXPECT_TRUE(test::device_required());
   const test::ScopedEnv zero("VKC_REQUIRE_VULKAN_DEVICE", "0");
   EXPECT_FALSE(test::device_required());
+}
+
+TEST(NoDeviceExitCode, SkipsUnlessADeviceIsRequired) {
+  {
+    const test::ScopedEnv unset("VKC_REQUIRE_VULKAN_DEVICE", nullptr);
+    EXPECT_EQ(test::no_device_exit_code("no device here"), test::kSkipExitCode);
+  }
+  const test::ScopedEnv required("VKC_REQUIRE_VULKAN_DEVICE", "1");
+  EXPECT_EQ(test::no_device_exit_code("no device here"), 1);
+}
+
+// --- the layer's settings ----------------------------------------------------
+
+constexpr const char* kValidateSync = "VK_KHRONOS_VALIDATION_VALIDATE_SYNC";
+constexpr const char* kLayerEnables = "VK_LAYER_ENABLES";
+constexpr const char* kShaderAccesses =
+    "VK_KHRONOS_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC";
+
+TEST(ValidationSession, SetsOneSpellingOfSynchronizationValidation) {
+  // From a clean slate: the environment's own session may have set them.
+  const test::ScopedEnv no_sync(kValidateSync, nullptr);
+  const test::ScopedEnv no_enables(kLayerEnables, nullptr);
+  const test::ScopedEnv no_shader(kShaderAccesses, nullptr);
+  {
+    const test::ValidationSession on(test::Validation::On);
+    EXPECT_EQ(env(kValidateSync), nullptr);
+    EXPECT_EQ(env(kLayerEnables), nullptr);
+    EXPECT_EQ(env(kShaderAccesses), nullptr);
+  }
+  {
+    const test::ValidationSession sync(test::Validation::Sync);
+    // The setting, or the deprecated spelling on a layer too old for it;
+    // never both, which a layer resolves for the deprecated one.
+    EXPECT_NE(env(kValidateSync) != nullptr, env(kLayerEnables) != nullptr);
+    EXPECT_EQ(env(kShaderAccesses), nullptr);
+  }
+  {
+    const test::ValidationSession shader(test::Validation::ShaderAccesses);
+    EXPECT_NE(env(kValidateSync) != nullptr, env(kLayerEnables) != nullptr);
+    EXPECT_STREQ(env(kShaderAccesses), "true");
+  }
+  // Restored on the way out.
+  EXPECT_EQ(env(kValidateSync), nullptr);
+  EXPECT_EQ(env(kLayerEnables), nullptr);
+  EXPECT_EQ(env(kShaderAccesses), nullptr);
+}
+
+// --- the log capture ---------------------------------------------------------
+
+TEST(LogCapture, CountsTheLayersErrorsAndKeepsWarnings) {
+  std::vector<std::string> handled;
+  {
+    const test::LogCapture log(
+        [&](std::string_view message) { handled.emplace_back(message); });
+    log_message(LogLevel::Error, "vulkan", "the layer's error");
+    log_message(LogLevel::Error, "app", "an error of another source");
+    log_message(LogLevel::Warning, "vulkan", "a warning");
+    log_message(LogLevel::Info, "vulkan", "information");
+    EXPECT_EQ(log.errors(), 1);
+    EXPECT_EQ(log.warnings(), std::vector<std::string>{"a warning"});
+    // An error fails a test that passed or skipped, and keeps a failure's.
+    EXPECT_EQ(log.exit_code(0), 1);
+    EXPECT_EQ(log.exit_code(test::kSkipExitCode), 1);
+    EXPECT_EQ(log.exit_code(2), 2);
+  }
+  EXPECT_EQ(handled, std::vector<std::string>{"the layer's error"});
+  const test::LogCapture clean;
+  EXPECT_EQ(clean.exit_code(0), 0);
+  EXPECT_EQ(clean.exit_code(test::kSkipExitCode), test::kSkipExitCode);
+}
+
+TEST(CheckLayerLoaded, FailsOnlyWhereTheEnvironmentAsks) {
+  const test::ScopedEnv no_validation("VKC_TEST_VALIDATION", nullptr);
+  const test::ScopedEnv no_sync("VKC_TEST_SYNC_VALIDATION", nullptr);
+  Result<Instance> instance =
+      Instance::create(test::instance_config(test::Validation::Off));
+  if (!instance) {
+    ASSERT_FALSE(test::device_required()) << instance.status().message();
+    GTEST_SKIP() << instance.status().message();
+  }
+  EXPECT_TRUE(test::check_layer_loaded(*instance).ok());
+  const test::ScopedEnv on("VKC_TEST_VALIDATION", "1");
+  const Status loaded = test::check_layer_loaded(*instance);
+  EXPECT_EQ(loaded.domain(), Status::Code::Unsupported);
+  EXPECT_NE(loaded.message().find("validation is off"), std::string::npos);
 }
 
 // --- a validation error fails the test ---------------------------------------
@@ -168,6 +271,66 @@ TEST_F(SyncValidatedTest, AHazardFailsTheTest) {
   ASSERT_TRUE(submitted.ok()) << submitted.message();
   EXPECT_TRUE(only_vulkan_errors(failures))
       << "synchronization validation is off";
+}
+
+// The first layer with shader-access tracking.
+constexpr std::uint32_t kShaderAccessesLayerVersion =
+    VK_MAKE_API_VERSION(0, 1, 3, 292);
+
+// Under shader-access tracking wherever the layer has it.
+class ShaderAccessesTest : public ValidatedTest {
+ protected:
+  test::Validation validation() const override {
+    return test::Validation::ShaderAccesses;
+  }
+
+  void SetUp() override {
+    ValidatedTest::SetUp();
+    if (base_setup_incomplete()) return;
+    if (test::validation_layer_version() < kShaderAccessesLayerVersion) {
+      GTEST_SKIP() << "the validation layer predates shader-access tracking";
+    }
+  }
+};
+
+// A compute shader writes a storage buffer, and a copy reads it with no
+// barrier between: read after write, which synchronization validation
+// reports only when it tracks what the shader accesses.
+TEST_F(ShaderAccessesTest, AHazardAgainstAShaderWriteFailsTheTest) {
+  constexpr std::uint32_t kCount = 64;
+  constexpr VkDeviceSize kBytes = VkDeviceSize{kCount} * 4;
+  VkPushConstantRange push{};
+  push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  push.size = 4;
+  ComputeKernel fill;
+  KernelSetBuilder builder(device());
+  ASSERT_TRUE(builder
+                  .add(fill, "test_fill", vkc_test_fill_comp_spv,
+                       vkc_test_fill_comp_spv_size, 1, &push)
+                  .ok());
+  const Result<DescriptorPool> pool = builder.build();
+  ASSERT_TRUE(pool.ok()) << pool.status().message();
+  Result<Buffer> written = device_storage_buffer(allocator(), kBytes);
+  Result<Buffer> copied = device_storage_buffer(allocator(), kBytes);
+  ASSERT_TRUE(written.ok() && copied.ok());
+  fill.set.write_storage_buffer(0, written->handle(), 0, VK_WHOLE_SIZE);
+  Status submitted;
+  const std::vector<::testing::TestPartResult> failures = failures_of([&] {
+    submitted = device().submit_single_time([&](VkCommandBuffer cmd) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                        fill.pipeline.handle());
+      VkDescriptorSet set = fill.set.handle();
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              fill.pipeline.layout(), 0, 1, &set, 0, nullptr);
+      vkCmdPushConstants(cmd, fill.pipeline.layout(),
+                         VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &kCount);
+      vkCmdDispatch(cmd, group_count(kCount, 64), 1, 1);
+      const VkBufferCopy region{0, 0, kBytes};
+      vkCmdCopyBuffer(cmd, written->handle(), copied->handle(), 1, &region);
+    });
+  });
+  ASSERT_TRUE(submitted.ok()) << submitted.message();
+  EXPECT_TRUE(only_vulkan_errors(failures)) << "shader-access tracking is off";
 }
 
 }  // namespace

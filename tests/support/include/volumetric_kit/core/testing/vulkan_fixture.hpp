@@ -10,20 +10,13 @@
 /// @ref volumetric_kit::core::test::VulkanTest gives a test an instance and
 /// the best physical device for its requirements;
 /// @ref volumetric_kit::core::test::VulkanDeviceTest adds a device and an
-/// allocator. The environment sets one policy for every test in the process:
-///
-/// - `VKC_REQUIRE_VULKAN_DEVICE=1`: a test that finds no instance or device
-///   fails instead of skipping, so a runner cannot pass by skipping.
-/// - `VKC_TEST_VALIDATION=1`: every instance enables the Khronos validation
-///   layer, and a test fails if the layer is missing, fails to load, or its
-///   messages do not reach the log sink.
-/// - `VKC_TEST_SYNC_VALIDATION=1`: the above, plus synchronization validation
-///   and, on layers that have it, its tracking of what shaders access.
+/// allocator. Both apply the environment's policy (`vulkan_policy.hpp`): a
+/// missing device skips or fails, a missing layer fails, and every error the
+/// layer reports fails the running test.
 ///
 /// A fixture may ask for more validation than the environment does
 /// (@ref volumetric_kit::core::test::VulkanTest::validation); it then gets it
-/// wherever the layer is installed. Every error the layer reports -- any
-/// `LogLevel::Error` from source `"vulkan"` -- fails the running test.
+/// wherever the layer is installed.
 ///
 /// The tests in a process share one instance per validation level, and one
 /// device per level and set of requirements: the first test that needs one
@@ -51,7 +44,6 @@
 /// }
 /// @endcode
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -59,81 +51,14 @@
 
 #include <gtest/gtest.h>
 
+#include "volumetric_kit/core/testing/vulkan_policy.hpp"  // IWYU pragma: export
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
-#include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core::test {
-
-/// @brief What the validation layer checks; each level adds to the one before.
-enum class Validation : std::uint8_t {
-  Off,  ///< No validation layer.
-  On,   ///< The Khronos validation layer.
-  /// Plus synchronization validation, which reports a missing barrier.
-  Sync,
-  /// Plus synchronization validation's tracking of what shaders access
-  /// through their descriptors, on layers that have it. Without it, the layer
-  /// reports no hazard against a compute shader's storage-buffer write.
-  ShaderAccesses,
-};
-
-/// @brief The validation the environment asks of every test.
-///
-/// A variable counts as set unless it is unset, empty or `0`.
-/// @return @ref Validation::ShaderAccesses under `VKC_TEST_SYNC_VALIDATION`;
-///         otherwise @ref Validation::On under `VKC_TEST_VALIDATION`;
-///         otherwise @ref Validation::Off.
-Validation requested_validation();
-
-/// @return Whether `VKC_REQUIRE_VULKAN_DEVICE` is set: a test that finds no
-///         instance or device fails rather than skips.
-bool device_required();
-
-/// @brief The configuration for an instance a test makes itself, such as
-///        through `SharedDevice`.
-///
-/// It enables the validation layer when @ref requested_validation asks for
-/// it. Synchronization validation reaches such an instance too: while the
-/// tests run, the layer's settings are set for the whole process.
-/// @return An `InstanceConfig` named for the tests.
-InstanceConfig instance_config();
-
-/// @brief Make the transfers recorded before it visible to the host, for a
-///        readback through a mapped buffer.
-///
-/// A fence wait orders the host after the work but does not make its writes
-/// visible; coherent memory needs no invalidate on top of this.
-/// @param cmd  The command buffer to record the barrier into.
-void host_read_barrier(VkCommandBuffer cmd);
-
-/// @brief Set an environment variable for this object's lifetime, then
-///        restore the value it had, or unset it.
-///
-/// @code
-/// {
-///   const test::ScopedEnv sync("VKC_TEST_SYNC_VALIDATION", "1");
-///   EXPECT_EQ(test::requested_validation(),
-///             test::Validation::ShaderAccesses);
-/// }
-/// @endcode
-class ScopedEnv {
- public:
-  /// @param name   The variable.
-  /// @param value  Its value while this lives, or null to unset it.
-  ScopedEnv(const char* name, const char* value);
-  ~ScopedEnv();
-  ScopedEnv(const ScopedEnv&) = delete;
-  ScopedEnv& operator=(const ScopedEnv&) = delete;
-  ScopedEnv(ScopedEnv&&) = delete;
-  ScopedEnv& operator=(ScopedEnv&&) = delete;
-
- private:
-  std::string name_;
-  std::optional<std::string> old_;
-};
 
 namespace detail {
 struct DeviceSlot;
@@ -142,11 +67,10 @@ struct DeviceSlot;
 /// @brief A test with an instance and a physical device: shared, validated
 ///        and required as the file comment describes.
 ///
-/// A test makes whatever it needs on them, devices included. Its log handler
-/// is the fixture's from `SetUp` until the fixture is destroyed: it fails the
-/// test on a `"vulkan"` error and prints warnings and other errors to stderr,
-/// as the default sink would. A test that installs its own handler gives that
-/// up.
+/// A test makes whatever it needs on them, devices included. From `SetUp`
+/// until the fixture is destroyed, the log handler is a @ref LogCapture whose
+/// `"vulkan"` errors fail the test. A test that installs its own handler
+/// gives that up.
 ///
 /// @code
 /// class DeviceTest : public test::VulkanTest {};
@@ -177,12 +101,15 @@ class VulkanTest : public ::testing::Test {
   ///        the physical device; skips or fails without either.
   void SetUp() override;
 
-  /// @return Whether the base `SetUp` stopped short -- it skipped the test,
-  ///         or failed it -- leaving nothing to use. A derived `SetUp`
-  ///         returns when it is true: `ASSERT_*` and `GTEST_SKIP` return only
-  ///         from the function they fire in, and `IsSkipped()` is false for a
-  ///         test that has also failed.
-  bool base_setup_incomplete() const { return !ready_; }
+  /// @return Whether a `SetUp` so far in the fixture chain -- the base's, or
+  ///         an intermediate fixture's -- stopped short, skipping or failing
+  ///         the test and leaving members unset. A derived `SetUp` returns
+  ///         when it is true: `ASSERT_*` and `GTEST_SKIP` return only from
+  ///         the function they fire in, and `IsSkipped()` is false for a test
+  ///         that has also failed.
+  bool base_setup_incomplete() const {
+    return !ready_ || HasFatalFailure() || IsSkipped();
+  }
 
   /// @return The shared instance. @pre `SetUp` completed.
   const Instance& instance() const;

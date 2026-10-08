@@ -3,15 +3,16 @@
 
 # A stand-in for a sibling repo: consumes volumetric_kit_core the two ways the
 # family does, and -- as calib, recon and gfx do -- installs and exports its own
-# library, which links the core PUBLIC, and builds a GPU test on the core's test
-# fixture. CI configures it twice:
+# library, which links the core PUBLIC, and builds GPU tests on the core's test
+# support. CI configures it twice:
 #
 # -DVKC_CONSUME=find_package -DCMAKE_PREFIX_PATH=<install prefix>
 # -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR=<checkout>
 #
 # The second mirrors FetchContent: the core is not the top-level project, so its
 # tests and -Werror must stay off, while its install rules stay on -- without
-# them the export below fails CMake's generate step.
+# them the export below fails CMake's generate step. -DVKC_CONSUMER_GTEST=OFF
+# stands in for a sibling without googletest.
 cmake_minimum_required(VERSION 3.21)
 project(vkc_package_consumer LANGUAGES CXX)
 
@@ -20,14 +21,18 @@ include(GNUInstallDirs)
 set(VKC_CONSUME
     "find_package"
     CACHE STRING "find_package or subdirectory")
+option(VKC_CONSUMER_GTEST "Provide googletest, and a GPU test on the fixtures"
+       ON)
 
 if(VKC_CONSUME STREQUAL "find_package")
   find_package(volumetric_kit_core 0.0 REQUIRED CONFIG)
-  if(TARGET volumetric_kit::core_test_support)
-    message(FATAL_ERROR "an installed core must not export core_test_support")
-  endif()
+  foreach(_target core_test_policy core_test_support)
+    if(TARGET volumetric_kit::${_target})
+      message(FATAL_ERROR "an installed core must not export ${_target}")
+    endif()
+  endforeach()
 elseif(VKC_CONSUME STREQUAL "subdirectory")
-  # A sibling with GPU tests asks for the core's test fixture before adding it.
+  # A sibling with GPU tests asks for the core's test support before adding it.
   if(VKC_WITH_VULKAN)
     set(VKC_BUILD_TEST_SUPPORT ON)
   endif()
@@ -64,10 +69,16 @@ if(TARGET volumetric_kit::core_vulkan)
                     smoke.comp)
 endif()
 
-# A GPU test on the core's fixture, linking the googletest the consumer provides
-# -- fetched after the core, as the fixture's link to GTest::gtest resolves when
-# the build is generated. Never installed.
-if(TARGET volumetric_kit::core_test_support)
+# GPU tests on the core's test support, never installed: a main() of its own on
+# the policy alone, and a GoogleTest one on the fixtures, linking the googletest
+# the consumer provides -- fetched after the core, as the fixtures' link to
+# GTest::gtest resolves when the build is generated.
+if(TARGET volumetric_kit::core_test_policy)
+  add_executable(vkc_package_consumer_policy_test policy_test.cpp)
+  target_link_libraries(vkc_package_consumer_policy_test
+                        PRIVATE volumetric_kit::core_test_policy)
+endif()
+if(VKC_CONSUMER_GTEST AND TARGET volumetric_kit::core_test_support)
   include(FetchContent)
   set(BUILD_GMOCK OFF)
   set(INSTALL_GTEST OFF)

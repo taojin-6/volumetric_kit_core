@@ -41,9 +41,9 @@ they land in are in [DECISIONS.md](DECISIONS.md#tiers).
 - CMake: `find_package(volumetric_kit_core)`; targets
   `volumetric_kit::core_base`, `…_vulkan`, `…_camera`, `…_sensor`; umbrella
   `volumetric_kit::core`.
-- Test support: `volumetric_kit::core_test_support` in `tests/support/`,
-  headers `volumetric_kit/core/testing/…`, namespace
-  `volumetric_kit::core::test`; never installed.
+- Test support: `volumetric_kit::core_test_policy` and `…_test_support` in
+  `tests/support/`, headers `volumetric_kit/core/testing/…`, namespace
+  `volumetric_kit::core::test` (README.md, "Use it in your project").
 - Macros/export: `VKC_*` (e.g. `VKC_TRY`, `VKC_CHECK`, `VKC_BASE_API`). Never
   `VK_*`, which Vulkan owns.
 

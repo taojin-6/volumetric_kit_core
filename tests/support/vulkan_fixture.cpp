@@ -5,9 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <cstring>
-#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -17,14 +15,12 @@
 #include <utility>
 #include <vector>
 
-// NOLINTNEXTLINE(modernize-deprecated-headers): setenv and unsetenv are POSIX's
-#include <stdlib.h>
-
 #include <gtest/gtest.h>
 
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
@@ -50,60 +46,6 @@ struct DeviceSlot {
 }  // namespace detail
 
 namespace {
-
-// Where the core's instance sends the validation layer's messages.
-constexpr std::string_view kVulkanSource = "vulkan";
-
-// The environment is read and set from the test thread, outside the threads a
-// test starts.
-const char* env(const char* name) {
-  return std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
-}
-
-// Sets `name` to `value`, or unsets it for null. include-cleaner: the macOS
-// SDK declares setenv and unsetenv in a header of its own, not <stdlib.h>.
-void set_env(const char* name, const char* value) {
-  if (value != nullptr) {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner)
-    ::setenv(name, value, 1);
-  } else {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner)
-    ::unsetenv(name);
-  }
-}
-
-bool env_set(const char* name) {
-  const char* value = env(name);
-  return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
-}
-
-void print(LogLevel level, std::string_view source, std::string_view message) {
-  std::cerr << '[' << source
-            << (level == LogLevel::Error ? " error] " : " warning] ") << message
-            << '\n';
-}
-
-// The layer's settings for `validation`, as the environment variables it reads
-// when an instance is created. Synchronization validation has two spellings:
-// the settings variable, and VK_LAYER_ENABLES, which older layers read; the
-// latter is left alone when the caller set it.
-std::vector<std::unique_ptr<ScopedEnv>> layer_settings(Validation validation) {
-  std::vector<std::unique_ptr<ScopedEnv>> settings;
-  if (validation >= Validation::Sync) {
-    settings.push_back(std::make_unique<ScopedEnv>(
-        "VK_KHRONOS_VALIDATION_VALIDATE_SYNC", "true"));
-    if (env("VK_LAYER_ENABLES") == nullptr) {
-      settings.push_back(std::make_unique<ScopedEnv>(
-          "VK_LAYER_ENABLES",
-          "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"));
-    }
-  }
-  if (validation >= Validation::ShaderAccesses) {
-    settings.push_back(std::make_unique<ScopedEnv>(
-        "VK_KHRONOS_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC", "true"));
-  }
-  return settings;
-}
 
 // Whether two requirements make the same device. The members are bound one
 // by one so that a member added to DeviceRequirements stops this compiling
@@ -150,8 +92,6 @@ class Registry {
   InstanceSlot& instance(Validation validation, std::vector<Logged>& logged) {
     auto [it, made] = instances_.try_emplace(validation);
     if (made) {
-      InstanceConfig config = instance_config();
-      config.enable_validation = validation != Validation::Off;
       std::mutex mutex;
       set_log_handler([&](LogLevel level, std::string_view source,
                           std::string_view message) {
@@ -160,8 +100,9 @@ class Registry {
       });
       {
         // Read as the instance is created, so they need not outlive it.
-        const auto settings = layer_settings(validation);
-        Result<Instance> instance = Instance::create(config);
+        const ValidationSession settings(validation);
+        Result<Instance> instance =
+            Instance::create(instance_config(validation));
         if (instance) {
           it->second.instance.emplace(*std::move(instance));
         } else {
@@ -214,19 +155,15 @@ class Registry {
   std::vector<std::string> release() {
     std::mutex mutex;
     std::vector<std::string> errors;
-    set_log_handler(
-        [&](LogLevel level, std::string_view source, std::string_view message) {
-          if (source == kVulkanSource && level == LogLevel::Error) {
-            const std::scoped_lock lock(mutex);
-            errors.emplace_back(message);
-          } else if (level >= LogLevel::Warning) {
-            print(level, source, message);
-          }
-        });
-    devices_.clear();
-    instances_.clear();
-    anchor_.reset();
-    set_log_handler({});
+    {
+      const LogCapture log([&](std::string_view message) {
+        const std::scoped_lock lock(mutex);
+        errors.emplace_back(message);
+      });
+      devices_.clear();
+      instances_.clear();
+      anchor_.reset();
+    }
     return errors;
   }
 
@@ -264,7 +201,7 @@ class VulkanEnvironment final : public ::testing::Environment {
  public:
   void SetUp() override {
     // Instances a test makes itself run the environment's checks too.
-    settings_ = layer_settings(requested_validation());
+    session_.emplace(requested_validation());
     if (::testing::UnitTest::GetInstance()->test_to_run_count() > 1) {
       Registry::get().hold_anchor();
     }
@@ -276,92 +213,40 @@ class VulkanEnvironment final : public ::testing::Environment {
                        "(an object a test never destroyed?): "
                     << error;
     }
-    settings_.clear();
+    session_.reset();
   }
 
  private:
-  std::vector<std::unique_ptr<ScopedEnv>> settings_;
+  std::optional<ValidationSession> session_;
 };
 
 }  // namespace
 
-Validation requested_validation() {
-  if (env_set("VKC_TEST_SYNC_VALIDATION")) return Validation::ShaderAccesses;
-  if (env_set("VKC_TEST_VALIDATION")) return Validation::On;
-  return Validation::Off;
-}
-
-bool device_required() { return env_set("VKC_REQUIRE_VULKAN_DEVICE"); }
-
-InstanceConfig instance_config() {
-  InstanceConfig config;
-  config.app_name = "volumetric_kit tests";
-  config.enable_validation = requested_validation() != Validation::Off;
-  return config;
-}
-
-void host_read_barrier(VkCommandBuffer cmd) {
-  VkMemoryBarrier barrier{};
-  barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                       VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr,
-                       0, nullptr);
-}
-
-ScopedEnv::ScopedEnv(const char* name, const char* value) : name_(name) {
-  if (const char* old = env(name)) old_ = old;
-  set_env(name, value);
-}
-
-ScopedEnv::~ScopedEnv() {
-  set_env(name_.c_str(), old_ ? old_->c_str() : nullptr);
-}
-
-// What the fixture's log handler gathers, behind a pointer so it stays put
-// for the handler.
+// The fixture's log capture, and what it counts of the errors a test allows.
+// The capture is declared last, so its handler goes before the counters.
 struct VulkanTest::Capture {
   std::atomic<bool> allowing{false};
   std::atomic<int> allowed{0};
-  mutable std::mutex mutex;
-  std::vector<std::string> warnings;
-
-  void on_message(LogLevel level, std::string_view source,
-                  std::string_view message) {
-    if (source == kVulkanSource && level == LogLevel::Error) {
-      if (allowing) {
-        ++allowed;
-      } else {
-        ADD_FAILURE() << "[vulkan error] " << message;
-      }
-      return;
-    }
-    if (level < LogLevel::Warning) return;
-    // As the default sink would: why a test fails may be in one.
-    print(level, source, message);
-    if (level == LogLevel::Warning) {
-      const std::scoped_lock lock(mutex);
-      warnings.emplace_back(message);
-    }
-  }
+  std::optional<LogCapture> log;
 };
 
 VulkanTest::VulkanTest() : capture_(std::make_unique<Capture>()) {}
 
-// The handler stays until here, so what a derived fixture's members report as
-// they are destroyed, after TearDown, still fails the test.
-VulkanTest::~VulkanTest() { set_log_handler({}); }
+// The capture stays until the members are destroyed, after a derived
+// fixture's, so what they report as they go still fails the test.
+VulkanTest::~VulkanTest() = default;
 
 void VulkanTest::SetUp() {
   const Validation requested = requested_validation();
   validation_ = std::max(requested, validation());
   std::vector<Logged> logged;
   InstanceSlot& slot = Registry::get().instance(validation_, logged);
-  set_log_handler([capture = capture_.get()](LogLevel level,
-                                             std::string_view source,
-                                             std::string_view message) {
-    capture->on_message(level, source, message);
+  capture_->log.emplace([capture = capture_.get()](std::string_view message) {
+    if (capture->allowing) {
+      ++capture->allowed;
+    } else {
+      ADD_FAILURE() << "[vulkan error] " << message;
+    }
   });
   // A layer only the fixture asked for, which did not load: the loader's
   // errors say why, and fail nothing.
@@ -369,21 +254,18 @@ void VulkanTest::SetUp() {
       requested == Validation::Off && validation_ != Validation::Off &&
       !(slot.instance && slot.instance->validation_logged());
   for (const Logged& message : logged) {
-    if (layer_missed && message.level == LogLevel::Error) {
-      print(LogLevel::Warning, message.source, message.message);
-    } else {
-      capture_->on_message(message.level, message.source, message.message);
-    }
+    log_message(layer_missed && message.level == LogLevel::Error
+                    ? LogLevel::Warning
+                    : message.level,
+                message.source, message.message);
   }
   if (!slot.instance) {
     no_device(slot.error);
     return;
   }
   instance_ = &*slot.instance;
-  if (requested != Validation::Off && !instance_->validation_logged()) {
-    FAIL() << "VKC_TEST_VALIDATION or VKC_TEST_SYNC_VALIDATION is set, but "
-              "validation is off or its messages do not reach the log sink; "
-              "the instance's warning says why";
+  if (const Status loaded = check_layer_loaded(*instance_); !loaded.ok()) {
+    FAIL() << loaded.message();
   }
   Result<PhysicalDeviceInfo> physical =
       instance_->select_physical_device(requirements());
@@ -408,8 +290,7 @@ int VulkanTest::allowed_validation_errors() const {
 }
 
 std::vector<std::string> VulkanTest::warnings() const {
-  const std::scoped_lock lock(capture_->mutex);
-  return capture_->warnings;
+  return capture_->log ? capture_->log->warnings() : std::vector<std::string>{};
 }
 
 VulkanDeviceTest::VulkanDeviceTest() = default;

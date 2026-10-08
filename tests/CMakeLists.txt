@@ -102,17 +102,32 @@ if(VKC_WITH_VULKAN)
     shaders/fill.comp
     shaders/batch_visibility.vert
     shaders/batch_visibility.frag)
-  foreach(_vkc_test vulkan_compute vulkan_command_batch vulkan_timer)
+  foreach(_vkc_test vulkan_compute vulkan_command_batch vulkan_timer
+                    testing_vulkan_fixture)
     target_link_libraries(vkc_${_vkc_test}_test PRIVATE vkc_test_shaders)
   endforeach()
+
+  # core_test_policy alone, in a test that is a main() of its own: no
+  # googletest, and a skip CTest reads from the exit code.
+  add_executable(vkc_testing_vulkan_policy_test testing_vulkan_policy_test.cpp)
+  target_link_libraries(vkc_testing_vulkan_policy_test
+                        PRIVATE volumetric_kit::core_test_policy)
+  vkc_target_warnings(vkc_testing_vulkan_policy_test)
+  add_test(NAME vkc_testing_vulkan_policy_test
+           COMMAND vkc_testing_vulkan_policy_test)
+  # The skip code is test::kSkipExitCode.
+  set_tests_properties(vkc_testing_vulkan_policy_test
+                       PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
 
 # core_test_support's fixture in processes of their own, each entry with the
 # environment it probes, read from the output: a run without a device fails
 # under VKC_REQUIRE_VULKAN_DEVICE and skips without it; one whose layer cannot
 # be found fails under VKC_TEST_VALIDATION; two tests in one process share the
-# device; and a buffer a test never destroys fails the run as the shared device
-# goes (LeakSanitizer off: the leak is the point).
+# device; a buffer a test never destroys fails the run as the shared device goes
+# (LeakSanitizer off: the leak is the point); a fixture chain stops where its
+# middle SetUp failed; and under VKC_TEST_SYNC_VALIDATION an instance a test
+# makes itself runs synchronization validation.
 if(VKC_WITH_VULKAN)
   add_executable(vkc_testing_vulkan_fixture_probe
                  testing_vulkan_fixture_probe.cpp)
@@ -177,6 +192,65 @@ if(VKC_WITH_VULKAN)
     vkc_testing_reports_a_leak
     PROPERTIES PASS_REGULAR_EXPRESSION "an object a test never destroyed"
                SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
+
+  add_test(NAME vkc_testing_stops_a_fixture_chain
+           COMMAND "${_vkc_probe}" --gtest_filter=LeafProbe.*)
+  set_tests_properties(
+    vkc_testing_stops_a_fixture_chain
+    PROPERTIES PASS_REGULAR_EXPRESSION "the middle SetUp stops here"
+               FAIL_REGULAR_EXPRESSION "carried on|the body ran"
+               SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
+
+  add_test(NAME vkc_testing_own_instance_runs_sync_validation
+           COMMAND "${CMAKE_COMMAND}" -E env VKC_TEST_SYNC_VALIDATION=1
+                   "${_vkc_probe}" --gtest_filter=OwnInstanceProbe.*)
+  set_tests_properties(vkc_testing_own_instance_runs_sync_validation
+                       PROPERTIES SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
+
+  # A sibling without googletest, whose tests are main()s of their own, asks for
+  # the test support and links core_test_policy alone: the package consumer,
+  # configured that way, generates. Configure only, with the VMA this build
+  # fetched.
+  include(FetchContent)
+  FetchContent_GetProperties(VulkanMemoryAllocator SOURCE_DIR _vkc_vma_source)
+  add_test(
+    NAME vkc_testing_policy_needs_no_googletest
+    COMMAND
+      "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/package_consumer" -B
+      "${CMAKE_CURRENT_BINARY_DIR}/policy_consumer" -G "${CMAKE_GENERATOR}"
+      "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}" -DVKC_CONSUME=subdirectory
+      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" -DVKC_WITH_VULKAN=ON
+      -DVKC_CONSUMER_GTEST=OFF
+      "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}")
+  set_tests_properties(vkc_testing_policy_needs_no_googletest PROPERTIES TIMEOUT
+                                                                         300)
+
+  # Flipping VKC_WITH_VULKAN in a build directory reconfigures, either way:
+  # whether the test support is built follows the tier and the tests, not a
+  # default cached by the first configure. Configure only, in order, with the
+  # dependencies this build fetched.
+  FetchContent_GetProperties(googletest SOURCE_DIR _vkc_gtest_source)
+  set(_vkc_step 0)
+  foreach(_vkc_vulkan ON OFF ON)
+    math(EXPR _vkc_next "${_vkc_step} + 1")
+    set(_vkc_name vkc_testing_support_follows_vulkan_${_vkc_next})
+    add_test(
+      NAME ${_vkc_name}
+      COMMAND
+        "${CMAKE_COMMAND}" -S "${PROJECT_SOURCE_DIR}" -B
+        "${CMAKE_CURRENT_BINARY_DIR}/vulkan_flip" -G "${CMAKE_GENERATOR}"
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        -DVKC_WITH_VULKAN=${_vkc_vulkan}
+        "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}"
+        "-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=${_vkc_gtest_source}")
+    set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_SETUP
+                                                 vkc_vulkan_flip_${_vkc_next})
+    if(_vkc_step GREATER 0)
+      set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
+                                                   vkc_vulkan_flip_${_vkc_step})
+    endif()
+    set(_vkc_step ${_vkc_next})
+  endforeach()
 endif()
 
 # The one-instance warning (cmake/vkc_single_instance.cmake): configure a
