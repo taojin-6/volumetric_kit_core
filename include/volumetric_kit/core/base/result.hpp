@@ -19,10 +19,11 @@
 /// early-return on failure, so they appear only inside functions that
 /// themselves return `Status` or `Result<T>`.
 ///
-/// `Status` is deliberately *backend-neutral*: its detail code is a generic
-/// `int64_t` (a `VkResult`, or a `cudaError_t`), never a GPU-API type, so this
-/// header -- and the whole base tier -- includes no GPU API. A backend tier
-/// adds its own factory and `TRY` macro on top (e.g. the vulkan tier's
+/// `Status` is deliberately *backend-neutral*: a backend failure carries a
+/// tag naming the backend (@ref Status::Backend) and that backend's code as a
+/// generic `int64_t` (a `VkResult`, a `CUresult`, ...), never a GPU-API type,
+/// so this header -- and the whole base tier -- includes no GPU API. A backend
+/// tier adds its own factory and `TRY` macro on top (e.g. the vulkan tier's
 /// `vk_error` and `VKC_VK_TRY`).
 ///
 /// Both types are `[[nodiscard]]`: with no exceptions, a dropped `Status` is a
@@ -50,16 +51,16 @@
 
 namespace volumetric_kit::core {
 
-/// @brief Success, or an error: a domain (@ref Code), an optional backend
-///        detail code, and a human-readable message.
+/// @brief Success, or an error: a domain (@ref Code), for a backend failure
+///        the backend and its code, and a human-readable message.
 ///
 /// A default-constructed `Status` is success. Build a failure with a domain
 /// factory (@ref invalid_argument, @ref not_found, @ref unsupported,
 /// @ref out_of_memory, @ref io_error, @ref numerical) or, for a failed
-/// GPU-backend call, @ref backend_error, which also carries the backend's own
-/// code. Convertible to `bool` (true == success) for terse checks. To add
-/// context on the way up, use @ref with_context, which keeps the domain and
-/// detail.
+/// backend call, @ref backend_error, which also carries which backend failed
+/// and its own code. Convertible to `bool` (true == success) for terse checks.
+/// To add context on the way up, use @ref with_context, which keeps the
+/// domain, backend and detail.
 ///
 /// @code
 /// Status s = integrate(frame);
@@ -73,9 +74,9 @@ class [[nodiscard]] Status {
  public:
   /// @brief The kind of failure a non-OK `Status` reports.
   ///
-  /// This is the primary discriminator. @ref detail carries a meaningful code
-  /// only when the domain is @ref Code::Backend; for every other domain it is
-  /// `0`.
+  /// This is the primary discriminator. @ref backend and @ref detail say more
+  /// only when the domain is @ref Code::Backend; for every other domain they
+  /// are empty and `0`.
   enum class Code {
     Ok,               ///< Success.
     InvalidArgument,  ///< A malformed or contradictory argument value.
@@ -85,28 +86,49 @@ class [[nodiscard]] Status {
     IoError,          ///< A read/write/decode/encode operation failed.
     Numerical,        ///< A solve failed: a singular system, no convergence,
                       ///< or a degenerate or ill-conditioned configuration.
-    Backend,          ///< A GPU-backend call (Vulkan, or the CUDA
-                      ///< accelerator) failed; see @ref detail.
+    Backend,          ///< A backend library's call failed; see
+                      ///< @ref backend and @ref detail.
+  };
+
+  /// @brief The backend whose call failed, for a @ref Code::Backend status.
+  ///
+  /// Backends number their codes independently, so a code means nothing
+  /// without its backend: `2` is `VK_TIMEOUT`, `CUDA_ERROR_OUT_OF_MEMORY` and
+  /// `NVJPEG_STATUS_INVALID_PARAMETER`.
+  enum class Backend : std::uint8_t {
+    Vulkan,        ///< A `VkResult`.
+    Cuda,          ///< A CUDA driver `CUresult` or runtime `cudaError_t`.
+    NvJpeg,        ///< An `nvjpegStatus_t`.
+    Ffmpeg,        ///< An FFmpeg `AVERROR` code.
+    VideoToolbox,  ///< An `OSStatus` from VideoToolbox or Core Media.
+    Other,         ///< A backend not listed; @ref detail is its own code.
   };
 
   /// @brief Construct a success status.
   Status() = default;
 
-  /// @brief Build a GPU-backend failure (domain @ref Code::Backend).
-  /// @param detail   The backend's code for the failure (a `VkResult`, or a
-  ///                 `cudaError_t`), widened to `int64_t` so this tier stays
-  ///                 free of GPU APIs.
+  /// @brief Build a backend failure (domain @ref Code::Backend).
+  /// @param backend  Which backend's call failed; it says how to read
+  ///                 @p detail.
+  /// @param detail   The backend's code for the failure, widened to `int64_t`
+  ///                 so this tier stays free of GPU APIs.
   /// @param message  Human-readable context, e.g. the failing call.
-  /// @pre @p detail is not `0`, which is success in both backends
-  ///      (`VK_SUCCESS`, `cudaSuccess`): test the call's result before
-  ///      building a failure from it. Violating this aborts via
+  /// @pre @p detail is not `0`, which is success in every listed backend
+  ///      (`VK_SUCCESS`, `CUDA_SUCCESS`, `noErr`, ...): test the call's result
+  ///      before building a failure from it. Violating this aborts via
   ///      @ref VKC_CHECK.
-  /// @return A non-OK `Status` carrying @p detail and @p message.
-  static Status backend_error(std::int64_t detail, std::string message) {
+  /// @return A non-OK `Status` carrying @p backend, @p detail and @p message.
+  ///
+  /// @code
+  /// if (r != CUDA_SUCCESS)
+  ///   return Status::backend_error(Status::Backend::Cuda, r, "cuMemAlloc");
+  /// @endcode
+  static Status backend_error(Backend backend, std::int64_t detail,
+                              std::string message) {
     VKC_CHECK(detail != 0,
               "Status::backend_error needs a failing backend code; 0 is "
-              "success (VK_SUCCESS, cudaSuccess)");
-    return Status{Code::Backend, detail, std::move(message)};
+              "success in every backend");
+    return Status{backend, detail, std::move(message)};
   }
 
   /// @brief Build a failure in the named domain, with no backend detail.
@@ -138,10 +160,10 @@ class [[nodiscard]] Status {
   }
 
   /// @brief Prefix the message with what failed at the caller's level,
-  ///        keeping the domain and the backend detail.
+  ///        keeping the domain, the backend and its detail.
   /// @param context  What was being done, e.g. the kernel being built.
-  /// @return For an error, the same domain and @ref detail with the message
-  ///         `"<context>: <message>"`; for success, success.
+  /// @return For an error, the same domain, @ref backend and @ref detail with
+  ///         the message `"<context>: <message>"`; for success, success.
   ///
   /// @code
   /// if (!s) return std::move(s).with_context(kernel_name);
@@ -168,6 +190,9 @@ class [[nodiscard]] Status {
 
   /// @return The error domain; @ref Code::Ok exactly when @ref ok.
   Code domain() const noexcept { return domain_; }
+  /// @return The backend whose call failed when @ref domain is
+  ///         @ref Code::Backend; empty otherwise.
+  std::optional<Backend> backend() const noexcept { return backend_; }
   /// @return The backend's code when @ref domain is @ref Code::Backend; `0`
   ///         otherwise.
   std::int64_t detail() const noexcept { return detail_; }
@@ -175,15 +200,19 @@ class [[nodiscard]] Status {
   const std::string& message() const noexcept { return message_; }
 
  private:
-  // A non-backend domain carries no detail: this overload fixes detail_ at 0,
-  // so a domain factory cannot pair a backend code with another domain. Only
-  // backend_error() passes a detail.
+  // A non-backend domain carries no backend or detail, and a backend failure
+  // always carries both: only backend_error() calls the second overload, so a
+  // domain factory cannot pair a backend code with another domain.
   Status(Code domain, std::string message)
       : domain_(domain), message_(std::move(message)) {}
-  Status(Code domain, std::int64_t detail, std::string message)
-      : domain_(domain), detail_(detail), message_(std::move(message)) {}
+  Status(Backend backend, std::int64_t detail, std::string message)
+      : domain_(Code::Backend),
+        backend_(backend),
+        detail_(detail),
+        message_(std::move(message)) {}
 
   Code domain_ = Code::Ok;
+  std::optional<Backend> backend_;
   std::int64_t detail_ = 0;
   std::string message_;
 };
@@ -192,6 +221,11 @@ class [[nodiscard]] Status {
 /// @param code  A domain value.
 /// @return A static, never-empty `string_view`.
 VKC_BASE_API std::string_view to_string(Status::Code code) noexcept;
+
+/// @brief Human-readable name for a @ref Status::Backend (e.g. "Cuda").
+/// @param backend  A backend value.
+/// @return A static, never-empty `string_view`.
+VKC_BASE_API std::string_view to_string(Status::Backend backend) noexcept;
 
 namespace detail {
 

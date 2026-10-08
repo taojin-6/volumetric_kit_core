@@ -23,6 +23,7 @@ TEST(Status, DefaultIsOk) {
   EXPECT_TRUE(s.ok());
   EXPECT_TRUE(static_cast<bool>(s));
   EXPECT_EQ(s.domain(), Status::Code::Ok);
+  EXPECT_EQ(s.backend(), std::nullopt);
   EXPECT_EQ(s.detail(), 0);
   EXPECT_TRUE(s.message().empty());
 }
@@ -43,34 +44,55 @@ TEST(Status, DomainFactoriesSetDomainAndMessageWithNoDetail) {
   for (const Case& c : cases) {
     EXPECT_FALSE(c.status.ok());
     EXPECT_EQ(c.status.domain(), c.domain);
+    EXPECT_EQ(c.status.backend(), std::nullopt) << to_string(c.domain);
     EXPECT_EQ(c.status.detail(), 0) << to_string(c.domain);
     EXPECT_EQ(c.status.message(), "m");
   }
 }
 
-TEST(Status, BackendErrorCarriesItsDetail) {
+TEST(Status, BackendErrorCarriesItsBackendAndDetail) {
   // -4 is VK_ERROR_DEVICE_LOST; the base tier only carries the number.
-  const Status s = Status::backend_error(-4, "vkQueueSubmit");
+  const Status s =
+      Status::backend_error(Status::Backend::Vulkan, -4, "vkQueueSubmit");
   EXPECT_FALSE(s.ok());
   EXPECT_EQ(s.domain(), Status::Code::Backend);
+  EXPECT_EQ(s.backend(), Status::Backend::Vulkan);
   EXPECT_EQ(s.detail(), -4);
   EXPECT_EQ(s.message(), "vkQueueSubmit");
 }
 
-TEST(StatusDeathTest, BackendErrorRefusesTheSuccessCode) {
-  // 0 is VK_SUCCESS and cudaSuccess: a failure built from it is a caller that
-  // forgot to test the call's result.
-  EXPECT_DEATH((void)Status::backend_error(0, "vkQueueSubmit"),
-               "backend_error needs a failing backend code");
+// One code from two backends means two failures (2 is VK_TIMEOUT and
+// CUDA_ERROR_OUT_OF_MEMORY); the backend tells them apart.
+TEST(Status, TheBackendTellsOneCodeFromTwoBackendsApart) {
+  const Status vulkan =
+      Status::backend_error(Status::Backend::Vulkan, 2, "vkWaitForFences");
+  const Status cuda =
+      Status::backend_error(Status::Backend::Cuda, 2, "cuMemAlloc");
+  EXPECT_EQ(vulkan.detail(), cuda.detail());
+  EXPECT_EQ(vulkan.backend(), Status::Backend::Vulkan);
+  EXPECT_EQ(cuda.backend(), Status::Backend::Cuda);
 }
 
-TEST(Status, WithContextKeepsDomainAndDetail) {
-  const Status s = Status::backend_error(-4, "vkQueueSubmit");
+TEST(StatusDeathTest, BackendErrorRefusesTheSuccessCode) {
+  // 0 is success in every backend (VK_SUCCESS, CUDA_SUCCESS, noErr): a
+  // failure built from it is a caller that forgot to test the call's result.
+  EXPECT_DEATH(
+      (void)Status::backend_error(Status::Backend::Vulkan, 0, "vkQueueSubmit"),
+      "backend_error needs a failing backend code");
+  EXPECT_DEATH(
+      (void)Status::backend_error(Status::Backend::Other, 0, "anything"),
+      "backend_error needs a failing backend code");
+}
+
+TEST(Status, WithContextKeepsDomainBackendAndDetail) {
+  const Status s =
+      Status::backend_error(Status::Backend::NvJpeg, 7, "nvjpegDecode");
   const Status named = s.with_context("integrate");
   EXPECT_EQ(named.domain(), Status::Code::Backend);
-  EXPECT_EQ(named.detail(), -4);
-  EXPECT_EQ(named.message(), "integrate: vkQueueSubmit");
-  EXPECT_EQ(s.message(), "vkQueueSubmit");  // the const& overload copies
+  EXPECT_EQ(named.backend(), Status::Backend::NvJpeg);
+  EXPECT_EQ(named.detail(), 7);
+  EXPECT_EQ(named.message(), "integrate: nvjpegDecode");
+  EXPECT_EQ(s.message(), "nvjpegDecode");  // the const& overload copies
 
   const Status moved = Status::numerical("singular").with_context("solve");
   EXPECT_EQ(moved.domain(), Status::Code::Numerical);
@@ -93,6 +115,15 @@ TEST(Status, ToStringNamesEveryDomain) {
   EXPECT_EQ(to_string(Status::Code::IoError), "IoError");
   EXPECT_EQ(to_string(Status::Code::Numerical), "Numerical");
   EXPECT_EQ(to_string(Status::Code::Backend), "Backend");
+}
+
+TEST(Status, ToStringNamesEveryBackend) {
+  EXPECT_EQ(to_string(Status::Backend::Vulkan), "Vulkan");
+  EXPECT_EQ(to_string(Status::Backend::Cuda), "Cuda");
+  EXPECT_EQ(to_string(Status::Backend::NvJpeg), "NvJpeg");
+  EXPECT_EQ(to_string(Status::Backend::Ffmpeg), "Ffmpeg");
+  EXPECT_EQ(to_string(Status::Backend::VideoToolbox), "VideoToolbox");
+  EXPECT_EQ(to_string(Status::Backend::Other), "Other");
 }
 
 // --- Result -----------------------------------------------------------------
@@ -297,11 +328,18 @@ TEST(ResultDeathTest, ValueOfAnErrorResultAborts) {
 // The abort names the held error, and value() names its caller's line rather
 // than the header's, so two misuses do not look alike in a crash report.
 TEST(ResultDeathTest, MisuseNamesTheErrorAndTheCaller) {
-  const Result<int> r = Status::backend_error(-4, "vkQueueSubmit");
+  const Result<int> r =
+      Status::backend_error(Status::Backend::Vulkan, -4, "vkQueueSubmit");
   EXPECT_DEATH((void)r.value(),
-               "Result::value\\(\\) on an error Result \\(Backend -4: "
+               "Result::value\\(\\) on an error Result \\(Backend Vulkan -4: "
                "vkQueueSubmit\\) \\[ok\\(\\)\\] at "
                ".*base_result_test.cpp:[0-9]+");
+  // The backend says how to read the code: 2 here is no VK_TIMEOUT.
+  const Result<int> cuda =
+      Status::backend_error(Status::Backend::Cuda, 2, "cuMemAlloc");
+  EXPECT_DEATH((void)*cuda,
+               "Result::operator\\* on an error Result \\(Backend Cuda 2: "
+               "cuMemAlloc\\)");
 }
 
 TEST(ResultDeathTest, FailureFromAnOkStatusAborts) {
