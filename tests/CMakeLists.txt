@@ -391,6 +391,78 @@ foreach(_vkc_consume IN LISTS _vkc_consumes)
   endforeach()
 endforeach()
 
+# The same check in a sibling's package config (require_core_package/), with
+# PACKAGE, against the stage: a core too old, or one without the vulkan tier,
+# leaves the sibling not found, the message naming it, and the config read no
+# further; the consumer's configure finishes unless it found the sibling
+# REQUIRED.
+if(VKC_INSTALL)
+  _vkc_message_regex(_vkc_past "read past vkc_require_core")
+  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan required)
+    set(_vkc_name vkc_require_core_package_${_vkc_require})
+    set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_require})
+    if(_vkc_require STREQUAL "vulkan")
+      set(_vkc_args -DVKC_SIBLING_REQUIRE=${PROJECT_VERSION}
+                    -DVKC_SIBLING_REQUIRE_VULKAN=ON)
+    elseif(_vkc_require STREQUAL "required")
+      set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_too_new}
+                    -DVKC_SIBLING_REQUIRED=ON)
+    endif()
+    add_test(
+      NAME ${_vkc_name}
+      COMMAND
+        "${CMAKE_COMMAND}" -S
+        "${CMAKE_CURRENT_SOURCE_DIR}/require_core_package" -B
+        "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DCMAKE_PREFIX_PATH=${_vkc_stage}" ${_vkc_args})
+    set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
+                                                 vkc_require_core_stage)
+    if(_vkc_require STREQUAL PROJECT_VERSION OR (_vkc_require STREQUAL "vulkan"
+                                                 AND VKC_WITH_VULKAN))
+      set(_vkc_pass "${_vkc_past}.+vkc_sibling found.+Generating done")
+      set(_vkc_fail "CMake Error")
+    else()
+      if(_vkc_require STREQUAL "vulkan")
+        _vkc_message_regex(
+          _vkc_head
+          "vkc_sibling needs volumetric_kit_core's vulkan tier, which the core installed at"
+        )
+        _vkc_message_regex(
+          _vkc_tail
+          "was built without: install one built with VKC_WITH_VULKAN ON")
+      else()
+        _vkc_message_regex(
+          _vkc_head
+          "vkc_sibling needs volumetric_kit_core ${_vkc_too_new} or newer, but the core installed at"
+        )
+        _vkc_message_regex(
+          _vkc_tail
+          "is ${PROJECT_VERSION}: install volumetric_kit_core ${_vkc_too_new} or newer"
+        )
+      endif()
+      # The fix ends at the prefix: the package config found this core, not
+      # FetchContent.
+      _vkc_message_regex(
+        _vkc_end
+        "and point CMAKE_PREFIX_PATH or volumetric_kit_core_DIR at it.")
+      set(_vkc_pass "${_vkc_head}.+${_vkc_tail}[ \n]+${_vkc_end}")
+      set(_vkc_fail "${_vkc_past}")
+      if(_vkc_require STREQUAL "required")
+        _vkc_message_regex(_vkc_reason "Reason given by package:")
+        set(_vkc_pass "${_vkc_reason}.+${_vkc_pass}")
+      else()
+        set(_vkc_pass "vkc_sibling not found: ${_vkc_pass}.+Generating done")
+        string(APPEND _vkc_fail "|CMake Error")
+      endif()
+    endif()
+    set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                                 "${_vkc_pass}")
+    set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
+                                                 "${_vkc_fail}")
+  endforeach()
+endif()
+
 # The same functions misused, or called before the core is added, must say so.
 function(_vkc_call_test name call message)
   add_test(NAME ${name}
@@ -402,7 +474,22 @@ endfunction()
 _vkc_call_test(
   vkc_require_core_usage
   "vkc_require_core(0.1.0 VULKAN TOOLS)"
-  "vkc_require_core(0.1.0 VULKAN TOOLS): use vkc_require_core(<min-version> [VULKAN])"
+  "vkc_require_core(0.1.0 VULKAN TOOLS): use vkc_require_core(<min-version> [VULKAN] [PACKAGE <package>])"
+)
+_vkc_call_test(
+  vkc_require_core_no_version
+  "vkc_require_core()"
+  "vkc_require_core(): use vkc_require_core(<min-version> [VULKAN] [PACKAGE <package>])"
+)
+_vkc_call_test(
+  vkc_require_core_package_usage
+  "vkc_require_core(0.1.0 PACKAGE)"
+  "vkc_require_core(0.1.0 PACKAGE): use vkc_require_core(<min-version> [VULKAN] [PACKAGE <package>])"
+)
+_vkc_call_test(
+  vkc_require_core_package_outside_config
+  "vkc_require_core(0.1.0 PACKAGE vkc_sibling)"
+  "vkc_require_core(0.1.0 PACKAGE vkc_sibling): PACKAGE vkc_sibling is for vkc_sibling's package config"
 )
 _vkc_call_test(
   vkc_core_version_usage "vkc_core_version(_v MAJOR)"

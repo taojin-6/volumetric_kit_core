@@ -138,8 +138,13 @@ vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp
 A consumer that installs and exports its own targets installs the core beside
 them (the core's install rules stay on in a subproject), and its package config
 must `find_dependency(volumetric_kit_core <MAJOR.MINOR>)`, the version
-`vkc_core_version(<var> MAJOR_MINOR)` reads. One that links the core into a
-shared library or framework builds the core shared too
+`vkc_core_version(<var> MAJOR_MINOR)` reads, then
+`vkc_require_core(<version> [VULKAN] PACKAGE <its package>)`. With `PACKAGE`,
+a core too old or without the tier leaves that package not found, as a failed
+`find_dependency` does: the message names the package and the config stops,
+so an optional `find_package` of it, or FetchContent looking for an installed
+copy before it builds one, carries on without it. One that links the core into
+a shared library or framework builds the core shared too
 (`BUILD_SHARED_LIBS=ON`): the log handler is process-global, and each binary
 linking a static core gets its own (DECISIONS.md, "One instance per process").
 

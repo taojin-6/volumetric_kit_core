@@ -780,7 +780,10 @@ migrate.
   changed is behaviour ([README.md](README.md#use-it-in-your-project) says
   what the failure names, and what a core older than 0.1.0 does). It checks
   a minimum only: before 1.0 a newer minor may break the API, which the
-  sibling's next re-pin meets.
+  sibling's next re-pin meets. A sibling's package config makes the same call
+  with `PACKAGE <package>`, so the refusal says the package is not found, as a
+  failed `find_dependency` does, and does not end a configure that can do
+  without it.
 
 Tests and `-Werror` default ON only at the top level, but install rules
 (`VKC_INSTALL`) default ON everywhere: a sibling that installs and exports its
