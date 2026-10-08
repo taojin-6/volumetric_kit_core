@@ -18,6 +18,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   outside the range too; store a `VkResult` with `vk_error`. `vk_result` still
   cannot tell a CUDA status from a Vulkan one: ask it only of a status from a
   Vulkan call.
+- A log handler that throws out of a failed `VKC_CHECK`, in a build with
+  exceptions, no longer leaves the thread's next failed check reading the
+  first one's destroyed message and bypassing the handler: every failed check
+  reports through the handler.
 - At a heap's budget, buffer and image allocations still take free space in
   the allocator's existing VMA blocks, so a falling budget no longer rejects
   a suballocation that needs no additional device memory. With budget room,

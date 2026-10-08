@@ -16,7 +16,10 @@
 /// A check that fails inside the installed log handler -- or while that
 /// handler is reporting an earlier failure -- skips the handler and writes to
 /// stderr directly (the earlier failure first), so a broken handler cannot
-/// recurse until the stack overflows and hide the message.
+/// recurse until the stack overflows and hide the message. A handler that
+/// throws, in a build with exceptions, unwinds out of the failed check instead
+/// of the abort; the thread's next failed check reports through the handler
+/// again.
 ///
 /// Mobile consumers build with `-fno-exceptions`, so abort -- not `throw` -- is
 /// the portable way to stop on a bug: it raises SIGABRT, which crash reporters
