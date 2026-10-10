@@ -36,6 +36,9 @@ option(VKC_INSTALL "Generate install/export rules" ON)
 # then needs no Vulkan installed to build.
 option(VKC_WITH_VULKAN "Build the vulkan tier (needs a Vulkan SDK)"
        ${PROJECT_IS_TOP_LEVEL})
+# The Vulkan test support a sibling's tests link (tests/support/; README.md,
+# "Use it in your project"). This repository's own tests build it too.
+option(VKC_BUILD_TEST_SUPPORT "Build the Vulkan test support for a sibling" OFF)
 # Lint first-party targets with clang-tidy as they compile (.clang-tidy); see
 # cmake/vkc_clang_tidy.cmake. Off by default: it slows the build.
 option(VKC_CLANG_TIDY "Run clang-tidy on first-party targets" OFF)
@@ -69,6 +72,13 @@ endif()
 # --- Dependencies + library tiers --------------------------------------------
 add_subdirectory(third_party)
 add_subdirectory(src)
+
+if(VKC_BUILD_TEST_SUPPORT AND NOT VKC_WITH_VULKAN)
+  message(FATAL_ERROR "VKC_BUILD_TEST_SUPPORT needs VKC_WITH_VULKAN")
+endif()
+if(VKC_WITH_VULKAN AND (VKC_BUILD_TEST_SUPPORT OR VKC_BUILD_TESTS))
+  add_subdirectory(tests/support)
+endif()
 
 if(VKC_BUILD_TESTS)
   enable_testing()

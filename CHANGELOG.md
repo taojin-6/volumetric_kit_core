@@ -52,6 +52,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- `volumetric_kit::core_test_policy` and `volumetric_kit::core_test_support`,
+  the test support for the family's Vulkan tests: the policy
+  `VKC_REQUIRE_VULKAN_DEVICE`, `VKC_TEST_VALIDATION` and
+  `VKC_TEST_SYNC_VALIDATION` set, for a test that is a `main()` of its own,
+  and GoogleTest fixtures on it. README.md ("Use it in your project") says how
+  a sibling adopts them. `VKC_TEST_SYNC_VALIDATION` now sets the layer's
+  settings itself, without `VK_LAYER_ENABLES` or
+  `VK_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC`.
 - `CommandBatch::submit_async(wait, signal)`: submit a batch without waiting
   for it. Nothing it records starts before every `TimelinePoint` in `wait`
   (a `TimelineSemaphore` and a value) is reached, and it sets those in
