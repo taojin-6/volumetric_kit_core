@@ -253,9 +253,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   exports a library of its own, that CI builds against an installed copy and
   against the source tree (also sanitized).
 - CI on GitHub-hosted runners: Linux and macOS Release, a Linux leg built
-  shared with `-fno-exceptions`, ASan/UBSan/LSan in Debug, and the lint gate,
-  behind one required check. A push to `main` never cancels another commit's
-  run.
+  shared, ASan/UBSan/LSan in Debug, and the lint gate, behind one required
+  check. A push to `main` never cancels another commit's run.
 - Formatting and lint: pinned clang-format and cmake-format hooks that fix
   files in place, hygiene checks (YAML, merge-conflict markers, large files,
   line endings), `.editorconfig`, and clang-tidy (`.clang-tidy`, pinned

@@ -13,9 +13,6 @@ on:
       build_type:
         type: string
         required: true
-      cxx_flags:
-        type: string
-        default: ''
       shared:
         type: boolean
         default: false
@@ -78,7 +75,6 @@ jobs:
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
-            -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
             -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }} \
             -DVKC_WITH_VULKAN=ON
 
@@ -97,7 +93,6 @@ jobs:
         run: |
           cmake -S tests/package_consumer -B build-consumer-package \
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
-            -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
             -DVKC_CONSUME=find_package -DCMAKE_PREFIX_PATH="$PWD/stage"
           cmake --build build-consumer-package
           env LD_LIBRARY_PATH="$PWD/stage/lib" \
@@ -107,7 +102,6 @@ jobs:
         run: |
           cmake -S tests/package_consumer -B build-consumer-subdir \
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
-            -DCMAKE_CXX_FLAGS="${{ inputs.cxx_flags }}" \
             -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }} \
             -DVKC_WITH_VULKAN=ON \
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
