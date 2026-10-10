@@ -57,9 +57,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   hosts and Macs, and `teardown-runners.sh`
   ([tools/runners/README.md](tools/runners/README.md)). Migrating, in `recon`
   and `gfx`: delete `.github/setup-*-runner.sh`, `.github/teardown-runners.sh`
-  and `.github/self-hosted-runners.md` in favour of these, and the fork guards
-  in favour of the repository's Actions policy (DECISIONS.md, "Only the owner
-  triggers CI").
+  and `.github/self-hosted-runners.md` in favour of these, the fork guards in
+  favour of the repository's Actions policy (DECISIONS.md, "Only the owner
+  triggers CI"), and the `ci:` block of `.pre-commit-config.yaml`, since that
+  policy refuses pre-commit.ci's pushes. On a host set up before these
+  scripts, run `setup-runners.sh` once, for either repository, so every
+  runner on it gets its share of the cores.
 - `volumetric_kit::core_test_policy` and `volumetric_kit::core_test_support`,
   the test support for the family's Vulkan tests: the policy
   `VKC_REQUIRE_VULKAN_DEVICE`, `VKC_TEST_VALIDATION` and

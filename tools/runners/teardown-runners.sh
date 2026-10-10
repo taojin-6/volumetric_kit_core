@@ -8,8 +8,9 @@
 #
 #   bash tools/runners/teardown-runners.sh <recon|gfx>
 #
-# Run as the user that owns the runner directories. It keeps going past a
-# runner it cannot remove, and exits non-zero if any is left.
+# Run as the user that owns the runner directories, with gh authed, which
+# deregistering needs: without it, no registered runner is touched. It keeps
+# going past a runner it cannot remove, and exits non-zero if any is left.
 set -uo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=common.sh
@@ -21,43 +22,54 @@ set -uo pipefail
 }
 select_repo "$1"
 
+# The repository's registered runners, in either layout, and its unregistered
+# leftovers -- a directory under ~/ci-runners/<repo>/, or one of recon's
+# pre-layout ~/actions-runner-recon-*, with no .runner, from a registration or
+# removal that did not finish.
 find_runner_dirs
-if [ "${#RUNNER_DIRS[@]}" -eq 0 ]; then
+leftovers=()
+for dir in "$RUNNER_ROOT"/runner-*/ "$HOME/actions-runner-$SLUG"-*/; do
+  if [ -d "$dir" ] && [ ! -f "${dir}.runner" ]; then leftovers+=("${dir%/}"); fi
+done
+if [ "$((${#RUNNER_DIRS[@]} + ${#leftovers[@]}))" -eq 0 ]; then
   echo "No runner of $REPO on this host (looked in $RUNNER_ROOT/ and ~/actions-runner-*/)."
   exit 0
 fi
 
-kept=0
-for dir in "${RUNNER_DIRS[@]}"; do
-  if [ -f "$dir/.runner" ] && ! registered_to_repo "$dir"; then
-    echo "==> Skipping $dir: registered to another repository"
-    continue
+# One remove token serves every runner. It is minted before any runner is
+# touched, so without gh auth, or if GitHub refuses, every runner keeps
+# running rather than going offline still registered.
+if [ "${#RUNNER_DIRS[@]}" -gt 0 ]; then
+  if ! { command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; }; then
+    die "gh is not authed, so no runner can be deregistered; none was touched. Run 'gh auth login' and re-run."
   fi
+  token="$(gh api -X POST "repos/$REPO/actions/runners/remove-token" --jq .token)" || token=""
+  [ -n "$token" ] || die "could not mint a remove token; no runner was touched"
+fi
+
+# remove_service DIR: uninstalls the runner's service, which stops it first.
+remove_service() {
+  if [ -f "$1/.service" ]; then svc "$1" uninstall >/dev/null; fi
+}
+
+kept=0
+for dir in ${RUNNER_DIRS[@]+"${RUNNER_DIRS[@]}"}; do # empty: set -u, bash 3.2
   echo "==> Removing $dir"
-  svc "$dir" stop >/dev/null 2>&1 || true
-  svc "$dir" uninstall >/dev/null 2>&1 || true
-  # Delete a registered runner's directory only once it is deregistered: it
-  # holds the credentials deregistering needs, so deleting it first would
-  # strand an offline registration that nothing on this host can remove.
-  if [ -f "$dir/.runner" ] && ! (
-    cd "$dir" || exit 1
-    if ! { command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; }; then
-      echo "    gh is not authed: the service is stopped, but the runner is still registered."
-      echo "    Run 'gh auth login' and re-run, or remove it under Settings -> Actions -> Runners."
-      exit 1
-    fi
-    token="$(gh api -X POST "repos/$REPO/actions/runners/remove-token" --jq .token)" || token=""
-    if [ -z "$token" ]; then
-      echo "    could not mint a remove token"
-      exit 1
-    fi
-    ./config.sh remove --token "$token"
-  ); then
-    echo "    Kept $dir (still registered): fix the cause and re-run, or remove it"
-    echo "    under Settings -> Actions -> Runners, then: rm -rf $dir"
+  # The runner refuses to deregister while its service is installed. Its
+  # directory is deleted only once it is deregistered: it holds the
+  # credentials deregistering needs, so deleting it first would strand an
+  # offline registration that nothing on this host can remove.
+  if ! { remove_service "$dir" && (cd "$dir" && ./config.sh remove --token "$token"); }; then
+    echo "    Kept $dir (still registered, and offline): re-run, or remove it under"
+    echo "    Settings -> Actions -> Runners and then: rm -rf $dir"
     kept=$((kept + 1))
     continue
   fi
+  rm -rf "$dir"
+done
+for dir in ${leftovers[@]+"${leftovers[@]}"}; do
+  echo "==> Removing $dir (not registered)"
+  remove_service "$dir" || true
   rm -rf "$dir"
 done
 

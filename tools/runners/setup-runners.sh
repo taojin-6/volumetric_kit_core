@@ -10,7 +10,8 @@
 #
 # Run as the user that owns ~/ci-runners (on Linux it calls sudo for the
 # services). Safe to re-run: registered runners are kept, so no new token is
-# needed, and a runner restarts only when its .env changed.
+# needed, a stopped one is started, and a running one restarts only when its
+# .env changed.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=common.sh
@@ -62,18 +63,21 @@ esac
 # in ~/actions-runner-* gets no second set. A token and the runner are fetched
 # only for that, so a re-run that only refreshes the services needs neither.
 find_runner_dirs
-have=0
-for dir in ${RUNNER_DIRS[@]+"${RUNNER_DIRS[@]}"}; do # empty: set -u, bash 3.2
-  if [ -f "$dir/.runner" ]; then have=$((have + 1)); fi
-done
+have=${#RUNNER_DIRS[@]}
 if [ "$have" -lt "$N" ]; then
+  # The latest runner release, from the tag its page redirects to: GitHub
+  # stops registering a release some time after the next one ships.
+  VER="$(curl -fsSIL -o /dev/null -w '%{url_effective}' https://github.com/actions/runner/releases/latest)"
+  VER="${VER##*/v}"
+  case "$VER" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) die "could not find the runner's latest release (got '$VER')" ;;
+  esac
   # Mint a registration token via gh if it is authed; otherwise ask for one.
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    VER="$(gh api repos/actions/runner/releases/latest --jq .tag_name | sed 's/^v//')"
     TOKEN="$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)"
   else
     echo "gh is not authed: get a token at https://github.com/$REPO/settings/actions/runners/new"
-    VER="2.335.1"
     read -r -p "Paste registration token: " TOKEN
   fi
   mkdir -p "$BASE"
@@ -84,51 +88,68 @@ if [ "$have" -lt "$N" ]; then
     "https://github.com/actions/runner/releases/download/v$VER/actions-runner-$PKG_OS-$PKG_ARCH-$VER.tar.gz"
 fi
 
-for i in $(seq 1 "$N"); do
+# A new runner takes the lowest number no runner of the repository here holds
+# and is named <host>-<slug>-<number>, since one host serves several
+# repositories. recon's pre-layout runners, ~/actions-runner-recon-<i>, carry
+# the same names, so their numbers are taken too. --replace reclaims the
+# registration of a runner of that name whose directory is gone; it must
+# never meet a working one, which it would disconnect.
+i=0
+while [ "$have" -lt "$N" ]; do
+  i=$((i + 1))
   dir="$RUNNER_ROOT/runner-$i"
-  echo "==> [$i/$N] $dir"
-  if [ -f "$dir/.runner" ]; then
-    echo "    already registered"
-  elif [ "$have" -ge "$N" ]; then
-    echo "    skipped: $N runners of $REPO are registered on this host"
-    continue
-  else
-    have=$((have + 1))
-    mkdir -p "$dir"
-    tar xzf "$TAR" -C "$dir"
-    # Runners registered before this script keep their names; new ones carry
-    # the repository's slug, since one host serves several repositories.
-    (cd "$dir" && ./config.sh --unattended --url "https://github.com/$REPO" \
-      --token "$TOKEN" --labels "$LABEL" --name "$(hostname -s)-$SLUG-$i" \
-      --work _work --replace)
-  fi
-  # One service per runner, started at boot (Linux) or login (macOS).
-  # 'install' fails when the service already exists; that is fine.
-  if [ "$OS" = Linux ]; then
-    svc "$dir" install "$USER" >/dev/null 2>&1 || true
-  else
-    svc "$dir" install >/dev/null 2>&1 || true
+  if [ -f "$dir/.runner" ] || [ -d "$HOME/actions-runner-$SLUG-$i" ]; then continue; fi
+  echo "==> Registering $dir"
+  mkdir -p "$dir"
+  tar xzf "$TAR" -C "$dir"
+  (cd "$dir" && ./config.sh --unattended --url "https://github.com/$REPO" \
+    --token "$TOKEN" --labels "$LABEL" --name "$(hostname -s)-$SLUG-$i" \
+    --work _work --replace)
+  have=$((have + 1))
+done
+find_runner_dirs
+
+# The parallel levels split the host's cores across every runner on it, of
+# every repository and in either layout, so they are written into all of
+# them: adding a repository's runners shrinks the others' share. They reach
+# jobs that run on the host, not job containers, whose workflows set their own.
+HOST_RUNNER_DIRS=()
+for dir in "$BASE"/*/runner-*/ "$HOME"/actions-runner-*/; do
+  if [ -f "${dir}.runner" ]; then HOST_RUNNER_DIRS+=("${dir%/}"); fi
+done
+THREADS=$((CORES / ${#HOST_RUNNER_DIRS[@]}))
+[ "$THREADS" -ge 1 ] || THREADS=1
+broken=0
+for dir in "${HOST_RUNNER_DIRS[@]}"; do
+  echo "==> $dir"
+  ENV_CHANGED=0
+  set_env "$dir/.env" CMAKE_BUILD_PARALLEL_LEVEL "$THREADS"
+  set_env "$dir/.env" CTEST_PARALLEL_LEVEL "$THREADS"
+  # The runner reads .env only when it starts, so a running one restarts. A
+  # stopped one, such as another repository's paused runner, stays stopped.
+  if [ "$ENV_CHANGED" -eq 1 ] && service_running "$dir"; then
+    echo "    .env changed; restarting the runner"
+    { svc "$dir" stop >/dev/null && start_service "$dir"; } || broken=$((broken + 1))
   fi
 done
 
-# Every registered runner of this repository, including any in the flat
-# pre-layout directories, gets the parallel levels. They split the host's
-# cores across every repository's runners on it, in either layout; they reach
-# jobs that run on the host, not job containers, whose workflows set their own.
-find_runner_dirs
-shared=0
-for marker in "$BASE"/*/runner-*/.runner "$HOME"/actions-runner-*/.runner; do
-  if [ -f "$marker" ]; then shared=$((shared + 1)); fi
-done
-[ "$shared" -ge 1 ] || shared=1
-THREADS=$((CORES / shared))
-[ "$THREADS" -ge 1 ] || THREADS=1
+# Each of the repository's runners is a service, started at boot (Linux) or
+# login (macOS): installed if it is not, and started if it is not running.
 for dir in "${RUNNER_DIRS[@]}"; do
-  echo "==> $dir"
-  configure_runner_env "$dir" "CMAKE_BUILD_PARALLEL_LEVEL=$THREADS" "CTEST_PARALLEL_LEVEL=$THREADS"
-  # A runner whose .env did not change is started if it is not running.
-  [ "$ENV_CHANGED" -eq 1 ] || svc "$dir" start >/dev/null 2>&1 || true
+  if [ ! -f "$dir/.service" ]; then
+    echo "==> Installing the service of $dir"
+    if [ "$OS" = Linux ]; then
+      svc "$dir" install "$USER" # as this user, not root
+    else
+      svc "$dir" install
+    fi || {
+      broken=$((broken + 1))
+      continue
+    }
+  fi
+  service_running "$dir" || start_service "$dir" || broken=$((broken + 1))
 done
+[ "$broken" -eq 0 ] || die "$broken runner services failed (above): fix the cause and re-run"
 
 echo "Done: ${#RUNNER_DIRS[@]} runners of $REPO labelled '$LABEL', $THREADS build threads each."
 if [ "$OS" = Linux ]; then

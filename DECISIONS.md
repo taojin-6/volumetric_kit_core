@@ -794,11 +794,17 @@ workflow stops only a fork that leaves it in.
   of the rule, a push's run ended in `startup_failure` with no jobs; with the
   owner in, the same workflow ran. A real fork's pull request has not been
   tried: the account that triggers one is the fork's, which is not in the
-  rule.
+  rule. Nor has the owner's approving or re-running a fork's run, which the
+  policy may then let through.
 - **The cost:** a collaborator's runs are refused until their account is added
-  to every repository's rule, and a fork's change gets CI only once a
-  maintainer pushes its branch here. [tools/runners/README.md](tools/runners/README.md)
-  has the policy and the command.
+  to every repository's rule, and a bot's are refused too: a pre-commit.ci
+  autofix push or a Dependabot pull request would get no CI, so neither is
+  installed and the lint job runs the hooks. A fork's change gets CI only
+  once a maintainer has reviewed it, above all `.github/` and the build and
+  test scripts, and pushed its branch here: from then on it runs on the
+  runners as the owner's. Approving or re-running a fork's run is treated the
+  same. [tools/runners/README.md](tools/runners/README.md) has the policy and
+  the command.
 - **The runner tooling has one copy, here,** parametrized by repository, so a
   fix reaches every repository's runners.
 
