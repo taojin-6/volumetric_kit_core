@@ -61,7 +61,6 @@ target_sources(
           shader.cpp
           support.hpp
           sync.cpp
-          timeline_points.hpp
           vk_result.cpp)
 
 # VMA is private: only allocator.cpp includes it, never a public header. Its

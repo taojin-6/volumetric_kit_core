@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "command_batch_barriers.hpp"
-#include "timeline_points.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -852,8 +851,8 @@ Result<PendingBatch> CommandBatch::submit_async(
   // can be corrected and the batch submitted again. Device::submit_pending
   // checks them again, for its own callers.
   if (device_ != nullptr && !submitted_) {
-    VKC_TRY(detail::check_timeline_points(*device_, wait, signal,
-                                          "CommandBatch::submit_async"));
+    VKC_TRY(check_timeline_points(*device_, wait, signal,
+                                  "CommandBatch::submit_async"));
   }
   VKC_TRY(begin_submit());
   if (ops_.empty() && wait.empty() && signal.empty()) return PendingBatch{};
