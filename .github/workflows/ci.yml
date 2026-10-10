@@ -29,8 +29,8 @@ jobs:
       # TODO: add the GPU legs recon runs -- Ubuntu containers on the
       # self-hosted `vk-linux-gpu` box and the self-hosted `mac` -- once those
       # runners are registered for this repository (runners on a personal
-      # account are per repository). This repository is public, so those legs
-      # must keep recon's guard and run only same-repository code.
+      # account are per repository). Only the owner triggers this
+      # repository's workflows (DECISIONS.md, "Only the owner triggers CI").
       matrix:
         os: [ubuntu-24.04, ubuntu-26.04, macos-latest]
     uses: ./.github/workflows/_build.yml

@@ -1,9 +1,11 @@
 name: lint
 
-# Lint gate: the pre-commit hooks (formatting + hygiene), and clang-tidy through
-# the build. Linux-only: the formatters' output is deterministic across operating
-# systems, so one runner is enough. Invoked by ci.yml; its `lint` result covers
-# both jobs.
+# Lint gate: the pre-commit hooks (formatting, hygiene, shellcheck), clang-tidy
+# through the build, and the tests of the runner tooling in tools/runners/.
+# The formatters' output is deterministic across operating systems, so they run
+# on Linux alone; the tooling's tests also run on macOS, whose bash (3.2) the
+# runner scripts must work with. Invoked by ci.yml; its `lint` result covers
+# every job.
 on:
   workflow_call:
 
@@ -54,3 +56,16 @@ jobs:
             -DVKC_CLANG_TIDY=ON
       - name: Build (clang-tidy runs on every first-party file)
         run: cmake --build build --parallel
+
+  runner-tooling:
+    name: runner tooling (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # Under the system's bash: 3.2 on macOS.
+      - run: /bin/bash tools/runners/tests/test_runner_scripts.sh

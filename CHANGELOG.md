@@ -52,6 +52,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
+- `tools/runners/`: the self-hosted runner scripts `recon` and `gfx` each kept
+  a copy of, in one copy for both: `setup-runners.sh <recon|gfx>` for Linux
+  hosts and Macs, and `teardown-runners.sh`
+  ([tools/runners/README.md](tools/runners/README.md)). Migrating, in `recon`
+  and `gfx`: delete `.github/setup-*-runner.sh`, `.github/teardown-runners.sh`
+  and `.github/self-hosted-runners.md` in favour of these, and the fork guards
+  in favour of the repository's Actions policy (DECISIONS.md, "Only the owner
+  triggers CI").
 - `volumetric_kit::core_test_policy` and `volumetric_kit::core_test_support`,
   the test support for the family's Vulkan tests: the policy
   `VKC_REQUIRE_VULKAN_DEVICE`, `VKC_TEST_VALIDATION` and

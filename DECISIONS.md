@@ -776,6 +776,32 @@ the core. None builds it shared, so nothing checks that the shared library
 exports what consumers call, and none builds with `-fno-exceptions`: the core
 neither throws nor catches, and review keeps it so.
 
+### Only the owner triggers CI
+
+`recon` and `gfx` are public and run legs on self-hosted runners: persistent
+machines, one a Mac whose jobs run in its logged-in user session. For a
+`pull_request` event GitHub runs the workflow files from the pull request
+itself, so a fork could send any job to those runners, and an `if:` in a
+workflow stops only a fork that leaves it in.
+
+- **GitHub enforces it, before any job.** Each family repository has an
+  Actions policy whose one rule lets only the owner's account trigger a
+  workflow. GitHub checks it before it creates a run's jobs, and no pull
+  request can change it, so the workflows carry no fork guards and the
+  runners no hook. Approval of every outside contributor's run stays on as a
+  second gate.
+- **Tested** on 2026-10-10 in a throwaway repository: with the owner left out
+  of the rule, a push's run ended in `startup_failure` with no jobs; with the
+  owner in, the same workflow ran. A real fork's pull request has not been
+  tried: the account that triggers one is the fork's, which is not in the
+  rule.
+- **The cost:** a collaborator's runs are refused until their account is added
+  to every repository's rule, and a fork's change gets CI only once a
+  maintainer pushes its branch here. [tools/runners/README.md](tools/runners/README.md)
+  has the policy and the command.
+- **The runner tooling has one copy, here,** parametrized by repository, so a
+  fix reaches every repository's runners.
+
 ### Platforms
 
 The core builds for Linux, macOS, iOS and Android, with GCC or Clang
@@ -837,9 +863,7 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   registered here too. They were to come before the allocator (V2), whose
   memory placement differs on a discrete GPU; V2 landed without them, so the
   discrete-GPU path -- `DeviceOnly` in VRAM, staging in system RAM -- is
-  tested only through the memory-type masks, against recorded layouts. On a
-  public repository those legs must run only same-repository code, as
-  `recon`'s guard does.
+  tested only through the memory-type masks, against recorded layouts.
 - **Unified memory.** `recon` deliberately runs the staged path on unified
   memory too, pending measurements of staging cost. The vulkan tier inherits that
   rule until the measurement says otherwise. On unified memory a staged

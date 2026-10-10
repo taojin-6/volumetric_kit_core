@@ -36,6 +36,14 @@ repos:
       - id: cmake-format
         additional_dependencies: [cmakelang, pyyaml]
 
+  # The self-hosted runner scripts and their tests (tools/runners/); the
+  # pinned shellcheck binary comes with the hook.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [--external-sources]
+
   # First-party code includes Vulkan through
   # "volumetric_kit/core/vulkan/vulkan.hpp", never <vulkan/...> directly, so the
   # loader choice (the link-time loader today, volk later) stays a detail of
