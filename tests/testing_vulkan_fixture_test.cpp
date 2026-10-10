@@ -122,6 +122,38 @@ TEST(ValidationSession, SetsOneSpellingOfSynchronizationValidation) {
   EXPECT_EQ(env(kShaderAccesses), nullptr);
 }
 
+TEST(ValidationSession, RestoresLegacySettingsAfterNestedSessions) {
+  for (const char* prefix :
+       {"VK_LAYER", "VK_KHRONOS_VALIDATION", "VK_VALIDATION", "VK"}) {
+    SCOPED_TRACE(prefix);
+    const std::string enables = std::string(prefix) + "_ENABLES";
+    const std::string disables = std::string(prefix) + "_DISABLES";
+    constexpr const char* kEnable =
+        "VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT";
+    constexpr const char* kDisable =
+        "VK_VALIDATION_FEATURE_DISABLE_THREAD_SAFETY_EXT";
+    const test::ScopedEnv original_enables(enables.c_str(), kEnable);
+    const test::ScopedEnv original_disables(disables.c_str(), kDisable);
+    const test::ScopedEnv original_sync(kValidateSync, "false");
+    const test::ScopedEnv original_shader(kShaderAccesses, "false");
+    {
+      const test::ValidationSession outer(test::Validation::Sync);
+      {
+        const test::ValidationSession inner(test::Validation::ShaderAccesses);
+        EXPECT_STREQ(env(kShaderAccesses), "true");
+      }
+      // Destroying the inner session leaves the outer one's policy in place.
+      EXPECT_NE(env(kValidateSync) != nullptr, env(kLayerEnables) != nullptr);
+      EXPECT_EQ(env(disables.c_str()), nullptr);
+      EXPECT_STREQ(env(kShaderAccesses), "false");
+    }
+    EXPECT_STREQ(env(enables.c_str()), kEnable);
+    EXPECT_STREQ(env(disables.c_str()), kDisable);
+    EXPECT_STREQ(env(kValidateSync), "false");
+    EXPECT_STREQ(env(kShaderAccesses), "false");
+  }
+}
+
 // --- the log capture ---------------------------------------------------------
 
 TEST(LogCapture, CountsTheLayersErrorsAndKeepsWarnings) {

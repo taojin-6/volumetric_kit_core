@@ -207,6 +207,39 @@ if(VKC_WITH_VULKAN)
   set_tests_properties(vkc_testing_own_instance_runs_sync_validation
                        PROPERTIES SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
 
+  # A caller's legacy enables/disables must not override the session's sync
+  # request. Check each spelling the layer accepts, through both the fixture and
+  # the policy alone, with a real write-after-write hazard.
+  foreach(_vkc_prefix VK_LAYER VK_KHRONOS_VALIDATION VK_VALIDATION VK)
+    string(TOLOWER "${_vkc_prefix}" _vkc_suffix)
+    foreach(_vkc_api fixture policy)
+      set(_vkc_name vkc_testing_${_vkc_api}_overrides_${_vkc_suffix})
+      if(_vkc_api STREQUAL "fixture")
+        set(_vkc_command "$<TARGET_FILE:vkc_testing_vulkan_fixture_test>"
+                         --gtest_filter=SyncValidatedTest.AHazardFailsTheTest)
+      else()
+        set(_vkc_command "$<TARGET_FILE:vkc_testing_vulkan_policy_test>")
+      endif()
+      add_test(
+        NAME ${_vkc_name}
+        COMMAND
+          "${CMAKE_COMMAND}" -E env
+          "${_vkc_prefix}_ENABLES=VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT"
+          "${_vkc_prefix}_DISABLES=VK_VALIDATION_FEATURE_DISABLE_THREAD_SAFETY_EXT"
+          ${_vkc_command})
+      set_tests_properties(
+        ${_vkc_name}
+        PROPERTIES FAIL_REGULAR_EXPRESSION
+                   "cannot be mixed"
+                   SKIP_REGULAR_EXPRESSION
+                   "${_vkc_skipped}"
+                   SKIP_RETURN_CODE
+                   77
+                   TIMEOUT
+                   120)
+    endforeach()
+  endforeach()
+
   # A sibling without googletest, whose tests are main()s of their own, asks for
   # the test support and links core_test_policy alone: the package consumer,
   # configured that way, generates. Configure only, with the VMA this build

@@ -123,22 +123,27 @@ ScopedEnv::~ScopedEnv() {
 
 // Synchronization validation through its setting, or through
 // VK_LAYER_ENABLES on a layer too old for the setting. Never both: a layer
-// given both honours the deprecated one, and newer layers warn of the mix. A
-// VK_LAYER_ENABLES the caller set is left alone.
+// given both honours the deprecated one, and newer layers warn of the mix.
+// Override legacy enables/disables, including their aliases, for the session:
+// any of them can suppress the synchronization setting. ScopedEnv restores
+// the caller's settings afterwards.
 ValidationSession::ValidationSession(Validation validation) {
   const auto set = [this](const char* name, const char* value) {
     settings_.push_back(std::make_unique<ScopedEnv>(name, value));
   };
   if (validation >= Validation::Sync) {
     const std::uint32_t layer = validation_layer_version();
-    if (layer != 0 && layer < kSyncSettingLayerVersion) {
-      if (env("VK_LAYER_ENABLES") == nullptr) {
-        set("VK_LAYER_ENABLES",
-            "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT");
-      }
-    } else {
-      set("VK_KHRONOS_VALIDATION_VALIDATE_SYNC", "true");
+    const bool legacy = layer != 0 && layer < kSyncSettingLayerVersion;
+    for (const char* name :
+         {"VK_LAYER_DISABLES", "VK_KHRONOS_VALIDATION_ENABLES",
+          "VK_KHRONOS_VALIDATION_DISABLES", "VK_VALIDATION_ENABLES",
+          "VK_VALIDATION_DISABLES", "VK_ENABLES", "VK_DISABLES"}) {
+      set(name, nullptr);
     }
+    set("VK_LAYER_ENABLES",
+        legacy ? "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+               : nullptr);
+    set("VK_KHRONOS_VALIDATION_VALIDATE_SYNC", legacy ? nullptr : "true");
   }
   if (validation >= Validation::ShaderAccesses) {
     set("VK_KHRONOS_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC", "true");

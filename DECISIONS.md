@@ -725,7 +725,10 @@ without it; and a `"vulkan"` error fails the running test.
   Synchronization validation goes through `VK_KHRONOS_VALIDATION_VALIDATE_SYNC`,
   or through `VK_LAYER_ENABLES` on a layer older than 1.3.268, which predates
   that setting; never both, since a layer given both honours the deprecated
-  one, and newer layers warn of the mix.
+  one, and newer layers warn of the mix. A synchronization session temporarily
+  overrides legacy enables/disables and their environment aliases so they
+  cannot suppress the requested checks; it restores the caller's values when
+  it ends.
 - **A fixture may ask for more** (`validation()`), met wherever the layer is
   installed -- elsewhere the test runs without it -- so barrier-heavy tests
   run under synchronization validation locally as well as in CI.

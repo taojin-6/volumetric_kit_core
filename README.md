@@ -93,6 +93,9 @@ three:
   the layer supports them, shader-access checks;
   `tests/testing_vulkan_fixture_test.cpp` checks that each reports a hazard.
 
+Synchronization sessions temporarily override legacy layer enable/disable
+environment variables and restore them on exit.
+
 Linux CI uses a software Vulkan driver; macOS requires an available device.
 Discrete DRAM/VRAM hardware coverage remains planned (DECISIONS.md, "Open
 decisions").
