@@ -803,14 +803,13 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   ship 1.2's. `vulkan.hpp` refuses older headers as it compiles. At configure,
   the build and the installed package's `find_dependency` refuse them where
   FindVulkan reports a version (CMake 3.23 and newer), from one
-  `VKC_VULKAN_MIN_VERSION`. A CI leg builds and tests on Ubuntu 22.04's
-  headers, so nothing newer than 1.3.204 slips into code every platform
-  compiles. No leg builds on Apple's 1.3.208: the one macOS leg takes
-  Homebrew's current headers, so the code that floor adds -- portability
-  enumeration, behind its macro -- compiles in CI only against newer ones. A
-  newer symbol is used behind its extension's macro, as the portability bits
-  are, or by its registry value, as `texel_bytes` takes VK_KHR_maintenance5's
-  formats.
+  `VKC_VULKAN_MIN_VERSION`. The core's CI builds on neither floor: on Ubuntu
+  24.04's and 26.04's headers, and on macOS on Homebrew's current ones.
+  recon's and gfx's Ubuntu 22.04 legs build the vulkan tier on 1.3.204, so
+  code that needs newer headers fails there when they bump their pin, not in
+  the core's own CI. A newer symbol is used behind its extension's macro, as
+  the portability bits are, or by its registry value, as `texel_bytes` takes
+  VK_KHR_maintenance5's formats.
 - **Format metadata is the core's** (`format.hpp`): `format_has_depth`,
   `format_has_stencil`, `view_aspect`, `format_needs_ycbcr_conversion` and
   `texel_bytes`, for core and KHR formats whatever headers the core was built

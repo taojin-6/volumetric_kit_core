@@ -287,7 +287,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   the build, and in the installed package's `find_dependency` -- and otherwise
   in `vulkan.hpp`, with a message naming the version needed. On Apple, 1.3.204
   through 1.3.207 used to build without portability enumeration and then find
-  no MoltenVK device. CI builds and tests on Ubuntu 22.04's headers.
+  no MoltenVK device.
 - `HeapStats` gains this allocator's own share beside the heap's figures:
   `reserved_bytes`, its blocks and dedicated memory with their free space,
   and `allocation_bytes`, its live allocations. `usage_bytes` and
