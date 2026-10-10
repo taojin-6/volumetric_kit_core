@@ -25,11 +25,6 @@ on:
       vulkan:
         type: boolean
         default: true
-      # A Vulkan-Headers tag (e.g. v1.3.208) to build against in place of the
-      # system's headers; empty takes the system's.
-      vulkan_headers:
-        type: string
-        default: ''
 
 jobs:
   build:
@@ -86,17 +81,6 @@ jobs:
           echo "VKC_LAYER_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
           echo "VK_LAYER_PATH=$(brew --prefix)/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
           DYLD_LIBRARY_PATH="$(brew --prefix)/lib" vulkaninfo --summary
-
-      # Vulkan_ROOT puts the tagged headers ahead of the system's for every
-      # find_package(Vulkan) in the job -- the build's and both consumers' --
-      # while the loader still comes from the system.
-      - name: Pin Vulkan headers
-        if: inputs.vulkan && inputs.vulkan_headers != ''
-        run: |
-          git clone --quiet --depth 1 --branch "${{ inputs.vulkan_headers }}" \
-            https://github.com/KhronosGroup/Vulkan-Headers.git \
-            "$RUNNER_TEMP/Vulkan-Headers"
-          echo "Vulkan_ROOT=$RUNNER_TEMP/Vulkan-Headers" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |

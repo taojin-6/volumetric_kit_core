@@ -27,6 +27,10 @@ jobs:
       # an existing os/build_type pair would extend that leg rather than add
       # one.
       #
+      # Every leg builds Release; the sanitizer job builds and tests Debug.
+      # Variations that do not interact share a leg rather than each taking
+      # one of its own.
+      #
       # TODO: add the GPU legs recon runs -- Ubuntu containers on the
       # self-hosted `vk-linux-gpu` box and the self-hosted `mac` -- once those
       # runners are registered for this repository (runners on a personal
@@ -34,40 +38,25 @@ jobs:
       # must keep recon's guard and run only same-repository code.
       matrix:
         include:
-          - name: ubuntu-24.04 Debug
-            os: ubuntu-24.04
-            build_type: Debug
-          - name: ubuntu-24.04 Release
-            os: ubuntu-24.04
-            build_type: Release
-          - name: macos Debug
-            os: macos-latest
-            build_type: Debug
-          - name: macos Release
-            os: macos-latest
-            build_type: Release
-          # The oldest Vulkan headers the vulkan tier supports (DECISIONS.md,
-          # "Vulkan headers come from the system"): Ubuntu 22.04's 1.3.204, and
-          # on Apple 1.3.208 -- Khronos' Vulkan-Headers at that tag, with
-          # Homebrew's loader and MoltenVK.
-          - name: ubuntu-22.04 Release
-            os: ubuntu-22.04
-            build_type: Release
-          - name: macos Release, Vulkan headers 1.3.208
-            os: macos-latest
-            build_type: Release
-            vulkan_headers: v1.3.208
-          # Mobile consumers build with -fno-exceptions (AGENTS.md).
-          - name: ubuntu-24.04 Release -fno-exceptions
+          # Mobile consumers build with -fno-exceptions (AGENTS.md), and
+          # siblings may link the core into shared libraries, where the export
+          # macros must hold under hidden visibility. The other legs build
+          # static with exceptions.
+          - name: ubuntu-24.04 Release, shared, -fno-exceptions
             os: ubuntu-24.04
             build_type: Release
             cxx_flags: -fno-exceptions
-          # Siblings may link the core into shared libraries; the export
-          # macros must hold under hidden visibility.
-          - name: ubuntu-24.04 Release shared
-            os: ubuntu-24.04
-            build_type: Release
             shared: true
+          # Ubuntu 22.04's Vulkan headers, 1.3.204, are the oldest the vulkan
+          # tier supports (DECISIONS.md, "Vulkan headers come from the
+          # system").
+          - name: ubuntu-22.04 Release
+            os: ubuntu-22.04
+            build_type: Release
+          # On Homebrew's current Vulkan headers, loader and MoltenVK.
+          - name: macos Release
+            os: macos-latest
+            build_type: Release
           # A consumer with no Vulkan installed (calib's headless solver):
           # the base tier alone, built, installed and consumed.
           - name: ubuntu-24.04 Release, no Vulkan
@@ -81,7 +70,6 @@ jobs:
       cxx_flags: ${{ matrix.cxx_flags || '' }}
       shared: ${{ matrix.shared || false }}
       vulkan: ${{ !matrix.no_vulkan }}
-      vulkan_headers: ${{ matrix.vulkan_headers || '' }}
 
   lint:
     uses: ./.github/workflows/lint.yml

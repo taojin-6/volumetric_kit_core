@@ -768,7 +768,7 @@ needs the core installed beside it. The shared library's soname carries
 The repository is public because `recon`, `gfx` and `ios` are public and will
 fetch it at configure time. The base tier is pure C++17 with no
 dependencies, so GitHub-hosted Linux and macOS runners cover it, including a
-`-fno-exceptions` leg, a shared-library leg, sanitizers, and both ways of
+shared-library build with `-fno-exceptions`, sanitizers, and both ways of
 consuming the package.
 
 ### Platforms
@@ -803,11 +803,14 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   ship 1.2's. `vulkan.hpp` refuses older headers as it compiles. At configure,
   the build and the installed package's `find_dependency` refuse them where
   FindVulkan reports a version (CMake 3.23 and newer), from one
-  `VKC_VULKAN_MIN_VERSION`. Two CI legs build and test on the floors --
-  Ubuntu 22.04's headers, and Khronos' 1.3.208 on macOS -- so nothing newer
-  slips into code either platform compiles. A newer symbol is used behind its
-  extension's macro, as the portability bits are, or by its registry value,
-  as `texel_bytes` takes VK_KHR_maintenance5's formats.
+  `VKC_VULKAN_MIN_VERSION`. A CI leg builds and tests on Ubuntu 22.04's
+  headers, so nothing newer than 1.3.204 slips into code every platform
+  compiles. No leg builds on Apple's 1.3.208: the one macOS leg takes
+  Homebrew's current headers, so the code that floor adds -- portability
+  enumeration, behind its macro -- compiles in CI only against newer ones. A
+  newer symbol is used behind its extension's macro, as the portability bits
+  are, or by its registry value, as `texel_bytes` takes VK_KHR_maintenance5's
+  formats.
 - **Format metadata is the core's** (`format.hpp`): `format_has_depth`,
   `format_has_stencil`, `view_aspect`, `format_needs_ycbcr_conversion` and
   `texel_bytes`, for core and KHR formats whatever headers the core was built

@@ -252,10 +252,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - Tests (GoogleTest) and a package-consumer project, which installs and
   exports a library of its own, that CI builds against an installed copy and
   against the source tree (also sanitized).
-- CI on GitHub-hosted runners: Linux and macOS Debug/Release, Linux
-  `-fno-exceptions` and shared-library legs, ASan/UBSan/LSan, and the lint
-  gate, behind one required check. A push to `main` never cancels another
-  commit's run.
+- CI on GitHub-hosted runners: Linux and macOS Release, a Linux leg built
+  shared with `-fno-exceptions`, ASan/UBSan/LSan in Debug, and the lint gate,
+  behind one required check. A push to `main` never cancels another commit's
+  run.
 - Formatting and lint: pinned clang-format and cmake-format hooks that fix
   files in place, hygiene checks (YAML, merge-conflict markers, large files,
   line endings), `.editorconfig`, and clang-tidy (`.clang-tidy`, pinned
@@ -287,8 +287,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   the build, and in the installed package's `find_dependency` -- and otherwise
   in `vulkan.hpp`, with a message naming the version needed. On Apple, 1.3.204
   through 1.3.207 used to build without portability enumeration and then find
-  no MoltenVK device. CI builds and tests on Ubuntu 22.04's headers and, on
-  macOS, on 1.3.208's.
+  no MoltenVK device. CI builds and tests on Ubuntu 22.04's headers.
 - `HeapStats` gains this allocator's own share beside the heap's figures:
   `reserved_bytes`, its blocks and dedicated memory with their free space,
   and `allocation_bytes`, its live allocations. `usage_bytes` and
