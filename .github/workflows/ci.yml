@@ -38,34 +38,29 @@ jobs:
       # must keep recon's guard and run only same-repository code.
       matrix:
         include:
-          # The newest Ubuntu, so its compiler and Vulkan packages are tested
-          # as they land; 24.04's run in the sanitizer and clang-tidy jobs.
-          # Mobile consumers build with -fno-exceptions (AGENTS.md), and
-          # siblings may link the core into shared libraries, where the export
-          # macros must hold under hidden visibility. The other legs build
-          # static with exceptions.
+          # The newest Ubuntu's compiler and Vulkan packages. Mobile consumers
+          # build with -fno-exceptions (AGENTS.md), and siblings may link the
+          # core into shared libraries, where the export macros must hold
+          # under hidden visibility. The other legs build static with
+          # exceptions.
           - name: ubuntu-26.04 Release, shared, -fno-exceptions
             os: ubuntu-26.04
             build_type: Release
             cxx_flags: -fno-exceptions
             shared: true
+          - name: ubuntu-24.04 Release
+            os: ubuntu-24.04
+            build_type: Release
           # On Homebrew's current Vulkan headers, loader and MoltenVK.
           - name: macos Release
             os: macos-latest
             build_type: Release
-          # A consumer with no Vulkan installed (calib's headless solver):
-          # the base tier alone, built, installed and consumed.
-          - name: ubuntu-24.04 Release, no Vulkan
-            os: ubuntu-24.04
-            build_type: Release
-            no_vulkan: true
     uses: ./.github/workflows/_build.yml
     with:
       os: ${{ matrix.os }}
       build_type: ${{ matrix.build_type }}
       cxx_flags: ${{ matrix.cxx_flags || '' }}
       shared: ${{ matrix.shared || false }}
-      vulkan: ${{ !matrix.no_vulkan }}
 
   lint:
     uses: ./.github/workflows/lint.yml

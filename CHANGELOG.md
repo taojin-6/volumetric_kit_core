@@ -227,7 +227,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   and ios's `SharedDevice`; "Migrating from a sibling's own copy" says how.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
-  on and reach the log sink; a leg builds with no Vulkan installed.
+  on and reach the log sink.
 
 - Build system: CMake ≥ 3.21, C++17, per-tier targets with an umbrella
   `volumetric_kit::core`, install/export for `find_package(volumetric_kit_core)`

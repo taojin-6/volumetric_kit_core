@@ -152,7 +152,9 @@ V1's choices, from comparing the two cores on 2026-10-03:
 - **`VKC_WITH_VULKAN` is opt-in for a subproject.** ON at the top level, OFF
   when fetched: recon and gfx set it, and calib, which fetches the core for
   its error types, then needs no Vulkan installed. An installed core ships the
-  tier's headers only with its library, and re-finds Vulkan only then.
+  tier's headers only with its library, and re-finds Vulkan only then. CI
+  builds the tier on every leg, as calib will take it too; until then,
+  calib's own CI is the build without Vulkan installed.
 - **CI without GPUs, but not without devices.** The hosted Linux legs run the
   device tests on lavapipe with `VKC_REQUIRE_VULKAN_DEVICE=1`, so a missing
   device fails instead of skipping; the sanitizer job adds the validation
