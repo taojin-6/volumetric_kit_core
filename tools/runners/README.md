@@ -21,11 +21,20 @@ both carries a set for each.
 Only the owner. Each family repository has an Actions policy (Settings ->
 Actions -> Rules) that lets no other account trigger a workflow; the core's
 [DECISIONS.md](../../DECISIONS.md#only-the-owner-triggers-ci) says why.
-GitHub checks it before it creates any job, so a fork's pull request, which
-runs the workflow files in the fork, never reaches a runner. Its run ends in
-`startup_failure` with no jobs, and GitHub's page blames "a workflow file
-issue". To test a fork's change, a maintainer pushes its branch to the
-repository and opens a pull request from there.
+GitHub checks it before it creates any job: a push by an account outside the
+rule was tested, and its run ended in `startup_failure` with no jobs, which
+GitHub's page blames on "a workflow file issue". A fork's pull request, which
+runs the workflow files in the fork and is triggered by the fork's account,
+should end the same way, but that has not been tried. Bots are refused too,
+so pre-commit.ci and Dependabot are not installed.
+
+Outside code therefore reaches the runners only through the owner, and the
+owner reviews it first. The runners are persistent, the Mac's jobs run in its
+login session, and the Linux hosts' `docker` group is root-equivalent. To
+give a fork's change CI, a maintainer first reads its whole diff, above all
+`.github/` and every build and test script, then pushes its branch to the
+repository and opens a pull request from there. Approving or re-running a
+fork's run counts the same: once the owner triggers it, it may run.
 
 The policy, as created on each repository. Add a new collaborator's user ID
 to `allowed_actors` on every repository, or their runs are refused too:
@@ -98,28 +107,30 @@ root-equivalent: fine for a personal machine, not for a shared one.
   runners share a host. Hosts set up before that layout have them in
   `~/actions-runner-*`; both scripts act on those whose `.runner` names the
   repository, and leave the rest.
-- A new runner is named `<host>-<repo>-<i>`, e.g. `taojin-desktop-recon-1`.
-  A runner already registered keeps its name, so `gfx`'s older runners keep
-  theirs (`<host>-<i>`).
+- A new runner is named `<host>-<repo>-<i>`, after the lowest number no
+  runner of the repository on the host holds. `recon`'s pre-layout runners,
+  `~/actions-runner-recon-<i>`, carry such names, so their numbers are taken
+  too: registering takes over any runner of the same name, which is how it
+  reclaims one whose directory was lost. A runner already registered keeps
+  its name, so `gfx`'s older runners keep theirs (`<host>-<i>`).
 - A re-run keeps registered runners, in either layout, and registers new
   ones only until the repository has 6 (Linux) or 2 (Mac) on the host, so it
   needs no token. For a new runner it mints the token with `gh` when that is
   authed, and otherwise asks for one from the repository's Settings ->
-  Actions -> Runners -> New self-hosted runner. It reuses a cached runner
-  tarball only if the archive is whole.
-- Each runner's `.env` gets `CMAKE_BUILD_PARALLEL_LEVEL` and
-  `CTEST_PARALLEL_LEVEL` set to the host's cores divided by every runner
-  registered on it, of every repository. They reach jobs that run on the host
-  (the Mac's), not job containers, whose workflows set their own. After
-  adding another repository's runners to a host, re-run the script for each
-  repository so the share is recomputed.
-- The runner reads `.env` only when it starts, so a runner whose `.env`
-  changed is restarted, which cancels a job running on it: run the script
-  while CI is idle.
-
-On `Taos-Mac-mini`, where jobs run on the host, run the script once for
-`recon` and once for `gfx` to write that share. The Linux hosts need nothing,
-since their jobs run in containers.
+  Actions -> Runners -> New self-hosted runner. It installs the runner's
+  latest release, reusing a cached tarball only if the archive is whole.
+- Each runner is a service, installed if it is not and started if it is not
+  running. A service that does not install or start fails the run, after the
+  other runners are set up.
+- Every runner on the host, of every repository, gets
+  `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL` in its `.env`: the
+  host's cores divided by the runners registered on it. Adding a
+  repository's runners thus shrinks the others' share in the same run. The
+  levels reach jobs that run on the host (the Mac's), not job containers,
+  whose workflows set their own.
+- The runner reads `.env` only when it starts, so a running runner whose
+  `.env` changed, of any repository, is restarted, which cancels a job
+  running on it: run the script while CI is idle.
 
 ## Pausing, moving and removing a host
 
@@ -127,17 +138,22 @@ Runners on a host share one label, and GitHub routes jobs to whichever host
 is online, so moving to a new host needs no workflow change: bring the new one
 up, then tear the old one down.
 
-- **Pause** (offline, still registered), per repository; drop `sudo` on
-  macOS:
+- **Pause** (offline, still registered), per repository, in either layout:
 
   ```sh
-  for d in ~/ci-runners/volumetric_kit_recon/runner-*/; do (cd "$d" && sudo ./svc.sh stop); done
+  bash -c '. tools/runners/common.sh; select_repo recon; find_runner_dirs
+    for d in "${RUNNER_DIRS[@]}"; do svc "$d" stop; done'
   ```
 
-  Resume with `./svc.sh start` the same way.
+  The runners stay offline until the host restarts (Linux) or the user logs
+  in again (macOS). Resume with `bash tools/runners/setup-runners.sh recon`,
+  which starts every runner of the repository that is not running.
 - **Remove**, on the old host: `bash tools/runners/teardown-runners.sh recon`,
-  and again with `gfx`. It stops and uninstalls each runner's service,
-  deregisters it and deletes its directory. A runner it cannot deregister (no
-  `gh` auth, or GitHub refused) is kept, with the credentials a retry needs,
-  and the script exits non-zero. Deregistering matters: a registration left
-  on a machine given away is a way into the repository's CI.
+  and again with `gfx`. It uninstalls each runner's service, deregisters the
+  runner and deletes its directory, and deletes the repository's leftovers
+  that never finished registering. It checks `gh` auth and mints one remove
+  token before it touches any runner, so if either fails every runner keeps
+  running. A runner GitHub will not deregister is kept, offline, with the
+  credentials a retry needs, and the script exits non-zero. Deregistering
+  matters: a registration left on a machine given away is a way into the
+  repository's CI.

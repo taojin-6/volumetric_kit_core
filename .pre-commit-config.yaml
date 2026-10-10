@@ -61,12 +61,3 @@ repos:
         # which it checks format.hpp against; the header-floor test includes
         # the system's to lower VK_HEADER_VERSION before vulkan.hpp checks it.
         exclude: ^(include/volumetric_kit/core/vulkan/vulkan\.hpp|tests/vulkan_format_reference_test\.cpp|tests/vulkan_header_floor\.cpp)$
-
-# pre-commit.ci (https://pre-commit.ci) runs these same hooks on every PR and
-# pushes the auto-fixes back to the branch. The `ci / required` check stays the
-# merge gate; this just removes the manual step.
-ci:
-  autofix_prs: true
-  autofix_commit_msg: "style: auto-fixes from pre-commit.ci hooks"
-  autoupdate_schedule: monthly
-  autoupdate_commit_msg: "chore: pre-commit autoupdate"

@@ -54,21 +54,16 @@ registered_to_repo() {
   grep -qsF "github.com/${REPO}\"" "${1%/}/.runner"
 }
 
-# Fills RUNNER_DIRS with this repository's runner directories on this host:
-# every ~/ci-runners/<repo>/runner-*, and the flat ~/actions-runner-* of hosts
-# set up before that layout, but only those whose .runner names $REPO -- that
-# glob matches every repository's.
+# Fills RUNNER_DIRS with this repository's registered runners on this host:
+# each ~/ci-runners/<repo>/runner-*, and each flat ~/actions-runner-* of hosts
+# set up before that layout, whose .runner names $REPO -- that glob matches
+# every repository's.
 find_runner_dirs() {
   RUNNER_DIRS=()
   local dir
   for dir in "$RUNNER_ROOT"/runner-*/ "$HOME"/actions-runner-*/; do
-    [ -f "${dir}config.sh" ] || continue
-    case "$dir" in
-      "$RUNNER_ROOT"/*) RUNNER_DIRS+=("${dir%/}") ;;
-      *) registered_to_repo "$dir" && RUNNER_DIRS+=("${dir%/}") ;;
-    esac
+    if registered_to_repo "$dir"; then RUNNER_DIRS+=("${dir%/}"); fi
   done
-  return 0
 }
 
 # set_env FILE KEY VALUE: makes KEY=VALUE the only KEY line in FILE, in place
@@ -87,23 +82,29 @@ set_env() {
     rm -f "$tmp"
   else
     mv -f "$tmp" "$file"
+    # shellcheck disable=SC2034 # setup-runners.sh reads it
     ENV_CHANGED=1
   fi
 }
 
-# configure_runner_env DIR KEY=VALUE...: sets each pair in runner directory
-# DIR's .env, restarting the runner if the file changed: the runner reads .env
-# only when it starts.
-configure_runner_env() {
-  local dir="$1" pair
-  shift
-  ENV_CHANGED=0
-  for pair in "$@"; do
-    set_env "$dir/.env" "${pair%%=*}" "${pair#*=}"
-  done
-  if [ "$ENV_CHANGED" -eq 1 ]; then
-    echo "    .env changed; restarting the runner"
-    svc "$dir" stop || true
-    svc "$dir" start
-  fi
+# Whether runner directory $1's service is running. svc.sh exits 0 either way,
+# so this reads what it prints: systemd's state on Linux, and on macOS whether
+# launchd has the agent loaded.
+service_running() {
+  local out
+  [ -f "$1/.service" ] || return 1 # svc.sh install writes it; uninstall deletes it
+  out="$(svc "$1" status 2>/dev/null)" || return 1
+  case "$OS:$out" in
+    Linux:*"Active: active "* | Darwin:*Started:*) return 0 ;;
+  esac
+  return 1
+}
+
+# Starts runner directory $1's service and checks that it runs: on macOS
+# svc.sh exits 0 even when launchctl fails.
+start_service() {
+  svc "$1" start >/dev/null
+  service_running "$1" && return 0
+  echo "error: the runner in $1 did not start; './svc.sh status' there says why" >&2
+  return 1
 }
