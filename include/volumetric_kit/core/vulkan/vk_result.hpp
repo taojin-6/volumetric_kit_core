@@ -9,10 +9,10 @@
 ///        and back.
 ///
 /// The base tier's `Status` carries a backend's code as a plain `int64_t`
-/// (domain `Code::Backend`), so it includes no GPU API. This header is the
-/// one place the vulkan tier turns a `VkResult` into that `Status` -- with
-/// @ref vk_error and @ref VKC_VK_TRY -- and reads it back with @ref vk_result
-/// and @ref to_string(VkResult).
+/// (domain `Code::Backend`), tagged with the backend, so it includes no GPU
+/// API. This header is the one place the vulkan tier turns a `VkResult` into
+/// that `Status` -- with @ref vk_error and @ref VKC_VK_TRY -- and reads it back
+/// with @ref vk_result, @ref is_timeout and @ref to_string(VkResult).
 ///
 /// @code
 /// Status init(VkDevice device, VkFence* fence) {
@@ -39,29 +39,25 @@ namespace volumetric_kit::core {
 /// @param what    Context for the message, e.g. the failing call.
 /// @pre @p result is not `VK_SUCCESS`: a success code is no failure, and
 ///      @ref Status::backend_error aborts on one.
-/// @return A non-OK `Status`, domain `Code::Backend`, whose @ref Status::detail
-///         is @p result.
+/// @return A non-OK `Status`, domain `Code::Backend`, whose
+///         @ref Status::backend is `Vulkan` and whose @ref Status::detail is
+///         @p result.
 inline Status vk_error(VkResult result, std::string_view what) {
-  return Status::backend_error(static_cast<std::int64_t>(result),
+  return Status::backend_error(Status::Backend::Vulkan,
+                               static_cast<std::int64_t>(result),
                                std::string(what));
 }
 
-/// @brief The `VkResult` a backend @ref Status carries.
+/// @brief The `VkResult` a Vulkan @ref Status carries.
 /// @param status  Any status.
-/// @return Its @ref Status::detail as a `VkResult` when its domain is
-///         `Code::Backend` and the detail is in `int32_t`'s range, which is
-///         `VkResult`'s; empty otherwise, success included. A 32-bit code
-///         stored without sign extension (from a `uint32_t`) is outside that
-///         range: store a `VkResult` with @ref vk_error.
-///
-/// The domain does not say *which* backend failed: a CUDA failure is a backend
-/// status too, whose `cudaError_t` detail this reads as an unrelated
-/// `VkResult` (`cudaErrorMemoryAllocation`, 2, as `VK_TIMEOUT`). Ask it only of
-/// a status from a Vulkan call.
+/// @return Its @ref Status::detail as a `VkResult` when its backend is
+///         `Vulkan` and the detail is in `int32_t`'s range, which is
+///         `VkResult`'s; empty otherwise -- for success, another domain, and
+///         another backend's failure. A 32-bit code stored without sign
+///         extension (from a `uint32_t`) is outside that range: store a
+///         `VkResult` with @ref vk_error.
 inline std::optional<VkResult> vk_result(const Status& status) noexcept {
-  // TODO: return empty for a CUDA status once Status records which backend
-  // failed (DECISIONS.md, "Open decisions").
-  if (status.domain() != Status::Code::Backend) return std::nullopt;
+  if (status.backend() != Status::Backend::Vulkan) return std::nullopt;
   // Converting a code outside VkResult's range, int32_t's, to the enum would
   // be undefined.
   const std::int64_t code = status.detail();
@@ -70,6 +66,24 @@ inline std::optional<VkResult> vk_result(const Status& status) noexcept {
     return std::nullopt;
   }
   return static_cast<VkResult>(code);
+}
+
+/// @brief Whether a wait ran out of time with the work still pending.
+/// @param status  Any status, e.g. from `Fence::wait` or `PendingBatch::wait`.
+/// @return `true` exactly when @p status is a Vulkan failure carrying
+///         `VK_TIMEOUT`; `false` for success, any other failure, and any
+///         non-Vulkan status.
+///
+/// @code
+/// Status waited = pending.wait(0);
+/// while (is_timeout(waited)) {
+///   do_other_work();  // the batch is still running
+///   waited = pending.wait(0);
+/// }
+/// VKC_TRY(waited);
+/// @endcode
+inline bool is_timeout(const Status& status) noexcept {
+  return vk_result(status) == std::optional<VkResult>(VK_TIMEOUT);
 }
 
 /// @brief The name of a `VkResult`, e.g. `"VK_ERROR_DEVICE_LOST"`.

@@ -1423,10 +1423,6 @@ class PendingTest : public BatchTest {
   TimelineSemaphore timeline_;
 };
 
-bool timed_out(const Status& s) {
-  return vk_result(s) == std::optional<VkResult>(VK_TIMEOUT);
-}
-
 // Longer than any of these waits should take, so a broken one fails the test
 // rather than hanging it.
 constexpr std::uint64_t kLongWaitNs = 10'000'000'000;
@@ -1445,7 +1441,7 @@ TEST_F(PendingTest, HoldsTheWorkBackUntilItsWaitIsMet) {
 
   // The dispatch cannot start, however long the host waits.
   EXPECT_FALSE(pending.ready());
-  EXPECT_TRUE(timed_out(pending.wait(1'000'000)));
+  EXPECT_TRUE(is_timeout(pending.wait(1'000'000)));
   EXPECT_TRUE(pending.in_flight());  // a timeout leaves it pending
   EXPECT_EQ(out[0], 0xDEADBEEFU);
 

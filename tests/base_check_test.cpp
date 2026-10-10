@@ -11,6 +11,11 @@
 
 #include "volumetric_kit/core/base/log.hpp"
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+#include <stdexcept>
+#define VKC_TEST_EXCEPTIONS 1
+#endif
+
 namespace volumetric_kit::core {
 namespace {
 
@@ -80,6 +85,36 @@ TEST(CheckDeathTest, AHandlerFailingOnACheckStillLeavesBothMessages) {
       },
       "contract check failed: handler fails on the report");
 }
+
+#ifdef VKC_TEST_EXCEPTIONS
+// A handler that throws unwinds out of a failed check, which a harness can
+// use to test checks without death tests. Each later failed check on the
+// thread reports through the handler too, rather than as a failure inside the
+// first one's report, whose text the unwinding destroyed.
+TEST(Check, AHandlerThatThrowsSeesEveryLaterFailedCheck) {
+  struct RestoreDefaultSink {
+    RestoreDefaultSink() = default;
+    RestoreDefaultSink(const RestoreDefaultSink&) = delete;
+    RestoreDefaultSink& operator=(const RestoreDefaultSink&) = delete;
+    RestoreDefaultSink(RestoreDefaultSink&&) = delete;
+    RestoreDefaultSink& operator=(RestoreDefaultSink&&) = delete;
+    ~RestoreDefaultSink() { set_log_handler({}); }
+  } const restore;
+  set_log_handler([](LogLevel level, std::string_view, std::string_view text) {
+    if (level == LogLevel::Error) throw std::runtime_error(std::string(text));
+  });
+  for (const char* contract : {"first", "second", "third"}) {
+    try {
+      VKC_CHECK(false, contract);
+      ADD_FAILURE() << "the failed check returned";
+    } catch (const std::runtime_error& reported) {
+      EXPECT_NE(std::string_view(reported.what()).find(contract),
+                std::string_view::npos)
+          << reported.what();
+    }
+  }
+}
+#endif
 
 }  // namespace
 }  // namespace volumetric_kit::core
