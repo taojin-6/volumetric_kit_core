@@ -84,10 +84,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   policy refuses pre-commit.ci's pushes. On a host set up before these
   scripts, run `setup-runners.sh` once, for either repository, so every
   runner on it gets its share of the cores.
-- `vkc_require_core(<version> [VULKAN])`, which fails the configure when the
-  core a project got is older than `<version>`, or with `VULKAN` lacks the
-  vulkan tier, naming what it found and how to fix the pin (DECISIONS.md,
-  "Consumers pin, and an application declares the core first"), and
+- `vkc_require_core(<version> [VULKAN] [PACKAGE <package>])`, which fails the
+  configure when the core a project got is older than `<version>`, or with
+  `VULKAN` lacks the vulkan tier, naming what it found and how to fix the pin
+  (DECISIONS.md, "Consumers pin, and an application declares the core
+  first") -- or, with `PACKAGE` in that package's config, leaves the package
+  not found, as `find_dependency` does -- and
   `vkc_core_version(<var> [MAJOR_MINOR])`, which reads the core's version.
   Both are defined once the core is added or found, and read the
   `VKC_CORE_VERSION` that `volumetric_kit::core_base` now carries, built here
@@ -96,9 +98,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   version they build with, recon and gfx adding `VULKAN`: it replaces recon's
   `core_vulkan` check in `third_party/CMakeLists.txt`, and gfx's
   `cmake/vg_core.cmake` and the `format.hpp` probe in its package config.
-  Each replaces the block in its `src/CMakeLists.txt` that derives the
-  MAJOR.MINOR its package config re-finds the core at with
-  `vkc_core_version(<var> MAJOR_MINOR)`.
+  Each package config calls it after `find_dependency(volumetric_kit_core)`,
+  with `PACKAGE` and its own package name. Each replaces the block in its
+  `src/CMakeLists.txt` that derives the MAJOR.MINOR its package config
+  re-finds the core at with `vkc_core_version(<var> MAJOR_MINOR)`.
 - `vulkan`: `is_timeout(status)`, whether a wait ran out of time with the work
   still pending -- a `Vulkan` status carrying `VK_TIMEOUT`, as the waits of
   `Fence`, `TimelineSemaphore`, `Device::PendingSubmit` and `PendingBatch`
