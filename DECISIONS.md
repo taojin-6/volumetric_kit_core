@@ -152,7 +152,9 @@ V1's choices, from comparing the two cores on 2026-10-03:
 - **`VKC_WITH_VULKAN` is opt-in for a subproject.** ON at the top level, OFF
   when fetched: recon and gfx set it, and calib, which fetches the core for
   its error types, then needs no Vulkan installed. An installed core ships the
-  tier's headers only with its library, and re-finds Vulkan only then.
+  tier's headers only with its library, and re-finds Vulkan only then. CI
+  builds the tier on every leg, as calib will take it too; until then,
+  calib's own CI is the build without Vulkan installed.
 - **CI without GPUs, but not without devices.** The hosted Linux legs run the
   device tests on lavapipe with `VKC_REQUIRE_VULKAN_DEVICE=1`, so a missing
   device fails instead of skipping; the sanitizer job adds the validation
@@ -767,9 +769,12 @@ needs the core installed beside it. The shared library's soname carries
 
 The repository is public because `recon`, `gfx` and `ios` are public and will
 fetch it at configure time. The base tier is pure C++17 with no
-dependencies, so GitHub-hosted Linux and macOS runners cover it, including a
-`-fno-exceptions` leg, a shared-library leg, sanitizers, and both ways of
-consuming the package.
+dependencies, so GitHub-hosted Linux and macOS runners cover it, including
+sanitizers and both ways of consuming the package. Every build leg is the
+same build on a different OS: Release and static, as every sibling builds
+the core. None builds it shared, so nothing checks that the shared library
+exports what consumers call, and none builds with `-fno-exceptions`: the core
+neither throws nor catches, and review keeps it so.
 
 ### Platforms
 
@@ -803,11 +808,13 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   ship 1.2's. `vulkan.hpp` refuses older headers as it compiles. At configure,
   the build and the installed package's `find_dependency` refuse them where
   FindVulkan reports a version (CMake 3.23 and newer), from one
-  `VKC_VULKAN_MIN_VERSION`. Two CI legs build and test on the floors --
-  Ubuntu 22.04's headers, and Khronos' 1.3.208 on macOS -- so nothing newer
-  slips into code either platform compiles. A newer symbol is used behind its
-  extension's macro, as the portability bits are, or by its registry value,
-  as `texel_bytes` takes VK_KHR_maintenance5's formats.
+  `VKC_VULKAN_MIN_VERSION`. The core's CI builds on neither floor: on Ubuntu
+  24.04's and 26.04's headers, and on macOS on Homebrew's current ones.
+  recon's and gfx's Ubuntu 22.04 legs build the vulkan tier on 1.3.204, so
+  code that needs newer headers fails there when they bump their pin, not in
+  the core's own CI. A newer symbol is used behind its extension's macro, as
+  the portability bits are, or by its registry value, as `texel_bytes` takes
+  VK_KHR_maintenance5's formats.
 - **Format metadata is the core's** (`format.hpp`): `format_has_depth`,
   `format_has_stencil`, `view_aspect`, `format_needs_ycbcr_conversion` and
   `texel_bytes`, for core and KHR formats whatever headers the core was built

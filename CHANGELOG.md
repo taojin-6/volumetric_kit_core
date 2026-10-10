@@ -227,7 +227,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   and ios's `SharedDevice`; "Migrating from a sibling's own copy" says how.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
-  on and reach the log sink; a leg builds with no Vulkan installed.
+  on and reach the log sink.
 
 - Build system: CMake ≥ 3.21, C++17, per-tier targets with an umbrella
   `volumetric_kit::core`, install/export for `find_package(volumetric_kit_core)`
@@ -252,10 +252,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - Tests (GoogleTest) and a package-consumer project, which installs and
   exports a library of its own, that CI builds against an installed copy and
   against the source tree (also sanitized).
-- CI on GitHub-hosted runners: Linux and macOS Debug/Release, Linux
-  `-fno-exceptions` and shared-library legs, ASan/UBSan/LSan, and the lint
-  gate, behind one required check. A push to `main` never cancels another
-  commit's run.
+- CI on GitHub-hosted runners: one static Release build each on Ubuntu 24.04
+  and 26.04 and macOS, ASan/UBSan/LSan in Debug, and the lint gate, behind
+  one required check. A push to `main` never cancels another commit's run.
 - Formatting and lint: pinned clang-format and cmake-format hooks that fix
   files in place, hygiene checks (YAML, merge-conflict markers, large files,
   line endings), `.editorconfig`, and clang-tidy (`.clang-tidy`, pinned
@@ -287,8 +286,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   the build, and in the installed package's `find_dependency` -- and otherwise
   in `vulkan.hpp`, with a message naming the version needed. On Apple, 1.3.204
   through 1.3.207 used to build without portability enumeration and then find
-  no MoltenVK device. CI builds and tests on Ubuntu 22.04's headers and, on
-  macOS, on 1.3.208's.
+  no MoltenVK device.
 - `HeapStats` gains this allocator's own share beside the heap's figures:
   `reserved_bytes`, its blocks and dedicated memory with their free space,
   and `allocation_bytes`, its live allocations. `usage_bytes` and

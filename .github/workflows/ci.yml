@@ -17,15 +17,14 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
+    name: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      # GitHub-hosted runners: the vulkan tier's device tests are required
-      # rather than skipped, and validated, on every leg -- Linux on lavapipe
-      # (Mesa's software Vulkan), macOS on the runner's device through
-      # MoltenVK. Legs are listed explicitly: a matrix `include` that matches
-      # an existing os/build_type pair would extend that leg rather than add
-      # one.
+      # GitHub-hosted runners, and one build on each: Release, static, as the
+      # siblings build the core (the sanitizer job builds Debug). The vulkan
+      # tier's device tests are required rather than skipped, and validated,
+      # on every leg -- Linux on lavapipe (Mesa's software Vulkan), macOS on
+      # the runner's device through MoltenVK, on Homebrew's current Vulkan.
       #
       # TODO: add the GPU legs recon runs -- Ubuntu containers on the
       # self-hosted `vk-linux-gpu` box and the self-hosted `mac` -- once those
@@ -33,55 +32,10 @@ jobs:
       # account are per repository). This repository is public, so those legs
       # must keep recon's guard and run only same-repository code.
       matrix:
-        include:
-          - name: ubuntu-24.04 Debug
-            os: ubuntu-24.04
-            build_type: Debug
-          - name: ubuntu-24.04 Release
-            os: ubuntu-24.04
-            build_type: Release
-          - name: macos Debug
-            os: macos-latest
-            build_type: Debug
-          - name: macos Release
-            os: macos-latest
-            build_type: Release
-          # The oldest Vulkan headers the vulkan tier supports (DECISIONS.md,
-          # "Vulkan headers come from the system"): Ubuntu 22.04's 1.3.204, and
-          # on Apple 1.3.208 -- Khronos' Vulkan-Headers at that tag, with
-          # Homebrew's loader and MoltenVK.
-          - name: ubuntu-22.04 Release
-            os: ubuntu-22.04
-            build_type: Release
-          - name: macos Release, Vulkan headers 1.3.208
-            os: macos-latest
-            build_type: Release
-            vulkan_headers: v1.3.208
-          # Mobile consumers build with -fno-exceptions (AGENTS.md).
-          - name: ubuntu-24.04 Release -fno-exceptions
-            os: ubuntu-24.04
-            build_type: Release
-            cxx_flags: -fno-exceptions
-          # Siblings may link the core into shared libraries; the export
-          # macros must hold under hidden visibility.
-          - name: ubuntu-24.04 Release shared
-            os: ubuntu-24.04
-            build_type: Release
-            shared: true
-          # A consumer with no Vulkan installed (calib's headless solver):
-          # the base tier alone, built, installed and consumed.
-          - name: ubuntu-24.04 Release, no Vulkan
-            os: ubuntu-24.04
-            build_type: Release
-            no_vulkan: true
+        os: [ubuntu-24.04, ubuntu-26.04, macos-latest]
     uses: ./.github/workflows/_build.yml
     with:
       os: ${{ matrix.os }}
-      build_type: ${{ matrix.build_type }}
-      cxx_flags: ${{ matrix.cxx_flags || '' }}
-      shared: ${{ matrix.shared || false }}
-      vulkan: ${{ !matrix.no_vulkan }}
-      vulkan_headers: ${{ matrix.vulkan_headers || '' }}
 
   lint:
     uses: ./.github/workflows/lint.yml
