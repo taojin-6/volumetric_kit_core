@@ -68,7 +68,8 @@ jobs:
       - name: Configure
         run: |
           cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON
+            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON \
+            -DVKC_TEST_SHARDS=4
 
       - name: Build
         run: cmake --build build --parallel

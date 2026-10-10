@@ -3,6 +3,39 @@
 
 include(GoogleTest)
 
+# Group ordinary device tests within each process so the Vulkan fixture's
+# instance/device registry is reused. Keep individual discovery by default for
+# ctest -R, and leave the policy/environment probes isolated in either mode.
+set(VKC_TEST_SHARDS
+    0
+    CACHE STRING "CTest shards per device-test binary (0: one per test)")
+if(NOT VKC_TEST_SHARDS MATCHES "^(0|[1-9][0-9]*)$")
+  message(FATAL_ERROR "VKC_TEST_SHARDS must be a non-negative integer")
+endif()
+
+function(_vkc_discover_device_tests target)
+  if(VKC_TEST_SHARDS EQUAL 0)
+    gtest_discover_tests(
+      ${target}
+      PROPERTIES
+      TIMEOUT 120)
+    return()
+  endif()
+  math(EXPR _last "${VKC_TEST_SHARDS} - 1")
+  foreach(_index RANGE ${_last})
+    set(_name "${target}.shard${_index}")
+    add_test(NAME "${_name}" COMMAND ${target})
+    # Do not match the GoogleTest skip banner: one capability skip must not hide
+    # another case's failure, or a failure in the shared-device teardown. CI
+    # requires a device; individual skips remain visible in gtest's output.
+    set_tests_properties(
+      "${_name}"
+      PROPERTIES
+        TIMEOUT 600 ENVIRONMENT
+        "GTEST_TOTAL_SHARDS=${VKC_TEST_SHARDS};GTEST_SHARD_INDEX=${_index}")
+  endforeach()
+endfunction()
+
 # Sets <out> to a regex matching <text> in a configure's output, however CMake
 # wraps the message's lines.
 function(_vkc_message_regex out text)
@@ -35,6 +68,16 @@ endforeach()
 # core_test_support's fixtures (support/), which skip without a device and fail
 # on a validation error as the environment asks.
 if(VKC_WITH_VULKAN)
+  set(_vkc_device_tests
+      vulkan_device
+      vulkan_allocator
+      vulkan_allocation_budget
+      vulkan_resources
+      vulkan_compute
+      vulkan_command_batch
+      vulkan_timer
+      vulkan_external_memory
+      vulkan_shared_device)
   foreach(
     _vkc_test
     vulkan_result
@@ -59,10 +102,14 @@ if(VKC_WITH_VULKAN)
       vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_test_support
                                     GTest::gtest_main)
     vkc_target_warnings(vkc_${_vkc_test}_test)
-    gtest_discover_tests(
-      vkc_${_vkc_test}_test
-      PROPERTIES
-      TIMEOUT 120)
+    if(_vkc_test IN_LIST _vkc_device_tests)
+      _vkc_discover_device_tests(vkc_${_vkc_test}_test)
+    else()
+      gtest_discover_tests(
+        vkc_${_vkc_test}_test
+        PROPERTIES
+        TIMEOUT 120)
+    endif()
   endforeach()
 
   # The queue-family reduction, the memory-type masks and the queue-plan choice

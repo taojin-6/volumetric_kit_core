@@ -3,8 +3,9 @@
 
 // ComputePipeline, KernelSetBuilder, ComputeKernel, KernelSets, the one-shot
 // dispatch, and the compute helpers. The shaders are tests/shaders/*.comp,
-// compiled and embedded by vkc_embed_shaders. Argument checks run without a
-// device; the rest on one (or lavapipe), as vulkan_fixture.hpp describes.
+// compiled and embedded by vkc_embed_shaders. Pure helpers need no device;
+// pipeline argument checks use a valid device so its refusal cannot mask the
+// argument under test. Device tests run as vulkan_fixture.hpp describes.
 
 #include <cstdint>
 #include <limits>
@@ -77,16 +78,6 @@ TEST(ComputeUtil, StorageInputRefusesNullHostBytes) {
   EXPECT_TRUE(is_invalid(StorageInput(empty).check("t", 4)));
 }
 
-TEST(ComputePipelineArgs, RefusesANullShader) {
-  ComputePipelineDesc desc;
-  EXPECT_TRUE(
-      is_invalid(ComputePipeline::create(VK_NULL_HANDLE, desc).status()));
-  const ShaderModule empty;
-  desc.shader = &empty;
-  EXPECT_TRUE(
-      is_invalid(ComputePipeline::create(VK_NULL_HANDLE, desc).status()));
-}
-
 TEST(ComputeKernelMoves, AnEmptyKernelMovesEmpty) {
   ComputeKernel a;
   EXPECT_FALSE(a.valid());
@@ -126,6 +117,16 @@ class ComputeTest : public test::VulkanDeviceTest {
     return out;
   }
 };
+
+TEST_F(ComputeTest, RefusesANullShader) {
+  ComputePipelineDesc desc;
+  EXPECT_TRUE(
+      is_invalid(ComputePipeline::create(device().handle(), desc).status()));
+  const ShaderModule empty;
+  desc.shader = &empty;
+  EXPECT_TRUE(
+      is_invalid(ComputePipeline::create(device().handle(), desc).status()));
+}
 
 // The whole chain by hand -- shader, layout, pipeline, pool, set, record,
 // dispatch, barrier, wait, read -- with no batch in the way.

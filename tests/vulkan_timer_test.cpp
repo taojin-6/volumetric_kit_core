@@ -122,7 +122,9 @@ TEST(GpuStageScopeInert, NullMetricsTimesNothing) {
 // family targets, so a device span above zero means something.
 constexpr VkDeviceSize kFillBytes = VkDeviceSize{64} << 20;
 
-class TimerTest : public test::VulkanDeviceTest {
+using TimerTest = test::VulkanDeviceTest;
+
+class TimerWorkTest : public TimerTest {
  protected:
   void SetUp() override {
     VulkanDeviceTest::SetUp();
@@ -178,7 +180,7 @@ class TimerTest : public test::VulkanDeviceTest {
 
 // Says, as a skip, when this device's timestamps do not advance -- why the
 // tests below check no span's magnitude here.
-TEST_F(TimerTest, TimestampsAdvance) {
+TEST_F(TimerWorkTest, TimestampsAdvance) {
   if (device().timestamp_valid_bits() == 0) {
     GTEST_SKIP() << "the queue family has no timestamps";
   }
@@ -188,7 +190,7 @@ TEST_F(TimerTest, TimestampsAdvance) {
   }
 }
 
-TEST_F(TimerTest, QueryPoolWritesAndReadsTimestamps) {
+TEST_F(TimerWorkTest, QueryPoolWritesAndReadsTimestamps) {
   // One 64-bit result a query is all read_results reads.
   EXPECT_TRUE(
       QueryPool::create(device().handle(), 2, VK_QUERY_TYPE_OCCLUSION).ok());
@@ -229,7 +231,7 @@ TEST_F(TimerTest, QueryPoolWritesAndReadsTimestamps) {
 // The device span is the recorded work alone, so it comes in under the wall
 // clock around the whole blocking submit -- if it were the wall clock
 // relabelled, or resolved against the wrong period, it would not.
-TEST_F(TimerTest, TimesTheWorkNotTheSubmit) {
+TEST_F(TimerWorkTest, TimesTheWorkNotTheSubmit) {
   Result<GpuTimer> made = GpuTimer::create(device());
   ASSERT_TRUE(made.ok()) << made.status().message();
   GpuTimer timer = *std::move(made);
@@ -261,7 +263,7 @@ TEST_F(TimerTest, TimesTheWorkNotTheSubmit) {
   EXPECT_EQ(timer.count(), 0U);  // publishing ended the window
 }
 
-TEST_F(TimerTest, AWindowIsBoundedPublishedOnceAndReusable) {
+TEST_F(TimerWorkTest, AWindowIsBoundedPublishedOnceAndReusable) {
   Result<GpuTimer> made = GpuTimer::create(device(), 1);
   ASSERT_TRUE(made.ok());
   GpuTimer tiny = *std::move(made);
@@ -370,7 +372,7 @@ TEST_F(TimerTest, SettleDropsWhatNeverRanAndRetiresWhatMayStillRun) {
 
 // What the window resolved before the timer retired is still published;
 // nothing is timed after.
-TEST_F(TimerTest, AbandonRetiresTheTimer) {
+TEST_F(TimerWorkTest, AbandonRetiresTheTimer) {
   Result<GpuTimer> made = GpuTimer::create(device());
   ASSERT_TRUE(made.ok());
   GpuTimer timer = *std::move(made);
@@ -397,7 +399,7 @@ TEST_F(TimerTest, AbandonRetiresTheTimer) {
 // outer span's queries are reset by a command buffer that has not run yet,
 // which the validation layer reports if read (VUID-vkGetQueryPoolResults-
 // None-09401), and in a later window hold the previous frame's value.
-TEST_F(TimerTest, ANestedSubmitReadsOnlyItsOwnSpan) {
+TEST_F(TimerWorkTest, ANestedSubmitReadsOnlyItsOwnSpan) {
   Result<GpuTimer> made = GpuTimer::create(device());
   ASSERT_TRUE(made.ok());
   GpuTimer timer = *std::move(made);
@@ -427,7 +429,7 @@ TEST_F(TimerTest, ANestedSubmitReadsOnlyItsOwnSpan) {
 // Two scopes open on one timer, with metrics of their own -- a stage, and a
 // helper inside it: each publishes its own spans, and the window ends with
 // the outer one.
-TEST_F(TimerTest, EachScopePublishesOnlyItsOwnSpans) {
+TEST_F(TimerWorkTest, EachScopePublishesOnlyItsOwnSpans) {
   Result<GpuTimer> made = GpuTimer::create(device());
   ASSERT_TRUE(made.ok());
   GpuTimer timer = *std::move(made);
@@ -460,12 +462,14 @@ TEST_F(TimerTest, AScopeClosedBeforeItsSubmitLeavesTheCommandUntimed) {
   Result<GpuTimer> made = GpuTimer::create(device());
   ASSERT_TRUE(made.ok());
   GpuTimer timer = *std::move(made);
+  const Result<Buffer> target = device_storage_buffer(allocator(), 64);
+  ASSERT_TRUE(target.ok()) << target.status().message();
   const std::vector<std::uint32_t> words(16, 7U);
   StageMetrics metrics;
   CommandBatch batch(device(), allocator());
   {
     GpuStageScope gone(&metrics, timer, "gone");
-    ASSERT_TRUE(batch.upload(target_, 0, words.data(), 64, &gone).ok());
+    ASSERT_TRUE(batch.upload(*target, 0, words.data(), 64, &gone).ok());
   }
   {
     const GpuStageScope later(&metrics, timer, "later");
@@ -484,13 +488,15 @@ TEST_F(TimerTest, AStageThatFillsTheWindowReportsNoDeviceTime) {
   ASSERT_TRUE(made.ok());
   GpuTimer tiny = *std::move(made);
   if (!tiny.available()) GTEST_SKIP() << "the queue family has no timestamps";
+  const Result<Buffer> target = device_storage_buffer(allocator(), 128);
+  ASSERT_TRUE(target.ok()) << target.status().message();
   const std::vector<std::uint32_t> words(16, 7U);
   StageMetrics full;
   {
     GpuStageScope stage(&full, tiny, "big");
     CommandBatch batch(device(), allocator());
-    ASSERT_TRUE(batch.upload(target_, 0, words.data(), 64, &stage).ok());
-    ASSERT_TRUE(batch.upload(target_, 64, words.data(), 64, &stage).ok());
+    ASSERT_TRUE(batch.upload(*target, 0, words.data(), 64, &stage).ok());
+    ASSERT_TRUE(batch.upload(*target, 64, words.data(), 64, &stage).ok());
     ASSERT_TRUE(batch.submit().ok());
     EXPECT_EQ(tiny.count(), 1U);
   }
@@ -500,7 +506,7 @@ TEST_F(TimerTest, AStageThatFillsTheWindowReportsNoDeviceTime) {
   {
     GpuStageScope stage(&fits, tiny, "big");
     CommandBatch batch(device(), allocator());
-    ASSERT_TRUE(batch.upload(target_, 0, words.data(), 64, &stage).ok());
+    ASSERT_TRUE(batch.upload(*target, 0, words.data(), 64, &stage).ok());
     ASSERT_TRUE(batch.submit().ok());
   }
   EXPECT_TRUE(row(fits, "big")->has_gpu);
@@ -508,7 +514,7 @@ TEST_F(TimerTest, AStageThatFillsTheWindowReportsNoDeviceTime) {
 
 // reserve grows the pool inside an open scope, which keeps publishing, and
 // refuses a device other than the timer's.
-TEST_F(TimerTest, ReserveGrowsWithinAScopeOnItsOwnDevice) {
+TEST_F(TimerWorkTest, ReserveGrowsWithinAScopeOnItsOwnDevice) {
   Result<GpuTimer> made = GpuTimer::create(device(), 1);
   ASSERT_TRUE(made.ok());
   GpuTimer timer = *std::move(made);
@@ -533,7 +539,7 @@ TEST_F(TimerTest, ReserveGrowsWithinAScopeOnItsOwnDevice) {
 #ifdef VKC_TEST_EXCEPTIONS
 // A record that throws never reaches the device: its span is dropped, and
 // the timer keeps timing.
-TEST_F(TimerTest, ARecordThatThrowsDropsItsSpan) {
+TEST_F(TimerWorkTest, ARecordThatThrowsDropsItsSpan) {
   Result<GpuTimer> made = GpuTimer::create(device());
   ASSERT_TRUE(made.ok());
   GpuTimer timer = *std::move(made);
