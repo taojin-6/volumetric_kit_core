@@ -38,18 +38,24 @@ jobs:
       # must keep recon's guard and run only same-repository code.
       matrix:
         include:
+          # The newest Ubuntu, so its compiler and Vulkan packages are tested
+          # as they land; 24.04's run in the sanitizer and clang-tidy jobs.
           # Mobile consumers build with -fno-exceptions (AGENTS.md), and
           # siblings may link the core into shared libraries, where the export
           # macros must hold under hidden visibility. The other legs build
           # static with exceptions.
-          - name: ubuntu-24.04 Release, shared, -fno-exceptions
-            os: ubuntu-24.04
+          - name: ubuntu-26.04 Release, shared, -fno-exceptions
+            os: ubuntu-26.04
             build_type: Release
             cxx_flags: -fno-exceptions
             shared: true
           # Ubuntu 22.04's Vulkan headers, 1.3.204, are the oldest the vulkan
           # tier supports (DECISIONS.md, "Vulkan headers come from the
           # system").
+          #
+          # TODO: GitHub stops supporting its ubuntu-22.04 runner image on
+          # 2027-04-17. Before then, run this leg in an ubuntu:22.04 container
+          # on a newer runner, so the header floor keeps its test.
           - name: ubuntu-22.04 Release
             os: ubuntu-22.04
             build_type: Release
