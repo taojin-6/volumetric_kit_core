@@ -10,7 +10,6 @@
 #include <memory>
 #include <mutex>
 #include <new>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -911,7 +910,7 @@ void Device::PendingSubmit::finish() noexcept {
   // Long enough that work merely queued behind other work rarely warns.
   constexpr std::uint64_t kStallNs = 1'000'000'000;
   Status waited = wait(kStallNs);
-  if (vk_result(waited) == std::optional<VkResult>(VK_TIMEOUT)) {
+  if (is_timeout(waited)) {
     for (const TimelinePoint& point : waits_) {
       const Result<std::uint64_t> reached = point.semaphore->value();
       if (reached.ok() && *reached < point.value) {

@@ -41,7 +41,7 @@ Status Fence::wait(std::uint64_t timeout_ns) const {
   VkFence fence = handle_.get();
   const VkResult result =
       vkWaitForFences(handle_.device(), 1, &fence, VK_TRUE, timeout_ns);
-  // VK_TIMEOUT too: reported, for the caller to tell apart with vk_result().
+  // VK_TIMEOUT too: reported, for the caller to tell apart with is_timeout().
   if (result != VK_SUCCESS) return vk_error(result, "vkWaitForFences");
   return {};
 }

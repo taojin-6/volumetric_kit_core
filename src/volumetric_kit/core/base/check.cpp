@@ -16,6 +16,20 @@ namespace {
 // The failure this thread is reporting through the handler, if any.
 thread_local const std::string* t_reporting = nullptr;
 
+// Marks `text` as the failure this thread reports while the guard lives. The
+// report ends by abort, or by a handler's exception unwinding out of the check:
+// then the destructor clears the mark, so a later failed check on this thread
+// neither reads the destroyed text nor bypasses the handler.
+class Reporting {
+ public:
+  explicit Reporting(const std::string& text) noexcept { t_reporting = &text; }
+  ~Reporting() { t_reporting = nullptr; }
+  Reporting(const Reporting&) = delete;
+  Reporting& operator=(const Reporting&) = delete;
+  Reporting(Reporting&&) = delete;
+  Reporting& operator=(Reporting&&) = delete;
+};
+
 }  // namespace
 
 void check_failed(const char* file, int line, const char* expr,
@@ -40,7 +54,7 @@ void check_failed(const char* file, int line, const char* expr,
     default_sink(LogLevel::Error, kCoreLogSource, text);
     std::abort();
   }
-  t_reporting = &text;
+  const Reporting reporting(text);
   log_message(LogLevel::Error, kCoreLogSource, text);
   std::abort();
 }
