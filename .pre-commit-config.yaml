@@ -36,6 +36,14 @@ repos:
       - id: cmake-format
         additional_dependencies: [cmakelang, pyyaml]
 
+  # The self-hosted runner scripts and their tests (tools/runners/); the
+  # pinned shellcheck binary comes with the hook.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [--external-sources]
+
   # First-party code includes Vulkan through
   # "volumetric_kit/core/vulkan/vulkan.hpp", never <vulkan/...> directly, so the
   # loader choice (the link-time loader today, volk later) stays a detail of
@@ -50,14 +58,6 @@ repos:
         language: pygrep
         files: \.(h|hpp|hxx|inl|ipp|c|cc|cpp|cxx|cu|cuh|mm)$
         # The reference test also includes Vulkan-Utility-Libraries' headers,
-        # which it checks format.hpp against.
-        exclude: ^(include/volumetric_kit/core/vulkan/vulkan\.hpp|tests/vulkan_format_reference_test\.cpp)$
-
-# pre-commit.ci (https://pre-commit.ci) runs these same hooks on every PR and
-# pushes the auto-fixes back to the branch. The `ci / required` check stays the
-# merge gate; this just removes the manual step.
-ci:
-  autofix_prs: true
-  autofix_commit_msg: "style: auto-fixes from pre-commit.ci hooks"
-  autoupdate_schedule: monthly
-  autoupdate_commit_msg: "chore: pre-commit autoupdate"
+        # which it checks format.hpp against; the header-floor test includes
+        # the system's to lower VK_HEADER_VERSION before vulkan.hpp checks it.
+        exclude: ^(include/volumetric_kit/core/vulkan/vulkan\.hpp|tests/vulkan_format_reference_test\.cpp|tests/vulkan_header_floor\.cpp)$

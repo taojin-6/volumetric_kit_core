@@ -1,0 +1,5 @@
+# core_test_support ships to the siblings, so it keeps clang-analyzer-*, which
+# tests/.clang-tidy turns off for the test files.
+InheritParentConfig: true
+Checks: >
+  clang-analyzer-*

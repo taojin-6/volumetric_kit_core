@@ -29,10 +29,10 @@
 #include "allocation_budget.hpp"
 #include "memory_types.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
-#include "vulkan_fixture.hpp"
 
 namespace volumetric_kit::core {
 namespace {
@@ -149,7 +149,7 @@ class AllocationBudgetTest : public test::VulkanTest {
  protected:
   void SetUp() override {
     VulkanTest::SetUp();
-    if (IsSkipped() || HasFatalFailure()) return;
+    if (base_setup_incomplete()) return;
     Result<Device> made =
         Device::create(instance(), physical(), requirements());
     ASSERT_TRUE(made.ok()) << made.status().message();

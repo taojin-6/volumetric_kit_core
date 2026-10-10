@@ -30,6 +30,7 @@ they land in are in [DECISIONS.md](DECISIONS.md#tiers).
 | Why a tier or rule exists | [DECISIONS.md](DECISIONS.md) |
 | Formatting and CI | [CONTRIBUTING.md](CONTRIBUTING.md), `.pre-commit-config.yaml`, `.github/workflows/` |
 | Seeding the vulkan tier | `recon`'s and `gfx`'s `include/volumetric_kit/*/core/` and their DECISIONS.md |
+| Self-hosted runners, who can trigger CI | [tools/runners/README.md](tools/runners/README.md) |
 
 ## Naming conventions
 
@@ -41,6 +42,9 @@ they land in are in [DECISIONS.md](DECISIONS.md#tiers).
 - CMake: `find_package(volumetric_kit_core)`; targets
   `volumetric_kit::core_base`, `…_vulkan`, `…_camera`, `…_sensor`; umbrella
   `volumetric_kit::core`.
+- Test support: `volumetric_kit::core_test_policy` and `…_test_support` in
+  `tests/support/`, headers `volumetric_kit/core/testing/…`, namespace
+  `volumetric_kit::core::test` (README.md, "Use it in your project").
 - Macros/export: `VKC_*` (e.g. `VKC_TRY`, `VKC_CHECK`, `VKC_BASE_API`). Never
   `VK_*`, which Vulkan owns.
 
@@ -109,6 +113,8 @@ git -C "$core_root" diff --check
 cmake -S "$core_root" -B "$core_root/build-tidy" \
   -DCMAKE_BUILD_TYPE=Debug -DVKC_CLANG_TIDY=ON
 cmake --build "$core_root/build-tidy" --parallel
+# the runner tooling's tests; they touch no runner:
+bash "$core_root/tools/runners/tests/test_runner_scripts.sh"
 ```
 
 - Use the pinned formatting tools in `.pre-commit-config.yaml` and the pinned
@@ -121,8 +127,9 @@ cmake --build "$core_root/build-tidy" --parallel
   (`tests/package_consumer/`, both `find_package` and `add_subdirectory`).
 - The vulkan tier's device tests skip without a device. Run them with
   `VKC_REQUIRE_VULKAN_DEVICE=1` so a skip fails, and `VKC_TEST_VALIDATION=1`
-  so a validation error fails (CONTRIBUTING.md, "GPU tests"); report which
-  device they ran on. Distinguish a skipped device test from a passed one.
+  and `VKC_TEST_SYNC_VALIDATION=1` so a validation error fails
+  (CONTRIBUTING.md, "GPU tests"); report which device they ran on.
+  Distinguish a skipped device test from a passed one.
 - Documentation-only changes need formatting, link, and consistency checks;
   no build is needed. Hooks can be scoped with `pre-commit run --files`.
 

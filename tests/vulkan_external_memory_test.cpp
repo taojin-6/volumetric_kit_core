@@ -19,13 +19,13 @@
 #include <gtest/gtest.h>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
-#include "vulkan_device_fixture.hpp"
 
 namespace volumetric_kit::core {
 namespace {
@@ -177,7 +177,7 @@ class ExportTest : public test::VulkanDeviceTest {
 
   void SetUp() override {
     VulkanDeviceTest::SetUp();
-    if (IsSkipped() || HasFatalFailure()) return;
+    if (base_setup_incomplete()) return;
     // Refused, not failed, wherever export is impossible: without the
     // extension, and with it where the driver exports no such buffer.
     if (!device().exports_memory() ||

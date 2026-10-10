@@ -152,13 +152,17 @@ V1's choices, from comparing the two cores on 2026-10-03:
 - **`VKC_WITH_VULKAN` is opt-in for a subproject.** ON at the top level, OFF
   when fetched: recon and gfx set it, and calib, which fetches the core for
   its error types, then needs no Vulkan installed. An installed core ships the
-  tier's headers only with its library, and re-finds Vulkan only then.
+  tier's headers only with its library, and re-finds Vulkan only then. CI
+  builds the tier on every leg, as calib will take it too; until then,
+  calib's own CI is the build without Vulkan installed.
 - **CI without GPUs, but not without devices.** The hosted Linux legs run the
   device tests on lavapipe with `VKC_REQUIRE_VULKAN_DEVICE=1`, so a missing
   device fails instead of skipping; the sanitizer job adds the validation
   layer (`VKC_TEST_VALIDATION=1`), so ASan, UBSan, LSan and validation check
   the same run. Under it, a test fails if validation is off or does not reach
-  the log sink, and counts errors the layer reports at `vkDestroyInstance`.
+  the log sink, and the run fails on errors the layer reports as the shared
+  devices and instances are destroyed ("One Vulkan test fixture for the
+  family", below).
 
 V2's choices, from the same comparison:
 
@@ -702,6 +706,44 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
   remain: a handler replacing itself waits only for calls on other threads,
   leaving its own active callbacks to return afterwards.
 
+### One Vulkan test fixture for the family
+
+The test support in `tests/support/` holds the policy that makes a GPU test
+mean something, written once for every sibling: a missing device skips or,
+under `VKC_REQUIRE_VULKAN_DEVICE`, fails; `VKC_TEST_VALIDATION` and
+`VKC_TEST_SYNC_VALIDATION` turn the layer on and fail a test that runs
+without it; and a `"vulkan"` error fails the running test.
+
+- **The policy needs no test framework.** `core_test_policy` holds it for a
+  test that is a `main()` of its own, as recon's are, and skips by exit code
+  (77, CTest's `SKIP_RETURN_CODE`). `core_test_support`'s GoogleTest fixtures
+  are built on it, and link the consumer's `GTest::gtest` only where it
+  exists, so a sibling without googletest still generates its build.
+- **One instance and device per process**, as gfx's fixture already shared
+  them (gfx DECISIONS.md, "GPU tests share a device per process", for the
+  driver costs and limits behind it): one instance per validation level, one
+  device per level and equal requirements. A test makes its own objects on
+  them; one it leaks is reported as the shared device is destroyed, failing
+  the run rather than the test. Requirements carrying a `feature_chain`
+  cannot be compared, so a fixture asking for one fails rather than share.
+- **From source only.** Neither target is installed or exported, so an
+  installed core carries no googletest. Static, so the shared objects are the
+  test binary's own.
+- **The layer's settings through its environment variables**, which it reads
+  as an instance is created: set while a fixture's instance is made, and for
+  the whole run under `VKC_TEST_SYNC_VALIDATION`, so an instance a test makes
+  itself (through `test::instance_config()`) runs the same checks.
+  Synchronization validation goes through `VK_KHRONOS_VALIDATION_VALIDATE_SYNC`,
+  or through `VK_LAYER_ENABLES` on a layer older than 1.3.268, which predates
+  that setting; never both, since a layer given both honours the deprecated
+  one, and newer layers warn of the mix. A synchronization session temporarily
+  overrides legacy enables/disables and their environment aliases so they
+  cannot suppress the requested checks; it restores the caller's values when
+  it ends.
+- **A fixture may ask for more** (`validation()`), met wherever the layer is
+  installed -- elsewhere the test runs without it -- so barrier-heavy tests
+  run under synchronization validation locally as well as in CI.
+
 ### One instance per process
 
 The log handler is process-global state, so a process must hold one copy of
@@ -736,9 +778,44 @@ needs the core installed beside it. The shared library's soname carries
 
 The repository is public because `recon`, `gfx` and `ios` are public and will
 fetch it at configure time. The base tier is pure C++17 with no
-dependencies, so GitHub-hosted Linux and macOS runners cover it, including a
-`-fno-exceptions` leg, a shared-library leg, sanitizers, and both ways of
-consuming the package.
+dependencies, so GitHub-hosted Linux and macOS runners cover it, including
+sanitizers and both ways of consuming the package. Every build leg is the
+same build on a different OS: Release and static, as every sibling builds
+the core. None builds it shared, so nothing checks that the shared library
+exports what consumers call, and none builds with `-fno-exceptions`: the core
+neither throws nor catches, and review keeps it so.
+
+### Only the owner triggers CI
+
+`recon` and `gfx` are public and run legs on self-hosted runners: persistent
+machines, one a Mac whose jobs run in its logged-in user session. For a
+`pull_request` event GitHub runs the workflow files from the pull request
+itself, so a fork could send any job to those runners, and an `if:` in a
+workflow stops only a fork that leaves it in.
+
+- **GitHub enforces it, before any job.** Each family repository has an
+  Actions policy whose one rule lets only the owner's account trigger a
+  workflow. GitHub checks it before it creates a run's jobs, and no pull
+  request can change it, so the workflows carry no fork guards and the
+  runners no hook. Approval of every outside contributor's run stays on as a
+  second gate.
+- **Tested** on 2026-10-10 in a throwaway repository: with the owner left out
+  of the rule, a push's run ended in `startup_failure` with no jobs; with the
+  owner in, the same workflow ran. A real fork's pull request has not been
+  tried: the account that triggers one is the fork's, which is not in the
+  rule. Nor has the owner's approving or re-running a fork's run, which the
+  policy may then let through.
+- **The cost:** a collaborator's runs are refused until their account is added
+  to every repository's rule, and a bot's are refused too: a pre-commit.ci
+  autofix push or a Dependabot pull request would get no CI, so neither is
+  installed and the lint job runs the hooks. A fork's change gets CI only
+  once a maintainer has reviewed it, above all `.github/` and the build and
+  test scripts, and pushed its branch here: from then on it runs on the
+  runners as the owner's. Approving or re-running a fork's run is treated the
+  same. [tools/runners/README.md](tools/runners/README.md) has the policy and
+  the command.
+- **The runner tooling has one copy, here,** parametrized by repository, so a
+  fix reaches every repository's runners.
 
 ### Platforms
 
@@ -765,18 +842,21 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   or gfx, and mix two versions in one that also includes `<vulkan/vulkan.h>`
   from elsewhere (GLFW, ImGui). An application that wants a reproducible pin
   points `Vulkan_INCLUDE_DIR` at it.
-- **The oldest supported headers are 1.3.204** -- Ubuntu 22.04's -- **and
-  1.3.208 on Apple**, the first with `VK_KHR_portability_enumeration`, without
-  which the loader hides MoltenVK's devices. On Android the headers are the
-  NDK's, so the floor is NDK r25, the first to ship Vulkan 1.3's; older NDKs
-  ship 1.2's. `vulkan.hpp` refuses older headers as it compiles. At configure,
-  the build and the installed package's `find_dependency` refuse them where
-  FindVulkan reports a version (CMake 3.23 and newer), from one
-  `VKC_VULKAN_MIN_VERSION`. Two CI legs build and test on the floors --
-  Ubuntu 22.04's headers, and Khronos' 1.3.208 on macOS -- so nothing newer
-  slips into code either platform compiles. A newer symbol is used behind its
-  extension's macro, as the portability bits are, or by its registry value,
-  as `texel_bytes` takes VK_KHR_maintenance5's formats.
+- **The oldest supported headers are 1.3.275, Ubuntu 24.04's, on every
+  platform** (raised from 1.3.204, Ubuntu 22.04's, on 2026-10-10, when recon
+  and gfx dropped their 22.04 legs and nothing built on that floor any more).
+  It is past Apple's own need, 1.3.208, the first with
+  `VK_KHR_portability_enumeration`, without which the loader hides MoltenVK's
+  devices. On Android the headers are the NDK's sysroot's, so the floor is
+  NDK r27, whose are 1.3.275; no CI builds Android. `vulkan.hpp` refuses older
+  headers as it compiles. At configure, the build and the installed package's
+  `find_dependency` refuse them where FindVulkan reports a version (CMake 3.23
+  and newer), from one `VKC_VULKAN_MIN_VERSION`; a test checks the two agree.
+  The core's CI builds on Ubuntu 26.04's headers and on macOS on Homebrew's
+  current ones, and its Ubuntu 24.04 leg, like recon's and gfx's, on the
+  floor itself. A newer symbol is used behind its extension's macro, as
+  the portability bits are, or by its registry value, as `texel_bytes` takes
+  VK_KHR_maintenance5's formats.
 - **Format metadata is the core's** (`format.hpp`): `format_has_depth`,
   `format_has_stencil`, `view_aspect`, `format_needs_ycbcr_conversion` and
   `texel_bytes`, for core and KHR formats whatever headers the core was built
@@ -799,9 +879,7 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   registered here too. They were to come before the allocator (V2), whose
   memory placement differs on a discrete GPU; V2 landed without them, so the
   discrete-GPU path -- `DeviceOnly` in VRAM, staging in system RAM -- is
-  tested only through the memory-type masks, against recorded layouts. On a
-  public repository those legs must run only same-repository code, as
-  `recon`'s guard does.
+  tested only through the memory-type masks, against recorded layouts.
 - **Unified memory.** `recon` deliberately runs the staged path on unified
   memory too, pending measurements of staging cost. The vulkan tier inherits that
   rule until the measurement says otherwise. On unified memory a staged

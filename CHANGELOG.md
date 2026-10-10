@@ -60,6 +60,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   refuses a wait for a value neither reached nor in that record, as a
   submission a present waits for needs. Nothing to migrate: the core's own
   submits check and record as before.
+- `tools/runners/`: the self-hosted runner scripts `recon` and `gfx` each kept
+  a copy of, in one copy for both: `setup-runners.sh <recon|gfx>` for Linux
+  hosts and Macs, and `teardown-runners.sh`
+  ([tools/runners/README.md](tools/runners/README.md)). Migrating, in `recon`
+  and `gfx`: delete `.github/setup-*-runner.sh`, `.github/teardown-runners.sh`
+  and `.github/self-hosted-runners.md` in favour of these, the fork guards in
+  favour of the repository's Actions policy (DECISIONS.md, "Only the owner
+  triggers CI"), and the `ci:` block of `.pre-commit-config.yaml`, since that
+  policy refuses pre-commit.ci's pushes. On a host set up before these
+  scripts, run `setup-runners.sh` once, for either repository, so every
+  runner on it gets its share of the cores.
+- `volumetric_kit::core_test_policy` and `volumetric_kit::core_test_support`,
+  the test support for the family's Vulkan tests: the policy
+  `VKC_REQUIRE_VULKAN_DEVICE`, `VKC_TEST_VALIDATION` and
+  `VKC_TEST_SYNC_VALIDATION` set, for a test that is a `main()` of its own,
+  and GoogleTest fixtures on it. README.md ("Use it in your project") says how
+  a sibling adopts them. `VKC_TEST_SYNC_VALIDATION` now sets the layer's
+  settings itself, without `VK_LAYER_ENABLES` or
+  `VK_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC`.
 - `CommandBatch::submit_async(wait, signal)`: submit a batch without waiting
   for it. Nothing it records starts before every `TimelinePoint` in `wait`
   (a `TimelineSemaphore` and a value) is reached, and it sets those in
@@ -227,7 +246,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   and ios's `SharedDevice`; "Migrating from a sibling's own copy" says how.
 - CI runs the vulkan tier's device tests on lavapipe, with a device required,
   and in the sanitizer job under the Khronos validation layer, which must be
-  on and reach the log sink; a leg builds with no Vulkan installed.
+  on and reach the log sink.
 
 - Build system: CMake ≥ 3.21, C++17, per-tier targets with an umbrella
   `volumetric_kit::core`, install/export for `find_package(volumetric_kit_core)`
@@ -252,10 +271,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - Tests (GoogleTest) and a package-consumer project, which installs and
   exports a library of its own, that CI builds against an installed copy and
   against the source tree (also sanitized).
-- CI on GitHub-hosted runners: Linux and macOS Debug/Release, Linux
-  `-fno-exceptions` and shared-library legs, ASan/UBSan/LSan, and the lint
-  gate, behind one required check. A push to `main` never cancels another
-  commit's run.
+- CI on GitHub-hosted runners: one static Release build each on Ubuntu 24.04
+  and 26.04 and macOS, ASan/UBSan/LSan in Debug, and the lint gate, behind
+  one required check. A push to `main` never cancels another commit's run.
 - Formatting and lint: pinned clang-format and cmake-format hooks that fix
   files in place, hygiene checks (YAML, merge-conflict markers, large files,
   line endings), `.editorconfig`, and clang-tidy (`.clang-tidy`, pinned
@@ -280,15 +298,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   said "a required core feature".
 - `Device` holds the record of what it enabled. Rebuild consumers after
   bumping their pin: `Device` changes size.
-- `vulkan`: **the oldest supported Vulkan headers are 1.3.204, and 1.3.208 on
-  Apple** (DECISIONS.md, "Vulkan headers come from the system"); on Android,
-  take NDK r25 or newer, whose headers are Vulkan 1.3's. Older headers fail at
-  configure where FindVulkan reports a version (CMake 3.23 and newer) -- in
-  the build, and in the installed package's `find_dependency` -- and otherwise
-  in `vulkan.hpp`, with a message naming the version needed. On Apple, 1.3.204
-  through 1.3.207 used to build without portability enumeration and then find
-  no MoltenVK device. CI builds and tests on Ubuntu 22.04's headers and, on
-  macOS, on 1.3.208's.
+- `vulkan`: **the oldest supported Vulkan headers are 1.3.275**, Ubuntu
+  24.04's, on every platform (DECISIONS.md, "Vulkan headers come from the
+  system"); on Android, take NDK r27 or newer. Older headers fail at configure
+  where FindVulkan reports a version (CMake 3.23 and newer) -- in the build,
+  and in the installed package's `find_dependency` -- and otherwise in
+  `vulkan.hpp`, with a message naming the version needed. On Ubuntu 22.04,
+  point `Vulkan_INCLUDE_DIR` at a Vulkan SDK's headers.
 - `HeapStats` gains this allocator's own share beside the heap's figures:
   `reserved_bytes`, its blocks and dedicated memory with their free space,
   and `allocation_bytes`, its live allocations. `usage_bytes` and

@@ -32,7 +32,10 @@ pre-commit run --all-files
 Lint with clang-tidy, pinned to the same release as clang-format. It needs a
 compile database, so it runs through the build rather than as a hook: every
 first-party file is checked against [`.clang-tidy`](.clang-tidy) as it
-compiles, and any finding fails the build.
+compiles, and any finding fails the build. The test files skip the
+path-sensitive analyzer (`clang-analyzer-*`), which is most of the time it
+takes ([`tests/.clang-tidy`](tests/.clang-tidy)); the library, test support
+included, keeps it.
 
 ```sh
 pipx install clang-tidy==22.1.8   # or: pip install --user clang-tidy==22.1.8
@@ -57,33 +60,19 @@ ctest --test-dir "$core_root/build" --output-on-failure
 
 ### GPU tests
 
-The vulkan tier's device tests run on the best device present -- a GPU, or
-lavapipe, Mesa's software Vulkan -- and skip without one. CTest reports a
-skipped test as passed, so check them as CI does:
+The vulkan tier's device tests skip without a device. Run them as CI does,
+with the variables [README.md](README.md#build-and-test) describes:
 
 ```sh
-VKC_REQUIRE_VULKAN_DEVICE=1 VKC_TEST_VALIDATION=1 \
-  VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
-  VK_VALIDATION_SYNCVAL_SHADER_ACCESSES_HEURISTIC=1 VKC_TEST_SYNC_VALIDATION=1 \
+VKC_REQUIRE_VULKAN_DEVICE=1 VKC_TEST_VALIDATION=1 VKC_TEST_SYNC_VALIDATION=1 \
   ctest --test-dir "$core_root/build" --output-on-failure
 ```
 
-`VKC_REQUIRE_VULKAN_DEVICE=1` turns a skip into a failure, and
-`VKC_TEST_VALIDATION=1` enables the Khronos validation layer and fails any test
-that triggers a validation error -- or that runs without validation. On macOS
-with Homebrew's `vulkan-validationlayers`, the loader finds the layer's
-manifest but not its library; add `DYLD_LIBRARY_PATH=/opt/homebrew/lib`, or
-every device test fails with "VKC_TEST_VALIDATION is set, but validation is
-off".
-
-CI enables synchronization validation and, on layers exposing the setting,
-shader-access checks as above. The latter detects uniform and storage-buffer
-visibility hazards that ordinary API validation cannot find.
-`VKC_TEST_SYNC_VALIDATION=1` makes a test commit a deliberate hazard and fail
-unless the layer reports it, so a run cannot pass with synchronization
-validation silently off. Capability skips, such as unsupported
-external-memory handles, remain distinct from tests that executed
-successfully.
+On macOS with Homebrew's `vulkan-validationlayers`, the loader finds the
+layer's manifest but not its library; add `DYLD_LIBRARY_PATH=/opt/homebrew/lib`,
+or every device test fails with "validation is off". Capability skips, such
+as unsupported external-memory handles, remain distinct from tests that
+executed successfully.
 
 ## Changing a public API
 
@@ -101,7 +90,8 @@ CMake package needs:
   gfx and ios pin, so their formatting is byte-identical; clang-tidy is pinned
   to the same release.
 - CI's single required check is `ci / required`; it passes only when every
-  build leg, lint (the pre-commit hooks and clang-tidy) and sanitizers pass.
+  build leg, lint (the pre-commit hooks, clang-tidy and the tests of
+  `tools/runners/`) and sanitizers pass.
 - Mark deferred work inline with a greppable `// TODO:` (or `# TODO:` in CMake
   and YAML), rather than tracking it only in prose or commits.
 

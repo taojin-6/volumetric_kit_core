@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_buffer.hpp"
@@ -26,7 +27,6 @@
 #include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
-#include "vulkan_device_fixture.hpp"
 
 namespace volumetric_kit::core {
 namespace {

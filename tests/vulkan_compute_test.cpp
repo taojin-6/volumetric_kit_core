@@ -20,6 +20,7 @@
 #include "fill_comp.spv.hpp"
 #include "memory_types.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
@@ -29,7 +30,6 @@
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/shader.hpp"
-#include "vulkan_device_fixture.hpp"
 
 namespace volumetric_kit::core {
 namespace {

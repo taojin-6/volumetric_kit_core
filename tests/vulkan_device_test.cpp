@@ -21,11 +21,11 @@
 #include <gtest/gtest.h>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
-#include "vulkan_fixture.hpp"
 
 namespace volumetric_kit::core {
 namespace {

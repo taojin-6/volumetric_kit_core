@@ -38,6 +38,18 @@ WarningsAsErrors: '*'
 # ones (googletest).
 HeaderFilterRegex: '.*/include/volumetric_kit/core/.*'
 SystemHeaders: false
+# clang-tidy 22 parses as Clang 22, which reports __COUNTER__ -- VKC_ASSIGN's
+# unique names -- as a C2y extension under -Wpedantic. The compilers CI builds
+# with are older and do not. clang-tidy reports it only where no
+# clang-analyzer-* check runs, so it surfaced when the test files dropped the
+# analyzer (tests/.clang-tidy).
+#
+# TODO: a Clang 22 build with -Wpedantic and -Werror fails the same way, in the
+# core and in any sibling that expands VKC_ASSIGN (recon and gfx build with
+# -Wpedantic). Fix VKC_ASSIGN before CI's compilers reach Clang 22, then drop
+# this.
+ExtraArgs:
+  - -Wno-c2y-extensions
 CheckOptions:
   # First-party code reaches Vulkan only through
   # volumetric_kit/core/vulkan/vulkan.hpp (the vulkan-include-umbrella hook
