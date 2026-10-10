@@ -411,15 +411,21 @@ TEST_F(ResourcesTest, ChecksAndRecordsTheValuesOfASubmitMadeOutsideTheCore) {
   EXPECT_TRUE(
       check_timeline_points(device(), {}, {{&timeline, 6}}, "Test::submit")
           .ok());
+  // Recording the signal proves its order, not that its host dependency has
+  // been satisfied. A presentation wait must still refuse it.
+  EXPECT_TRUE(is_invalid(check_timeline_points(
+      device(), {{&timeline, 5}}, {}, "Test::submit", TimelineWaits::Reached)));
 
   EXPECT_TRUE(timeline.signal(1).ok());
   EXPECT_TRUE(timeline.wait(5).ok());
+  EXPECT_TRUE(check_timeline_points(device(), {{&timeline, 5}}, {},
+                                    "Test::submit", TimelineWaits::Reached)
+                  .ok());
 }
 
-// With TimelineWaits::Submitted a wait must be for a value already reached,
-// or one a submit that reached the queue sets; the default takes any value,
-// as one the host sets later is.
-TEST_F(ResourcesTest, RefusesAWaitNothingIsSubmittedToSet) {
+// A submitted signal can still depend on a host value that has not been set.
+// A presentation wait must refuse it until reached; Any still accepts it.
+TEST_F(ResourcesTest, RefusesAnUnreachedWaitEvenWhenItsSignalWasSubmitted) {
   Result<TimelineSemaphore> made = TimelineSemaphore::create(device(), 2);
   ASSERT_TRUE(made.ok()) << made.status().message();
   TimelineSemaphore timeline = *std::move(made);
@@ -427,6 +433,7 @@ TEST_F(ResourcesTest, RefusesAWaitNothingIsSubmittedToSet) {
   ASSERT_TRUE(made.ok()) << made.status().message();
   TimelineSemaphore gate = *std::move(made);
   const auto check = [&](std::uint64_t value) {
+    // The earlier public spelling must enforce the stricter policy too.
     return check_timeline_points(device(), {{&timeline, value}}, {},
                                  "Test::submit", TimelineWaits::Submitted);
   };
@@ -444,13 +451,84 @@ TEST_F(ResourcesTest, RefusesAWaitNothingIsSubmittedToSet) {
   Result<Device::PendingSubmit> pending = device().submit_pending(
       [](VkCommandBuffer) {}, {{&gate, 1}}, {{&timeline, 4}});
   ASSERT_TRUE(pending.ok()) << pending.status().message();
-  EXPECT_TRUE(check(4).ok());
+  EXPECT_TRUE(is_invalid(check(4)));
   EXPECT_TRUE(is_invalid(check(5)));
   EXPECT_EQ(counter(timeline), 2u);
+  EXPECT_TRUE(
+      check_timeline_points(device(), {{&timeline, 4}}, {}, "Test::submit")
+          .ok());
 
   EXPECT_TRUE(gate.signal(1).ok());
   EXPECT_TRUE(pending->wait().ok());
   EXPECT_EQ(counter(timeline), 4u);
+  EXPECT_TRUE(check(4).ok());
+}
+
+TEST_F(ResourcesTest, RefusesAnUnreachedWaitThroughSeveralSubmissions) {
+  Result<TimelineSemaphore> made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  TimelineSemaphore gate = *std::move(made);
+  made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const TimelineSemaphore intermediate = *std::move(made);
+  made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const TimelineSemaphore produced = *std::move(made);
+
+  Result<Device::PendingSubmit> first = device().submit_pending(
+      [](VkCommandBuffer) {}, {{&gate, 1}}, {{&intermediate, 4}});
+  ASSERT_TRUE(first.ok()) << first.status().message();
+  Result<Device::PendingSubmit> second = device().submit_pending(
+      [](VkCommandBuffer) {}, {{&intermediate, 4}}, {{&produced, 8}});
+  // No fatal assertion while the host holds either submission.
+  EXPECT_TRUE(second.ok()) << second.status().message();
+  const auto check = [&] {
+    return check_timeline_points(device(), {{&produced, 8}}, {}, "Test::submit",
+                                 TimelineWaits::Reached);
+  };
+  EXPECT_TRUE(is_invalid(check()));
+  EXPECT_EQ(counter(produced), 0u);
+  EXPECT_TRUE(
+      check_timeline_points(device(), {{&produced, 8}}, {}, "Test::submit")
+          .ok());
+
+  EXPECT_TRUE(gate.signal(1).ok());
+  EXPECT_TRUE(first->wait().ok());
+  if (second.ok()) {
+    EXPECT_TRUE(second->wait().ok());
+    EXPECT_TRUE(check().ok());
+  }
+}
+
+// Even a producer with no explicit waits inherits earlier work on its queue.
+// Certifying it just because its own wait list is empty is also unsafe.
+TEST_F(ResourcesTest, RefusesAnUnreachedSignalBehindAQueuePredecessor) {
+  Result<TimelineSemaphore> made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  TimelineSemaphore gate = *std::move(made);
+  made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const TimelineSemaphore produced = *std::move(made);
+
+  Result<Device::PendingSubmit> first =
+      device().submit_pending([](VkCommandBuffer) {}, {{&gate, 1}}, {});
+  ASSERT_TRUE(first.ok()) << first.status().message();
+  Result<Device::PendingSubmit> second =
+      device().submit_pending([](VkCommandBuffer) {}, {}, {{&produced, 4}});
+  EXPECT_TRUE(second.ok()) << second.status().message();
+  const auto check = [&] {
+    return check_timeline_points(device(), {{&produced, 4}}, {}, "Test::submit",
+                                 TimelineWaits::Reached);
+  };
+  EXPECT_TRUE(is_invalid(check()));
+  EXPECT_EQ(counter(produced), 0u);
+
+  EXPECT_TRUE(gate.signal(1).ok());
+  EXPECT_TRUE(first->wait().ok());
+  if (second.ok()) {
+    EXPECT_TRUE(second->wait().ok());
+    EXPECT_TRUE(check().ok());
+  }
 }
 
 // --- command pools and buffers -----------------------------------------------

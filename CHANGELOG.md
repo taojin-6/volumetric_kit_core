@@ -56,10 +56,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `note_timeline_signals(signal)` (`sync.hpp`): the timeline-value refusals
   `Device::submit_pending` and `CommandBatch::submit_async` make, and their
   record of the values a submit that reached a queue sets, for a library that
-  submits to the queue itself. With `TimelineWaits::Submitted` the check also
-  refuses a wait for a value neither reached nor in that record, as a
-  submission a present waits for needs. Nothing to migrate: the core's own
-  submits check and record as before.
+  submits to the queue itself. `TimelineWaits::Reached` conservatively
+  refuses unfinished timeline waits feeding presentation: a submitted signal
+  may still depend on an unsubmitted signal, including through earlier queue
+  work. The initial `Submitted` spelling remains an alias, with this stricter
+  behavior. Callers using that policy must wait for the producer's value or
+  retry after it is reached; prefer the `Reached` spelling. The check covers
+  the named timeline points, not binary waits or other queue dependencies.
+  The core's own submits keep `Any` and their asynchronous behavior.
 - `tools/runners/`: the self-hosted runner scripts `recon` and `gfx` each kept
   a copy of, in one copy for both: `setup-runners.sh <recon|gfx>` for Linux
   hosts and Macs, and `teardown-runners.sh`

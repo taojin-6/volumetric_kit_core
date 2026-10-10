@@ -212,11 +212,15 @@ struct TimelinePoint {
 enum class TimelineWaits {
   /// Any value, one the host or a later submission sets included, as
   /// @ref Device::submit_pending allows.
-  Any,
-  /// Only a value already reached, or one a submission that reached a queue
-  /// sets (@ref note_timeline_signals): what a submission that a present
-  /// waits for needs (`VUID-vkQueuePresentKHR-pWaitSemaphores-03268`).
-  Submitted,
+  Any = 0,
+  /// Only a value already reached. A recorded but unfinished signal may
+  /// still depend on an unsubmitted signal, directly or through earlier
+  /// queue work, so it cannot establish a valid presentation dependency
+  /// (`VUID-vkQueuePresentKHR-pWaitSemaphores-03268`). The check never waits.
+  Reached = 1,
+  /// The initial API's spelling, retained for source compatibility. It now
+  /// requires reached values too; a submitted signal alone is insufficient.
+  Submitted = Reached,
 };
 
 /// @brief Check the timeline values a submission to @p device waits for and
@@ -229,9 +233,16 @@ enum class TimelineWaits {
 /// submits' -- know the values it sets. The value checks catch a stale value,
 /// not a race, as @ref TimelineSemaphore::signal says.
 ///
+/// For a submission feeding presentation, @ref TimelineWaits::Reached
+/// conservatively refuses unfinished producers: the record contains their
+/// signal values, not their upstream dependencies. Wait for the value or
+/// retry after it is reached. This checks only the named timeline points;
+/// the caller must also satisfy presentation's requirements for binary
+/// semaphore dependencies and other work on the queue.
+///
 /// @code
 /// VKC_TRY(check_timeline_points(device, wait, signal, "Renderer::submit",
-///                               TimelineWaits::Submitted));
+///                               TimelineWaits::Reached));
 /// // ... fill VkTimelineSemaphoreSubmitInfo from wait and signal ...
 /// if (device.queue_submit(1, &submit, fence) == VK_SUCCESS) {
 ///   note_timeline_signals(signal);
@@ -247,8 +258,8 @@ enum class TimelineWaits {
 ///         would not advance its counter -- one semaphore set twice, a value
 ///         not above one waited for on the same semaphore, or not above both
 ///         its counter and every value a recorded submission sets -- or, with
-///         @ref TimelineWaits::Submitted, a value to wait for above both its
-///         counter and every value a recorded submission sets;
+///         @ref TimelineWaits::Reached, a value to wait for above its current
+///         counter, even when a recorded submission will set it;
 ///         @ref Status::Code::Unsupported for a value on a device that did not
 ///         enable `timelineSemaphore`; or a backend @ref Status from reading
 ///         a counter. OK for no values at all, on any device.
@@ -259,8 +270,8 @@ VKC_VULKAN_API Status check_timeline_points(
 
 /// @brief Record that a submission which reached a queue sets each value in
 ///        @p signal, so @ref check_timeline_points refuses a later one that
-///        would not exceed it, and, with @ref TimelineWaits::Submitted,
-///        accepts a wait for it.
+///        would not exceed it. This records signal order only: it does not
+///        make an unfinished signal acceptable to @ref TimelineWaits::Reached.
 /// @param signal  The submission's values to set, which
 ///                @ref check_timeline_points accepted.
 VKC_VULKAN_API void note_timeline_signals(

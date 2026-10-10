@@ -138,6 +138,15 @@ shared library or framework builds the core shared too
 (`BUILD_SHARED_LIBS=ON`): the log handler is process-global, and each binary
 linking a static core gets its own (DECISIONS.md, "One instance per process").
 
+Libraries submitting directly use `check_timeline_points` before submission
+and `note_timeline_signals` after success (`vulkan/sync.hpp`). For timeline
+waits feeding presentation, `TimelineWaits::Reached` requires each value to
+be reached already: a recorded pending signal does not prove its upstream
+dependencies are submitted. Wait for the producer or retry later. The
+initial `Submitted` spelling is an alias with the same stricter behavior;
+ordinary core submissions keep `Any` and may wait for future values. Binary
+waits and other queue dependencies remain the submitter's responsibility.
+
 A sibling's Vulkan tests apply the variables above through the core's test
 support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
 `FetchContent_MakeAvailable`; an installed core has none.

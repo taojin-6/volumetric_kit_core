@@ -451,11 +451,18 @@ without the wait:
   `note_timeline_signals`), so a library that submits to the queue itself --
   gfx's frame loop, whose submit carries the present's semaphore -- refuses
   what the core's submits refuse, and its values join the record they check
-  against. A submission a present waits for may wait only for a value already
-  reached or submitted to be set (`VUID-vkQueuePresentKHR-pWaitSemaphores-03268`),
-  which `TimelineWaits::Submitted` checks against the same record; the core's
-  own submits keep `TimelineWaits::Any`, as the rule above lets them wait for
-  a value the host sets later.
+  against. Presentation requires the entire upstream signal chain to be
+  submitted (`VUID-vkQueuePresentKHR-pWaitSemaphores-03268`). A recorded signal
+  is insufficient: its producer may still wait for a future host value, and
+  even a producer with no explicit waits can sit behind such work on its
+  queue. The record keeps values, not a dependency graph, so
+  `TimelineWaits::Reached` conservatively requires the current counters to
+  have reached every named wait. It does not block; the caller waits for the
+  producer or retries later. `Submitted` remains a source-compatible alias
+  for this stricter policy. Binary semaphore dependencies and other work on
+  the queue remain the submitter's responsibility. The core's own submits
+  keep `TimelineWaits::Any`, as the rule above lets them wait for a value the
+  host sets later.
 - **A readback lands at the wait, once.** The work completing writes nothing
   the host can see, so a destination is never written while the host may be
   reading an earlier one.

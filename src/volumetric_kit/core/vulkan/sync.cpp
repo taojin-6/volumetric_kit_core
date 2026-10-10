@@ -211,21 +211,17 @@ Status check_timeline_points(const Device& device,
       }
     }
   }
-  // The newest value a semaphore is reached or submitted to reach. As for
-  // TimelineSemaphore::signal, comparing against it catches a stale value,
-  // not a race.
-  const auto settled =
-      [](const TimelineSemaphore& semaphore) -> Result<std::uint64_t> {
-    VKC_ASSIGN(const std::uint64_t current, semaphore.value());
-    return std::max(current, detail::TimelineSubmits::highest(semaphore));
-  };
-  if (waits == TimelineWaits::Submitted) {
+  // A submitted signal does not prove its dependencies have been submitted:
+  // its producer, or earlier work on its queue, may still wait for the host.
+  // TODO: accept unfinished producers only with proof of all their upstream
+  // dependencies, including implicit dependencies through queue order.
+  if (waits == TimelineWaits::Reached) {
     for (const TimelinePoint& point : wait) {
-      VKC_ASSIGN(const std::uint64_t reachable, settled(*point.semaphore));
-      if (point.value > reachable) {
+      VKC_ASSIGN(const std::uint64_t current, point.semaphore->value());
+      if (point.value > current) {
         return refuse(
-            "a value to wait for is neither reached nor set by a submit that "
-            "reached a queue");
+            "a value to wait for has not been reached; a submitted signal "
+            "does not prove its upstream dependencies are resolved");
       }
     }
   }
@@ -252,8 +248,9 @@ Status check_timeline_points(const Device& device,
       }
     }
     // An earlier submit's signal, on this queue, runs first.
-    VKC_ASSIGN(const std::uint64_t reachable, settled(semaphore));
-    if (value <= reachable) {
+    VKC_ASSIGN(const std::uint64_t current, semaphore.value());
+    if (value <=
+        std::max(current, detail::TimelineSubmits::highest(semaphore))) {
       return refuse(
           "a value to set must exceed its semaphore's current one, and every "
           "value an earlier submit sets");
