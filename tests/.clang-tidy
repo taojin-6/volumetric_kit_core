@@ -1,0 +1,8 @@
+# The test files skip clang-analyzer-*, the path-sensitive analyzer: on them it
+# took about 80% of the clang-tidy job, while the sanitizer job checks the
+# tests at run time. Every other check of the root .clang-tidy still applies,
+# and the library keeps the analyzer (src/, and tests/support/, which siblings
+# link).
+InheritParentConfig: true
+Checks: >
+  -clang-analyzer-*

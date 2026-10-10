@@ -32,7 +32,10 @@ pre-commit run --all-files
 Lint with clang-tidy, pinned to the same release as clang-format. It needs a
 compile database, so it runs through the build rather than as a hook: every
 first-party file is checked against [`.clang-tidy`](.clang-tidy) as it
-compiles, and any finding fails the build.
+compiles, and any finding fails the build. The test files skip the
+path-sensitive analyzer (`clang-analyzer-*`), which is most of the time it
+takes ([`tests/.clang-tidy`](tests/.clang-tidy)); the library, test support
+included, keeps it.
 
 ```sh
 pipx install clang-tidy==22.1.8   # or: pip install --user clang-tidy==22.1.8
