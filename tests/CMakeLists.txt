@@ -120,6 +120,34 @@ if(VKC_WITH_VULKAN)
                        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
 
+# The Vulkan-header floor (vulkan.hpp): compile vulkan_header_floor.cpp, which
+# lowers the system headers' VK_HEADER_VERSION before vulkan.hpp checks it, one
+# patch release below VKC_VULKAN_MIN_VERSION and at it. The first must fail with
+# the floor's message and the second compile, so the header's floor and the
+# build's agree. Compile only: nothing is linked or run.
+if(VKC_WITH_VULKAN)
+  string(REGEX REPLACE "^[0-9]+\\.[0-9]+\\.([0-9]+)$" "\\1" _vkc_floor
+                       "${VKC_VULKAN_MIN_VERSION}")
+  math(EXPR _vkc_below "${_vkc_floor} - 1")
+  set(_vkc_sysroot)
+  if(APPLE AND CMAKE_OSX_SYSROOT)
+    set(_vkc_sysroot -isysroot "${CMAKE_OSX_SYSROOT}")
+  endif()
+  foreach(_vkc_version ${_vkc_below} ${_vkc_floor})
+    add_test(
+      NAME vkc_vulkan_header_floor_${_vkc_version}
+      COMMAND
+        "${CMAKE_CXX_COMPILER}" ${_vkc_sysroot} -std=c++17 -fsyntax-only
+        "-I${PROJECT_SOURCE_DIR}/include" "-I${Vulkan_INCLUDE_DIR}"
+        "-DVKC_TEST_HEADER_VERSION=${_vkc_version}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/vulkan_header_floor.cpp")
+  endforeach()
+  set_tests_properties(
+    vkc_vulkan_header_floor_${_vkc_below}
+    PROPERTIES PASS_REGULAR_EXPRESSION
+               "needs Vulkan headers ${VKC_VULKAN_MIN_VERSION} or newer")
+endif()
+
 # core_test_support's fixture in processes of their own, each entry with the
 # environment it probes, read from the output: a run without a device fails
 # under VKC_REQUIRE_VULKAN_DEVICE and skips without it; one whose layer cannot

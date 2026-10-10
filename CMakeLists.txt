@@ -61,12 +61,8 @@ if(VKC_WITH_VULKAN)
   # come from the system"), checked at configure where FindVulkan reports a
   # version: by the build (src/volumetric_kit/core/vulkan/) and by the installed
   # package's find_dependency. vulkan.hpp checks the same as it compiles; keep
-  # the two in step.
-  if(APPLE)
-    set(VKC_VULKAN_MIN_VERSION 1.3.208)
-  else()
-    set(VKC_VULKAN_MIN_VERSION 1.3.204)
-  endif()
+  # the two in step (tests/vulkan_header_floor.cpp checks they agree).
+  set(VKC_VULKAN_MIN_VERSION 1.3.275)
 endif()
 
 # --- Dependencies + library tiers --------------------------------------------
