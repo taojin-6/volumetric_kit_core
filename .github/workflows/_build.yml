@@ -1,21 +1,15 @@
 name: build
 
-# One build leg: configure, build and test, then install and consume the
-# package the two ways the sibling repos do (find_package against the install,
-# add_subdirectory against the checkout). Invoked by ci.yml, which owns the
-# triggers and the matrix.
+# One build leg, Release and static as the siblings build the core: configure,
+# build and test, then install and consume the package the two ways the
+# sibling repos do (find_package against the install, add_subdirectory against
+# the checkout). Invoked by ci.yml, which owns the triggers and the matrix.
 on:
   workflow_call:
     inputs:
       os:
         type: string
         required: true
-      build_type:
-        type: string
-        required: true
-      shared:
-        type: boolean
-        default: false
 
 jobs:
   build:
@@ -74,9 +68,7 @@ jobs:
       - name: Configure
         run: |
           cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
-            -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }} \
-            -DVKC_WITH_VULKAN=ON
+            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON
 
       - name: Build
         run: cmake --build build --parallel
@@ -92,18 +84,15 @@ jobs:
       - name: Consume via find_package
         run: |
           cmake -S tests/package_consumer -B build-consumer-package \
-            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DCMAKE_BUILD_TYPE=Release \
             -DVKC_CONSUME=find_package -DCMAKE_PREFIX_PATH="$PWD/stage"
           cmake --build build-consumer-package
-          env LD_LIBRARY_PATH="$PWD/stage/lib" \
-            ./build-consumer-package/vkc_package_consumer
+          ./build-consumer-package/vkc_package_consumer
 
       - name: Consume via add_subdirectory
         run: |
           cmake -S tests/package_consumer -B build-consumer-subdir \
-            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
-            -DBUILD_SHARED_LIBS=${{ inputs.shared && 'ON' || 'OFF' }} \
-            -DVKC_WITH_VULKAN=ON \
+            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON \
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
           cmake --build build-consumer-subdir
           ./build-consumer-subdir/vkc_package_consumer

@@ -252,9 +252,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - Tests (GoogleTest) and a package-consumer project, which installs and
   exports a library of its own, that CI builds against an installed copy and
   against the source tree (also sanitized).
-- CI on GitHub-hosted runners: Linux and macOS Release, a Linux leg built
-  shared, ASan/UBSan/LSan in Debug, and the lint gate, behind one required
-  check. A push to `main` never cancels another commit's run.
+- CI on GitHub-hosted runners: one static Release build each on Ubuntu 24.04
+  and 26.04 and macOS, ASan/UBSan/LSan in Debug, and the lint gate, behind
+  one required check. A push to `main` never cancels another commit's run.
 - Formatting and lint: pinned clang-format and cmake-format hooks that fix
   files in place, hygiene checks (YAML, merge-conflict markers, large files,
   line endings), `.editorconfig`, and clang-tidy (`.clang-tidy`, pinned

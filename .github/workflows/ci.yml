@@ -17,19 +17,14 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
+    name: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      # GitHub-hosted runners: the vulkan tier's device tests are required
-      # rather than skipped, and validated, on every leg -- Linux on lavapipe
-      # (Mesa's software Vulkan), macOS on the runner's device through
-      # MoltenVK. Legs are listed explicitly: a matrix `include` that matches
-      # an existing os/build_type pair would extend that leg rather than add
-      # one.
-      #
-      # Every leg builds Release; the sanitizer job builds and tests Debug.
-      # Variations that do not interact share a leg rather than each taking
-      # one of its own.
+      # GitHub-hosted runners, and one build on each: Release, static, as the
+      # siblings build the core (the sanitizer job builds Debug). The vulkan
+      # tier's device tests are required rather than skipped, and validated,
+      # on every leg -- Linux on lavapipe (Mesa's software Vulkan), macOS on
+      # the runner's device through MoltenVK, on Homebrew's current Vulkan.
       #
       # TODO: add the GPU legs recon runs -- Ubuntu containers on the
       # self-hosted `vk-linux-gpu` box and the self-hosted `mac` -- once those
@@ -37,26 +32,10 @@ jobs:
       # account are per repository). This repository is public, so those legs
       # must keep recon's guard and run only same-repository code.
       matrix:
-        include:
-          # Siblings may link the core into shared libraries, where the export
-          # macros must hold under hidden visibility. The other legs build
-          # static.
-          - name: ubuntu-26.04 Release, shared
-            os: ubuntu-26.04
-            build_type: Release
-            shared: true
-          - name: ubuntu-24.04 Release
-            os: ubuntu-24.04
-            build_type: Release
-          # On Homebrew's current Vulkan headers, loader and MoltenVK.
-          - name: macos Release
-            os: macos-latest
-            build_type: Release
+        os: [ubuntu-24.04, ubuntu-26.04, macos-latest]
     uses: ./.github/workflows/_build.yml
     with:
       os: ${{ matrix.os }}
-      build_type: ${{ matrix.build_type }}
-      shared: ${{ matrix.shared || false }}
 
   lint:
     uses: ./.github/workflows/lint.yml

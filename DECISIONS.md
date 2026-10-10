@@ -769,10 +769,12 @@ needs the core installed beside it. The shared library's soname carries
 
 The repository is public because `recon`, `gfx` and `ios` are public and will
 fetch it at configure time. The base tier is pure C++17 with no
-dependencies, so GitHub-hosted Linux and macOS runners cover it, including a
-shared-library build, sanitizers, and both ways of consuming the package. No
-leg builds with `-fno-exceptions`: the core neither throws nor catches, and
-review keeps it so.
+dependencies, so GitHub-hosted Linux and macOS runners cover it, including
+sanitizers and both ways of consuming the package. Every build leg is the
+same build on a different OS: Release and static, as every sibling builds
+the core. None builds it shared, so nothing checks that the shared library
+exports what consumers call, and none builds with `-fno-exceptions`: the core
+neither throws nor catches, and review keeps it so.
 
 ### Platforms
 
