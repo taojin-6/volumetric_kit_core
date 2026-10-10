@@ -30,6 +30,7 @@ they land in are in [DECISIONS.md](DECISIONS.md#tiers).
 | Why a tier or rule exists | [DECISIONS.md](DECISIONS.md) |
 | Formatting and CI | [CONTRIBUTING.md](CONTRIBUTING.md), `.pre-commit-config.yaml`, `.github/workflows/` |
 | Seeding the vulkan tier | `recon`'s and `gfx`'s `include/volumetric_kit/*/core/` and their DECISIONS.md |
+| Self-hosted runners, who can trigger CI | [tools/runners/README.md](tools/runners/README.md) |
 
 ## Naming conventions
 
@@ -112,6 +113,8 @@ git -C "$core_root" diff --check
 cmake -S "$core_root" -B "$core_root/build-tidy" \
   -DCMAKE_BUILD_TYPE=Debug -DVKC_CLANG_TIDY=ON
 cmake --build "$core_root/build-tidy" --parallel
+# the runner tooling's tests; they touch no runner:
+bash "$core_root/tools/runners/tests/test_runner_scripts.sh"
 ```
 
 - Use the pinned formatting tools in `.pre-commit-config.yaml` and the pinned

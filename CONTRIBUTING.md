@@ -90,7 +90,8 @@ CMake package needs:
   gfx and ios pin, so their formatting is byte-identical; clang-tidy is pinned
   to the same release.
 - CI's single required check is `ci / required`; it passes only when every
-  build leg, lint (the pre-commit hooks and clang-tidy) and sanitizers pass.
+  build leg, lint (the pre-commit hooks, clang-tidy and the tests of
+  `tools/runners/`) and sanitizers pass.
 - Mark deferred work inline with a greppable `// TODO:` (or `# TODO:` in CMake
   and YAML), rather than tracking it only in prose or commits.
 
