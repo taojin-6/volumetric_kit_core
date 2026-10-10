@@ -38,12 +38,18 @@ configure_file(
 # same minor), so the soname carries MAJOR.MINOR and two releases installed to
 # one prefix are told apart by the loader rather than by a crash.
 #
-# TODO: from 1.0, SOVERSION ${PROJECT_VERSION_MAJOR} alone.
+# VKC_CORE_VERSION: the version vkc_require_core and vkc_core_version read,
+# exported so an installed core_base carries it too.
+#
+# TODO: from 1.0, SOVERSION ${PROJECT_VERSION_MAJOR} alone, and so the soname
+# check in tests/package_consumer/.
 set_target_properties(
   core_base
   PROPERTIES OUTPUT_NAME volumetric_kit_core_base
              VERSION ${PROJECT_VERSION}
              SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+             VKC_CORE_VERSION ${PROJECT_VERSION}
+             EXPORT_PROPERTIES VKC_CORE_VERSION
              CXX_VISIBILITY_PRESET hidden
              VISIBILITY_INLINES_HIDDEN ON
              POSITION_INDEPENDENT_CODE ON)

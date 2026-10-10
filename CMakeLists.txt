@@ -3,11 +3,13 @@
 
 cmake_minimum_required(VERSION 3.21)
 
+# When VERSION moves, and what takes it: DECISIONS.md, "Consumers pin, and an
+# application declares the core first".
 project(
   volumetric_kit_core
-  VERSION 0.0.1
+  VERSION 0.1.0
   DESCRIPTION
-    "Shared foundation for the volumetric_kit family: error handling, and (staged) the Vulkan core, camera models and sensors"
+    "Shared foundation for the volumetric_kit family: error handling and the Vulkan core"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_core"
   LANGUAGES CXX)
 
@@ -53,8 +55,10 @@ include(vkc_warnings)
 include(vkc_sanitizers)
 include(vkc_clang_tidy)
 include(vkc_single_instance)
+# vkc_require_core / vkc_core_version, and with the vulkan tier
 # vkc_compile_shaders / vkc_embed_shaders: functions are global in CMake, so a
 # project that fetches the core can call them once it is added.
+include(vkc_require_core)
 if(VKC_WITH_VULKAN)
   include(vkc_shaders)
   # The oldest Vulkan headers the tier supports (DECISIONS.md, "Vulkan headers
