@@ -195,8 +195,7 @@ function(_vkc_add_shader_commands out_var caller output_dir target_env)
         FATAL_ERROR
           "${caller}: no GLSL->SPIR-V compiler found. "
           "Install shaderc (glslc) or glslang -- both ship with the Vulkan SDK "
-          "(macOS: brew install shaderc; Ubuntu: apt install glslc, or "
-          "glslang-tools on 22.04).")
+          "(macOS: brew install shaderc; Ubuntu: apt install glslc).")
     endif()
   endif()
 

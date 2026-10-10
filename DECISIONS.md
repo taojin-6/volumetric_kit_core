@@ -827,18 +827,19 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   or gfx, and mix two versions in one that also includes `<vulkan/vulkan.h>`
   from elsewhere (GLFW, ImGui). An application that wants a reproducible pin
   points `Vulkan_INCLUDE_DIR` at it.
-- **The oldest supported headers are 1.3.204** -- Ubuntu 22.04's -- **and
-  1.3.208 on Apple**, the first with `VK_KHR_portability_enumeration`, without
-  which the loader hides MoltenVK's devices. On Android the headers are the
-  NDK's, so the floor is NDK r25, the first to ship Vulkan 1.3's; older NDKs
-  ship 1.2's. `vulkan.hpp` refuses older headers as it compiles. At configure,
-  the build and the installed package's `find_dependency` refuse them where
-  FindVulkan reports a version (CMake 3.23 and newer), from one
-  `VKC_VULKAN_MIN_VERSION`. The core's CI builds on neither floor: on Ubuntu
-  24.04's and 26.04's headers, and on macOS on Homebrew's current ones.
-  recon's and gfx's Ubuntu 22.04 legs build the vulkan tier on 1.3.204, so
-  code that needs newer headers fails there when they bump their pin, not in
-  the core's own CI. A newer symbol is used behind its extension's macro, as
+- **The oldest supported headers are 1.3.275, Ubuntu 24.04's, on every
+  platform** (raised from 1.3.204, Ubuntu 22.04's, on 2026-10-10, when recon
+  and gfx dropped their 22.04 legs and nothing built on that floor any more).
+  It is past Apple's own need, 1.3.208, the first with
+  `VK_KHR_portability_enumeration`, without which the loader hides MoltenVK's
+  devices. On Android the headers are the NDK's sysroot's, so the floor is
+  NDK r27, whose are 1.3.275; no CI builds Android. `vulkan.hpp` refuses older
+  headers as it compiles. At configure, the build and the installed package's
+  `find_dependency` refuse them where FindVulkan reports a version (CMake 3.23
+  and newer), from one `VKC_VULKAN_MIN_VERSION`; a test checks the two agree.
+  The core's CI builds on Ubuntu 26.04's headers and on macOS on Homebrew's
+  current ones, and its Ubuntu 24.04 leg, like recon's and gfx's, on the
+  floor itself. A newer symbol is used behind its extension's macro, as
   the portability bits are, or by its registry value, as `texel_bytes` takes
   VK_KHR_maintenance5's formats.
 - **Format metadata is the core's** (`format.hpp`): `format_has_depth`,

@@ -58,8 +58,9 @@ repos:
         language: pygrep
         files: \.(h|hpp|hxx|inl|ipp|c|cc|cpp|cxx|cu|cuh|mm)$
         # The reference test also includes Vulkan-Utility-Libraries' headers,
-        # which it checks format.hpp against.
-        exclude: ^(include/volumetric_kit/core/vulkan/vulkan\.hpp|tests/vulkan_format_reference_test\.cpp)$
+        # which it checks format.hpp against; the header-floor test includes
+        # the system's to lower VK_HEADER_VERSION before vulkan.hpp checks it.
+        exclude: ^(include/volumetric_kit/core/vulkan/vulkan\.hpp|tests/vulkan_format_reference_test\.cpp|tests/vulkan_header_floor\.cpp)$
 
 # pre-commit.ci (https://pre-commit.ci) runs these same hooks on every PR and
 # pushes the auto-fixes back to the branch. The `ci / required` check stays the
