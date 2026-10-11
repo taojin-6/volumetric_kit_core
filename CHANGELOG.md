@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-11
+
+### Added
+
+- `Cli` and `parse_number` (`base/cli.hpp`): the family's command-line
+  parser, moved from recon's `examples/common/cli.hpp` with its behaviour
+  unchanged. Migrating, in `recon`: require 0.2.0 (`vkc_require_core`),
+  include `volumetric_kit/core/base/cli.hpp`, use `vkc::Cli` and
+  `vkc::parse_number` for `vr_example::Cli` and `vr_example::parse_number`,
+  and delete `examples/common/cli.hpp`; `starts_with_space` is no longer
+  public.
+
 ## [0.1.0] - 2026-10-08
 
 ### Fixed
@@ -499,5 +511,6 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
     `TwoQueuesOneFamily`, `TwoFamilies`, `SharedQueue`. `release_surface()`,
     `wait_idle()` and `summary()` keep their names (recon gains the last two).
 
-[Unreleased]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/taojin-6/volumetric_kit_core/releases/tag/v0.1.0

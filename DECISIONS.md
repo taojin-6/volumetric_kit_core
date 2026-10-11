@@ -35,7 +35,7 @@ uses (`calib`'s headless solver needs no Vulkan):
 
 | Tier | Depends on | Holds | Lands |
 | --- | --- | --- | --- |
-| `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, version | now |
+| `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, version, the command-line parser | now |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
 
 - `vulkan` is seeded from `recon`'s core, which carries the measured memory
@@ -44,6 +44,10 @@ uses (`calib`'s headless solver needs no Vulkan):
   pipelines) stay in `gfx`; consumers migrate in the order `recon`, `gfx`
   (re-measuring its frame times, since its allocator semantics change), `ios`
   (deleting its `SharedDevice` copy).
+- **The command-line parser is the family's.** recon's examples, the window
+  flags gfx takes over from them and calib's rig app all parse command lines,
+  so `Cli` moved here from recon's `examples/common/cli.hpp` rather than
+  calib copying it.
 - **No camera or sensor tier.** Camera models, the rig's calibration file,
   frame types, the capture interface and vendor drivers stay out of the
   core. Core PR #14 proposed a camera tier and was closed; `recon`'s

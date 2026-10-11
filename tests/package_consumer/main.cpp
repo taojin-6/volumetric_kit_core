@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <string_view>
 
+#include "volumetric_kit/core/base/cli.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/version.hpp"
@@ -35,6 +36,12 @@ vkc::Status run() {
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");
   if (parse_positive(-1).ok()) return vkc::Status::numerical("accepted -1");
+  int frames = 0;
+  vkc::Cli cli("consumer");
+  cli.option("--frames", "N", frames, 1);
+  const char* const args[] = {"consumer", "--frames", "4"};
+  VKC_TRY(cli.parse(3, args));
+  VKC_CHECK(frames == 4, "parsed --frames");
 #ifdef VKC_CONSUMER_HAS_VULKAN
   if (vkc::to_string(VK_ERROR_DEVICE_LOST) != "VK_ERROR_DEVICE_LOST") {
     return vkc::Status::invalid_argument("VkResult names do not resolve");
