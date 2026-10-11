@@ -3,8 +3,6 @@
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
-#include <unistd.h>
-
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -18,11 +16,6 @@
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
-
-void UniqueFd::reset(int fd) noexcept {
-  if (fd_ >= 0 && fd_ != fd) close(fd_);
-  fd_ = fd;
-}
 
 std::optional<std::uint32_t> find_memory_type(const Device& device,
                                               std::uint32_t type_bits,

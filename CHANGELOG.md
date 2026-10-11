@@ -11,16 +11,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
-- `Cli` and `parse_number` (`base/cli.hpp`): the family's command-line
-  parser, moved from recon's `examples/common/cli.hpp`. Two behaviours differ
-  from recon's copy: declaring a spelling twice aborts (`VKC_CHECK`), where
-  the second declaration was never reached, and a real number too small for a
-  `double` rounds toward zero, as for a `float`, instead of being refused as
-  not finite. Migrating, in `recon`: require 0.2.0 (`vkc_require_core`),
-  include `volumetric_kit/core/base/cli.hpp`, use `vkc::Cli` and
-  `vkc::parse_number` for `vr_example::Cli` and `vr_example::parse_number`,
-  and delete `examples/common/cli.hpp`; `starts_with_space` is no longer
-  public.
+- `base/file_io.hpp`: `read_file(path)`, `write_file(path, bytes, WriteMode)`
+  and `create_new_directory(path)`, which fail with a `Status`, and
+  `check_path(api, path)`, which refuses an empty path or an embedded NUL. A
+  write goes through a temporary file flushed to the storage device, so
+  neither a reader nor a crash finds part of it: `WriteMode::Replace` renames
+  it over the file, keeping its permission bits and writing through a
+  symbolic link, and `WriteMode::CreateNew` refuses anything already at the
+  path. When recon and gfx pin 0.2.0, their whole-file reads move onto
+  `read_file`, and recon's `io::detail::check_path(api, path)` becomes
+  `check_path(api, path)`.
+- `base/exception_status.hpp`: `exception_status(api, fallback)`, the
+  exception being handled as a `Status`: `OutOfMemory` for a
+  `std::bad_alloc`, `fallback` for anything else. recon's
+  `io::detail::exception_status(api)` becomes
+  `exception_status(api, Status::Code::IoError)`.
+
+### Changed
+
+- `UniqueFd` moves from `vulkan/external_memory.hpp` and `core_vulkan` to
+  `base/unique_fd.hpp` and `core_base`, which owns descriptors too now.
+  `external_memory.hpp` still includes it, so no consumer changes.
+- `core_base` catches exceptions, to return them as a `Status`, so it no
+  longer compiles with `-fno-exceptions`, which no sibling uses.
 
 ## [0.1.0] - 2026-10-08
 

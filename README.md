@@ -15,15 +15,15 @@ buffers zero-copy on one shared device.
                       ios
 ```
 
-> **Status:** the `base` tier is implemented and tested ([Tiers](#tiers)), and
-> calib and recon build on it. The `vulkan` tier is implemented -- the
-> instance, device selection against a library's requirements, the logical
-> device every sibling creates or adopts, the VMA allocator with its buffers
-> and images, descriptors, synchronization, compute kernels, `CommandBatch`
-> (waited on, or ordered by timeline semaphores and waited on later), the
-> shader build functions, GPU timers, buffers exported for CUDA to write, and
-> the shared device a compute library and a renderer both adopt. Camera models
-> and sensors are not core tiers: they stay in recon and calib
+> **Status:** the `base` tier is implemented and tested, and calib and recon
+> build on it. The `vulkan` tier is implemented -- the instance, device
+> selection against a library's requirements, the logical device every sibling
+> creates or adopts, the VMA allocator with its buffers and images,
+> descriptors, synchronization, compute kernels, `CommandBatch` (waited on, or
+> ordered by timeline semaphores and waited on later), the shader build
+> functions, GPU timers, buffers exported for CUDA to write, and the shared
+> device a compute library and a renderer both adopt. Camera models and
+> sensors are not core tiers: they stay in recon and calib
 > ([DECISIONS.md](DECISIONS.md#tiers)).
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and
@@ -33,7 +33,7 @@ Claude Code; `CLAUDE.md` imports it.
 
 | Tier | Target | Holds |
 | --- | --- | --- |
-| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, stage metrics, the command-line parser (`Cli`), version |
+| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics, whole-file I/O, version |
 | `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no

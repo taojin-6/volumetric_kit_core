@@ -263,8 +263,8 @@ class StageMetrics::Scope {
 
   /// @brief Stop timing and add the span, unless inert.
   // Adding a row may allocate; out of memory here terminates, as from any
-  // destructor (and aborts under -fno-exceptions) -- for a diagnostic, the
-  // same end the allocation failure would reach anywhere else.
+  // destructor -- for a diagnostic, the same end the allocation failure would
+  // reach anywhere else.
   // NOLINTNEXTLINE(bugprone-exception-escape)
   ~Scope() {
     if (metrics_ == nullptr) return;
