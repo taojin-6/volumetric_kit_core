@@ -62,6 +62,7 @@ CheckOptions:
   # SIGPIPE in <signal.h>), but C++ includes <cstdlib> and <csignal>
   # (modernize-deprecated-headers), which include-cleaner does not credit.
   # POSIX numeric locale functions similarly come through <clocale> on Linux
-  # and the public <xlocale.h> umbrella (private locale headers) on macOS.
+  # (including glibc's private bits/types/locale_t.h) and the public
+  # <xlocale.h> umbrella (private locale headers) on macOS.
   - key: misc-include-cleaner.IgnoreHeaders
-    value: 'vulkan/.*;vk_video/.*;sys/_types/.*;sys/fcntl\.h;signal\.h;stdlib\.h;locale\.h;_locale_posix2008\.h;_types/_locale_t\.h'
+    value: 'vulkan/.*;vk_video/.*;sys/_types/.*;sys/fcntl\.h;signal\.h;stdlib\.h;locale\.h;_locale_posix2008\.h;_types/_locale_t\.h;bits/types/locale_t\.h'
