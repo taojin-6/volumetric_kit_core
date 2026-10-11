@@ -135,6 +135,7 @@ TEST_F(AllocatorTest, StagingMemoryIsSystemRamOnADiscreteGpu) {
       FAIL() << "no memory info";
     }
     EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0U);
+    EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0U);
     EXPECT_NE(made->mapped(), nullptr);  // a staging buffer is always mapped
     VkMemoryRequirements needs{};
     vkGetBufferMemoryRequirements(device().handle(), made->handle(), &needs);
@@ -227,26 +228,6 @@ TEST_F(AllocatorTest, AnAllocationPastTheHeapBudgetFails) {
   EXPECT_EQ(vk_result(made.status()),
             std::optional<VkResult>(VK_ERROR_OUT_OF_DEVICE_MEMORY))
       << made.status().message();
-}
-
-TEST_F(AllocatorTest, StagingBufferIsMappedAndCoherent) {
-  const Buffer buffer =
-      make(256, kTransfer, MemoryUsage::Staging, HostAccess::Random);
-  ASSERT_NE(buffer.mapped(), nullptr);
-  const std::optional<MemoryInfo> memory = buffer.memory_info();
-  // An if, not ASSERT_TRUE: clang-tidy's optional-access check follows the
-  // one and not the other.
-  if (!memory.has_value()) {
-    FAIL() << "no memory info";
-  }
-  const VkMemoryPropertyFlags props = memory->properties;
-  EXPECT_NE(props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0u);
-  EXPECT_NE(props & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0u);
-  auto* bytes = static_cast<std::uint8_t*>(buffer.mapped());
-  bytes[0] = 7;
-  bytes[255] = 9;
-  EXPECT_EQ(bytes[0], 7);
-  EXPECT_EQ(bytes[255], 9);
 }
 
 TEST_F(AllocatorTest, RefusesContradictoryBuffers) {

@@ -53,7 +53,7 @@ jobs:
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DVKC_SANITIZE="address;undefined"
+            -DVKC_SANITIZE="address;undefined" -DVKC_TEST_SHARDS=4
 
       - name: Build
         run: cmake --build build --parallel

@@ -74,6 +74,14 @@ or every device test fails with "validation is off". Capability skips, such
 as unsupported external-memory handles, remain distinct from tests that
 executed successfully.
 
+CI configures `-DVKC_TEST_SHARDS=4`: each ordinary device-test binary runs in
+four processes, reusing its shared Vulkan fixtures within each shard. Policy
+and environment probes still run separately. Shards fail on their exit code,
+including shared-device teardown errors; a capability skip does not mask a
+failure in another case. GoogleTest reports individual skips in the output.
+Leave the default `VKC_TEST_SHARDS=0` for one CTest entry per case and
+`ctest -R <case>`, or run a binary with `--gtest_filter=<case>` in either mode.
+
 ## Changing a public API
 
 Four repositories build on this one. A change to an installed header or to the

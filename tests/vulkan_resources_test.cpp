@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Tao Jin
 
 // Descriptors, shader modules, fences and semaphores, command pools and
-// buffers. Argument checks run without a device; the rest on one (or
-// lavapipe), as vulkan_fixture.hpp describes.
+// buffers. Null-device and empty-object checks need no device; malformed
+// arguments use a valid device so a null-device refusal cannot mask them.
+// Device tests run as vulkan_fixture.hpp describes.
 
 #include <cstdint>
 #include <optional>
@@ -89,24 +90,6 @@ TEST(VulkanObjects, RefuseANullDevice) {
   EXPECT_TRUE(is_invalid(Fence::create(VK_NULL_HANDLE).status()));
   EXPECT_TRUE(is_invalid(Semaphore::create(VK_NULL_HANDLE).status()));
   EXPECT_TRUE(is_invalid(CommandPool::create(VK_NULL_HANDLE, 0).status()));
-}
-
-TEST(VulkanObjects, RefuseMalformedArguments) {
-  EXPECT_TRUE(is_invalid(
-      DescriptorSetLayout::create(VK_NULL_HANDLE, nullptr, 1).status()));
-  const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
-  EXPECT_TRUE(is_invalid(
-      DescriptorPool::create(VK_NULL_HANDLE, nullptr, 1, 1).status()));
-  EXPECT_TRUE(
-      is_invalid(DescriptorPool::create(VK_NULL_HANDLE, &size, 0, 1).status()));
-  EXPECT_TRUE(
-      is_invalid(DescriptorPool::create(VK_NULL_HANDLE, &size, 1, 0).status()));
-  EXPECT_TRUE(
-      is_invalid(ShaderModule::create(VK_NULL_HANDLE, nullptr, 4).status()));
-  EXPECT_TRUE(is_invalid(
-      ShaderModule::create(VK_NULL_HANDLE, kEmptyCompute, 0).status()));
-  EXPECT_TRUE(is_invalid(
-      ShaderModule::create(VK_NULL_HANDLE, kEmptyCompute, 7).status()));
 }
 
 TEST(VulkanObjects, EmptyObjectsReportRatherThanCrash) {
@@ -198,6 +181,21 @@ class ResourcesTest : public test::VulkanDeviceTest {
     return buffer.ok() ? *std::move(buffer) : Buffer{};
   }
 };
+
+TEST_F(ResourcesTest, RefuseMalformedArguments) {
+  // Each call has one invalid argument, with a real device for the rest.
+  EXPECT_TRUE(
+      is_invalid(DescriptorSetLayout::create(vk(), nullptr, 1).status()));
+  const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+  EXPECT_TRUE(is_invalid(DescriptorPool::create(vk(), nullptr, 1, 1).status()));
+  EXPECT_TRUE(is_invalid(DescriptorPool::create(vk(), &size, 0, 1).status()));
+  EXPECT_TRUE(is_invalid(DescriptorPool::create(vk(), &size, 1, 0).status()));
+  EXPECT_TRUE(is_invalid(ShaderModule::create(vk(), nullptr, 4).status()));
+  EXPECT_TRUE(
+      is_invalid(ShaderModule::create(vk(), kEmptyCompute, 0).status()));
+  EXPECT_TRUE(
+      is_invalid(ShaderModule::create(vk(), kEmptyCompute, 7).status()));
+}
 
 // --- descriptors -------------------------------------------------------------
 

@@ -106,14 +106,6 @@ class BatchTest : public test::VulkanDeviceTest {
     max_groups_ = physical().limits().maxComputeWorkGroupCount[0];
     range_.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     range_.size = sizeof(Push);
-    KernelSetBuilder builder(device());
-    ASSERT_TRUE(builder
-                    .add(add_, "test_add", vkc_test_add_comp_spv,
-                         vkc_test_add_comp_spv_size, 1, &range_)
-                    .ok());
-    Result<DescriptorPool> pool = builder.build();
-    ASSERT_TRUE(pool.ok()) << pool.status().message();
-    pool_ = *std::move(pool);
     Result<Buffer> a = device_storage_buffer(allocator(), kBytes);
     Result<Buffer> b = device_storage_buffer(allocator(), kBytes);
     ASSERT_TRUE(a.ok() && b.ok());
@@ -127,6 +119,17 @@ class BatchTest : public test::VulkanDeviceTest {
     add_ = ComputeKernel{};
     pool_ = DescriptorPool{};
     VulkanDeviceTest::TearDown();
+  }
+
+  void make_add_kernel() {
+    KernelSetBuilder builder(device());
+    ASSERT_TRUE(builder
+                    .add(add_, "test_add", vkc_test_add_comp_spv,
+                         vkc_test_add_comp_spv_size, 1, &range_)
+                    .ok());
+    Result<DescriptorPool> pool = builder.build();
+    ASSERT_TRUE(pool.ok()) << pool.status().message();
+    pool_ = *std::move(pool);
   }
 
   // Bind `buffer` to the add kernel and record it over the first kCount
@@ -236,6 +239,16 @@ class BatchTest : public test::VulkanDeviceTest {
   DescriptorPool pool_;
   Buffer a_;
   Buffer b_;
+};
+
+// Only dispatch tests build the add pipeline and its descriptor pool.
+class BatchComputeTest : public BatchTest {
+ protected:
+  void SetUp() override {
+    BatchTest::SetUp();
+    if (base_setup_incomplete()) return;
+    make_add_kernel();
+  }
 };
 
 TEST(BatchBarriers, TransferOnlyScopesNeedNoShaderOrDrawSupport) {
@@ -524,7 +537,7 @@ INSTANTIATE_TEST_SUITE_P(FinalBarrierAndPublicBatch, BatchGraphicsTest,
 
 // --- in order, over both memory kinds ----------------------------------------
 
-class BatchOrderTest : public BatchTest,
+class BatchOrderTest : public BatchComputeTest,
                        public ::testing::WithParamInterface<bool> {};
 
 TEST_P(BatchOrderTest, RunsCommandsInTheOrderRecorded) {
@@ -723,7 +736,7 @@ TEST_F(BatchTest, RetainsABufferItsCommandsUseUntilTheyRun) {
   EXPECT_EQ(got, p);
 }
 
-TEST_F(BatchTest, RunsRisingFillsTogetherAndOrdersOneThatGoesBack) {
+TEST_F(BatchComputeTest, RunsRisingFillsTogetherAndOrdersOneThatGoesBack) {
   std::vector<std::uint32_t> got(kCount, 0);
   CommandBatch batch(device(), allocator());
   for (std::uint32_t i = 0; i < kCount; ++i) {
@@ -786,7 +799,7 @@ TEST_F(BatchTest, OrdersACopyWhoseSourceTheRunWrote) {
 
 // --- dispatches --------------------------------------------------------------
 
-TEST_F(BatchTest, DispatchesIndirectlyFromABuffer) {
+TEST_F(BatchComputeTest, DispatchesIndirectlyFromABuffer) {
   // Two of four groups.
   const std::vector<std::uint32_t> p = pattern(1);
   Result<Buffer> made =
@@ -819,7 +832,7 @@ TEST_F(BatchTest, DispatchesIndirectlyFromABuffer) {
   }));
 }
 
-TEST_F(BatchTest, RefusesASetRewrittenAfterItsDispatch) {
+TEST_F(BatchComputeTest, RefusesASetRewrittenAfterItsDispatch) {
   const std::vector<std::uint32_t> z(kCount, 0);
   upload(a_, z);
   upload(b_, z);
@@ -831,7 +844,7 @@ TEST_F(BatchTest, RefusesASetRewrittenAfterItsDispatch) {
   EXPECT_EQ(read(b_), z);
 }
 
-TEST_F(BatchTest, RefusesASetRewrittenThroughACopy) {
+TEST_F(BatchComputeTest, RefusesASetRewrittenThroughACopy) {
   // Copies alias the Vulkan set: a write through any copy refuses both the
   // kernel's own binding and a supplied one.
   for (const bool explicit_set : {false, true}) {
@@ -867,7 +880,7 @@ TEST_F(BatchTest, RefusesASetRewrittenThroughACopy) {
   }
 }
 
-TEST_F(BatchTest, DispatchesOneKernelOverSetsOfItsOwn) {
+TEST_F(BatchComputeTest, DispatchesOneKernelOverSetsOfItsOwn) {
   KernelSets sets;
   ASSERT_TRUE(sets.reserve(device(), add_, 2).ok());
   const DescriptorSet& sa = sets[0];
@@ -928,7 +941,7 @@ TEST_F(BatchTest, DispatchesOneKernelOverSetsOfItsOwn) {
       empty_set.dispatch(add_, none, &one, sizeof(one), groups, max_groups_)));
 }
 
-TEST_F(BatchTest, RefusesASetFreedWithItsPool) {
+TEST_F(BatchComputeTest, RefusesASetFreedWithItsPool) {
   // A KernelSets that grows frees the sets it held, and a kernel's pool can
   // go too: either way the recorded binding is gone, and submit refuses
   // rather than bind freed memory.
@@ -954,7 +967,7 @@ TEST_F(BatchTest, RefusesASetFreedWithItsPool) {
   EXPECT_EQ(read(a_), z);      // neither dispatch ran
 }
 
-TEST_F(BatchTest, BindsTheKernelItRecordedThoughTheKernelMoves) {
+TEST_F(BatchComputeTest, BindsTheKernelItRecordedThoughTheKernelMoves) {
   // The batch takes the kernel's pipeline and set when it records, so a
   // kernel moved before submit -- a vector of kernels that grew -- still runs.
   const std::vector<std::uint32_t> p = pattern(1);
@@ -971,7 +984,7 @@ TEST_F(BatchTest, BindsTheKernelItRecordedThoughTheKernelMoves) {
 
 // --- acquires ----------------------------------------------------------------
 
-TEST_F(BatchTest, AcquiresABufferBeforeWhatReadsIt) {
+TEST_F(BatchComputeTest, AcquiresABufferBeforeWhatReadsIt) {
   // From outside Vulkan it records the transfer, for an EXCLUSIVE buffer and
   // a CONCURRENT one; from this device's family, from none, or from another
   // family into a CONCURRENT buffer it records nothing. Either way the kernel
@@ -1010,7 +1023,7 @@ TEST_F(BatchTest, AcquiresABufferBeforeWhatReadsIt) {
       refused([&](CommandBatch& c) { return c.acquire(a_, family_count); }));
 }
 
-TEST_F(BatchTest, ReleasesABufferAfterEverythingThatUsesIt) {
+TEST_F(BatchComputeTest, ReleasesABufferAfterEverythingThatUsesIt) {
   // To outside Vulkan it records the transfer after every command, so a
   // kernel and a readback recorded after the release still run first, on the
   // buffer the batch owns; the next batch takes it back from there -- a frame
@@ -1071,7 +1084,7 @@ TEST_F(BatchTest, ReleasesABufferAfterEverythingThatUsesIt) {
 
 // --- image copies ------------------------------------------------------------
 
-TEST_F(BatchTest, CopiesImagesIntoABuffer) {
+TEST_F(BatchComputeTest, CopiesImagesIntoABuffer) {
   // One R8 and one R8G8, each a region short of the image, rising through the
   // buffer after a fill and before a kernel; then the first again back over
   // the second, which keeps its barrier and lands last.
@@ -1213,7 +1226,7 @@ TEST_F(BatchTest, ARefusalPoisonsTheBatch) {
   EXPECT_EQ(read(a_), z);  // the first upload never ran
 }
 
-TEST_F(BatchTest, RefusesBadArguments) {
+TEST_F(BatchComputeTest, RefusesBadArguments) {
   BufferDesc desc;
   desc.size = kBytes;
   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -1423,11 +1436,20 @@ class PendingTest : public BatchTest {
   TimelineSemaphore timeline_;
 };
 
+class PendingComputeTest : public PendingTest {
+ protected:
+  void SetUp() override {
+    PendingTest::SetUp();
+    if (base_setup_incomplete()) return;
+    make_add_kernel();
+  }
+};
+
 // Longer than any of these waits should take, so a broken one fails the test
 // rather than hanging it.
 constexpr std::uint64_t kLongWaitNs = 10'000'000'000;
 
-TEST_F(PendingTest, HoldsTheWorkBackUntilItsWaitIsMet) {
+TEST_F(PendingComputeTest, HoldsTheWorkBackUntilItsWaitIsMet) {
   upload(a_, pattern(10));
   std::vector<std::uint32_t> out(kCount, 0xDEADBEEFU);
   CommandBatch batch(device(), allocator());
@@ -1455,7 +1477,7 @@ TEST_F(PendingTest, HoldsTheWorkBackUntilItsWaitIsMet) {
 
 // The second batch, submitted while the first cannot have run, reads what
 // the first wrote: it ran after it, as the value it waits for orders.
-TEST_F(PendingTest, RunsAChainInTheTimelinesOrder) {
+TEST_F(PendingComputeTest, RunsAChainInTheTimelinesOrder) {
   upload(a_, pattern(0));
   std::vector<std::uint32_t> out(kCount, 0xDEADBEEFU);
   // Both declared before the guard, which releases them as the scope closes
@@ -1600,7 +1622,7 @@ TEST_F(PendingTest, RefusesAValueAnEarlierSubmitSets) {
 // Until a wait sees the work complete, a dispatched kernel's set must stay as
 // it was submitted: the wait refuses one rewritten since, and writes no
 // readback, since the work may have run on the later binding.
-TEST_F(PendingTest, RefusesASetRewrittenWhileItIsPending) {
+TEST_F(PendingComputeTest, RefusesASetRewrittenWhileItIsPending) {
   upload(a_, pattern(0));
   std::vector<std::uint32_t> out(kCount, 0xDEADBEEFU);
   CommandBatch batch(device(), allocator());
@@ -1682,7 +1704,7 @@ TEST_F(PendingTest, IsInFlightUntilAWaitSeesItComplete) {
   EXPECT_EQ(counter(), 2u);
 }
 
-TEST_F(PendingTest, MovesCarryTheWorkAndWaitForWhatTheyDrop) {
+TEST_F(PendingComputeTest, MovesCarryTheWorkAndWaitForWhatTheyDrop) {
   upload(a_, pattern(0));
   // Work the host releases from another thread after `delay`, raising the
   // timeline from `from` to `from + 1`; the work then sets `from + 2`.
