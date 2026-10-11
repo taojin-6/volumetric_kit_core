@@ -14,14 +14,11 @@
 namespace volumetric_kit::core {
 
 /// @brief Sole owner of a file descriptor, closing it exactly once unless it
-///        is released to the API that imports it.
+///        is released to an API that takes it.
 ///
 /// Owned, a descriptor is closed on every path, an early return or an
-/// exception included. An exported memory's descriptor keeps that memory
-/// alive after Vulkan frees it, so one leaked would pin a whole dedicated
-/// allocation for the life of the process (external_memory.hpp). An import
-/// that succeeds owns the descriptor (CUDA's does), so the caller then calls
-/// @ref release; after a failed one it is still owned here.
+/// exception included. When a call that takes ownership succeeds, the caller
+/// calls @ref release; after a failed one it is still owned here.
 ///
 /// @code
 /// UniqueFd fd(raw);                     // adopts

@@ -8,14 +8,16 @@
 ///        failure as a `Status`.
 ///
 /// A write never leaves a partial file at its path: the bytes go to a
-/// temporary file beside the destination, are flushed with `fsync`, and only
-/// then take the destination's name. @ref WriteMode says whether they may
-/// replace a file already there.
+/// temporary file beside the destination, are flushed to the storage device
+/// (`fsync`; on Apple `F_FULLFSYNC`, as `fsync` there stops at the drive's
+/// cache), and only then take the destination's name. @ref WriteMode says
+/// whether they may replace a file already there.
 ///
 /// Paths are POSIX paths, relative to the working directory or absolute. An
 /// empty path, or one with an embedded NUL, is refused before any file
-/// access. A failure's domain is:
-/// - `NotFound`: the file, or a directory on its path, does not exist;
+/// access (@ref check_path). A failure's domain is:
+/// - `NotFound`: the file, or a directory on its path, does not exist (a
+///   component that is a file, not a directory, included);
 /// - `InvalidArgument`: the path is refused, names a directory or other
 ///   non-regular file where a regular file is meant, or names something that
 ///   exists where a new file or directory is asked for;
@@ -33,6 +35,17 @@
 
 namespace volumetric_kit::core {
 
+/// @brief Refuse a path no file call can take: an empty one, or one with an
+///        embedded NUL, which a C API would cut short.
+/// @param api   The caller, which starts the message.
+/// @param path  The path to check.
+/// @return Success, or `InvalidArgument` naming @p api and the reason.
+///
+/// @code
+/// VKC_TRY(check_path("load_mesh", path));  // before handing it to a library
+/// @endcode
+VKC_BASE_API Status check_path(std::string_view api, const std::string& path);
+
 /// @brief What @ref write_file does when something is already at its path.
 ///
 /// @code
@@ -42,9 +55,11 @@ namespace volumetric_kit::core {
 enum class WriteMode {
   /// Replace the file atomically, or create it: a reader, or a crash, finds
   /// the old bytes or the new ones, never a mix. The replaced file's
-  /// permission bits are kept; a new file gets `0666` less the umask. A
-  /// symbolic link at the path stays a link, and the file it points to is
-  /// replaced.
+  /// permission bits are kept, and until they are set only the writer can
+  /// open the new bytes; a new file gets `0666` less the umask. A symbolic
+  /// link at the path stays a link, and the file it points to is replaced.
+  /// The file is a new one: other hard links to the old one keep the old
+  /// bytes, and its owner, ACLs and extended attributes are not kept.
   Replace,
   /// Create the file only if nothing is at the path, not even a symbolic
   /// link; otherwise refuse (`InvalidArgument`) and leave what is there

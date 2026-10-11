@@ -12,14 +12,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 ### Added
 
 - `base/file_io.hpp`: `read_file(path)`, `write_file(path, bytes, WriteMode)`
-  and `create_new_directory(path)`, which fail with a `Status`. A write goes
-  through a flushed temporary file, so neither a reader nor a crash finds
-  part of it: `WriteMode::Replace` renames it over the file, keeping its
-  permission bits and writing through a symbolic link, and
-  `WriteMode::CreateNew` refuses anything already at the path. In the
-  re-pins, recon's two whole-file read loops (`read_text` in
-  `array_calibration.cpp`, and `read_orbbec_sync_config`) and calib's session
-  writer move onto them.
+  and `create_new_directory(path)`, which fail with a `Status`, and
+  `check_path(api, path)`, which refuses an empty path or an embedded NUL. A
+  write goes through a temporary file flushed to the storage device, so
+  neither a reader nor a crash finds part of it: `WriteMode::Replace` renames
+  it over the file, keeping its permission bits and writing through a
+  symbolic link, and `WriteMode::CreateNew` refuses anything already at the
+  path. When recon and gfx pin 0.2.0, their whole-file reads move onto
+  `read_file`, and recon's `io::detail::check_path(api, path)` becomes
+  `check_path(api, path)`.
 - `base/exception_status.hpp`: `exception_status(api, fallback)`, the
   exception being handled as a `Status`: `OutOfMemory` for a
   `std::bad_alloc`, `fallback` for anything else. recon's

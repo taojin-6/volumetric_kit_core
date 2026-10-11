@@ -35,7 +35,7 @@ uses (`calib`'s headless solver needs no Vulkan):
 
 | Tier | Depends on | Holds | Lands |
 | --- | --- | --- | --- |
-| `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, whole-file I/O, version | now |
+| `base` | — | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics, whole-file I/O, version | now |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
 
 - `vulkan` is seeded from `recon`'s core, which carries the measured memory
@@ -724,7 +724,7 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
 
 ### Whole-file I/O, and an exception as a `Status`
 
-`recon` reads whole files with two copies of one `fread` loop, and `calib`'s
+`recon` and `gfx` read whole files with loops of their own, and `calib`'s
 capture writes a session that must survive a crash and never overwrite a
 capture, so `file_io.hpp` is in `base`.
 
@@ -734,13 +734,18 @@ capture, so `file_io.hpp` is in `base`.
   `CreateNew` hard-links it to the path, which `link` refuses when anything
   is there; `O_EXCL` on the final name would refuse too, but shows the file
   while it is written.
+- **On Apple, `F_FULLFSYNC`, not `F_BARRIERFSYNC`**, for the file and then
+  its directory, since Apple's `fsync` stops at the drive's cache. A barrier
+  costs less but only orders the writes, so a write that returned could
+  still be lost to a power loss.
 - **`Replace` follows symbolic links and keeps permission bits**, as an
   editor's save does: a link to a shared file still points at it afterwards.
 - **POSIX calls, not `std::filesystem`**, which cannot `fsync`. Their
-  descriptors are `UniqueFd`s, which moved down from the vulkan tier.
-- **`exception_status(api, fallback)`** is `recon` io's private helper, with
-  the domain a parameter, so `calib`'s OpenCV guard and `recon`'s io turn an
-  exception into a `Status` one way.
+  descriptors are `UniqueFd`s.
+- **`exception_status(api, fallback)` and `check_path(api, path)`** are
+  `recon` io's private helpers, the first with the domain a parameter, so
+  `calib`'s OpenCV guard and `recon`'s io turn an exception into a `Status`,
+  and refuse a path no C API can take, one way.
 
 ### One Vulkan test fixture for the family
 

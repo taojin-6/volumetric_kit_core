@@ -47,6 +47,8 @@ struct ExportedBuffer {
   /// it frees with itself.
   Buffer buffer;
   /// An opaque file descriptor for the memory (`VK_KHR_external_memory_fd`).
+  /// While open it keeps the memory alive after the buffer frees it, so it
+  /// is released only to an import that takes it.
   UniqueFd fd;
   /// The memory's size, which an importer is told; at least the buffer's.
   VkDeviceSize memory_size = 0;

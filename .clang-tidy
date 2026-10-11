@@ -56,6 +56,10 @@ CheckOptions:
   # enforces it), so include-cleaner must not ask for Vulkan's own headers. The
   # macOS SDK declares POSIX types and constants (mode_t, ssize_t, S_IRUSR,
   # O_RDONLY, SIGXFSZ) in headers of its own, which Linux lacks; the code
-  # includes the POSIX headers that declare them.
+  # includes the POSIX headers that declare them, <sys/types.h> with "IWYU
+  # pragma: keep", since on macOS it declares none of them itself. glibc
+  # declares POSIX's additions to C headers there (mkdtemp in <stdlib.h>,
+  # SIGPIPE in <signal.h>), but C++ includes <cstdlib> and <csignal>
+  # (modernize-deprecated-headers), which include-cleaner does not credit.
   - key: misc-include-cleaner.IgnoreHeaders
-    value: 'vulkan/.*;vk_video/.*;sys/_types/.*;sys/fcntl\.h;sys/signal\.h'
+    value: 'vulkan/.*;vk_video/.*;sys/_types/.*;sys/fcntl\.h;signal\.h;stdlib\.h'

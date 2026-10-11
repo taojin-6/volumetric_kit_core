@@ -3,18 +3,26 @@
 
 #include "volumetric_kit/core/base/file_io.hpp"
 
+#include <fcntl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/types.h>  // IWYU pragma: keep (mode_t, pid_t, ssize_t on Linux)
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <ios>
+#include <map>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -23,6 +31,7 @@
 #include <gtest/gtest.h>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/unique_fd.hpp"
 
 namespace volumetric_kit::core {
 namespace {
@@ -67,29 +76,110 @@ class ScopedUmask {
   mode_t old_;
 };
 
+// A signal ignored for the scope.
+class ScopedIgnoredSignal {
+ public:
+  explicit ScopedIgnoredSignal(int signal)
+      : signal_(signal), old_handler_(std::signal(signal, SIG_IGN)) {}
+  ~ScopedIgnoredSignal() { std::signal(signal_, old_handler_); }
+  ScopedIgnoredSignal(const ScopedIgnoredSignal&) = delete;
+  ScopedIgnoredSignal& operator=(const ScopedIgnoredSignal&) = delete;
+  ScopedIgnoredSignal(ScopedIgnoredSignal&&) = delete;
+  ScopedIgnoredSignal& operator=(ScopedIgnoredSignal&&) = delete;
+
+ private:
+  int signal_;
+  void (*old_handler_)(int);
+};
+
 // A file-size limit for the scope: a write past it fails with EFBIG, as on a
 // full disk, instead of raising SIGXFSZ. It works as root too.
 class ScopedFileSizeLimit {
  public:
-  explicit ScopedFileSizeLimit(rlim_t bytes)
-      : old_handler_(std::signal(SIGXFSZ, SIG_IGN)) {
+  explicit ScopedFileSizeLimit(rlim_t bytes) {
     EXPECT_EQ(::getrlimit(RLIMIT_FSIZE, &old_limit_), 0);
     rlimit limit = old_limit_;
     limit.rlim_cur = bytes;
     EXPECT_EQ(::setrlimit(RLIMIT_FSIZE, &limit), 0);
   }
-  ~ScopedFileSizeLimit() {
-    ::setrlimit(RLIMIT_FSIZE, &old_limit_);
-    std::signal(SIGXFSZ, old_handler_);
-  }
+  ~ScopedFileSizeLimit() { ::setrlimit(RLIMIT_FSIZE, &old_limit_); }
   ScopedFileSizeLimit(const ScopedFileSizeLimit&) = delete;
   ScopedFileSizeLimit& operator=(const ScopedFileSizeLimit&) = delete;
   ScopedFileSizeLimit(ScopedFileSizeLimit&&) = delete;
   ScopedFileSizeLimit& operator=(ScopedFileSizeLimit&&) = delete;
 
  private:
+  const ScopedIgnoredSignal sigxfsz_{SIGXFSZ};
   rlimit old_limit_{};
-  void (*old_handler_)(int);
+};
+
+// A path's permission bits, changed for the scope.
+class ScopedPermissions {
+ public:
+  ScopedPermissions(std::string path, mode_t mode)
+      : path_(std::move(path)), old_(permissions_of(path_)) {
+    EXPECT_EQ(::chmod(path_.c_str(), mode), 0) << path_;
+  }
+  ~ScopedPermissions() { ::chmod(path_.c_str(), old_); }
+  ScopedPermissions(const ScopedPermissions&) = delete;
+  ScopedPermissions& operator=(const ScopedPermissions&) = delete;
+  ScopedPermissions(ScopedPermissions&&) = delete;
+  ScopedPermissions& operator=(ScopedPermissions&&) = delete;
+
+ private:
+  std::string path_;
+  mode_t old_;
+};
+
+// Lists a directory in a thread of its own until stopped, recording each
+// temporary file write_file makes there (".vkc_tmp.*") with every permission
+// bit it was seen with, so a write in the meantime is observed from outside.
+class TemporaryFileWatcher {
+ public:
+  explicit TemporaryFileWatcher(std::string dir) : dir_(std::move(dir)) {}
+  ~TemporaryFileWatcher() { join(); }
+  TemporaryFileWatcher(const TemporaryFileWatcher&) = delete;
+  TemporaryFileWatcher& operator=(const TemporaryFileWatcher&) = delete;
+  TemporaryFileWatcher(TemporaryFileWatcher&&) = delete;
+  TemporaryFileWatcher& operator=(TemporaryFileWatcher&&) = delete;
+
+  // How many sightings so far, of any temporary file.
+  int sightings() const { return sightings_.load(); }
+
+  // Stop, and return each name seen with the union of its modes.
+  std::map<std::string, mode_t> stop() {
+    join();
+    return seen_;
+  }
+
+ private:
+  void join() {
+    stop_ = true;
+    if (thread_.joinable()) thread_.join();
+  }
+
+  void watch() {
+    while (!stop_) {
+      std::error_code error;
+      for (fs::directory_iterator it(dir_, error), end; !error && it != end;
+           it.increment(error)) {
+        const std::string name = it->path().filename().string();
+        struct stat info{};
+        if (name.rfind(".vkc_tmp.", 0) != 0 ||
+            ::lstat(it->path().c_str(), &info) != 0) {
+          continue;  // not a temporary file, or renamed since it was listed
+        }
+        seen_[name] |= info.st_mode & kPermissionBits;
+        ++sightings_;
+      }
+    }
+  }
+
+  std::string dir_;
+  std::map<std::string, mode_t> seen_;
+  std::atomic<int> sightings_{0};
+  std::atomic<bool> stop_{false};
+  std::thread thread_{[this] { watch(); }};  // last: starts once all is set
 };
 
 // Each test runs in a new temporary directory, removed afterwards.
@@ -174,11 +264,36 @@ TEST_F(FileIo, AFailedWriteLeavesWhatWasThereAndNoTemporaryFile) {
 TEST_F(FileIo, ReplaceKeepsThePermissions) {
   const std::string path = at("calibration.json");
   ASSERT_TRUE(write_file(path, "old", WriteMode::Replace));
-  for (const mode_t mode : {mode_t{0640}, mode_t{0604}, mode_t{0444}}) {
+  // 04755: set-user-ID, which an owner may set; macOS refuses the sticky bit
+  // on a file.
+  for (const mode_t mode :
+       {mode_t{0640}, mode_t{0604}, mode_t{0444}, mode_t{04755}}) {
     ASSERT_EQ(::chmod(path.c_str(), mode), 0);
     ASSERT_TRUE(write_file(path, "new", WriteMode::Replace));
     EXPECT_EQ(permissions_of(path), mode) << std::oct << mode;
   }
+}
+
+// Under umask 022 a new file is 0644, so a temporary file made that way would
+// let anyone open a 0600 file's new bytes while they are written.
+TEST_F(FileIo, ReplaceKeepsAPrivateFilesNewBytesPrivate) {
+  const ScopedUmask umask(022);
+  const std::string path = at("private.json");
+  ASSERT_TRUE(write_file(path, "old", WriteMode::Replace));
+  ASSERT_EQ(::chmod(path.c_str(), 0600), 0);
+  const std::string big(std::size_t{16} << 20U, 'n');
+
+  TemporaryFileWatcher watcher(root_);
+  for (int i = 0; i < 50 && watcher.sightings() == 0; ++i) {
+    ASSERT_TRUE(write_file(path, big, WriteMode::Replace));
+  }
+  const std::map<std::string, mode_t> seen = watcher.stop();
+
+  ASSERT_FALSE(seen.empty()) << "no temporary file was seen";
+  for (const auto& [name, mode] : seen) {
+    EXPECT_EQ(mode & 077U, 0U) << name << ' ' << std::oct << mode;
+  }
+  EXPECT_EQ(permissions_of(path), 0600U);
 }
 
 TEST_F(FileIo, ANewFileGetsTheUmasksMode) {
@@ -195,22 +310,35 @@ TEST_F(FileIo, ANewFileGetsTheUmasksMode) {
 
 TEST_F(FileIo, ReplaceWritesThroughSymbolicLinks) {
   // links/session.json -> ../data/link.json -> real.json, both relative and in
-  // other directories, so the temporary file must go beside real.json.
+  // other directories, and links/absolute.json -> <root>/data/real.json. The
+  // temporary file must go beside real.json: links/ is read-only.
   ASSERT_TRUE(create_new_directory(at("links")));
   ASSERT_TRUE(create_new_directory(at("data")));
   ASSERT_TRUE(write_file(at("data/real.json"), "old", WriteMode::Replace));
   ASSERT_EQ(::symlink("real.json", at("data/link.json").c_str()), 0);
   ASSERT_EQ(::symlink("../data/link.json", at("links/session.json").c_str()),
             0);
+  ASSERT_EQ(::symlink(at("data/real.json").c_str(),
+                      at("links/absolute.json").c_str()),
+            0);
   ASSERT_EQ(::chmod(at("data/real.json").c_str(), 0640), 0);
 
-  ASSERT_TRUE(write_file(at("links/session.json"), "new", WriteMode::Replace));
+  {
+    const ScopedPermissions read_only(at("links"), 0555);
+    ASSERT_TRUE(
+        write_file(at("links/session.json"), "new", WriteMode::Replace));
+    EXPECT_EQ(read_ok(at("data/real.json")), "new");
+    ASSERT_TRUE(
+        write_file(at("links/absolute.json"), "newer", WriteMode::Replace));
+    EXPECT_EQ(read_ok(at("data/real.json")), "newer");
+  }
 
   EXPECT_TRUE(is_symlink(at("links/session.json")));
+  EXPECT_TRUE(is_symlink(at("links/absolute.json")));
   EXPECT_TRUE(is_symlink(at("data/link.json")));
-  EXPECT_EQ(read_ok(at("data/real.json")), "new");
   EXPECT_EQ(permissions_of(at("data/real.json")), 0640U);
-  EXPECT_EQ(entries(at("links")), std::vector<std::string>{"session.json"});
+  EXPECT_EQ(entries(at("links")),
+            (std::vector<std::string>{"absolute.json", "session.json"}));
   EXPECT_EQ(entries(at("data")),
             (std::vector<std::string>{"link.json", "real.json"}));
 }
@@ -275,10 +403,55 @@ TEST_F(FileIo, AMissingFileOrDirectoryIsNotFound) {
             std::string::npos)
       << missing.status().message();
   for (const WriteMode mode : {WriteMode::Replace, WriteMode::CreateNew}) {
-    EXPECT_EQ(write_file(at("missing/a.json"), "x", mode).domain(),
-              Code::NotFound);
+    const Status s = write_file(at("missing/a.json"), "x", mode);
+    EXPECT_EQ(s.domain(), Code::NotFound);
+    // The message names the file asked for, not only its directory.
+    EXPECT_NE(s.message().find("write_file: cannot create a temporary file "
+                               "for " +
+                               at("missing/a.json") + " in "),
+              std::string::npos)
+        << s.message();
   }
   EXPECT_TRUE(entries().empty());
+}
+
+// A component of the path that is a file, not a directory: the directory the
+// path names does not exist either.
+TEST_F(FileIo, AFileWhereADirectoryShouldBeIsNotFound) {
+  ASSERT_TRUE(write_file(at("plain"), "x", WriteMode::CreateNew));
+  EXPECT_EQ(read_file(at("plain/a.json")).status().domain(), Code::NotFound);
+  for (const WriteMode mode : {WriteMode::Replace, WriteMode::CreateNew}) {
+    EXPECT_EQ(write_file(at("plain/a.json"), "x", mode).domain(),
+              Code::NotFound);
+  }
+  EXPECT_EQ(create_new_directory(at("plain/session")).domain(), Code::NotFound);
+  EXPECT_EQ(entries(), std::vector<std::string>{"plain"});
+}
+
+// A file of unknown size, as a pipe is, is read to its end however long it
+// is: past read_file's 64 KiB first read.
+TEST_F(FileIo, AFileOfUnknownSizeIsReadWhole) {
+  const std::string pipe = at("pipe");
+  ASSERT_EQ(::mkfifo(pipe.c_str(), 0600), 0);
+  const std::string bytes = binary_bytes((std::size_t{256} << 10U) + 5U);
+  // A reader that stops early then fails the writer (EPIPE) instead of
+  // killing the test.
+  const ScopedIgnoredSignal sigpipe(SIGPIPE);
+  std::thread writer([&] {
+    const UniqueFd out(::open(pipe.c_str(), O_WRONLY | O_CLOEXEC));
+    std::string_view rest = bytes;
+    while (out.valid() && !rest.empty()) {
+      const ssize_t n = ::write(out.get(), rest.data(), rest.size());
+      if (n < 0 && errno == EINTR) continue;
+      if (n <= 0) break;
+      rest.remove_prefix(static_cast<std::size_t>(n));
+    }
+  });
+  const Result<std::string> read = read_file(pipe);
+  writer.join();
+  ASSERT_TRUE(read.ok()) << read.status().message();
+  EXPECT_EQ(read->size(), bytes.size());
+  EXPECT_TRUE(*read == bytes);
 }
 
 // Writers in two threads and in two processes, replacing one file at once:
@@ -310,12 +483,71 @@ TEST_F(FileIo, ConcurrentWritersGetDistinctTemporaryFiles) {
 
   EXPECT_EQ(a_failures, 0);
   EXPECT_EQ(b_failures, 0);
-  EXPECT_TRUE(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+  EXPECT_EQ(child_status, 0);  // exited, with status 0
   const std::string last = read_ok(path);
   ASSERT_EQ(last.size(), kSize);
   EXPECT_EQ(std::count(last.begin(), last.end(), last.front()),
             static_cast<std::ptrdiff_t>(kSize));
   EXPECT_EQ(entries(), std::vector<std::string>{"session.json"});
+}
+
+// Temporary names already taken -- by files a crashed writer left, or by
+// symbolic links to a file elsewhere -- are skipped and left as they are.
+TEST_F(FileIo, TakenTemporaryNamesAreSkippedAndLeftAlone) {
+  ASSERT_TRUE(create_new_directory(at("dir")));
+  ASSERT_TRUE(
+      write_file(at("elsewhere.json"), "elsewhere", WriteMode::Replace));
+  const std::string path = at("dir/session.json");
+  const std::string prefix = ".vkc_tmp." + std::to_string(::getpid()) + ".";
+
+  // The temporary names are ".vkc_tmp.<pid>.<n>", n counting up in the
+  // process: watch a write to learn a recent n.
+  std::uint64_t last = 0;
+  {
+    TemporaryFileWatcher watcher(at("dir"));
+    const std::string big(std::size_t{16} << 20U, 'n');
+    for (int i = 0; i < 50 && watcher.sightings() == 0; ++i) {
+      ASSERT_TRUE(write_file(path, big, WriteMode::Replace));
+    }
+    const std::map<std::string, mode_t> seen = watcher.stop();
+    ASSERT_FALSE(seen.empty()) << "no temporary file was seen";
+    for (const auto& entry : seen) {
+      ASSERT_EQ(entry.first.rfind(prefix, 0), 0U) << entry.first;
+      last = std::max<std::uint64_t>(
+          last, std::stoull(entry.first.substr(prefix.size())));
+    }
+  }
+  // Take the next ten, alternately with a file and a link, without
+  // write_file, which would use a name itself. The watcher may have missed
+  // the last write's name, so the next write starts at the first or second.
+  std::vector<std::string> expected = {"session.json"};
+  for (std::uint64_t n = last + 1; n <= last + 10; ++n) {
+    const std::string name = prefix + std::to_string(n);
+    if (n % 2 == 0) {
+      std::ofstream(at("dir/" + name)) << "left";
+    } else {
+      ASSERT_EQ(
+          ::symlink(at("elsewhere.json").c_str(), at("dir/" + name).c_str()),
+          0);
+    }
+    expected.push_back(name);
+  }
+  std::sort(expected.begin(), expected.end());
+
+  ASSERT_TRUE(write_file(path, "new", WriteMode::Replace));
+
+  EXPECT_EQ(read_ok(path), "new");
+  EXPECT_FALSE(is_symlink(path));
+  EXPECT_EQ(entries(at("dir")), expected);
+  for (std::uint64_t n = last + 1; n <= last + 10; ++n) {
+    const std::string planted = at("dir/" + prefix + std::to_string(n));
+    if (n % 2 == 0) {
+      EXPECT_EQ(read_ok(planted), "left") << n;
+    } else {
+      EXPECT_TRUE(is_symlink(planted)) << n;
+    }
+  }
+  EXPECT_EQ(read_ok(at("elsewhere.json")), "elsewhere");
 }
 
 TEST_F(FileIo, CreateNewDirectoryRefusesAnythingThere) {
@@ -343,7 +575,13 @@ TEST_F(FileIo, ANewDirectoryGetsTheUmasksMode) {
 
 TEST(FileIoPaths, AnEmptyPathOrAnEmbeddedNulIsRefused) {
   const std::string nul("dir/a\0b.json", 12);
+  EXPECT_TRUE(check_path("load_mesh", "dir/a.json"));
+  EXPECT_EQ(check_path("load_mesh", "").message(),
+            "load_mesh: the path is empty");
+  EXPECT_EQ(check_path("load_mesh", nul).message(),
+            "load_mesh: the path has an embedded NUL");
   for (const std::string& path : {std::string(), nul}) {
+    EXPECT_EQ(check_path("load_mesh", path).domain(), Code::InvalidArgument);
     const Result<std::string> read = read_file(path);
     EXPECT_EQ(read.status().domain(), Code::InvalidArgument);
     EXPECT_EQ(read.status().message().rfind("read_file: ", 0), 0U);

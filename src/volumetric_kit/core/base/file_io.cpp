@@ -5,6 +5,7 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/types.h>  // IWYU pragma: keep (mode_t and ssize_t on Linux)
 #include <unistd.h>
 
 #include <algorithm>
@@ -44,6 +45,10 @@ constexpr mode_t kPermissionBits =
 constexpr mode_t kNewFileMode =
     S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
 constexpr mode_t kNewDirectoryMode = S_IRWXU | S_IRWXG | S_IRWXO;
+// What the temporary file of a replaced file starts as (0600): only once its
+// bytes are written does it take the replaced file's bits, so no one the old
+// file kept out can open it in the meantime.
+constexpr mode_t kOwnerOnlyMode = S_IRUSR | S_IWUSR;
 
 // "<api>: <what> <path>: <the system's reason>", in the domain `error` says.
 Status system_failure(std::string_view api, std::string_view what,
@@ -57,6 +62,7 @@ Status system_failure(std::string_view api, std::string_view what,
   message += std::generic_category().message(error);
   switch (error) {
     case ENOENT:
+    case ENOTDIR:  // a component of the path is not a directory
       return Status::not_found(std::move(message));
     case EEXIST:
     case EISDIR:
@@ -68,17 +74,6 @@ Status system_failure(std::string_view api, std::string_view what,
   }
 }
 
-Status check_path(std::string_view api, const std::string& path) {
-  if (path.empty()) {
-    return Status::invalid_argument(std::string(api) + ": the path is empty");
-  }
-  if (path.find('\0') != std::string::npos) {
-    return Status::invalid_argument(std::string(api) +
-                                    ": the path has an embedded NUL");
-  }
-  return {};
-}
-
 // The directory part of `path` with its trailing '/', or "" for a bare name,
 // so the part plus a name is a path in the same directory.
 std::string directory_of(const std::string& path) {
@@ -86,12 +81,22 @@ std::string directory_of(const std::string& path) {
   return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
 }
 
+// Flush `fd` to the storage device. Apple's fsync stops at the drive's cache,
+// so there F_FULLFSYNC flushes that too; a filesystem that refuses it gets
+// fsync.
+int flush(int fd) {
+#ifdef F_FULLFSYNC
+  if (::fcntl(fd, F_FULLFSYNC) == 0) return 0;
+#endif
+  return ::fsync(fd);
+}
+
 // Flush a directory's entries, where the filesystem allows it. Best effort:
 // the rename or link it follows has already happened.
 void sync_directory(const std::string& directory) {
   const UniqueFd dir(::open(directory.empty() ? "." : directory.c_str(),
                             O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-  if (dir.get() >= 0) (void)::fsync(dir.get());
+  if (dir.get() >= 0) (void)flush(dir.get());
 }
 
 // A temporary file that write_file fills, then renames or links into place.
@@ -108,18 +113,22 @@ class TempFile {
   TempFile& operator=(TempFile&&) = delete;
 
   // Create it in `directory` (as directory_of returns it) as
-  // ".vkc_tmp.<pid>.<n>". O_EXCL keeps two writers off one name, and a taken
-  // name -- another writer's, or one a crashed writer left -- moves to the
-  // next; the process id and the counter make that rare.
-  Status create(std::string_view api, const std::string& directory) {
+  // ".vkc_tmp.<pid>.<n>", with `mode` before the umask. O_EXCL keeps two
+  // writers off one name, and a taken name -- another writer's, or one a
+  // crashed writer left -- moves to the next; the process id and the counter
+  // make that rare. `path` names the destination in a failure's message.
+  Status create(std::string_view api, const std::string& path,
+                const std::string& directory, mode_t mode) {
     static std::atomic<std::uint64_t> counter{0};
     const std::string prefix =
         directory + ".vkc_tmp." + std::to_string(::getpid()) + ".";
+    const std::string where =
+        path + " in " + (directory.empty() ? "." : directory);
     for (int attempt = 0; attempt < kMaxTempNames; ++attempt) {
       std::string name = prefix + std::to_string(counter.fetch_add(
                                       1, std::memory_order_relaxed));
-      const int fd = ::open(
-          name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, kNewFileMode);
+      const int fd =
+          ::open(name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode);
       if (fd >= 0) {
         fd_.reset(fd);
         path_ = std::move(name);
@@ -127,16 +136,17 @@ class TempFile {
       }
       const int error = errno;
       if (error != EEXIST && error != EINTR) {
-        return system_failure(api, "cannot create a temporary file in",
-                              directory.empty() ? "." : directory, error);
+        return system_failure(api, "cannot create a temporary file for", where,
+                              error);
       }
     }
-    return Status::io_error(std::string(api) + ": no free temporary name in " +
-                            (directory.empty() ? "." : directory));
+    return Status::io_error(std::string(api) + ": no free temporary name for " +
+                            where);
   }
 
   // Write `bytes`, set `mode` if given, flush and close. `path` names the
-  // destination in a failure's message.
+  // destination in a failure's message. `mode` comes after the bytes: a write
+  // by an unprivileged process clears the set-user-ID and set-group-ID bits.
   Status finish(std::string_view api, const std::string& path,
                 std::string_view bytes, std::optional<mode_t> mode) {
     while (!bytes.empty()) {
@@ -152,7 +162,7 @@ class TempFile {
     if (mode && ::fchmod(fd_.get(), *mode) != 0) {
       return system_failure(api, "cannot set the permissions of", path, errno);
     }
-    if (::fsync(fd_.get()) != 0) {
+    if (flush(fd_.get()) != 0) {
       return system_failure(api, "cannot flush", path, errno);
     }
     if (::close(fd_.release()) != 0 && errno != EINTR) {
@@ -266,7 +276,8 @@ Status replace_file(const std::string& path, std::string_view bytes) {
   }
   const std::string directory = directory_of(target);
   TempFile temp;
-  VKC_TRY(temp.create(kApi, directory));
+  VKC_TRY(
+      temp.create(kApi, path, directory, mode ? kOwnerOnlyMode : kNewFileMode));
   VKC_TRY(temp.finish(kApi, path, bytes, mode));
   if (::rename(temp.path().c_str(), target.c_str()) != 0) {
     return system_failure(kApi, "cannot replace", path, errno);
@@ -280,7 +291,7 @@ Status create_file(const std::string& path, std::string_view bytes) {
   constexpr std::string_view kApi = "write_file";
   const std::string directory = directory_of(path);
   TempFile temp;
-  VKC_TRY(temp.create(kApi, directory));
+  VKC_TRY(temp.create(kApi, path, directory, kNewFileMode));
   VKC_TRY(temp.finish(kApi, path, bytes, std::nullopt));
   // link() refuses whatever is at `path`, a dangling symbolic link included,
   // and the file appears there already complete.
@@ -293,6 +304,17 @@ Status create_file(const std::string& path, std::string_view bytes) {
 }
 
 }  // namespace
+
+Status check_path(std::string_view api, const std::string& path) {
+  if (path.empty()) {
+    return Status::invalid_argument(std::string(api) + ": the path is empty");
+  }
+  if (path.find('\0') != std::string::npos) {
+    return Status::invalid_argument(std::string(api) +
+                                    ": the path has an embedded NUL");
+  }
+  return {};
+}
 
 Result<std::string> read_file(const std::string& path) {
   constexpr std::string_view kApi = "read_file";

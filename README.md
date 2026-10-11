@@ -15,17 +15,16 @@ buffers zero-copy on one shared device.
                       ios
 ```
 
-> **Status:** the `base` tier is implemented and tested: exception-free
-> `Status`/`Result`, the `VKC_CHECK` contract check, the pluggable log sink, and
-> the version API. calib and recon build on it. The `vulkan` tier is
-> implemented -- the instance, device selection against a library's
-> requirements, the logical device every sibling creates or adopts, the VMA
-> allocator with its buffers and images, descriptors, synchronization, compute
-> kernels, `CommandBatch` (waited on, or ordered by timeline semaphores and
-> waited on later), the shader build functions, GPU timers, buffers
-> exported for CUDA to write, and the shared device a compute library and a
-> renderer both adopt. Camera models and sensors are not core tiers: they stay
-> in recon and calib ([DECISIONS.md](DECISIONS.md#tiers)).
+> **Status:** the `base` tier is implemented and tested, and calib and recon
+> build on it. The `vulkan` tier is implemented -- the instance, device
+> selection against a library's requirements, the logical device every sibling
+> creates or adopts, the VMA allocator with its buffers and images,
+> descriptors, synchronization, compute kernels, `CommandBatch` (waited on, or
+> ordered by timeline semaphores and waited on later), the shader build
+> functions, GPU timers, buffers exported for CUDA to write, and the shared
+> device a compute library and a renderer both adopt. Camera models and
+> sensors are not core tiers: they stay in recon and calib
+> ([DECISIONS.md](DECISIONS.md#tiers)).
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and
 Claude Code; `CLAUDE.md` imports it.
