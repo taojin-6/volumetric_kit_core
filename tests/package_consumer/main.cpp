@@ -14,6 +14,10 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/version.hpp"
 
+#ifdef VKC_CONSUMER_HAS_CONFIG
+#include "volumetric_kit/core/config/config.hpp"
+#endif
+
 #ifdef VKC_CONSUMER_HAS_VULKAN
 #include "smoke_comp.spv.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
@@ -34,6 +38,13 @@ vkc::Status run() {
       std::string_view(vkc::version_string()) != VKC_CONSUMER_CORE_VERSION) {
     return vkc::Status::invalid_argument("the core's versions disagree");
   }
+#ifdef VKC_CONSUMER_HAS_CONFIG
+  VKC_ASSIGN(const auto scenario,
+             vkc::config::parse(R"({"version":1,"operation":"view"})",
+                                vkc::config::Application::GfxTriangle));
+  if (scenario.window.width != 800)
+    return vkc::Status::invalid_argument("config defaults disagree");
+#endif
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");
   if (parse_positive(-1).ok()) return vkc::Status::numerical("accepted -1");

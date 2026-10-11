@@ -68,7 +68,7 @@ jobs:
       - name: Configure
         run: |
           cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON \
+            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON -DVKC_WITH_CONFIG=ON \
             -DVKC_TEST_SHARDS=4
 
       - name: Build
@@ -93,7 +93,7 @@ jobs:
       - name: Consume via add_subdirectory
         run: |
           cmake -S tests/package_consumer -B build-consumer-subdir \
-            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON \
+            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON -DVKC_WITH_CONFIG=ON \
             -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
           cmake --build build-consumer-subdir
           ./build-consumer-subdir/vkc_package_consumer
@@ -104,3 +104,23 @@ jobs:
             ./build-consumer-subdir/vkc_package_consumer_policy_test
           # Like a sibling's install: its exported library plus the core.
           cmake --install build-consumer-subdir --prefix "$PWD/stage-consumer"
+
+      - name: Base-only build has no JSON or GPU dependency
+        run: |
+          cmake -S . -B build-base -DCMAKE_BUILD_TYPE=Release \
+            -DVKC_WITH_VULKAN=OFF -DVKC_WITH_CONFIG=OFF -DVKC_BUILD_TESTS=OFF
+          cmake --build build-base --parallel 2
+          cmake --install build-base --prefix "$PWD/stage-base"
+          test ! -d build-base/_deps/nlohmann_json-src
+          test ! -d stage-base/include/volumetric_kit/core/config
+          cmake -S tests/package_consumer -B consumer-base-package \
+            -DCMAKE_BUILD_TYPE=Release -DVKC_CONSUME=find_package \
+            -DCMAKE_PREFIX_PATH="$PWD/stage-base" -DVKC_CONSUMER_GTEST=OFF
+          cmake --build consumer-base-package --parallel 2
+          ./consumer-base-package/vkc_package_consumer
+          cmake -S tests/package_consumer -B consumer-base-source \
+            -DCMAKE_BUILD_TYPE=Release -DVKC_CONSUME=subdirectory \
+            -DVKC_SOURCE_DIR="$PWD" -DVKC_WITH_VULKAN=OFF -DVKC_WITH_CONFIG=OFF \
+            -DVKC_CONSUMER_GTEST=OFF
+          cmake --build consumer-base-source --parallel 2
+          ./consumer-base-source/vkc_package_consumer

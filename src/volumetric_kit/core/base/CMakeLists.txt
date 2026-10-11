@@ -17,7 +17,6 @@ add_library(volumetric_kit::core_base ALIAS core_base)
 target_sources(
   core_base
   PRIVATE check.cpp
-          cli.cpp
           exception_status.cpp
           file_io.cpp
           log.cpp

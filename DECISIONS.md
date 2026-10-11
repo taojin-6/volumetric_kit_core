@@ -36,6 +36,7 @@ uses (`calib`'s headless solver needs no Vulkan):
 | Tier | Depends on | Holds | Lands |
 | --- | --- | --- | --- |
 | `base` | — | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics, whole-file I/O, version | now |
+| `config` | `base`, private nlohmann/json | family scenario schema, typed settings, defaults and static validation | 0.3.0 |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
 
 - `vulkan` is seeded from `recon`'s core, which carries the measured memory
@@ -952,3 +953,27 @@ the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
   `DeviceMapped` memory the host writes in place and a kernel reads as a
   `StorageInput` device buffer, now exists. Which inputs take it, and on
   which architecture (`unified_memory()`), is the open part.
+
+## 2026-10-11 — One family scenario format in the core
+
+The applications use separate JSON files for dataset, live, rendering and
+mobile scenarios with one format owned here (CONFIG.md). The user chose a
+single owner for typed settings, defaults and all static/cross-field checks.
+The optional CPU-only `core_config` tier supplies it; `core_base` remains free
+of dependencies. nlohmann/json 3.12.0 is a private implementation dependency,
+using the same FetchContent name and hash as recon. No camera model, driver,
+renderer or solver algorithm moves into core.
+
+Applications select their `Application` profile, load the file, adapt typed
+settings, and check files, device modes and build/backend availability at
+runtime. Unknown or ignored explicit settings are errors. Every file states
+its version, operation and, when present, discriminated source. Paths are
+relative to the config file. Shared calibration/session artifact formats
+remain with their domain owners.
+
+This replaces the unconsumed core `Cli` proposal in PR #26. No generalized
+CLI registration API is released: desktop programs accept only `--config`
+and `--help`; iOS loads its bundled scenario. Existing defaults and recon's
+stream-only exclusions are preserved. Siblings pin 0.3.0, enable
+`VKC_WITH_CONFIG` before the first core declaration, and require its `CONFIG`
+tier. Base-only installs fetch and export no JSON dependency or config headers.

@@ -52,7 +52,6 @@ endfunction()
 # into a failure instead of a hung job.
 foreach(
   _vkc_test
-  base_cli
   base_result
   base_check
   base_log
@@ -456,21 +455,26 @@ foreach(_vkc_consume IN LISTS _vkc_consumes)
     set(_vkc_core "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
                   -DVKC_WITH_VULKAN=OFF)
     set(_vkc_has_vulkan OFF)
+    set(_vkc_has_config OFF)
     set(_vkc_origin "the core at")
     set(_vkc_fix "pin v${_vkc_too_new} or newer")
     set(_vkc_tier_fix "set VKC_WITH_VULKAN ON before")
   else()
     set(_vkc_core "-DCMAKE_PREFIX_PATH=${_vkc_stage}")
     set(_vkc_has_vulkan ${VKC_WITH_VULKAN})
+    set(_vkc_has_config ${VKC_WITH_CONFIG})
     set(_vkc_origin "the core installed at")
     set(_vkc_fix "install volumetric_kit_core ${_vkc_too_new} or newer")
     set(_vkc_tier_fix "install one built with VKC_WITH_VULKAN ON")
   endif()
-  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan)
+  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan config)
     set(_vkc_name vkc_require_core_${_vkc_consume}_${_vkc_require})
     if(_vkc_require STREQUAL "vulkan")
       set(_vkc_args -DVKC_CONSUMER_REQUIRE=${PROJECT_VERSION}
                     -DVKC_CONSUMER_REQUIRE_VULKAN=ON)
+    elseif(_vkc_require STREQUAL "config")
+      set(_vkc_args -DVKC_CONSUMER_REQUIRE=${PROJECT_VERSION}
+                    -DVKC_CONSUMER_REQUIRE_CONFIG=ON)
     else()
       set(_vkc_args -DVKC_CONSUMER_REQUIRE=${_vkc_require})
     endif()
@@ -494,6 +498,8 @@ foreach(_vkc_consume IN LISTS _vkc_consumes)
         "needs volumetric_kit_core's vulkan tier, which ${_vkc_origin}")
       _vkc_message_regex(_vkc_tail "was built without: ${_vkc_tier_fix}")
       set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
+    elseif(_vkc_require STREQUAL "config" AND NOT _vkc_has_config)
+      _vkc_message_regex(_vkc_pass "needs volumetric_kit_core's config tier")
     else()
       # The version read back, and a configure that finished.
       set(_vkc_pass "${_vkc_read}.+Generating done")
@@ -618,3 +624,14 @@ _vkc_call_test(vkc_core_version_before_core "vkc_core_version(_v)"
 # Beyond these configure tests, CI builds and runs package_consumer/ against an
 # installed copy (find_package) and against the source tree (add_subdirectory),
 # the two ways the sibling repos consume this one.
+
+if(VKC_WITH_CONFIG)
+  add_executable(vkc_config_test config_test.cpp)
+  target_link_libraries(vkc_config_test PRIVATE volumetric_kit::core_config
+                                                GTest::gtest_main)
+  vkc_target_warnings(vkc_config_test)
+  gtest_discover_tests(
+    vkc_config_test
+    PROPERTIES
+    TIMEOUT 60)
+endif()

@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.21)
 # application declares the core first".
 project(
   volumetric_kit_core
-  VERSION 0.2.0
+  VERSION 0.3.0
   DESCRIPTION
     "Shared foundation for the volumetric_kit family: error handling and the Vulkan core"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_core"
@@ -23,6 +23,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # Tests and -Werror default ON only when this is the top-level project, so a
 # consumer that pulls it in via FetchContent builds the library tiers alone,
 # with no warnings-as-errors from its newer compiler.
+option(VKC_WITH_CONFIG "Build CPU-only scenario configuration"
+       ${PROJECT_IS_TOP_LEVEL})
 option(VKC_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
 option(VKC_WARNINGS_AS_ERRORS "Treat first-party compiler warnings as errors"
        ${PROJECT_IS_TOP_LEVEL})

@@ -53,7 +53,10 @@ not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 
 ## Architecture
 
-`base` → `vulkan`. A tier depends only on the tiers its row in DECISIONS.md
+`base` → {`config`, `vulkan`}. The optional CPU-only `config` tier owns the
+family scenario schema, typed settings, defaults and all static validation;
+siblings adapt validated settings and check runtime resources/capabilities.
+Its JSON dependency stays private. A tier depends only on the tiers its row in DECISIONS.md
 names. `base` is pure CPU, so its tests run on every machine.
 
 ## Error handling
