@@ -53,6 +53,9 @@ ExtraArgs:
 CheckOptions:
   # First-party code reaches Vulkan only through
   # volumetric_kit/core/vulkan/vulkan.hpp (the vulkan-include-umbrella hook
-  # enforces it), so include-cleaner must not ask for Vulkan's own headers.
+  # enforces it), so include-cleaner must not ask for Vulkan's own headers. The
+  # macOS SDK declares POSIX types and constants (mode_t, ssize_t, S_IRUSR,
+  # O_RDONLY, SIGXFSZ) in headers of its own, which Linux lacks; the code
+  # includes the POSIX headers that declare them.
   - key: misc-include-cleaner.IgnoreHeaders
-    value: 'vulkan/.*;vk_video/.*'
+    value: 'vulkan/.*;vk_video/.*;sys/_types/.*;sys/fcntl\.h;sys/signal\.h'

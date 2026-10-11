@@ -35,7 +35,7 @@ uses (`calib`'s headless solver needs no Vulkan):
 
 | Tier | Depends on | Holds | Lands |
 | --- | --- | --- | --- |
-| `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, version | now |
+| `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, whole-file I/O, version | now |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
 
 - `vulkan` is seeded from `recon`'s core, which carries the measured memory
@@ -62,7 +62,7 @@ It lands in five stages, each its own PR, merged before any sibling migrates:
 | V1 (landed) | `vulkan.hpp`, the `VkResult` helpers, `UniqueHandle`, `PhysicalDeviceInfo`, `DeviceRequirements` with `merge` and `check_device_support`, `Instance`, `Device` |
 | V2 (landed) | `Allocator`, `Buffer`, `Image`, descriptor layouts, pools and sets, `ShaderModule`, fences and semaphores, command pools and buffers |
 | V3 (landed) | `ComputePipeline`, `ComputeKernel`, `KernelSetBuilder`, `KernelSets`, `dispatch`, `CommandBatch`, the compute helpers, and the shader build functions |
-| V4 (landed) | `QueryPool`, `GpuTimer`, `GpuStageScope`, `StageMetrics` (in `base`), timed `CommandBatch` commands and submits; `create_exported_buffer`, `UniqueFd`, `find_memory_type`, `CommandBatch::release` |
+| V4 (landed) | `QueryPool`, `GpuTimer`, `GpuStageScope`, `StageMetrics` (in `base`), timed `CommandBatch` commands and submits; `create_exported_buffer`, `UniqueFd` (now in `base`), `find_memory_type`, `CommandBatch::release` |
 | V5 (landed) | `SharedDevice`: one device for a compute library and a renderer, replacing recon's example copy and ios's `SharedDevice` |
 
 V1's choices, from comparing the two cores on 2026-10-03:
@@ -722,6 +722,26 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
   remain: a handler replacing itself waits only for calls on other threads,
   leaving its own active callbacks to return afterwards.
 
+### Whole-file I/O, and an exception as a `Status`
+
+`recon` reads whole files with two copies of one `fread` loop, and `calib`'s
+capture writes a session that must survive a crash and never overwrite a
+capture, so `file_io.hpp` is in `base`.
+
+- **A write goes through a temporary file** beside the destination, flushed
+  before it takes the name, so neither a reader nor a crash finds part of it.
+  `Replace` renames it over the old file, which POSIX makes atomic.
+  `CreateNew` hard-links it to the path, which `link` refuses when anything
+  is there; `O_EXCL` on the final name would refuse too, but shows the file
+  while it is written.
+- **`Replace` follows symbolic links and keeps permission bits**, as an
+  editor's save does: a link to a shared file still points at it afterwards.
+- **POSIX calls, not `std::filesystem`**, which cannot `fsync`. Their
+  descriptors are `UniqueFd`s, which moved down from the vulkan tier.
+- **`exception_status(api, fallback)`** is `recon` io's private helper, with
+  the domain a parameter, so `calib`'s OpenCV guard and `recon`'s io turn an
+  exception into a `Status` one way.
+
 ### One Vulkan test fixture for the family
 
 The test support in `tests/support/` holds the policy that makes a GPU test
@@ -821,8 +841,9 @@ dependencies, so GitHub-hosted Linux and macOS runners cover it, including
 sanitizers and both ways of consuming the package. Every build leg is the
 same build on a different OS: Release and static, as every sibling builds
 the core. None builds it shared, so nothing checks that the shared library
-exports what consumers call, and none builds with `-fno-exceptions`: the core
-neither throws nor catches, and review keeps it so.
+exports what consumers call, and none builds with `-fno-exceptions`, which no
+sibling uses (`calib`'s DECISIONS.md, 2026-10-10): the core throws nothing,
+and catches only to return a `Status`.
 
 ### Only the owner triggers CI
 

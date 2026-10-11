@@ -34,7 +34,7 @@ Claude Code; `CLAUDE.md` imports it.
 
 | Tier | Target | Holds |
 | --- | --- | --- |
-| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, logging, stage metrics, version |
+| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics, whole-file I/O, version |
 | `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no

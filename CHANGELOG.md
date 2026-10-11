@@ -7,6 +7,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-11
+
+### Added
+
+- `base/file_io.hpp`: `read_file(path)`, `write_file(path, bytes, WriteMode)`
+  and `create_new_directory(path)`, which fail with a `Status`. A write goes
+  through a flushed temporary file, so neither a reader nor a crash finds
+  part of it: `WriteMode::Replace` renames it over the file, keeping its
+  permission bits and writing through a symbolic link, and
+  `WriteMode::CreateNew` refuses anything already at the path. In the
+  re-pins, recon's two whole-file read loops (`read_text` in
+  `array_calibration.cpp`, and `read_orbbec_sync_config`) and calib's session
+  writer move onto them.
+- `base/exception_status.hpp`: `exception_status(api, fallback)`, the
+  exception being handled as a `Status`: `OutOfMemory` for a
+  `std::bad_alloc`, `fallback` for anything else. recon's
+  `io::detail::exception_status(api)` becomes
+  `exception_status(api, Status::Code::IoError)`.
+
+### Changed
+
+- `UniqueFd` moves from `vulkan/external_memory.hpp` and `core_vulkan` to
+  `base/unique_fd.hpp` and `core_base`, which owns descriptors too now.
+  `external_memory.hpp` still includes it, so no consumer changes.
+- `core_base` catches exceptions, to return them as a `Status`, so it no
+  longer compiles with `-fno-exceptions`, which no sibling uses.
+
 ## [0.1.0] - 2026-10-08
 
 ### Fixed
@@ -499,5 +526,6 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
     `TwoQueuesOneFamily`, `TwoFamilies`, `SharedQueue`. `release_surface()`,
     `wait_idle()` and `summary()` keep their names (recon gains the last two).
 
-[Unreleased]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/taojin-6/volumetric_kit_core/releases/tag/v0.1.0

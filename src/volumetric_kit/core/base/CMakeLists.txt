@@ -3,9 +3,9 @@
 
 # --- core_base: the bottom tier ----------------------------------------------
 # Exception-free Status/Result error handling, the VKC_CHECK contract check, the
-# pluggable log sink, and the version API. Pure C++17 with no dependencies, so
-# every other tier, and every sibling repo, can build on it -- including a
-# headless or device-less consumer.
+# pluggable log sink, whole-file I/O and the version API. Pure C++17 with no
+# dependencies, so every other tier, and every sibling repo, can build on it --
+# including a headless or device-less consumer.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -14,8 +14,16 @@ set(_vkc_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(core_base)
 add_library(volumetric_kit::core_base ALIAS core_base)
 
-target_sources(core_base PRIVATE check.cpp log.cpp log_internal.hpp result.cpp
-                                 version.cpp)
+target_sources(
+  core_base
+  PRIVATE check.cpp
+          exception_status.cpp
+          file_io.cpp
+          log.cpp
+          log_internal.hpp
+          result.cpp
+          unique_fd.cpp
+          version.cpp)
 
 # Generated headers: the per-tier VKC_BASE_API export macro (each tier generates
 # its own, so their macros and guards never collide) and the configured version
