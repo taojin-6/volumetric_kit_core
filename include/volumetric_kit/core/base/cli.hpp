@@ -44,7 +44,8 @@
 namespace volumetric_kit::core {
 
 /// @brief Parse @p text, the value of @p flag, as a finite number: the whole
-///        text, so `10x`, ` 5`, `nan` and an empty value are refused.
+///        text, so `10x`, ` 5`, `nan` and an empty value are refused. A value
+///        too small for a double rounds toward zero.
 /// @param flag  The flag's spelling, for the message.
 /// @param text  The value; not null.
 /// @param out   Set on success; unchanged on error.
@@ -86,14 +87,14 @@ VKC_BASE_API Status parse_number(const std::string& flag, const char* text,
 /// starting with `-` that names no flag is refused, as are a positional
 /// argument past those declared, a second flag of a @ref one_of group, and a
 /// command line without a positional or a @ref require "required" flag.
-/// After the arguments, every @ref check runs, in declaration order. Every
-/// error is InvalidArgument, its message `<program>: <what>` followed by the
-/// @ref usage line, for a `main` to print as it is.
+/// After the arguments, the @ref check "checks" run in declaration order
+/// until one refuses. Every error is InvalidArgument, its message
+/// `<program>: <what>` followed by the @ref usage line, for a `main` to print
+/// as it is.
 ///
 /// A declaration keeps a reference to its variable, which must outlive every
-/// @ref parse, and keeps a metavar or a positional's name by pointer: a
-/// string literal, as every caller passes. Naming an undeclared flag in
-/// @ref require or @ref one_of is a programmer error (`VKC_CHECK`).
+/// @ref parse. Declaring a spelling twice, or naming an undeclared flag in
+/// @ref require or @ref one_of, is a programmer error (`VKC_CHECK`).
 ///
 /// @code
 /// std::string serial, rig;
@@ -128,8 +129,8 @@ class VKC_BASE_API Cli {
     std::vector<std::string> list;
   };
 
-  /// What a flag does with its value (null for a switch), given the
-  /// spelling it was found under.
+  /// @brief What a flag does with its value (null for a switch), given the
+  ///        spelling it was found under; its refusal is the parse's.
   using Handler =
       std::function<Status(const std::string& flag, const char* value)>;
 
@@ -248,13 +249,13 @@ class VKC_BASE_API Cli {
  private:
   struct Flag {
     std::vector<std::string> names;
-    const char* metavar;  // null: a switch
+    std::optional<std::string> metavar;  // empty: a switch
     Handler handler;
     int group;      // a one_of group's flags share one, shown together
     bool required;  // makes its group required
   };
   struct Positional {
-    const char* name;
+    std::string name;
     std::string* out;
   };
 

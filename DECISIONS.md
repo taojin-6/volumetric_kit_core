@@ -35,7 +35,7 @@ uses (`calib`'s headless solver needs no Vulkan):
 
 | Tier | Depends on | Holds | Lands |
 | --- | --- | --- | --- |
-| `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, version, the command-line parser | now |
+| `base` | — | `Status`/`Result`, `VKC_CHECK`, logging, stage metrics, the command-line parser, version | now |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
 
 - `vulkan` is seeded from `recon`'s core, which carries the measured memory

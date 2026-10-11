@@ -38,9 +38,10 @@ constexpr std::size_t kColumns = 80;
 
 Status parse_number(const std::string& flag, const char* text, double& out) {
   char* end = nullptr;
-  errno = 0;
+  // errno is not consulted: an underflow (ERANGE) rounds toward zero, as a
+  // float's does, and an overflow is infinite.
   const double value = std::strtod(text, &end);
-  if (starts_with_space(text) || end == text || *end != '\0' || errno != 0 ||
+  if (starts_with_space(text) || end == text || *end != '\0' ||
       !std::isfinite(value)) {
     return Status::invalid_argument(flag + ": not a finite number: " + text);
   }
@@ -124,8 +125,14 @@ Cli& Cli::option(Names names, const char* metavar, std::uint32_t& out,
 }
 
 Cli& Cli::on(Names names, const char* metavar, Handler handler) {
-  flags_.push_back({std::move(names.list), metavar, std::move(handler),
-                    next_group_++, false});
+  for (const std::string& name : names.list) {
+    VKC_CHECK(index_of(name) == flags_.size(),
+              "Cli: a spelling declared twice");
+  }
+  flags_.push_back(
+      {std::move(names.list),
+       metavar == nullptr ? std::nullopt : std::optional<std::string>(metavar),
+       std::move(handler), next_group_++, false});
   return *this;
 }
 
@@ -173,7 +180,7 @@ Status Cli::parse(int argc, const char* const* argv) const {
     }
     first = &flag;
     const char* value = nullptr;
-    if (flag.metavar != nullptr) {
+    if (flag.metavar.has_value()) {
       if (i + 1 >= argc) return error(arg + " needs a value");
       value = argv[++i];
     }
@@ -182,7 +189,7 @@ Status Cli::parse(int argc, const char* const* argv) const {
     }
   }
   if (positional < positionals_.size()) {
-    return error(std::string("needs <") + positionals_[positional].name + ">");
+    return error("needs <" + positionals_[positional].name + ">");
   }
   for (const Flag& flag : flags_) {
     if (group_required(flag.group) &&
@@ -201,7 +208,7 @@ std::string Cli::usage() const {
   std::vector<std::string> items;
   items.reserve(positionals_.size() + flags_.size());
   for (const Positional& p : positionals_) {
-    items.push_back("<" + std::string(p.name) + ">");
+    items.push_back("<" + p.name + ">");
   }
   // Each group once, where its first flag was declared.
   std::vector<bool> shown(static_cast<std::size_t>(next_group_), false);
@@ -217,9 +224,9 @@ std::string Cli::usage() const {
         several = true;
       }
       item += member.names.front();
-      if (member.metavar != nullptr) {
+      if (member.metavar.has_value()) {
         item += ' ';
-        item += member.metavar;
+        item += *member.metavar;
       }
     }
     if (!group_required(flag.group)) {

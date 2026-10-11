@@ -12,8 +12,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 ### Added
 
 - `Cli` and `parse_number` (`base/cli.hpp`): the family's command-line
-  parser, moved from recon's `examples/common/cli.hpp` with its behaviour
-  unchanged. Migrating, in `recon`: require 0.2.0 (`vkc_require_core`),
+  parser, moved from recon's `examples/common/cli.hpp`. Two behaviours differ
+  from recon's copy: declaring a spelling twice aborts (`VKC_CHECK`), where
+  the second declaration was never reached, and a real number too small for a
+  `double` rounds toward zero, as for a `float`, instead of being refused as
+  not finite. Migrating, in `recon`: require 0.2.0 (`vkc_require_core`),
   include `volumetric_kit/core/base/cli.hpp`, use `vkc::Cli` and
   `vkc::parse_number` for `vr_example::Cli` and `vr_example::parse_number`,
   and delete `examples/common/cli.hpp`; `starts_with_space` is no longer

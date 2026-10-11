@@ -9,7 +9,9 @@
 
 #include "volumetric_kit/core/base/cli.hpp"
 
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -48,17 +50,38 @@ TEST(CliNumbers, RealsAreTheWholeTextAndFinite) {
     EXPECT_EQ(d, 7.0) << bad;
   }
   float f = 0.0F;
-  EXPECT_TRUE(has(parse_number("--x", "1e39", f), "--x: number too large"));
-  EXPECT_EQ(f, 0.0F);
+  for (const char* large : {"1e39", "-1e39"}) {
+    EXPECT_TRUE(has(parse_number("--x", large, f), "--x: number too large"))
+        << large;
+    EXPECT_EQ(f, 0.0F) << large;
+  }
   EXPECT_TRUE(parse_number("--x", "-2.5", f).ok());
   EXPECT_EQ(f, -2.5F);
+}
+
+// A value too small for its type rounds toward zero, in either type.
+TEST(CliNumbers, AnUnderflowRoundsTowardZero) {
+  double d = 7.0;
+  ASSERT_TRUE(parse_number("--x", "1e-310", d).ok());
+  EXPECT_GT(d, 0.0);
+  EXPECT_LT(d, std::numeric_limits<double>::min());
+  ASSERT_TRUE(parse_number("--x", "-1e-400", d).ok());
+  EXPECT_EQ(d, 0.0);
+  float f = 7.0F;
+  ASSERT_TRUE(parse_number("--x", "1e-50", f).ok());
+  EXPECT_EQ(f, 0.0F);
 }
 
 TEST(CliNumbers, IntegersAreDecimalAndInRange) {
   int i = 3;
   EXPECT_TRUE(parse_number("--n", "-42", i).ok());
   EXPECT_EQ(i, -42);
-  for (const char* bad : {"10x", "", " 5", "1.5", "2147483648", "0x10"}) {
+  EXPECT_TRUE(parse_number("--n", "-2147483648", i).ok());
+  EXPECT_EQ(i, std::numeric_limits<int>::min());
+  EXPECT_TRUE(parse_number("--n", "2147483647", i).ok());
+  EXPECT_EQ(i, std::numeric_limits<int>::max());
+  for (const char* bad :
+       {"10x", "", " 5", "1.5", "2147483648", "-2147483649", "0x10"}) {
     i = 3;
     EXPECT_TRUE(has(parse_number("--n", bad, i), "--n: not an integer")) << bad;
     EXPECT_EQ(i, 3) << bad;
@@ -150,6 +173,10 @@ TEST_F(CliParse, EveryDeclarationSetsItsVariable) {
   // Each parse stands alone: the earlier --lit does not refuse --unlit.
   EXPECT_TRUE(parse(cli_, {"room0", "--unlit"}).ok());
   EXPECT_FALSE(o_.lit);
+  // A bound is accepted itself.
+  ASSERT_TRUE(parse(cli_, {"room0", "--frames", "1", "--fps", "1"}).ok());
+  EXPECT_EQ(o_.frames, 1);
+  EXPECT_EQ(o_.fps, 1U);
 }
 
 // Each refusal names its program and its cause, then the usage line.
@@ -184,6 +211,28 @@ TEST(Cli, ChecksRunAfterTheArguments) {
   const Status late = parse(checked, {"--frames", "3"});
   EXPECT_EQ(seen, 3);
   EXPECT_TRUE(has(late, "prog: frames is 3\nusage: prog"));
+}
+
+// Checks run in declaration order, and the first refusal is the parse's: the
+// checks after it do not run.
+TEST(Cli, ChecksRunInOrderUntilOneRefuses) {
+  std::vector<int> ran;
+  bool refuse = false;
+  Cli cli("prog");
+  cli.check([&] {
+       ran.push_back(1);
+       return refuse ? Status::invalid_argument("first") : Status{};
+     })
+      .check([&] {
+        ran.push_back(2);
+        return refuse ? Status::invalid_argument("second") : Status{};
+      });
+  ASSERT_TRUE(parse(cli, {}).ok());
+  EXPECT_EQ(ran, (std::vector<int>{1, 2}));
+  ran.clear();
+  refuse = true;
+  EXPECT_TRUE(has(parse(cli, {}), "prog: first\nusage: prog"));
+  EXPECT_EQ(ran, std::vector<int>{1});
 }
 
 // A handler gets the spelling it was found under and the value, or null for
@@ -285,6 +334,48 @@ TEST(CliUsage, WrapsUnderTheProgramBefore80Columns) {
             "            [--third value]");
 }
 
+// `tool`'s usage line with one optional flag, its item `[--aa...a v]`
+// @p width columns wide, after a positional `<in>` when @p positional.
+std::string usage_with_item(bool positional, std::size_t width) {
+  std::string s;
+  const std::string name = "--" + std::string(width - 6, 'a');
+  Cli cli("tool");
+  if (positional) cli.positional("in", s);
+  cli.option(name.c_str(), "v", s);
+  return cli.usage();
+}
+
+// No line reaches column 80: an item that would end there starts the next
+// line, under the program's name. The first item stays beside the name
+// however wide it is.
+TEST(CliUsage, NoLineReachesColumn80) {
+  // `usage: tool <in>` is 16 columns, then a space and the item.
+  const std::string fits = usage_with_item(true, 62);
+  EXPECT_EQ(fits.size(), 79U);
+  EXPECT_EQ(fits.find('\n'), std::string::npos);
+  EXPECT_EQ(usage_with_item(true, 63).rfind(
+                "usage: tool <in>\n" + std::string(12, ' ') + "[--a", 0),
+            0U);
+  const std::string wide = usage_with_item(false, 90);
+  EXPECT_EQ(wide.rfind("usage: tool [--a", 0), 0U);
+  EXPECT_EQ(wide.find('\n'), std::string::npos);
+}
+
+// A metavar and a positional's name are copied, so they may be temporaries.
+TEST(CliUsage, NamesAreCopied) {
+  std::string s;
+  Cli cli("tool");
+  {
+    std::string name = "in";
+    std::string metavar = "path";
+    cli.positional(name.c_str(), s).option("--out", metavar.c_str(), s);
+    name.assign("XX");  // in place: a borrowed pointer would now read these
+    metavar.assign("XXXX");
+  }
+  EXPECT_EQ(cli.usage(), "usage: tool <in> [--out path]");
+  EXPECT_TRUE(has(parse(cli, {}), "tool: needs <in>"));
+}
+
 // A group is shown where its first flag was declared: in brackets when
 // optional, in parentheses when required.
 TEST(CliUsage, AGroupShowsWhereItsFirstFlagWasDeclared) {
@@ -302,10 +393,11 @@ TEST(CliUsage, AGroupShowsWhereItsFirstFlagWasDeclared) {
             "usage: tool (--serial SN | --rig sync.json) [--frames N]");
 }
 
-// Naming a flag that was never declared, or grouping fewer than two, is a
-// programmer error.
+// Naming a flag that was never declared, grouping fewer than two, or
+// declaring a spelling twice is a programmer error.
 TEST(CliDeathTest, MisdeclarationsAbort) {
   std::string s;
+  bool b = false;
   EXPECT_DEATH(
       {
         Cli cli("prog");
@@ -324,6 +416,19 @@ TEST(CliDeathTest, MisdeclarationsAbort) {
         cli.option("--serial", "SN", s).one_of({"--serial"});
       },
       "Cli::one_of groups two flags or more");
+  EXPECT_DEATH(
+      {
+        Cli cli("prog");
+        cli.option({"-o", "--out"}, "path", s).flag("--out", b);
+      },
+      "Cli: a spelling declared twice");
+  EXPECT_DEATH(
+      {
+        Cli cli("prog");
+        cli.flag("--lit", b)
+            .choice<bool>({{"--unlit", false}, {"--lit", true}}, b);
+      },
+      "Cli: a spelling declared twice");
 }
 
 }  // namespace
