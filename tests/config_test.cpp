@@ -166,6 +166,39 @@ TEST(Config, StreamModePreservesPresenceSensitiveFusionAndOutputConflicts) {
   rejected(R"({"version":1,"operation":"stream"})", App::GfxModel, "operation");
 }
 
+TEST(Config, PictureReadbackIsOptionalForLiveFusionAndStreaming) {
+  for (const char* operation : {"fuse", "stream"}) {
+    const auto omitted = scenario(
+        std::string(R"({"version":1,"operation":")") + operation + "\"}",
+        App::FuseOrbbec);
+    ASSERT_TRUE(omitted) << omitted.status().message();
+    EXPECT_FALSE(omitted->diagnostics.readback);
+    for (const char* enabled : {"true", "false"}) {
+      const auto text = std::string(R"({"version":1,"operation":")") +
+                        operation + R"(","diagnostics":{"readback":)" +
+                        enabled + "}}";
+      const auto loaded = scenario(text, App::FuseOrbbec);
+      ASSERT_TRUE(loaded) << loaded.status().message();
+      EXPECT_EQ(loaded->diagnostics.readback,
+                std::string_view(enabled) == "true");
+    }
+  }
+  rejected(R"({"version":1,"diagnostics":{"readback":1}})", App::FuseOrbbec,
+           "diagnostics.readback");
+  rejected(R"({"version":1,"diagnostics":{"readback":true}})", App::Scanner,
+           "diagnostics.readback");
+  rejected(R"({"version":1,"diagnostics":{"readback":false}})", App::Scanner,
+           "diagnostics.readback");
+  rejected(R"({"version":1,"diagnostics":{"measure_stages":false}})",
+           App::FuseOrbbec, "diagnostics.measure_stages");
+  rejected(
+      R"({"version":1,"operation":"stream","diagnostics":{"readback":true},"fusion":{}})",
+      App::FuseOrbbec, "fusion");
+  rejected(
+      R"({"version":1,"operation":"stream","diagnostics":{"readback":true},"output":{}})",
+      App::FuseOrbbec, "output");
+}
+
 TEST(Config, LiveRelationsAndCountsAreCentral) {
   rejected(R"({"version":1,"source":{"serial":"A\u0000B"}})", App::FuseOrbbec,
            "source.serial");

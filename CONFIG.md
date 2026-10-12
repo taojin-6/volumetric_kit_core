@@ -141,6 +141,9 @@ unknown extension object.
 - Scanner fusion fields: `voxel_size_m`, `truncation_m`, `buckets`,
   `max_buckets`, `fuse_every`, `remesh_every`, `occlusion_m`;
   `diagnostics.measure_stages` controls timings.
+- `FuseOrbbec` accepts the boolean `diagnostics.readback` (core 0.4.0),
+  default false. When true, its stream or fuse run reads each set's luma back
+  to the host as a separate stage. Other profiles reject this field.
 
 ## Validation and compatibility
 

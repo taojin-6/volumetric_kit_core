@@ -45,6 +45,13 @@ vkc::Status run() {
   if (scenario.window.width != 800)
     return vkc::Status::invalid_argument("config defaults disagree");
   VKC_ASSIGN(
+      const auto readback,
+      vkc::config::parse(
+          R"({"version":1,"operation":"stream","source":{"kind":"live"},"diagnostics":{"readback":true}})",
+          vkc::config::Application::FuseOrbbec));
+  if (!readback.diagnostics.readback)
+    return vkc::Status::invalid_argument("config readback was not enabled");
+  VKC_ASSIGN(
       const auto mesh,
       vkc::config::parse(
           R"({"version":1,"operation":"codec","source":{"kind":"mesh","path":"mesh.ply","height_m":2,"up_axis":"y"}})",
