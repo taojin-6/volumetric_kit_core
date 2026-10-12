@@ -62,6 +62,14 @@ vkc::Status run() {
           vkc::config::Application::CodecMesh));
   if (!mesh.source.up_vector.has_value())
     return vkc::Status::invalid_argument("mesh direction was not resolved");
+  VKC_ASSIGN(
+      const auto codec,
+      vkc::config::parse(
+          R"({"version":1,"operation":"codec","source":{"kind":"dataset","path":"room0"},"output":{"stream":"runs/frames.vrst"}})",
+          vkc::config::Application::CodecReplica, "/scenario"));
+  if (codec.output.stream != "/scenario/runs/frames.vrst" ||
+      !codec.output.csv.empty())
+    return vkc::Status::invalid_argument("codec outputs were not resolved");
 #endif
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");

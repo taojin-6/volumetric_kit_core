@@ -89,7 +89,8 @@ struct Fusion {
   int fuse_every = 1;
   bool share_vertices = false;
   bool device_extract = false;
-  bool dynamic = true;
+  /// Dynamic integration if true, else Classic; RigViewer resolves true.
+  bool dynamic = false;
   bool depth_within_color = true;
   float occlusion_m = 0.05F;
   int remesh_every = 1;
@@ -128,13 +129,17 @@ struct Render {
   bool show_sources = false;
   bool texture_stats = false;
 };
-/// @brief Output paths. Empty prefix/screenshot disable optional output;
+/// @brief Output paths. An empty string disables each optional output;
 /// fusion/export applications require a nonempty path.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Output {
   std::string path;
   std::string prefix;
   std::string screenshot;
+  /// The codec's per-frame rows, as CSV.
+  std::string csv;
+  /// The codec's coded frames, in one stream file; never the csv path.
+  std::string stream;
 };
 /// @brief Run limits; a negative frame limit means unlimited where supported.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
