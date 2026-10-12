@@ -5,9 +5,10 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cfenv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <initializer_list>
 #include <limits>
@@ -21,11 +22,6 @@
 #include <vector>
 
 #include <fcntl.h>
-#ifdef __APPLE__
-#include <xlocale.h>
-#else
-#include <clocale>  // IWYU pragma: keep
-#endif
 #include <sys/stat.h>
 #include <sys/types.h>  // IWYU pragma: keep
 #include <unistd.h>
@@ -65,22 +61,26 @@ bool is_codec(App app) {
 bool is_live(App app) {
   return is_one_of(app, {App::FuseOrbbec, App::RigViewer});
 }
-bool has(const Config& c, std::string_view field) {
-  return std::find(c.explicit_fields.begin(), c.explicit_fields.end(), field) !=
-         c.explicit_fields.end();
+struct ParseState {
+  std::vector<std::string> fields;
+  std::string up_axis;
+};
+bool has(const ParseState& state, std::string_view field) {
+  return std::find(state.fields.begin(), state.fields.end(), field) !=
+         state.fields.end();
 }
 
 class Reader {
  public:
-  Reader(const Json& value, std::string path, Config& config)
-      : value_(value), path_(std::move(path)), config_(config) {
+  Reader(const Json& value, std::string path, ParseState& state)
+      : value_(value), path_(std::move(path)), state_(state) {
     if (!value_.is_object()) fail(path_, "expected an object");
   }
   const Json* take(const char* key) {
     used_.insert(key);
     const auto it = value_.find(key);
     if (it == value_.end()) return nullptr;
-    config_.explicit_fields.push_back(field(key));
+    state_.fields.push_back(field(key));
     return &*it;
   }
   std::string field(const char* key) const {
@@ -164,12 +164,12 @@ class Reader {
  private:
   const Json& value_;
   std::string path_;
-  Config& config_;
+  ParseState& state_;
   std::set<std::string> used_;
 };
 
-void read_source(const Json& json, Config& c) {
-  Reader r(json, "source", c);
+void read_source(const Json& json, Config& c, ParseState& state) {
+  Reader r(json, "source", state);
   if (!json.contains("kind")) fail("source.kind", "is required");
   r.choice("kind", c.source.kind,
            {{"none", SourceKind::None},
@@ -187,7 +187,7 @@ void read_source(const Json& json, Config& c) {
   STR(serial);
   STR(sync_config);
   STR(calibration);
-  STR(up_axis);
+  r.string("up_axis", state.up_axis);
   BOOL(preload);
   BOOL(apply_sync);
   BOOL(host_clock);
@@ -212,8 +212,8 @@ void read_source(const Json& json, Config& c) {
   }
   r.finish();
 }
-void read_fusion(const Json& json, Config& c) {
-  Reader r(json, "fusion", c);
+void read_fusion(const Json& json, Config& c, ParseState& state) {
+  Reader r(json, "fusion", state);
 #define NUM(member) r.number(#member, c.fusion.member)
 #define BOOL(member) r.boolean(#member, c.fusion.member)
   NUM(voxel_size_m);
@@ -239,8 +239,8 @@ void read_fusion(const Json& json, Config& c) {
 #undef BOOL
   r.finish();
 }
-void read_codec(const Json& json, Config& c) {
-  Reader r(json, "codec", c);
+void read_codec(const Json& json, Config& c, ParseState& state) {
+  Reader r(json, "codec", state);
   r.number("coefficient_count", c.codec.coefficient_count);
   r.number("quantization_scale", c.codec.quantization_scale);
   r.number("segment_size", c.codec.segment_size);
@@ -257,16 +257,16 @@ void read_codec(const Json& json, Config& c) {
             {"device", Entropy::Device}});
   r.finish();
 }
-void read_window(const Json& json, Config& c) {
-  Reader r(json, "window", c);
+void read_window(const Json& json, Config& c, ParseState& state) {
+  Reader r(json, "window", state);
   r.number("width", c.window.width);
   r.number("height", c.window.height);
   r.boolean("overlay", c.window.overlay);
   r.boolean("validation", c.window.validation);
   r.finish();
 }
-void read_render(const Json& json, Config& c) {
-  Reader r(json, "render", c);
+void read_render(const Json& json, Config& c, ParseState& state) {
+  Reader r(json, "render", state);
   r.number("yaw_degrees", c.render.yaw_degrees);
   r.number("pitch_degrees", c.render.pitch_degrees);
   r.number("follow", c.render.follow);
@@ -279,8 +279,8 @@ void read_render(const Json& json, Config& c) {
   r.boolean("texture_stats", c.render.texture_stats);
   r.finish();
 }
-void read_calibration(const Json& json, Config& c) {
-  Reader r(json, "calibration", c);
+void read_calibration(const Json& json, Config& c, ParseState& state) {
+  Reader r(json, "calibration", state);
 #define NUM(member) r.number(#member, c.calibration.member)
   NUM(image_width);
   NUM(image_height);
@@ -436,111 +436,23 @@ std::array<double, 3> axis_vector(std::string_view axis) {
   return up;
 }
 
-void validate_impl(const Config& c, App app) {
+void validate_impl(const Config& c, App app, const ParseState& state) {
   if (c.version != 1) fail("version", "only version 1 is supported");
-  for (const std::string& field : c.explicit_fields) {
+  for (const std::string& field : state.fields) {
     if (!supports(field, app)) fail(field, "is not used by this application");
     if (app == App::CodecMesh && c.codec.inspect_only &&
         ignored_when_inspecting(field))
       fail(field, "is not used when codec.inspect_only is enabled");
   }
-  auto expected = defaults_impl(app);
-  if (c.operation == Operation::Stream) expected.output.path.clear();
-  if (app == App::CodecMesh)
-    expected.fusion.truncation_m = 4.F * c.fusion.voxel_size_m;
-  const auto changed = [&](std::string_view field, const auto& value,
-                           const auto& initial) {
-    if (value == initial) return;
-    if (!supports(field, app)) fail(field, "is not used by this application");
-    if (app == App::CodecMesh && c.codec.inspect_only &&
-        ignored_when_inspecting(field))
-      fail(field, "is not used when codec.inspect_only is enabled");
-    if (c.operation == Operation::Stream &&
-        (field.rfind("fusion.", 0) == 0 || field.rfind("output.", 0) == 0))
-      fail(field, "is not used by operation stream");
-  };
-#define CHANGED(section, member) \
-  changed(#section "." #member, c.section.member, expected.section.member)
-  CHANGED(source, format);
-  CHANGED(source, driver);
-  CHANGED(source, path);
-  CHANGED(source, camera_parameters);
-  CHANGED(source, serial);
-  CHANGED(source, sync_config);
-  CHANGED(source, calibration);
-  CHANGED(source, preload);
-  CHANGED(source, apply_sync);
-  CHANGED(source, host_clock);
-  CHANGED(source, color_codec);
-  CHANGED(source, color_width);
-  CHANGED(source, color_height);
-  CHANGED(source, depth_width);
-  CHANGED(source, depth_height);
-  CHANGED(source, fps);
-  CHANGED(source, height_m);
-  CHANGED(source, up_axis);
-  CHANGED(source, up_vector);
-  CHANGED(source, sdf_mode);
-  CHANGED(source, shell_voxels);
-  CHANGED(fusion, voxel_size_m);
-  CHANGED(fusion, truncation_m);
-  CHANGED(fusion, min_depth_m);
-  CHANGED(fusion, max_depth_m);
-  CHANGED(fusion, max_weight);
-  CHANGED(fusion, stride);
-  CHANGED(fusion, mesh_every);
-  CHANGED(fusion, dirty_every);
-  CHANGED(fusion, buckets);
-  CHANGED(fusion, max_buckets);
-  CHANGED(fusion, fuse_every);
-  CHANGED(fusion, share_vertices);
-  CHANGED(fusion, device_extract);
-  CHANGED(fusion, dynamic);
-  CHANGED(fusion, depth_within_color);
-  CHANGED(fusion, occlusion_m);
-  CHANGED(fusion, remesh_every);
-  CHANGED(fusion, hold_ms);
-  CHANGED(fusion, free_after);
-  CHANGED(codec, coefficient_count);
-  CHANGED(codec, quantization_scale);
-  CHANGED(codec, quantization_table);
-  CHANGED(codec, quantization_weights);
-  CHANGED(codec, entropy);
-  CHANGED(codec, segment_size);
-  CHANGED(codec, encode_every);
-  CHANGED(codec, sweep);
-  CHANGED(codec, inspect_only);
-  CHANGED(window, width);
-  CHANGED(window, height);
-  CHANGED(window, overlay);
-  CHANGED(window, validation);
-  CHANGED(render, yaw_degrees);
-  CHANGED(render, pitch_degrees);
-  CHANGED(render, follow);
-  CHANGED(render, shading);
-  CHANGED(render, texture);
-  CHANGED(render, show_sources);
-  CHANGED(render, texture_stats);
-  CHANGED(output, path);
-  CHANGED(output, prefix);
-  CHANGED(output, screenshot);
-  CHANGED(run, frames);
-  CHANGED(run, sets);
-  CHANGED(diagnostics, measure_stages);
-  CHANGED(calibration, image_width);
-  CHANGED(calibration, image_height);
-  CHANGED(calibration, intrinsics);
-  CHANGED(calibration, distortion);
-  CHANGED(calibration, point);
-#undef CHANGED
+  const auto expected = defaults_impl(app);
   if (c.operation != expected.operation &&
       (app != App::FuseOrbbec || c.operation != Operation::Stream))
     fail("operation", "is not supported by this application");
   if (c.source.kind != expected.source.kind)
     fail("source.kind", "is not supported by this application");
   if (c.operation == Operation::Stream &&
-      (has(c, "fusion") || has(c, "output")))
-    fail(has(c, "fusion") ? "fusion" : "output",
+      (has(state, "fusion") || has(state, "output")))
+    fail(has(state, "fusion") ? "fusion" : "output",
          "is not used by operation stream");
   path_check(c.source.serial, "source.serial");
   path_check(c.source.path, "source.path",
@@ -565,9 +477,9 @@ void validate_impl(const Config& c, App app) {
       fail("source.apply_sync", "requires source.sync_config");
     if (c.source.host_clock && !c.source.sync_config.empty())
       fail("source.host_clock", "cannot be combined with source.sync_config");
-    if (has(c, "source.color_width") != has(c, "source.color_height"))
+    if (has(state, "source.color_width") != has(state, "source.color_height"))
       fail("source", "color_width and color_height must be provided together");
-    if (has(c, "source.depth_width") != has(c, "source.depth_height"))
+    if (has(state, "source.depth_width") != has(state, "source.depth_height"))
       fail("source", "depth_width and depth_height must be provided together");
     positive(c.source.color_width, "source.color_width");
     positive(c.source.color_height, "source.color_height");
@@ -582,13 +494,11 @@ void validate_impl(const Config& c, App app) {
     fail("source.driver", "only arkit is supported");
   if (app == App::CodecMesh) {
     positive(c.source.height_m, "source.height_m");
-    if (has(c, "source.up_axis") && has(c, "source.up_vector"))
+    if (has(state, "source.up_axis") && has(state, "source.up_vector"))
       fail("source", "up_axis and up_vector are mutually exclusive");
     if (!c.source.up_vector)
       fail("source.up_vector", "up_axis or up_vector is required");
     const auto& up = *c.source.up_vector;
-    if (!c.source.up_axis.empty() && up != axis_vector(c.source.up_axis))
-      fail("source.up_vector", "must match the resolved up_axis direction");
     for (const double v : up)
       if (!std::isfinite(v)) fail("source.up_vector", "must be finite");
     const double norm_squared =
@@ -650,11 +560,6 @@ void validate_impl(const Config& c, App app) {
         c.codec.quantization_table != QuantizationTable::Band &&
         c.codec.quantization_table != QuantizationTable::Radial)
       fail("codec.quantization_table", "unknown choice");
-    Codec expected_codec = c.codec;
-    resolve_weights(expected_codec);
-    if (c.codec.quantization_weights != expected_codec.quantization_weights)
-      fail("codec.quantization_weights",
-           "must match the resolved quantization_table preset");
     // Retained coefficients use increasing total frequency, ties x,y,z.
     std::uint32_t retained = 0;
     for (int sum = 0; sum <= 21; ++sum) {
@@ -698,9 +603,9 @@ void validate_impl(const Config& c, App app) {
     fail("run.frames", "must be -1 or nonnegative");
   nonnegative(c.run.sets, "run.sets");
   if (app == App::GfxModel && !c.output.screenshot.empty()) {
-    if (has(c, "run.frames") || c.run.frames != expected.run.frames)
+    if (has(state, "run.frames"))
       fail("run.frames", "is not used when output.screenshot is requested");
-    if (has(c, "window.overlay") || c.window.overlay != expected.window.overlay)
+    if (has(state, "window.overlay"))
       fail("window.overlay", "is not used when output.screenshot is requested");
   }
   if (app == App::CalibProjectPoint) {
@@ -718,71 +623,21 @@ void validate_impl(const Config& c, App app) {
   }
 }
 
-class NumericLocale {
+// Parse configuration numbers consistently even when the caller uses directed
+// rounding. nlohmann rejects overflowing numbers when strtod returns infinity.
+class NearestRounding {
  public:
-  NumericLocale() : locale_(newlocale(LC_NUMERIC_MASK, "C", nullptr)) {
-    if (locale_ == nullptr)
-      throw std::runtime_error("cannot create C numeric locale");
+  NearestRounding() : original_(std::fegetround()) {
+    if (original_ == -1 || std::fesetround(FE_TONEAREST) != 0)
+      throw std::runtime_error("cannot select nearest numeric rounding");
   }
-  ~NumericLocale() { freelocale(locale_); }
-  NumericLocale(const NumericLocale&) = delete;
-  NumericLocale& operator=(const NumericLocale&) = delete;
-  locale_t get() const { return locale_; }
+  ~NearestRounding() { std::fesetround(original_); }
+  NearestRounding(const NearestRounding&) = delete;
+  NearestRounding& operator=(const NearestRounding&) = delete;
 
  private:
-  locale_t locale_;
+  int original_;
 };
-
-// Check tokens before nlohmann converts them: under directed rounding an
-// overflowing strtod can return finite DBL_MAX, which is otherwise accepted.
-void preflight(std::string_view text) {
-  if (text.size() > kMaxConfigBytes) fail("config", "exceeds one MiB");
-  const NumericLocale locale;
-  bool quoted = false;
-  bool escaped = false;
-  std::size_t depth = 0;
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    const char c = text[i];
-    if (quoted) {
-      if (escaped)
-        escaped = false;
-      else if (c == '\\')
-        escaped = true;
-      else if (c == '"')
-        quoted = false;
-      continue;
-    }
-    if (c == '"') {
-      quoted = true;
-      continue;
-    }
-    if (c == '{' || c == '[') {
-      if (++depth > kMaxConfigDepth)
-        fail("config", "nesting exceeds 32 levels");
-    } else if (c == '}' || c == ']') {
-      if (depth > 0) --depth;
-    } else if (c == '-' || (c >= '0' && c <= '9')) {
-      const std::size_t start = i;
-      while (i + 1 < text.size()) {
-        const char next = text[i + 1];
-        if ((next >= '0' && next <= '9') || next == '.' || next == 'e' ||
-            next == 'E' || next == '+' || next == '-')
-          ++i;
-        else
-          break;
-      }
-      const std::string token(text.substr(start, i - start + 1));
-      errno = 0;
-      char* end = nullptr;
-      const double value = strtod_l(token.c_str(), &end, locale.get());
-      if (end == token.c_str() + token.size() &&
-          (!std::isfinite(value) ||
-           (errno == ERANGE &&
-            std::abs(value) >= std::numeric_limits<double>::max())))
-        fail("config", "numeric overflow at byte " + std::to_string(start));
-    }
-  }
-}
 
 void resolve_path(std::string& path, const std::filesystem::path& base) {
   if (path.empty()) return;
@@ -790,13 +645,13 @@ void resolve_path(std::string& path, const std::filesystem::path& base) {
   if (p.is_relative()) p = base / p;
   path = p.lexically_normal().string();
 }
-void resolve(Config& c, App app, std::string_view directory) {
+void resolve(Config& c, App app, std::string_view directory,
+             const ParseState& state) {
   if (app != App::Scanner &&
-      (!has(c, "fusion.truncation_m") || c.fusion.truncation_m <= 0))
+      (!has(state, "fusion.truncation_m") || c.fusion.truncation_m <= 0))
     c.fusion.truncation_m = 4.F * c.fusion.voxel_size_m;
   if (c.operation == Operation::Stream) c.output.path.clear();
-  if (!c.source.up_axis.empty())
-    c.source.up_vector = axis_vector(c.source.up_axis);
+  if (!state.up_axis.empty()) c.source.up_vector = axis_vector(state.up_axis);
   resolve_weights(c.codec);
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()
@@ -878,29 +733,18 @@ Config defaults_impl(Application application) {
 
 }  // namespace
 
-Result<Config> defaults(Application application) {
-  try {
-    return defaults_impl(application);
-  } catch (...) {
-    return exception_status("config defaults", Status::Code::InvalidArgument);
-  }
-}
-
-Status validate(const Config& config, Application application) {
-  try {
-    validate_impl(config, application);
-    return {};
-  } catch (...) {
-    return exception_status("config", Status::Code::InvalidArgument);
-  }
-}
-
 Result<Config> parse(std::string_view text, Application application,
                      std::string_view base_directory) {
   try {
-    preflight(text);
+    if (text.size() > kMaxConfigBytes) fail("config", "exceeds one MiB");
+    const NearestRounding rounding;
     std::vector<std::set<std::string>> keys;
-    const auto callback = [&keys](int, Json::parse_event_t event, Json& value) {
+    const auto callback = [&keys](int depth, Json::parse_event_t event,
+                                  Json& value) {
+      if ((event == Json::parse_event_t::object_start ||
+           event == Json::parse_event_t::array_start) &&
+          depth >= static_cast<int>(kMaxConfigDepth))
+        fail("config", "nesting exceeds 32 levels");
       if (event == Json::parse_event_t::object_start) keys.emplace_back();
       if (event == Json::parse_event_t::key &&
           !keys.back().insert(value.get<std::string>()).second)
@@ -910,7 +754,8 @@ Result<Config> parse(std::string_view text, Application application,
     };
     const Json json = Json::parse(text.begin(), text.end(), callback);
     Config c = defaults_impl(application);
-    Reader r(json, "", c);
+    ParseState state;
+    Reader r(json, "", state);
     if (!json.contains("version")) fail("version", "is required");
     r.number("version", c.version);
     if (!json.contains("operation")) fail("operation", "is required");
@@ -924,33 +769,33 @@ Result<Config> parse(std::string_view text, Application application,
         (is_dataset(application) || is_live(application) ||
          application == App::CodecMesh || application == App::Scanner))
       fail("source", "is required");
-    if (const auto* v = r.take("source")) read_source(*v, c);
-    if (const auto* v = r.take("fusion")) read_fusion(*v, c);
-    if (const auto* v = r.take("codec")) read_codec(*v, c);
-    if (const auto* v = r.take("window")) read_window(*v, c);
-    if (const auto* v = r.take("render")) read_render(*v, c);
-    if (const auto* v = r.take("calibration")) read_calibration(*v, c);
+    if (const auto* v = r.take("source")) read_source(*v, c, state);
+    if (const auto* v = r.take("fusion")) read_fusion(*v, c, state);
+    if (const auto* v = r.take("codec")) read_codec(*v, c, state);
+    if (const auto* v = r.take("window")) read_window(*v, c, state);
+    if (const auto* v = r.take("render")) read_render(*v, c, state);
+    if (const auto* v = r.take("calibration")) read_calibration(*v, c, state);
     if (const auto* v = r.take("run")) {
-      Reader q(*v, "run", c);
+      Reader q(*v, "run", state);
       q.number("frames", c.run.frames);
       q.number("sets", c.run.sets);
       q.finish();
     }
     if (const auto* v = r.take("output")) {
-      Reader q(*v, "output", c);
+      Reader q(*v, "output", state);
       q.string("path", c.output.path, true);
       q.string("prefix", c.output.prefix, true);
       q.string("screenshot", c.output.screenshot, true);
       q.finish();
     }
     if (const auto* v = r.take("diagnostics")) {
-      Reader q(*v, "diagnostics", c);
+      Reader q(*v, "diagnostics", state);
       q.boolean("measure_stages", c.diagnostics.measure_stages);
       q.finish();
     }
     r.finish();
-    resolve(c, application, base_directory);
-    validate_impl(c, application);
+    resolve(c, application, base_directory, state);
+    validate_impl(c, application, state);
     return c;
   } catch (...) {
     return exception_status("config", Status::Code::InvalidArgument);

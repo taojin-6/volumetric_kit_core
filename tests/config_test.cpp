@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Tao Jin
 #include "volumetric_kit/core/config/config.hpp"
 
-#include <array>
 #include <cfenv>
 #include <cstdlib>  // IWYU pragma: keep; glibc declares mkdtemp here.
 #include <filesystem>
@@ -60,7 +59,6 @@ TEST(Config, OperationIsRequiredAndUnknownApplicationIsRejected) {
   ASSERT_FALSE(missing);
   EXPECT_NE(missing.status().message().find("operation"), std::string::npos);
   const auto invalid_app = static_cast<App>(999);
-  EXPECT_FALSE(defaults(invalid_app));
   EXPECT_FALSE(parse(R"({"version":1,"operation":"view"})", invalid_app));
 }
 
@@ -169,6 +167,8 @@ TEST(Config, StreamModePreservesPresenceSensitiveFusionAndOutputConflicts) {
 }
 
 TEST(Config, LiveRelationsAndCountsAreCentral) {
+  rejected(R"({"version":1,"source":{"serial":"A\u0000B"}})", App::FuseOrbbec,
+           "source.serial");
   rejected(R"({"version":1,"source":{"serial":"A","sync_config":"rig.json"}})",
            App::FuseOrbbec, "source.serial");
   rejected(R"({"version":1,"source":{"apply_sync":true}})", App::FuseOrbbec,
@@ -211,7 +211,7 @@ TEST(Config, FusionDefaultsAndBoundsDoNotDependOnTheConsumer) {
       App::FuseReplica, "fusion.buckets");
 }
 
-TEST(Config, DirectedRoundingCannotTurnOverflowIntoAValidFiniteSetting) {
+TEST(Config, JsonParsingRestoresCallerRoundingOnSuccessAndFailure) {
   struct RoundingRestore {
     int mode = std::fegetround();
     ~RoundingRestore() { std::fesetround(mode); }
@@ -219,24 +219,29 @@ TEST(Config, DirectedRoundingCannotTurnOverflowIntoAValidFiniteSetting) {
   const RoundingRestore restore;
   for (const int mode : {FE_TONEAREST, FE_TOWARDZERO, FE_DOWNWARD, FE_UPWARD}) {
     ASSERT_EQ(std::fesetround(mode), 0);
+    const auto parsed = scenario(
+        R"({"version":1,"calibration":{"distortion":[1e-999,-1e-999,0,0,0],"point":[1.7976931348623157e308,0,1]}})",
+        App::CalibProjectPoint);
+    ASSERT_TRUE(parsed) << parsed.status().message();
+    EXPECT_EQ(std::fegetround(), mode);
+    EXPECT_EQ(parsed->calibration.distortion[0], 0.);
+    EXPECT_EQ(parsed->calibration.distortion[1], 0.);
+    EXPECT_EQ(parsed->calibration.point[0], std::numeric_limits<double>::max());
     for (const auto* const token :
          {"1e999", "-1e999", "1.25e999", "-1.25e999"}) {
       rejected(std::string(R"({"version":1,"calibration":{"point":[0,0,)") +
                    token + "]}}",
-               App::CalibProjectPoint, "numeric overflow");
+               App::CalibProjectPoint, "overflow");
+      EXPECT_EQ(std::fegetround(), mode);
     }
+    EXPECT_FALSE(parse("{", App::GfxModel));
+    EXPECT_EQ(std::fegetround(), mode);
+    rejected(R"({"version":1,"version":1})", App::GfxModel, "duplicate");
+    EXPECT_EQ(std::fegetround(), mode);
     rejected(R"({"version":1,"fusion":{"voxel_size_m":3.5e38}})",
              App::FuseOrbbec, "fusion.voxel_size_m");
+    EXPECT_EQ(std::fegetround(), mode);
   }
-}
-
-TEST(Config, RepresentableDoubleAndUnderflowAreNotMisclassifiedAsOverflow) {
-  const auto parsed = scenario(
-      R"({"version":1,"calibration":{"distortion":[1e-999,0,0,0,0],"point":[1.7976931348623157e308,0,1]}})",
-      App::CalibProjectPoint);
-  ASSERT_TRUE(parsed) << parsed.status().message();
-  EXPECT_EQ(parsed->calibration.distortion[0], 0.);
-  EXPECT_EQ(parsed->calibration.point[0], std::numeric_limits<double>::max());
 }
 
 TEST(Config, CodecPresetWeightsAndRetainedStepBoundsAreResolvedOnce) {
@@ -293,31 +298,10 @@ TEST(Config, MeshSourceRequiresHeightAndOneNonzeroUpDirection) {
       App::CodecMesh, "up_axis");
 }
 
-TEST(Config, TypedMutationsCannotInvalidateResolvedSourceChoices) {
-  auto mesh = scenario(
-      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"}})",
-      App::CodecMesh);
-  ASSERT_TRUE(mesh) << mesh.status().message();
-  mesh->source.up_axis = "bad";
-  auto status = validate(*mesh, App::CodecMesh);
-  EXPECT_FALSE(status);
-  EXPECT_NE(status.message().find("source.up_axis"), std::string::npos);
-  mesh->source.up_axis = "y";
-  mesh->source.up_vector = std::array<double, 3>{1., 0., 0.};
-  status = validate(*mesh, App::CodecMesh);
-  EXPECT_FALSE(status);
-  EXPECT_NE(status.message().find("source.up_vector"), std::string::npos);
-  mesh->source.up_vector = std::array<double, 3>{0., 1., 0.};
-  EXPECT_TRUE(validate(*mesh, App::CodecMesh));
-  auto live = defaults(App::FuseOrbbec);
-  ASSERT_TRUE(live);
-  live->source.serial = std::string("serial\0suffix", 13);
-  status = validate(*live, App::FuseOrbbec);
-  EXPECT_FALSE(status);
-  EXPECT_NE(status.message().find("source.serial"), std::string::npos);
-}
-
 TEST(Config, KnownButUnusedSettingsAreRejectedRatherThanSilentlyIgnored) {
+  rejected(
+      R"({"version":1,"output":{"screenshot":"a.png"},"window":{"overlay":true}})",
+      App::GfxModel, "window.overlay");
   rejected(R"({"version":1,"fusion":{}})", App::GfxImage, "fusion");
   rejected(R"({"version":1,"render":{"texture":false}})", App::GfxImage,
            "render");
@@ -389,35 +373,23 @@ TEST(Config, DiscriminatorAndOptionalOutputPolicyAreExplicit) {
 }
 
 TEST(Config, InputSizeAndNestingAreBoundedBeforeDecoding) {
+  const std::string at_limit = std::string(kMaxConfigDepth, '[') + "0" +
+                               std::string(kMaxConfigDepth, ']');
+  const auto bounded = parse(at_limit, App::GfxModel);
+  ASSERT_FALSE(bounded);
+  EXPECT_NE(bounded.status().message().find("expected an object"),
+            std::string::npos);
+  const auto too_deep = parse("[" + at_limit + "]", App::GfxModel);
+  ASSERT_FALSE(too_deep);
+  EXPECT_NE(too_deep.status().message().find("nesting"), std::string::npos);
   rejected(std::string(kMaxConfigBytes + 1, ' '), App::GfxImage, "one MiB");
   rejected(std::string(kMaxConfigDepth + 1, '[') + "0" +
                std::string(kMaxConfigDepth + 1, ']'),
            App::GfxImage, "nesting");
-  // Brackets and overflow-like text inside strings do not affect preflight.
+  // Brackets and overflow-like text inside strings are ordinary JSON text.
   const auto parsed = scenario(
       R"({"version":1,"source":{"path":"[[[1e999\\\".glb"}})", App::GfxModel);
   ASSERT_TRUE(parsed) << parsed.status().message();
-}
-
-TEST(Config, TypedValidationAlsoRejectsIgnoredProgrammaticValues) {
-  auto triangle = defaults(App::GfxTriangle);
-  ASSERT_TRUE(triangle);
-  triangle->source.path = "ignored.glb";
-  EXPECT_FALSE(validate(*triangle, App::GfxTriangle));
-  triangle->source.path.clear();
-  triangle->window.overlay = false;
-  EXPECT_FALSE(validate(*triangle, App::GfxTriangle));
-  auto live = defaults(App::FuseOrbbec);
-  ASSERT_TRUE(live);
-  live->operation = Operation::Stream;
-  EXPECT_FALSE(validate(*live, App::FuseOrbbec));
-  live->output.path.clear();
-  EXPECT_TRUE(validate(*live, App::FuseOrbbec));
-  live->fusion.voxel_size_m = 0.04F;
-  EXPECT_FALSE(validate(*live, App::FuseOrbbec));
-  rejected(
-      R"({"version":1,"output":{"screenshot":"a.png"},"window":{"overlay":true}})",
-      App::GfxModel, "window.overlay");
 }
 
 TEST(Config, CommandLineOnlyAcceptsConfigurationOrHelpWithoutSideEffects) {

@@ -44,6 +44,13 @@ vkc::Status run() {
                                 vkc::config::Application::GfxTriangle));
   if (scenario.window.width != 800)
     return vkc::Status::invalid_argument("config defaults disagree");
+  VKC_ASSIGN(
+      const auto mesh,
+      vkc::config::parse(
+          R"({"version":1,"operation":"codec","source":{"kind":"mesh","path":"mesh.ply","height_m":2,"up_axis":"y"}})",
+          vkc::config::Application::CodecMesh));
+  if (!mesh.source.up_vector.has_value())
+    return vkc::Status::invalid_argument("mesh direction was not resolved");
 #endif
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");

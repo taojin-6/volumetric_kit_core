@@ -10,7 +10,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/config/export.hpp"
@@ -70,7 +69,6 @@ struct Source {
   std::uint32_t depth_height = 576;
   std::uint32_t fps = 30;
   double height_m = 0;
-  std::string up_axis;
   std::optional<std::array<double, 3>> up_vector;
   SdfMode sdf_mode = SdfMode::Signed;
   float shell_voxels = 1.5F;
@@ -175,8 +173,6 @@ struct Config {
   Run run;
   Calibration calibration;
   Diagnostics diagnostics;
-  /// Explicit JSON fields, retained to reject settings an application ignores.
-  std::vector<std::string> explicit_fields;
 };
 /// @brief Arguments accepted by every desktop entry point, without I/O.
 /// @code VKC_ASSIGN(const Arguments args, parse_args(argc, argv)); @endcode
@@ -189,16 +185,6 @@ inline constexpr std::size_t kMaxConfigBytes = std::size_t{1024} * 1024;
 /// Maximum JSON object/array nesting accepted by parse/load.
 inline constexpr std::size_t kMaxConfigDepth = 32;
 
-/// @brief Return the application's defaults; source paths may still be
-/// required.
-/// @param application The consumer selecting defaults.
-/// @return Default settings; call validate before use after programmatic edits.
-VKC_CONFIG_API Result<Config> defaults(Application application);
-/// @brief Check all static ranges, supported fields and cross-field relations.
-/// @param config The resolved typed settings.
-/// @param application The consumer requesting them.
-/// @return Success, or a field-qualified failure; no resources are opened.
-VKC_CONFIG_API Status validate(const Config& config, Application application);
 /// @brief Parse a strict version-1 JSON scenario and apply application
 /// defaults.
 /// @param text UTF-8 JSON, bounded by kMaxConfigBytes and kMaxConfigDepth.

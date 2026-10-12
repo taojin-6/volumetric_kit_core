@@ -95,8 +95,10 @@ does not override the requested operation or source discriminator.
 | `CalibProjectPoint` | `project` | omitted | 1280x720, intrinsics [1000,1000,640,360], Brown distortion [-0.28,0.10,0.001,-0.0005,0], point [0.1,-0.2,2] |
 
 The `Config` structs in
-[`config.hpp`](include/volumetric_kit/core/config/config.hpp) list the exact
-field names and types. JSON uses those member names. Root sections are
+[`config.hpp`](include/volumetric_kit/core/config/config.hpp) describe the
+resolved settings consumed by applications. The JSON fields below generally
+match their member names; mesh `up_axis` and codec presets are resolved during
+decoding. Root sections are
 `source`, `fusion`, `codec`, `window`, `render`, `output`, `run`,
 `calibration`, and `diagnostics`. There is no generic merge/override or
 unknown extension object.
@@ -162,13 +164,16 @@ truncation must be positive and its default stays 0.03 m. Depth defaults are
 0.1–8 m for datasets and 0.25–5 m for Orbbec. Core checks the block-of-eight
 size, truncation ratio and bucket-index bounds before library construction.
 
-`defaults` returns a `Result<Config>` for programmatic construction; required
-source paths may still be missing. `validate` checks typed mutations too.
-Keep `explicit_fields` from a parsed config so default-equal explicit settings
-still participate in exclusions. `codec.quantization_weights` and mesh-axis
-resolution are derived values: the weights must match their selected preset,
-and a mesh up direction must be present and match any `up_axis`. Prefer
-parsing a scenario to manually assembling these derived values. All fallible public config calls contain
-exceptions and return `Status`/`Result`; loading never starts devices or writes
-files. A valid schema does not prove a requested device mode, file or optional
-backend exists; those remain runtime checks in the owning application.
+`parse` and `load` return resolved settings for consumption. Field-presence
+tracking, defaults and validation remain private to decoding; there is no
+separate mutable configuration builder. Core resolves mesh `up_axis` to the
+returned `up_vector` and codec presets to `quantization_weights`.
+
+nlohmann/json handles JSON syntax and number parsing. Decoding temporarily
+uses nearest rounding so overflow is rejected even when the caller uses a
+directed rounding mode, and restores that mode on success or failure. Checked
+numeric conversions and the family's domain rules are applied before returning.
+All fallible public calls contain exceptions and return `Status`/`Result`;
+loading never starts devices or writes files. A valid schema does not prove a
+requested device mode, file or optional backend exists; those remain runtime
+checks in the owning application.
