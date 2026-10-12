@@ -473,12 +473,14 @@ TEST(Config, CodecSettingsKeepGenericChecksAndLeaveStepsToTheCodec) {
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_scale":1e-40}})",
       App::CodecReplica, "quantization_scale");
   // Effective steps outside the codec's bounds are the codec's to refuse.
-  EXPECT_TRUE(scenario(
+  const auto fine = scenario(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_scale":0.0001}})",
-      App::CodecReplica));
-  EXPECT_TRUE(scenario(
+      App::CodecReplica);
+  EXPECT_TRUE(fine) << fine.status().message();
+  const auto coarse = scenario(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":512,"quantization_scale":4}})",
-      App::CodecReplica));
+      App::CodecReplica);
+  EXPECT_TRUE(coarse) << coarse.status().message();
 }
 
 TEST(Config, MeshSourceRequiresHeightAndOneNonzeroUpDirection) {
