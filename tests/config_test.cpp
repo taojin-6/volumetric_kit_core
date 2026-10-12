@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cfenv>
+#include <cstdlib>  // IWYU pragma: keep; glibc declares mkdtemp here.
 #include <filesystem>
 #include <limits>
 #include <string>
@@ -12,7 +13,7 @@
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
-#include <unistd.h>
+#include <unistd.h>  // IWYU pragma: keep; macOS declares mkdtemp here.
 
 #include "volumetric_kit/core/base/file_io.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -290,6 +291,30 @@ TEST(Config, MeshSourceRequiresHeightAndOneNonzeroUpDirection) {
   rejected(
       R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"bad"}})",
       App::CodecMesh, "up_axis");
+}
+
+TEST(Config, TypedMutationsCannotInvalidateResolvedSourceChoices) {
+  auto mesh = scenario(
+      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"}})",
+      App::CodecMesh);
+  ASSERT_TRUE(mesh) << mesh.status().message();
+  mesh->source.up_axis = "bad";
+  auto status = validate(*mesh, App::CodecMesh);
+  EXPECT_FALSE(status);
+  EXPECT_NE(status.message().find("source.up_axis"), std::string::npos);
+  mesh->source.up_axis = "y";
+  mesh->source.up_vector = std::array<double, 3>{1., 0., 0.};
+  status = validate(*mesh, App::CodecMesh);
+  EXPECT_FALSE(status);
+  EXPECT_NE(status.message().find("source.up_vector"), std::string::npos);
+  mesh->source.up_vector = std::array<double, 3>{0., 1., 0.};
+  EXPECT_TRUE(validate(*mesh, App::CodecMesh));
+  auto live = defaults(App::FuseOrbbec);
+  ASSERT_TRUE(live);
+  live->source.serial = std::string("serial\0suffix", 13);
+  status = validate(*live, App::FuseOrbbec);
+  EXPECT_FALSE(status);
+  EXPECT_NE(status.message().find("source.serial"), std::string::npos);
 }
 
 TEST(Config, KnownButUnusedSettingsAreRejectedRatherThanSilentlyIgnored) {

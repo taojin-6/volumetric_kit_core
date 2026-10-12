@@ -422,6 +422,20 @@ bool ignored_when_inspecting(std::string_view field) {
          (field.rfind("codec.", 0) == 0 && field != "codec.inspect_only");
 }
 
+std::array<double, 3> axis_vector(std::string_view axis) {
+  std::size_t pos = 0;
+  double sign = 1;
+  if (!axis.empty() && (axis[0] == '+' || axis[0] == '-')) {
+    sign = axis[0] == '-' ? -1. : 1.;
+    pos = 1;
+  }
+  if (axis.size() != pos + 1 || axis[pos] < 'x' || axis[pos] > 'z')
+    fail("source.up_axis", "expected x, y, z, -x, -y or -z");
+  std::array<double, 3> up{};
+  up[static_cast<std::size_t>(axis[pos] - 'x')] = sign;
+  return up;
+}
+
 void validate_impl(const Config& c, App app) {
   if (c.version != 1) fail("version", "only version 1 is supported");
   for (const std::string& field : c.explicit_fields) {
@@ -528,6 +542,7 @@ void validate_impl(const Config& c, App app) {
       (has(c, "fusion") || has(c, "output")))
     fail(has(c, "fusion") ? "fusion" : "output",
          "is not used by operation stream");
+  path_check(c.source.serial, "source.serial");
   path_check(c.source.path, "source.path",
              is_dataset(app) || app == App::CodecMesh);
   path_check(c.source.camera_parameters, "source.camera_parameters");
@@ -572,6 +587,8 @@ void validate_impl(const Config& c, App app) {
     if (!c.source.up_vector)
       fail("source.up_vector", "up_axis or up_vector is required");
     const auto& up = *c.source.up_vector;
+    if (!c.source.up_axis.empty() && up != axis_vector(c.source.up_axis))
+      fail("source.up_vector", "must match the resolved up_axis direction");
     for (const double v : up)
       if (!std::isfinite(v)) fail("source.up_vector", "must be finite");
     const double norm_squared =
@@ -778,20 +795,8 @@ void resolve(Config& c, App app, std::string_view directory) {
       (!has(c, "fusion.truncation_m") || c.fusion.truncation_m <= 0))
     c.fusion.truncation_m = 4.F * c.fusion.voxel_size_m;
   if (c.operation == Operation::Stream) c.output.path.clear();
-  if (!c.source.up_axis.empty()) {
-    std::array<double, 3> up{};
-    const auto& axis = c.source.up_axis;
-    std::size_t pos = 0;
-    double sign = 1;
-    if (axis[0] == '+' || axis[0] == '-') {
-      sign = axis[0] == '-' ? -1. : 1.;
-      pos = 1;
-    }
-    if (axis.size() != pos + 1 || axis[pos] < 'x' || axis[pos] > 'z')
-      fail("source.up_axis", "expected x, y, z, -x, -y or -z");
-    up[static_cast<std::size_t>(axis[pos] - 'x')] = sign;
-    c.source.up_vector = up;
-  }
+  if (!c.source.up_axis.empty())
+    c.source.up_vector = axis_vector(c.source.up_axis);
   resolve_weights(c.codec);
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()

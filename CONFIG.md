@@ -167,8 +167,8 @@ source paths may still be missing. `validate` checks typed mutations too.
 Keep `explicit_fields` from a parsed config so default-equal explicit settings
 still participate in exclusions. `codec.quantization_weights` and mesh-axis
 resolution are derived values: the weights must match their selected preset,
-and a mesh up direction must be present. Prefer parsing a scenario to manually
-assembling these derived values. All fallible public config calls contain
+and a mesh up direction must be present and match any `up_axis`. Prefer
+parsing a scenario to manually assembling these derived values. All fallible public config calls contain
 exceptions and return `Status`/`Result`; loading never starts devices or writes
 files. A valid schema does not prove a requested device mode, file or optional
 backend exists; those remain runtime checks in the owning application.
