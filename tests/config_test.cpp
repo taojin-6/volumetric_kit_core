@@ -199,6 +199,99 @@ TEST(Config, PictureReadbackIsOptionalForLiveFusionAndStreaming) {
       App::FuseOrbbec, "output");
 }
 
+TEST(Config, JpegDumpIsAnOptionalConfigRelativeLiveDiagnostic) {
+  const std::string mjpeg = R"({"version":1,"source":{"color_codec":"mjpeg"},)";
+  const std::string no_directory =
+      "diagnostics.dump_directory: is required when diagnostics.dump_sets is "
+      "positive";
+  const std::string unused_directory =
+      "diagnostics.dump_directory: is not used when diagnostics.dump_sets is 0";
+  const std::string not_mjpeg =
+      "diagnostics.dump_sets: requires source.color_codec mjpeg";
+  for (const char* operation : {"fuse", "stream"}) {
+    const std::string run =
+        std::string(R"({"version":1,"operation":")") + operation + "\",";
+    const std::string head =
+        run + R"("source":{"color_codec":"mjpeg"},"diagnostics":)";
+    const auto omitted = scenario(head + "{}}", App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(omitted) << omitted.status().message();
+    EXPECT_EQ(omitted->diagnostics.dump_sets, 0);
+    EXPECT_TRUE(omitted->diagnostics.dump_directory.empty());
+    const auto dumped = scenario(
+        head +
+            R"({"readback":true,"dump_sets":20,"dump_directory":"h2/../dump"}})",
+        App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(dumped) << dumped.status().message();
+    EXPECT_EQ(dumped->diagnostics.dump_sets, 20);
+    EXPECT_EQ(dumped->diagnostics.dump_directory, "/scenario/dump");
+    EXPECT_TRUE(dumped->diagnostics.readback);
+
+    // A count needs a directory, and a directory a count.
+    rejected(head + R"({"dump_sets":1}})", App::FuseOrbbec, no_directory);
+    rejected(head + R"({"dump_directory":"dump"}})", App::FuseOrbbec,
+             unused_directory);
+    rejected(head + R"({"dump_sets":0,"dump_directory":"dump"}})",
+             App::FuseOrbbec, unused_directory);
+    // Only MJPEG frames are self-contained; HEVC is the default codec.
+    rejected(run + R"("diagnostics":{"dump_sets":1,"dump_directory":"d"}})",
+             App::FuseOrbbec, not_mjpeg);
+    rejected(
+        run +
+            R"("source":{"color_codec":"hevc"},"diagnostics":{"dump_sets":1,"dump_directory":"d"}})",
+        App::FuseOrbbec, not_mjpeg);
+    // The run takes run.frames sets, so it can dump at most that many.
+    const std::string frames =
+        run + R"("source":{"color_codec":"mjpeg"},"run":{"frames":5},)";
+    const auto all = scenario(
+        frames + R"("diagnostics":{"dump_sets":5,"dump_directory":"d"}})",
+        App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(all) << all.status().message();
+    EXPECT_EQ(all->diagnostics.dump_sets, 5);
+    rejected(frames + R"("diagnostics":{"dump_sets":6,"dump_directory":"d"}})",
+             App::FuseOrbbec,
+             "diagnostics.dump_sets: must not exceed run.frames");
+  }
+  const auto absolute = scenario(
+      mjpeg + R"("diagnostics":{"dump_sets":1,"dump_directory":"/data/h2"}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(absolute) << absolute.status().message();
+  EXPECT_EQ(absolute->diagnostics.dump_directory, "/data/h2");
+  const auto off = scenario(R"({"version":1,"diagnostics":{"dump_sets":0}})",
+                            App::FuseOrbbec);
+  ASSERT_TRUE(off) << off.status().message();
+  EXPECT_EQ(off->diagnostics.dump_sets, 0);
+
+  const auto count = [&](const char* value, const char* reason) {
+    rejected(mjpeg + R"("diagnostics":{"dump_sets":)" + value +
+                 R"(,"dump_directory":"d"}})",
+             App::FuseOrbbec, std::string("diagnostics.dump_sets: ") + reason);
+  };
+  count("-1", "must be finite and nonnegative");
+  count("1.5", "expected an integer");
+  count("true", "expected an integer");
+  count("2147483648", "integer is out of range");
+  for (const char* sets : {"0", "1"}) {
+    const auto directory = [&](const char* value, const char* reason) {
+      rejected(mjpeg + R"("diagnostics":{"dump_sets":)" + sets +
+                   R"(,"dump_directory":)" + value + "}}",
+               App::FuseOrbbec,
+               std::string("diagnostics.dump_directory: ") + reason);
+    };
+    directory(R"("")", "must not be empty");
+    directory(R"("a\u0000b")", "embedded NUL");
+    directory("1", "expected a string");
+  }
+  // FuseOrbbec only, even when the value would turn the dump off.
+  rejected(R"({"version":1,"diagnostics":{"dump_sets":0}})", App::Scanner,
+           "diagnostics.dump_sets: is not used by this application");
+  rejected(R"({"version":1,"diagnostics":{"dump_directory":"d"}})",
+           App::Scanner,
+           "diagnostics.dump_directory: is not used by this application");
+  rejected(
+      R"({"version":1,"source":{"sync_config":"rig.json","color_codec":"mjpeg"},"diagnostics":{"dump_sets":1,"dump_directory":"d"}})",
+      App::RigViewer, "diagnostics: is not used by this application");
+}
+
 TEST(Config, LiveRelationsAndCountsAreCentral) {
   rejected(R"({"version":1,"source":{"serial":"A\u0000B"}})", App::FuseOrbbec,
            "source.serial");

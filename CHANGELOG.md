@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-12
+
+### Added
+
+- `config::Diagnostics::dump_sets` (default 0, off) and `dump_directory`, as
+  `diagnostics.dump_sets` / `dump_directory` for `Application::FuseOrbbec`
+  stream and fuse runs; rules in CONFIG.md. Consumers require core 0.5.0;
+  existing scenario files need no changes.
+
 ## [0.4.0] - 2026-10-11
 
 ### Added
