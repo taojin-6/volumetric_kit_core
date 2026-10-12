@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-12
+
+### Added
+
+- `config::Diagnostics::dump_sets` and `dump_directory`, exposed as
+  `diagnostics.dump_sets` and `diagnostics.dump_directory` in version-1
+  scenarios for `Application::FuseOrbbec`, in stream and fuse operations. The
+  count defaults to 0 (off). A positive count requires the directory, resolved
+  against the scenario's directory, and `source.color_codec` `mjpeg`; a
+  directory without a positive count is refused, as is either field in another
+  profile. Consumers of the new settings require core 0.5.0 and read
+  `settings.diagnostics.dump_sets` / `dump_directory`; existing scenario files
+  need no changes.
+
 ## [0.4.0] - 2026-10-11
 
 ### Added

@@ -151,12 +151,17 @@ struct Calibration {
   std::array<double, 5> distortion{-0.28, 0.10, 0.001, -0.0005, 0.};
   std::array<double, 3> point{0.1, -0.2, 2.};
 };
-/// @brief Optional timing diagnostics.
+/// @brief Optional timing and live-picture diagnostics.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Diagnostics {
   bool measure_stages = true;
   /// Read each live set's luma to the host in FuseOrbbec's stream or fuse run.
   bool readback = false;
+  /// FuseOrbbec writes the first dump_sets sets' camera JPEGs, and with
+  /// readback their luma, into dump_directory; 0 writes none.
+  int dump_sets = 0;
+  /// The directory dump_sets writes into, config-relative; empty when off.
+  std::string dump_directory;
 };
 /// @brief A validated scenario with all application defaults resolved.
 /// @code

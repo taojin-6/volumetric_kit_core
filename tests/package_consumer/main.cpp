@@ -6,6 +6,7 @@
 // include path fails here rather than in a sibling. Nothing here needs a GPU.
 
 #include <cstdio>
+#include <string>
 #include <string_view>
 
 #include "volumetric_kit/core/base/exception_status.hpp"
@@ -47,10 +48,13 @@ vkc::Status run() {
   VKC_ASSIGN(
       const auto readback,
       vkc::config::parse(
-          R"({"version":1,"operation":"stream","source":{"kind":"live"},"diagnostics":{"readback":true}})",
+          R"({"version":1,"operation":"stream","source":{"kind":"live","color_codec":"mjpeg"},"diagnostics":{"readback":true,"dump_sets":2,"dump_directory":"/dump"}})",
           vkc::config::Application::FuseOrbbec));
   if (!readback.diagnostics.readback)
     return vkc::Status::invalid_argument("config readback was not enabled");
+  if (readback.diagnostics.dump_sets != 2 ||
+      readback.diagnostics.dump_directory != "/dump")
+    return vkc::Status::invalid_argument("config dump was not enabled");
   VKC_ASSIGN(
       const auto mesh,
       vkc::config::parse(

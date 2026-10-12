@@ -414,7 +414,9 @@ bool supports(std::string_view field, App app) {
   if (field == "diagnostics")
     return is_one_of(app, {App::Scanner, App::FuseOrbbec});
   if (field == "diagnostics.measure_stages") return app == App::Scanner;
-  if (field == "diagnostics.readback") return app == App::FuseOrbbec;
+  if (field_in(field, {"diagnostics.readback", "diagnostics.dump_sets",
+                       "diagnostics.dump_directory"}))
+    return app == App::FuseOrbbec;
   return false;
 }
 
@@ -604,6 +606,18 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (is_gfx(app) && c.run.frames < -1)
     fail("run.frames", "must be -1 or nonnegative");
   nonnegative(c.run.sets, "run.sets");
+  nonnegative(c.diagnostics.dump_sets, "diagnostics.dump_sets");
+  path_check(c.diagnostics.dump_directory, "diagnostics.dump_directory");
+  if (c.diagnostics.dump_sets > 0) {
+    if (c.diagnostics.dump_directory.empty())
+      fail("diagnostics.dump_directory",
+           "is required when dump_sets is positive");
+    // An H.265 frame is not self-contained, so only MJPEG can be written out.
+    if (c.source.color_codec != ColorCodec::Mjpeg)
+      fail("diagnostics.dump_sets", "requires source.color_codec mjpeg");
+  } else if (!c.diagnostics.dump_directory.empty()) {
+    fail("diagnostics.dump_directory", "is not used when dump_sets is 0");
+  }
   if (app == App::GfxModel && !c.output.screenshot.empty()) {
     if (has(state, "run.frames"))
       fail("run.frames", "is not used when output.screenshot is requested");
@@ -665,6 +679,7 @@ void resolve(Config& c, App app, std::string_view directory,
   resolve_path(c.output.path, base);
   resolve_path(c.output.prefix, base);
   resolve_path(c.output.screenshot, base);
+  resolve_path(c.diagnostics.dump_directory, base);
   if (is_dataset(app) && c.source.camera_parameters.empty() &&
       !c.source.path.empty())
     c.source.camera_parameters =
@@ -794,6 +809,8 @@ Result<Config> parse(std::string_view text, Application application,
       Reader q(*v, "diagnostics", state);
       q.boolean("measure_stages", c.diagnostics.measure_stages);
       q.boolean("readback", c.diagnostics.readback);
+      q.number("dump_sets", c.diagnostics.dump_sets);
+      q.string("dump_directory", c.diagnostics.dump_directory);
       q.finish();
     }
     r.finish();

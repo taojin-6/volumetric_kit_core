@@ -199,6 +199,71 @@ TEST(Config, PictureReadbackIsOptionalForLiveFusionAndStreaming) {
       App::FuseOrbbec, "output");
 }
 
+TEST(Config, JpegDumpIsAnOptionalConfigRelativeLiveDiagnostic) {
+  const std::string mjpeg = R"({"version":1,"source":{"color_codec":"mjpeg"},)";
+  for (const char* operation : {"fuse", "stream"}) {
+    const std::string head =
+        std::string(R"({"version":1,"operation":")") + operation +
+        R"(","source":{"color_codec":"mjpeg"},"diagnostics":)";
+    const auto omitted = scenario(head + "{}}", App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(omitted) << omitted.status().message();
+    EXPECT_EQ(omitted->diagnostics.dump_sets, 0);
+    EXPECT_TRUE(omitted->diagnostics.dump_directory.empty());
+    const auto dumped = scenario(
+        head +
+            R"({"readback":true,"dump_sets":20,"dump_directory":"h2/../dump"}})",
+        App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(dumped) << dumped.status().message();
+    EXPECT_EQ(dumped->diagnostics.dump_sets, 20);
+    EXPECT_EQ(dumped->diagnostics.dump_directory, "/scenario/dump");
+    EXPECT_TRUE(dumped->diagnostics.readback);
+  }
+  const auto absolute = scenario(
+      mjpeg + R"("diagnostics":{"dump_sets":1,"dump_directory":"/data/h2"}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(absolute) << absolute.status().message();
+  EXPECT_EQ(absolute->diagnostics.dump_directory, "/data/h2");
+  const auto off = scenario(R"({"version":1,"diagnostics":{"dump_sets":0}})",
+                            App::FuseOrbbec);
+  ASSERT_TRUE(off) << off.status().message();
+  EXPECT_EQ(off->diagnostics.dump_sets, 0);
+
+  // A count needs a directory, and a directory a count.
+  rejected(mjpeg + R"("diagnostics":{"dump_sets":1}})", App::FuseOrbbec,
+           "diagnostics.dump_directory");
+  rejected(mjpeg + R"("diagnostics":{"dump_directory":"dump"}})",
+           App::FuseOrbbec, "diagnostics.dump_directory");
+  rejected(mjpeg + R"("diagnostics":{"dump_sets":0,"dump_directory":"dump"}})",
+           App::FuseOrbbec, "diagnostics.dump_directory");
+  // Only MJPEG frames are self-contained; HEVC is the default codec.
+  rejected(
+      R"({"version":1,"diagnostics":{"dump_sets":1,"dump_directory":"d"}})",
+      App::FuseOrbbec, "diagnostics.dump_sets");
+  rejected(
+      R"({"version":1,"source":{"color_codec":"hevc"},"diagnostics":{"dump_sets":1,"dump_directory":"d"}})",
+      App::FuseOrbbec, "source.color_codec mjpeg");
+  for (const char* count : {"-1", "1.5", "true", "2147483648"}) {
+    rejected(mjpeg + R"("diagnostics":{"dump_sets":)" + count +
+                 R"(,"dump_directory":"d"}})",
+             App::FuseOrbbec, "diagnostics.dump_sets");
+  }
+  for (const char* directory : {R"("")", R"("a\u0000b")", "1"}) {
+    for (const char* count : {"0", "1"}) {
+      rejected(mjpeg + R"("diagnostics":{"dump_sets":)" + count +
+                   R"(,"dump_directory":)" + directory + "}}",
+               App::FuseOrbbec, "diagnostics.dump_directory");
+    }
+  }
+  // FuseOrbbec only, even when the value would turn the dump off.
+  rejected(R"({"version":1,"diagnostics":{"dump_sets":0}})", App::Scanner,
+           "diagnostics.dump_sets");
+  rejected(R"({"version":1,"diagnostics":{"dump_directory":"d"}})",
+           App::Scanner, "diagnostics.dump_directory");
+  rejected(
+      R"({"version":1,"source":{"sync_config":"rig.json","color_codec":"mjpeg"},"diagnostics":{"dump_sets":1,"dump_directory":"d"}})",
+      App::RigViewer, "diagnostics");
+}
+
 TEST(Config, LiveRelationsAndCountsAreCentral) {
   rejected(R"({"version":1,"source":{"serial":"A\u0000B"}})", App::FuseOrbbec,
            "source.serial");

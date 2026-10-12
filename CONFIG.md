@@ -144,6 +144,14 @@ unknown extension object.
 - `FuseOrbbec` accepts the boolean `diagnostics.readback` (core 0.4.0),
   default false. When true, its stream or fuse run reads each set's luma back
   to the host as a separate stage. Other profiles reject this field.
+- `FuseOrbbec` accepts the integer `diagnostics.dump_sets` (core 0.5.0),
+  default 0 (off), and `diagnostics.dump_directory`. A positive count makes
+  its stream or fuse run write the first that many sets' camera JPEGs, and
+  with `readback` their luma, into the directory. The directory is a
+  `diagnostics` field so that a stream run, which refuses `output`, can use
+  it. A positive count requires the directory and `source.color_codec`
+  `mjpeg`, since an H.265 frame is not self-contained; a directory requires a
+  positive count. Other profiles reject both fields.
 
 ## Validation and compatibility
 
