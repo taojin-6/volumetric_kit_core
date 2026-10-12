@@ -291,21 +291,6 @@ void read_calibration(const Json& json, Config& c, ParseState& state) {
   r.finish();
 }
 
-void resolve_weights(Codec& c) {
-  for (std::size_t z = 0; z < 8; ++z) {
-    for (std::size_t y = 0; y < 8; ++y) {
-      for (std::size_t x = 0; x < 8; ++x) {
-        float weight = 1.F;
-        if (c.quantization_table == QuantizationTable::Band)
-          weight += 0.25F * static_cast<float>(x + y + z);
-        if (c.quantization_table == QuantizationTable::Radial)
-          weight += 0.125F * static_cast<float>((x * x) + (y * y) + (z * z));
-        c.quantization_weights[x + (8 * y) + (64 * z)] = weight;
-      }
-    }
-  }
-}
-
 void positive(double value, std::string_view name) {
   if (!std::isfinite(value) || value <= 0)
     fail(name, "must be finite and positive");
@@ -572,25 +557,6 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         c.codec.quantization_table != QuantizationTable::Band &&
         c.codec.quantization_table != QuantizationTable::Radial)
       fail("codec.quantization_table", "unknown choice");
-    // Retained coefficients use increasing total frequency, ties x,y,z.
-    std::uint32_t retained = 0;
-    for (int sum = 0; sum <= 21; ++sum) {
-      for (int x = 0; x < 8; ++x) {
-        for (int y = 0; y < 8; ++y) {
-          const int z = sum - x - y;
-          if (z < 0 || z >= 8) continue;
-          if (retained++ >= c.codec.coefficient_count) continue;
-          const float weight =
-              c.codec.quantization_weights[static_cast<std::size_t>(x) +
-                                           (8 * static_cast<std::size_t>(y)) +
-                                           (64 * static_cast<std::size_t>(z))];
-          const float step = weight * c.codec.quantization_scale;
-          if (!std::isfinite(step) || step < 6.90555025e-4F || step > 64.F)
-            fail("codec.quantization_scale",
-                 "a retained coefficient step is outside [6.90555025e-4, 64]");
-        }
-      }
-    }
   }
   positive(c.window.width, "window.width");
   positive(c.window.height, "window.height");
@@ -680,7 +646,6 @@ void resolve(Config& c, App app, std::string_view directory,
     c.fusion.truncation_m = 4.F * c.fusion.voxel_size_m;
   if (c.operation == Operation::Stream) c.output.path.clear();
   if (!state.up_axis.empty()) c.source.up_vector = axis_vector(state.up_axis);
-  resolve_weights(c.codec);
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()
                                          : std::filesystem::path(directory);
@@ -759,7 +724,6 @@ Config defaults_impl(Application application) {
     c.source.kind = SourceKind::None;
     c.operation = Operation::Project;
   }
-  resolve_weights(c.codec);
   return c;
 }
 

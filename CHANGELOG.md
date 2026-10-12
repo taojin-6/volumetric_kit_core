@@ -27,11 +27,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   defaults to false (Classic); `RigViewer` still resolves true. Existing
   scenario files need no changes.
 
+### Removed
+
+- `config::Codec::quantization_weights`: core no longer resolves the
+  quantization table to weights or checks each kept coefficient's step
+  (DECISIONS.md, the 2026-10-11 entry's amendment).
+
 ### Migration
 
 - Consumers of the new settings require core 0.6.0. Code that
   default-constructs `Config` or `Fusion` and relies on `dynamic == true`
   sets it.
+- Code that read `codec.quantization_weights` derives the weights from
+  `codec.quantization_table` and checks the steps itself (recon:
+  `CodecParams::validate()`): a scenario whose steps are out of bounds now
+  loads.
 
 ## [0.5.0] - 2026-10-12
 

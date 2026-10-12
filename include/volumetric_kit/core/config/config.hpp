@@ -97,13 +97,12 @@ struct Fusion {
   int hold_ms = 2000;
   int free_after = 30;
 };
-/// @brief Codec settings; the resolved weights are ready for a codec adapter.
+/// @brief Codec settings; the codec maps the table to weights and checks steps.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Codec {
   std::uint32_t coefficient_count = 64;
   float quantization_scale = 0.2F;
   QuantizationTable quantization_table = QuantizationTable::Uniform;
-  std::array<float, 512> quantization_weights{};
   Entropy entropy = Entropy::Auto;
   std::uint32_t segment_size = 64;
   int encode_every = 1;

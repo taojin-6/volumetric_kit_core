@@ -457,29 +457,28 @@ TEST(Config, JsonParsingRestoresCallerRoundingOnSuccessAndFailure) {
   }
 }
 
-TEST(Config, CodecPresetWeightsAndRetainedStepBoundsAreResolvedOnce) {
+TEST(Config, CodecSettingsKeepGenericChecksAndLeaveStepsToTheCodec) {
   const auto parsed = scenario(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":512,"quantization_scale":0.2}})",
       App::CodecReplica);
   ASSERT_TRUE(parsed) << parsed.status().message();
-  EXPECT_EQ(parsed->codec.quantization_weights[0], 1.F);
-  EXPECT_EQ(parsed->codec.quantization_weights[1 + (8 * 2) + (64 * 3)], 2.75F);
+  EXPECT_EQ(parsed->codec.quantization_table, QuantizationTable::Radial);
+  rejected(
+      R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"steep"}})",
+      App::CodecReplica, "codec.quantization_table");
   rejected(
       R"({"version":1,"source":{"path":"scene"},"codec":{"coefficient_count":513}})",
       App::CodecReplica, "coefficient_count");
   rejected(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_scale":1e-40}})",
       App::CodecReplica, "quantization_scale");
-  rejected(
+  // Effective steps outside the codec's bounds are the codec's to refuse.
+  EXPECT_TRUE(scenario(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_scale":0.0001}})",
-      App::CodecReplica, "quantization_scale");
-  rejected(
+      App::CodecReplica));
+  EXPECT_TRUE(scenario(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":512,"quantization_scale":4}})",
-      App::CodecReplica, "quantization_scale");
-  const auto dc_only = scenario(
-      R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":1,"quantization_scale":64}})",
-      App::CodecReplica);
-  ASSERT_TRUE(dc_only) << dc_only.status().message();
+      App::CodecReplica));
 }
 
 TEST(Config, MeshSourceRequiresHeightAndOneNonzeroUpDirection) {

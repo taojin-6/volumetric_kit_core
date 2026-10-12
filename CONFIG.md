@@ -97,7 +97,7 @@ does not override the requested operation or source discriminator.
 The `Config` structs in
 [`config.hpp`](include/volumetric_kit/core/config/config.hpp) describe the
 resolved settings consumed by applications. The JSON fields below generally
-match their member names; mesh `up_axis` and codec presets are resolved during
+match their member names; mesh `up_axis` is resolved to `up_vector` during
 decoding. Root sections are
 `source`, `fusion`, `codec`, `window`, `render`, `output`, `run`,
 `calibration`, and `diagnostics`. There is no generic merge/override or
@@ -121,8 +121,9 @@ unknown extension object.
 - Codec fields: `coefficient_count`, `quantization_scale`,
   `quantization_table` (`uniform`/`band`/`radial`), `entropy`
   (`auto`/`host`/`device`), `segment_size`, `sweep`; `encode_every` belongs to
-  CodecReplica and `inspect_only` to CodecMesh. Core resolves the 512 weights
-  and validates retained coefficient steps with the codec's float arithmetic.
+  CodecReplica and `inspect_only` to CodecMesh. Core checks a
+  `coefficient_count` in [1, 512] and a positive normal scale; the codec maps
+  the table to its weights and checks each kept coefficient's step at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
   `overlay` only where UI is supported. Model dimensions are at most 16384.
   Scanner accepts no window section. No window/device handles are serialized.
@@ -183,8 +184,7 @@ size, truncation ratio and bucket-index bounds before library construction.
 
 `parse` and `load` return resolved settings for consumption. Field-presence
 tracking, defaults and validation remain private to decoding; there is no
-separate mutable configuration builder. Core resolves mesh `up_axis` to the
-returned `up_vector` and codec presets to `quantization_weights`.
+separate mutable configuration builder.
 
 nlohmann/json handles JSON syntax and number parsing. Decoding temporarily
 uses nearest rounding so overflow is rejected even when the caller uses a
