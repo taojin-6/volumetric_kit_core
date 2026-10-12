@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <string_view>
 
+#include "volumetric_kit/core/base/exception_status.hpp"
+#include "volumetric_kit/core/base/file_io.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/version.hpp"
@@ -35,6 +37,18 @@ vkc::Status run() {
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");
   if (parse_positive(-1).ok()) return vkc::Status::numerical("accepted -1");
+  if (vkc::read_file("").status().domain() !=
+      vkc::Status::Code::InvalidArgument) {
+    return vkc::Status::invalid_argument("read_file accepted an empty path");
+  }
+  try {
+    throw 1;
+  } catch (...) {
+    if (vkc::exception_status("consumer", vkc::Status::Code::IoError)
+            .domain() != vkc::Status::Code::IoError) {
+      return vkc::Status::invalid_argument("exception_status lost the domain");
+    }
+  }
 #ifdef VKC_CONSUMER_HAS_VULKAN
   if (vkc::to_string(VK_ERROR_DEVICE_LOST) != "VK_ERROR_DEVICE_LOST") {
     return vkc::Status::invalid_argument("VkResult names do not resolve");

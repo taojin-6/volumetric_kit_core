@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// find_memory_type, UniqueFd and create_exported_buffer, ported from recon's
+// find_memory_type and create_exported_buffer, ported from recon's
 // core_external_memory_test, plus a round trip recon could not make without
 // CUDA: the exported descriptor imported back into Vulkan, reading the bytes
 // written through the export. Export needs VK_KHR_external_memory_fd; where
 // the device lacks it, the refusal is what is checked.
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
-
-#include <unistd.h>
 
 #include <cstdint>
 #include <optional>
@@ -125,45 +123,6 @@ TEST_F(MemoryTypeTest, RefusesAnAllocatorOfAnotherDevice) {
   ASSERT_TRUE(foreign.ok()) << foreign.status().message();
   EXPECT_EQ(create_exported_buffer(device(), *foreign, 256).status().domain(),
             Status::Code::InvalidArgument);
-}
-
-// Whether `fd` names an open descriptor: only an open one duplicates.
-bool is_open(int fd) {
-  const int copy = dup(fd);
-  if (copy < 0) return false;
-  close(copy);
-  return true;
-}
-
-TEST(UniqueFdTest, ClosesWhatItOwnsUnlessReleased) {
-  int ends[2] = {-1, -1};
-  ASSERT_EQ(pipe(ends), 0);
-  {
-    UniqueFd read_end(ends[0]);
-    UniqueFd moved = std::move(read_end);
-    // The moved-from state is what is checked.
-    // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
-    EXPECT_FALSE(read_end.valid());
-    EXPECT_EQ(moved.get(), ends[0]);
-    // An assignment closes what the target held.
-    UniqueFd write_end(ends[1]);
-    moved = std::move(write_end);
-    EXPECT_FALSE(is_open(ends[0]));
-    EXPECT_EQ(moved.get(), ends[1]);
-  }
-  EXPECT_FALSE(is_open(ends[1]));  // closed with its owner
-
-  ASSERT_EQ(pipe(ends), 0);
-  UniqueFd kept(ends[0]);
-  kept.reset();
-  EXPECT_FALSE(is_open(ends[0]));
-  EXPECT_FALSE(kept.valid());
-  // Released, as to an import that took it: left open, and the caller's.
-  UniqueFd handed(ends[1]);
-  EXPECT_EQ(handed.release(), ends[1]);
-  EXPECT_FALSE(handed.valid());
-  EXPECT_TRUE(is_open(ends[1]));
-  EXPECT_EQ(close(ends[1]), 0);
 }
 
 // A device asked for export where the driver offers it.

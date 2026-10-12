@@ -21,11 +21,10 @@
 /// of the abort; the thread's next failed check reports through the handler
 /// again.
 ///
-/// Mobile consumers build with `-fno-exceptions`, so abort -- not `throw` -- is
-/// the portable way to stop on a bug: it raises SIGABRT, which crash reporters
-/// (Crashlytics, os_log, Android tombstones) capture, and it never leaves the
-/// empty-`optional` / use-after-error undefined behaviour a skipped check
-/// would.
+/// A check stops on a bug by abort, not `throw`: it raises SIGABRT, which crash
+/// reporters (Crashlytics, os_log, Android tombstones) capture, and it never
+/// leaves the empty-`optional` / use-after-error undefined behaviour a skipped
+/// check would.
 
 #include <string_view>
 

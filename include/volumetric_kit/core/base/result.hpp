@@ -6,9 +6,8 @@
 /// @file result.hpp
 /// @brief Exception-free, backend-neutral error handling for the public API.
 ///
-/// No exceptions cross a library boundary: mobile (iOS/Android) consumers
-/// build with `-fno-exceptions`, where a throwing API is unusable. Fallible
-/// calls therefore report failure by value:
+/// No exception crosses a library boundary. Fallible calls report failure by
+/// value:
 ///
 /// - @ref Status    -- success, or an error domain (@ref Status::Code) with an
 ///                     optional backend detail code and a context message.

@@ -12,9 +12,9 @@
 
 #include <cstdint>
 #include <optional>
-#include <utility>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/unique_fd.hpp"  // IWYU pragma: export
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -23,52 +23,6 @@ namespace volumetric_kit::core {
 
 class Allocator;
 class Device;
-
-/// @brief Sole owner of a file descriptor, closing it exactly once unless it
-///        is released to the API that imports it.
-///
-/// An opaque descriptor keeps its memory alive after Vulkan frees it, so one
-/// leaked on an early return would pin a whole dedicated allocation for the
-/// life of the process. Owned, it is closed on every path until an import
-/// takes it: an import that succeeds owns the descriptor (CUDA's does), so
-/// the caller then calls @ref release; after a failed one it is still owned
-/// here.
-///
-/// @code
-/// UniqueFd fd(raw);                     // adopts
-/// if (import(fd.get())) fd.release();  // the importer owns it now
-/// @endcode
-class VKC_VULKAN_API UniqueFd {
- public:
-  /// @brief Construct an empty owner (owns nothing; `valid()` is false).
-  UniqueFd() noexcept = default;
-  /// @brief Adopt @p fd.
-  /// @param fd  An open descriptor, or -1 for none.
-  explicit UniqueFd(int fd) noexcept : fd_(fd) {}
-  ~UniqueFd() { reset(); }
-  UniqueFd(UniqueFd&& other) noexcept : fd_(other.release()) {}
-  UniqueFd& operator=(UniqueFd&& other) noexcept {
-    if (this != &other) reset(other.release());
-    return *this;
-  }
-  UniqueFd(const UniqueFd&) = delete;
-  UniqueFd& operator=(const UniqueFd&) = delete;
-
-  /// @return The descriptor, still owned here; -1 when empty.
-  int get() const noexcept { return fd_; }
-  /// @return Whether this owns a descriptor.
-  bool valid() const noexcept { return fd_ >= 0; }
-  /// @brief Give the descriptor up without closing it, as an import that
-  ///        took it needs.
-  /// @return The descriptor, now the caller's; -1 when empty.
-  int release() noexcept { return std::exchange(fd_, -1); }
-  /// @brief Close the descriptor owned, if any, and adopt @p fd.
-  /// @param fd  An open descriptor, or -1 for none.
-  void reset(int fd = -1) noexcept;
-
- private:
-  int fd_ = -1;
-};
 
 /// @brief A buffer on memory of its own, and a file descriptor for that
 ///        memory, for another API to import.
@@ -93,6 +47,8 @@ struct ExportedBuffer {
   /// it frees with itself.
   Buffer buffer;
   /// An opaque file descriptor for the memory (`VK_KHR_external_memory_fd`).
+  /// While open it keeps the memory alive after the buffer frees it, so it
+  /// is released only to an import that takes it.
   UniqueFd fd;
   /// The memory's size, which an importer is told; at least the buffer's.
   VkDeviceSize memory_size = 0;
