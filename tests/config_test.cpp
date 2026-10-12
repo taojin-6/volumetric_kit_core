@@ -261,17 +261,25 @@ TEST(Config, JpegDumpIsAnOptionalConfigRelativeLiveDiagnostic) {
   ASSERT_TRUE(off) << off.status().message();
   EXPECT_EQ(off->diagnostics.dump_sets, 0);
 
-  for (const char* count : {"-1", "1.5", "true", "2147483648"}) {
-    rejected(mjpeg + R"("diagnostics":{"dump_sets":)" + count +
+  const auto count = [&](const char* value, const char* reason) {
+    rejected(mjpeg + R"("diagnostics":{"dump_sets":)" + value +
                  R"(,"dump_directory":"d"}})",
-             App::FuseOrbbec, "diagnostics.dump_sets");
-  }
-  for (const char* directory : {R"("")", R"("a\u0000b")", "1"}) {
-    for (const char* count : {"0", "1"}) {
-      rejected(mjpeg + R"("diagnostics":{"dump_sets":)" + count +
-                   R"(,"dump_directory":)" + directory + "}}",
-               App::FuseOrbbec, "diagnostics.dump_directory");
-    }
+             App::FuseOrbbec, std::string("diagnostics.dump_sets: ") + reason);
+  };
+  count("-1", "must be finite and nonnegative");
+  count("1.5", "expected an integer");
+  count("true", "expected an integer");
+  count("2147483648", "integer is out of range");
+  for (const char* sets : {"0", "1"}) {
+    const auto directory = [&](const char* value, const char* reason) {
+      rejected(mjpeg + R"("diagnostics":{"dump_sets":)" + sets +
+                   R"(,"dump_directory":)" + value + "}}",
+               App::FuseOrbbec,
+               std::string("diagnostics.dump_directory: ") + reason);
+    };
+    directory(R"("")", "must not be empty");
+    directory(R"("a\u0000b")", "embedded NUL");
+    directory("1", "expected a string");
   }
   // FuseOrbbec only, even when the value would turn the dump off.
   rejected(R"({"version":1,"diagnostics":{"dump_sets":0}})", App::Scanner,
