@@ -155,6 +155,8 @@ struct Calibration {
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Diagnostics {
   bool measure_stages = true;
+  /// Read each live set's luma to the host in FuseOrbbec's stream or fuse run.
+  bool readback = false;
 };
 /// @brief A validated scenario with all application defaults resolved.
 /// @code

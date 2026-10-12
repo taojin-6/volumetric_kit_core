@@ -411,8 +411,10 @@ bool supports(std::string_view field, App app) {
                        "calibration.intrinsics", "calibration.distortion",
                        "calibration.point"}))
     return app == App::CalibProjectPoint;
-  if (field == "diagnostics" || field == "diagnostics.measure_stages")
-    return app == App::Scanner;
+  if (field == "diagnostics")
+    return is_one_of(app, {App::Scanner, App::FuseOrbbec});
+  if (field == "diagnostics.measure_stages") return app == App::Scanner;
+  if (field == "diagnostics.readback") return app == App::FuseOrbbec;
   return false;
 }
 
@@ -791,6 +793,7 @@ Result<Config> parse(std::string_view text, Application application,
     if (const auto* v = r.take("diagnostics")) {
       Reader q(*v, "diagnostics", state);
       q.boolean("measure_stages", c.diagnostics.measure_stages);
+      q.boolean("readback", c.diagnostics.readback);
       q.finish();
     }
     r.finish();

@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-11
+
+### Added
+
+- `config::Diagnostics::readback`, exposed as `diagnostics.readback` in
+  version-1 scenarios for `Application::FuseOrbbec`. The boolean defaults to
+  false and is accepted in both stream and fuse operations. Other application
+  profiles reject it, including an explicitly supplied false value.
+  Consumers of the new setting require core 0.4.0 and read
+  `settings.diagnostics.readback`; existing scenario files need no changes.
+
 ## [0.3.0] - 2026-10-11
 
 ### Added
