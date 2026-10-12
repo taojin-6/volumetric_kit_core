@@ -160,7 +160,8 @@ struct Diagnostics {
   /// FuseOrbbec writes the first dump_sets sets' camera JPEGs, and with
   /// readback their luma, into dump_directory; 0 writes none.
   int dump_sets = 0;
-  /// The directory dump_sets writes into, config-relative; empty when off.
+  /// The directory FuseOrbbec's dump writes into, config-relative; empty when
+  /// off.
   std::string dump_directory;
 };
 /// @brief A validated scenario with all application defaults resolved.

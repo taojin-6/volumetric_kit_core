@@ -611,12 +611,16 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (c.diagnostics.dump_sets > 0) {
     if (c.diagnostics.dump_directory.empty())
       fail("diagnostics.dump_directory",
-           "is required when dump_sets is positive");
+           "is required when diagnostics.dump_sets is positive");
     // An H.265 frame is not self-contained, so only MJPEG can be written out.
     if (c.source.color_codec != ColorCodec::Mjpeg)
       fail("diagnostics.dump_sets", "requires source.color_codec mjpeg");
+    // FuseOrbbec's run takes run.frames sets, so a larger count is never met.
+    if (c.diagnostics.dump_sets > c.run.frames)
+      fail("diagnostics.dump_sets", "must not exceed run.frames");
   } else if (!c.diagnostics.dump_directory.empty()) {
-    fail("diagnostics.dump_directory", "is not used when dump_sets is 0");
+    fail("diagnostics.dump_directory",
+         "is not used when diagnostics.dump_sets is 0");
   }
   if (app == App::GfxModel && !c.output.screenshot.empty()) {
     if (has(state, "run.frames"))

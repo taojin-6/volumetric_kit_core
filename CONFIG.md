@@ -150,8 +150,9 @@ unknown extension object.
   with `readback` their luma, into the directory. The directory is a
   `diagnostics` field so that a stream run, which refuses `output`, can use
   it. A positive count requires the directory and `source.color_codec`
-  `mjpeg`, since an H.265 frame is not self-contained; a directory requires a
-  positive count. Other profiles reject both fields.
+  `mjpeg`, since an H.265 frame is not self-contained, and must not exceed
+  `run.frames`; a directory requires a positive count. Other profiles reject
+  both fields.
 
 ## Validation and compatibility
 
