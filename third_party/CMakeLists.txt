@@ -36,3 +36,21 @@ if(VKC_BUILD_TESTS)
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(googletest)
 endif()
+
+# Config is optional; base-only consumers fetch no JSON dependency. The name and
+# hash match recon so a family build resolves one copy.
+if(VKC_WITH_CONFIG)
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
+  FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+    URL_HASH
+      SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
+    SOURCE_SUBDIR do-not-add-json-cmake)
+  FetchContent_MakeAvailable(nlohmann_json)
+  set(VKC_JSON_INCLUDE_DIR
+      "${nlohmann_json_SOURCE_DIR}/include"
+      PARENT_SCOPE)
+endif()

@@ -8,7 +8,7 @@
 # volumetric_kit::core_base carries. The core's CMakeLists defines them, and the
 # installed package config includes this file.
 #
-# vkc_require_core(<min-version> [VULKAN] [PACKAGE <package>])
+# vkc_require_core(<min-version> [VULKAN] [CONFIG] [PACKAGE <package>])
 #
 # Fails the configure unless the core is <min-version> or newer -- the oldest
 # the caller builds with -- and, with VULKAN, has its vulkan tier. In
@@ -64,7 +64,7 @@ function(_vkc_require_core)
   list(JOIN ARGV " " _call)
   set(_call "vkc_require_core(${_call})")
   set(min_version "${ARGV0}")
-  cmake_parse_arguments(PARSE_ARGV 1 _arg "VULKAN" "PACKAGE" "")
+  cmake_parse_arguments(PARSE_ARGV 1 _arg "VULKAN;CONFIG" "PACKAGE" "")
   if(_arg_UNPARSED_ARGUMENTS
      OR _arg_KEYWORDS_MISSING_VALUES
      OR NOT min_version MATCHES "^[0-9]+(\\.[0-9]+)*$")
@@ -125,6 +125,16 @@ function(_vkc_require_core)
                     "FetchContent_MakeAvailable(volumetric_kit_core)")
     endif()
     string(CONCAT _refusal "${_who} needs volumetric_kit_core's vulkan tier, "
+                  "which ${_origin} was built without: ${_fix}.")
+  elseif(_arg_CONFIG AND NOT TARGET volumetric_kit::core_config)
+    if(_imported)
+      set(_fix "install one built with VKC_WITH_CONFIG ON ${_use_it}")
+    else()
+      set(_fix
+          "set VKC_WITH_CONFIG ON before the build's first FetchContent_MakeAvailable(volumetric_kit_core)"
+      )
+    endif()
+    string(CONCAT _refusal "${_who} needs volumetric_kit_core's config tier, "
                   "which ${_origin} was built without: ${_fix}.")
   endif()
 

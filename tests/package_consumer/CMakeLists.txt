@@ -26,8 +26,9 @@ set(VKC_CONSUME
 option(VKC_CONSUMER_GTEST "Provide googletest, and a GPU test on the fixtures"
        ON)
 set(VKC_CONSUMER_REQUIRE
-    "0.2.0"
+    "0.3.0"
     CACHE STRING "The oldest volumetric_kit_core this consumer builds with")
+option(VKC_CONSUMER_REQUIRE_CONFIG "Require the config tier" OFF)
 option(VKC_CONSUMER_REQUIRE_VULKAN "Require the core's vulkan tier" OFF)
 
 if(VKC_CONSUME STREQUAL "find_package")
@@ -61,6 +62,9 @@ endif()
 set(_vkc_tier)
 if(VKC_CONSUMER_REQUIRE_VULKAN)
   set(_vkc_tier VULKAN)
+endif()
+if(VKC_CONSUMER_REQUIRE_CONFIG)
+  list(APPEND _vkc_tier CONFIG)
 endif()
 vkc_require_core(${VKC_CONSUMER_REQUIRE} ${_vkc_tier})
 vkc_core_version(_vkc_version)
@@ -102,6 +106,10 @@ add_executable(vkc_package_consumer main.cpp)
 target_link_libraries(vkc_package_consumer PRIVATE vkc_package_consumer_lib)
 target_compile_definitions(
   vkc_package_consumer PRIVATE "VKC_CONSUMER_CORE_VERSION=\"${_vkc_version}\"")
+if(TARGET volumetric_kit::core_config)
+  target_compile_definitions(vkc_package_consumer
+                             PRIVATE VKC_CONSUMER_HAS_CONFIG)
+endif()
 # The vulkan tier, when the core has it: an installed core built with it, or a
 # subproject configured -DVKC_WITH_VULKAN=ON, as recon and gfx will.
 if(TARGET volumetric_kit::core_vulkan)

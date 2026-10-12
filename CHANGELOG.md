@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-11
+
+### Added
+
+- Optional CPU-only `core_config`: the family's version-1 scenario JSON,
+  public typed settings, application defaults and static validation. Includes
+  bounded reads, strict fields/discriminators, duplicate/numeric overflow
+  checks, config-relative paths and presence-sensitive operation exclusions.
+- `vkc_require_core(... CONFIG)` checks the optional target. Base-only builds
+  remain independent of JSON; installed config headers expose no JSON types.
+
+### Changed
+
+- Replaces PR #26's unconsumed `Cli`/`parse_number` proposal. Consumers enable
+  `VKC_WITH_CONFIG`, require core 0.3.0 and link `core_config`; load the scenario
+  for their `Application` profile instead of sharing option registration.
+  Desktop bootstrap accepts `--config PATH` / `--help`. Parsing uses
+  nlohmann/json with scoped nearest rounding; defaults, field presence and
+  validation stay private to decoding. See CONFIG.md.
+
 ## [0.2.0] - 2026-10-11
 
 ### Added
