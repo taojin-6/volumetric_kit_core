@@ -977,3 +977,11 @@ and `--help`; iOS loads its bundled scenario. Existing defaults and recon's
 stream-only exclusions are preserved. Siblings pin 0.3.0, enable
 `VKC_WITH_CONFIG` before the first core declaration, and require its `CONFIG`
 tier. Base-only installs fetch and export no JSON dependency or config headers.
+
+**Amended 2026-10-12 (core 0.5.0): the codec owns its validity rules.** Core
+resolved each quantization table to 512 weights and checked every kept
+coefficient's step: a second copy of recon's tables, coefficient order and
+step bounds, free to disagree with the codec it configures. The user gave
+those rules to the codec. Core keeps the table choice and the generic type
+and range checks; recon maps the table to weights and refuses an
+out-of-bounds step at runtime, so a scenario with one loads.

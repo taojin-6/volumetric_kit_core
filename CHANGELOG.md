@@ -7,6 +7,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-12
+
+### Added
+
+- `config::Output::csv` and `config::Output::stream`, exposed as `output.csv`
+  and `output.stream` for `Application::CodecReplica` and `CodecMesh`: the
+  codec's per-frame rows and its coded frames, in one file each. Paths are
+  relative to the config file, an empty string disables each, and equal
+  resolved paths are refused, naming `output.stream`. Mesh inspection and
+  other profiles reject both. Core checks neither the files nor the stream's
+  format.
+
+### Changed
+
+- `fusion.dynamic` is accepted by every dataset and Orbbec profile
+  (`FuseReplica`, `CodecReplica`, `FuseRender`, `FuseViewer`, `FuseOrbbec`
+  and `RigViewer`), not by `RigViewer` alone. `config::Fusion::dynamic` now
+  defaults to false (Classic); `RigViewer` still resolves true. Existing
+  scenario files need no changes.
+
+### Removed
+
+- `config::Codec::quantization_weights`: core no longer resolves the
+  quantization table to weights or checks each kept coefficient's step
+  (DECISIONS.md, the 2026-10-11 entry's amendment).
+
+### Migration
+
+- Consumers of the new settings require core 0.6.0. Code that
+  default-constructs `Config` or `Fusion` and relies on `dynamic == true`
+  sets it.
+- Code that read `codec.quantization_weights` derives the weights from
+  `codec.quantization_table` and checks the steps itself (recon:
+  `CodecParams::validate()`): a scenario whose steps are out of bounds now
+  loads.
+
 ## [0.5.0] - 2026-10-12
 
 ### Added

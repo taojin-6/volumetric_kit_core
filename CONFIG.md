@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.3.0 CONFIG)
+vkc_require_core(0.6.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -82,7 +82,7 @@ does not override the requested operation or source discriminator.
 | Profile | Operation | Source | Important defaults |
 | --- | --- | --- | --- |
 | `FuseReplica` | `fuse` | `dataset`, `replica`; path required | voxel 0.02 m, frames 2^30, mesh every 50, output `fuse_room0.ply` |
-| `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no output prefix |
+| `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
 | `CodecMesh` | `codec` | `mesh`; path, positive height, one up direction required | voxel 0.01 m, signed SDF, shell thickness 1.5 voxels |
 | `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; fusion output `fuse_orbbec.ply` |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
@@ -97,7 +97,7 @@ does not override the requested operation or source discriminator.
 The `Config` structs in
 [`config.hpp`](include/volumetric_kit/core/config/config.hpp) describe the
 resolved settings consumed by applications. The JSON fields below generally
-match their member names; mesh `up_axis` and codec presets are resolved during
+match their member names; mesh `up_axis` is resolved to `up_vector` during
 decoding. Root sections are
 `source`, `fusion`, `codec`, `window`, `render`, `output`, `run`,
 `calibration`, and `diagnostics`. There is no generic merge/override or
@@ -113,14 +113,17 @@ unknown extension object.
   signed) or `up_vector` (three finite numbers with finite positive squared
   length), `sdf_mode` (`signed`/`shell`), `shell_voxels`.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
-  `max_depth_m`, `max_weight`. Application-specific extraction/dynamic fields
-  are accepted only by their actual consumers. CodecMesh accepts only voxel
-  size and derives truncation from it.
+  `max_depth_m`, `max_weight`. Every dataset and Orbbec profile accepts the
+  boolean `dynamic` (core 0.6.0): Dynamic integration when true, Classic when
+  false; only RigViewer defaults to true. Other application-specific
+  extraction/dynamic fields are accepted only by their actual consumers.
+  CodecMesh accepts only voxel size and derives truncation from it.
 - Codec fields: `coefficient_count`, `quantization_scale`,
   `quantization_table` (`uniform`/`band`/`radial`), `entropy`
   (`auto`/`host`/`device`), `segment_size`, `sweep`; `encode_every` belongs to
-  CodecReplica and `inspect_only` to CodecMesh. Core resolves the 512 weights
-  and validates retained coefficient steps with the codec's float arithmetic.
+  CodecReplica and `inspect_only` to CodecMesh. Core checks a
+  `coefficient_count` in [1, 512] and a positive normal scale; the codec maps
+  the table to its weights and checks each kept coefficient's step at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
   `overlay` only where UI is supported. Model dimensions are at most 16384.
   Scanner accepts no window section. No window/device handles are serialized.
@@ -128,9 +131,11 @@ unknown extension object.
   `shading` (`unlit`/`lit`, plus `normals` for RigViewer), `texture` for recon
   viewers; `show_sources`/`texture_stats` for RigViewer. Scanner accepts only
   `texture`. Gfx examples accept no render section.
-- Output fields: `path` for fusion/export programs, `prefix` for codecs,
-  `screenshot` for GfxModel. Empty strings disable optional prefix/screenshot
-  output; fusion/export operations require a nonempty `path`.
+- Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
+  rows) and `stream` (coded frames, in one file) for codecs, the last two in
+  core 0.6.0; `screenshot` for GfxModel. An empty string disables each
+  optional output; fusion/export operations require a nonempty `path`. `csv`
+  and `stream` must differ once resolved.
 - Run fields: `frames`, plus `sets` for RigViewer. Dataset/FuseOrbbec limits
   are positive; RigViewer uses zero for unlimited; gfx uses -1 for unlimited
   and permits zero frames. Scanner has no run limits.
@@ -164,7 +169,8 @@ silently ignored by an application that does not consume it. In particular:
 - Stream mode rejects an explicit `fusion` or `output` section, even empty or
   equal to defaults. This preserves recon's stream-only option exclusions.
 - Headless model screenshots reject explicit frame limits or overlay settings.
-- Mesh inspection rejects fusion, SDF and encoder settings it would not use.
+- Mesh inspection rejects fusion, SDF, encoder and `csv`/`stream` output
+  settings it would not use.
 - JSON integers remain integers; floating-point syntax cannot silently become
   an integer setting. Directed rounding cannot hide numeric overflow.
 - Configuration input is limited to one MiB and 32 nesting levels. `load`
@@ -178,8 +184,7 @@ size, truncation ratio and bucket-index bounds before library construction.
 
 `parse` and `load` return resolved settings for consumption. Field-presence
 tracking, defaults and validation remain private to decoding; there is no
-separate mutable configuration builder. Core resolves mesh `up_axis` to the
-returned `up_vector` and codec presets to `quantization_weights`.
+separate mutable configuration builder.
 
 nlohmann/json handles JSON syntax and number parsing. Decoding temporarily
 uses nearest rounding so overflow is rejected even when the caller uses a

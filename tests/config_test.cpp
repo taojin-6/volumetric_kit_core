@@ -81,6 +81,15 @@ TEST(Config, ApplicationDefaultsPreserveExistingBehavior) {
   EXPECT_EQ(replica->source.path, "/scenario/scene");
   EXPECT_EQ(replica->source.camera_parameters, "/scenario/cam_params.json");
   EXPECT_EQ(replica->output.path, "/scenario/fuse_room0.ply");
+  EXPECT_FALSE(replica->fusion.dynamic);
+  EXPECT_FALSE(Config{}.fusion.dynamic);
+  const auto codec = scenario(R"({"version":1,"source":{"path":"scene"}})",
+                              App::CodecReplica, "/scenario");
+  ASSERT_TRUE(codec) << codec.status().message();
+  EXPECT_FALSE(codec->fusion.dynamic);
+  EXPECT_TRUE(codec->output.prefix.empty());
+  EXPECT_TRUE(codec->output.csv.empty());
+  EXPECT_TRUE(codec->output.stream.empty());
   const auto live = scenario(R"({"version":1})", App::FuseOrbbec, "/scenario");
   ASSERT_TRUE(live) << live.status().message();
   EXPECT_EQ(live->source.color_codec, ColorCodec::Hevc);
@@ -91,6 +100,7 @@ TEST(Config, ApplicationDefaultsPreserveExistingBehavior) {
   EXPECT_EQ(live->run.frames, 300);
   EXPECT_EQ(live->fusion.min_depth_m, 0.25F);
   EXPECT_EQ(live->fusion.max_depth_m, 5.F);
+  EXPECT_FALSE(live->fusion.dynamic);
   const auto rig =
       scenario(R"({"version":1,"source":{"sync_config":"sync.json"}})",
                App::RigViewer, "/scenario");
@@ -164,6 +174,83 @@ TEST(Config, StreamModePreservesPresenceSensitiveFusionAndOutputConflicts) {
       R"({"version":1,"operation":"stream","output":{"path":"fuse_orbbec.ply"}})",
       App::FuseOrbbec, "output");
   rejected(R"({"version":1,"operation":"stream"})", App::GfxModel, "operation");
+}
+
+TEST(Config, DynamicFusionIsAcceptedByEveryFusingProfile) {
+  for (const auto app : {App::FuseReplica, App::CodecReplica, App::FuseRender,
+                         App::FuseViewer, App::FuseOrbbec}) {
+    const std::string source =
+        app == App::FuseOrbbec ? "" : R"("source":{"path":"scene"},)";
+    const auto parsed = scenario(
+        R"({"version":1,)" + source + R"("fusion":{"dynamic":true}})", app);
+    ASSERT_TRUE(parsed) << parsed.status().message();
+    EXPECT_TRUE(parsed->fusion.dynamic);
+  }
+  const auto rig = scenario(
+      R"({"version":1,"source":{"sync_config":"sync.json"},"fusion":{"dynamic":false}})",
+      App::RigViewer);
+  ASSERT_TRUE(rig) << rig.status().message();
+  EXPECT_FALSE(rig->fusion.dynamic);
+  rejected(
+      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"},"fusion":{"dynamic":true}})",
+      App::CodecMesh, "fusion.dynamic");
+  rejected(R"({"version":1,"fusion":{"dynamic":true}})", App::Scanner,
+           "fusion.dynamic");
+  rejected(R"({"version":1,"fusion":{"dynamic":true}})", App::GfxModel,
+           "fusion");
+  rejected(R"({"version":1,"operation":"stream","fusion":{"dynamic":false}})",
+           App::FuseOrbbec, "fusion: is not used by operation stream");
+}
+
+TEST(Config, CodecOutputsAreConfigRelativeAndCodecOnly) {
+  // A dataset scenario with these output fields.
+  const auto outputs = [](const std::string& fields) {
+    return R"({"version":1,"source":{"path":"scene"},"output":{)" + fields +
+           "}}";
+  };
+  const auto replica =
+      scenario(outputs(R"("csv":"rows.csv","stream":"../runs/frames.vrst")"),
+               App::CodecReplica, "/scenario/sub");
+  ASSERT_TRUE(replica) << replica.status().message();
+  EXPECT_EQ(replica->output.csv, "/scenario/sub/rows.csv");
+  EXPECT_EQ(replica->output.stream, "/scenario/runs/frames.vrst");
+  const auto mesh = scenario(
+      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"},"output":{"csv":"/data/rows.csv","stream":"out/./mesh.vrst"}})",
+      App::CodecMesh, "/scenario");
+  ASSERT_TRUE(mesh) << mesh.status().message();
+  EXPECT_EQ(mesh->output.csv, "/data/rows.csv");
+  EXPECT_EQ(mesh->output.stream, "/scenario/out/mesh.vrst");
+  const auto disabled = scenario(outputs(R"("csv":"","stream":"")"),
+                                 App::CodecReplica, "/scenario");
+  ASSERT_TRUE(disabled) << disabled.status().message();
+  EXPECT_TRUE(disabled->output.csv.empty());
+  EXPECT_TRUE(disabled->output.stream.empty());
+
+  rejected(outputs(R"("csv":"a.csv")"), App::FuseReplica, "output.csv");
+  rejected(R"({"version":1,"output":{"stream":"a.vrst"}})", App::GfxModel,
+           "output.stream");
+  rejected(R"({"version":1,"output":{"stream":"a.vrst"}})", App::FuseOrbbec,
+           "output.stream");
+  for (const char* key : {"csv", "stream"}) {
+    const std::string field = std::string("output.") + key;
+    const std::string member = std::string("\"") + key + "\":";
+    rejected(
+        R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"},"codec":{"inspect_only":true},"output":{)" +
+            member + R"("out"}})",
+        App::CodecMesh,
+        field + ": is not used when codec.inspect_only is enabled");
+    rejected(outputs(member + "1"), App::CodecReplica,
+             field + ": expected a string");
+    rejected(outputs(member + R"("a\u0000b")"), App::CodecReplica,
+             field + ": embedded NUL");
+  }
+  for (const char* paths :
+       {R"("csv":"out.bin","stream":"out.bin")",
+        R"("csv":"runs/../out.bin","stream":"./out.bin")",
+        R"("csv":"/scenario/out.bin","stream":"out.bin")"}) {
+    rejected(outputs(paths), App::CodecReplica,
+             "output.stream: must differ from output.csv");
+  }
 }
 
 TEST(Config, PictureReadbackIsOptionalForLiveFusionAndStreaming) {
@@ -370,29 +457,30 @@ TEST(Config, JsonParsingRestoresCallerRoundingOnSuccessAndFailure) {
   }
 }
 
-TEST(Config, CodecPresetWeightsAndRetainedStepBoundsAreResolvedOnce) {
+TEST(Config, CodecSettingsKeepGenericChecksAndLeaveStepsToTheCodec) {
   const auto parsed = scenario(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":512,"quantization_scale":0.2}})",
       App::CodecReplica);
   ASSERT_TRUE(parsed) << parsed.status().message();
-  EXPECT_EQ(parsed->codec.quantization_weights[0], 1.F);
-  EXPECT_EQ(parsed->codec.quantization_weights[1 + (8 * 2) + (64 * 3)], 2.75F);
+  EXPECT_EQ(parsed->codec.quantization_table, QuantizationTable::Radial);
+  rejected(
+      R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"steep"}})",
+      App::CodecReplica, "codec.quantization_table");
   rejected(
       R"({"version":1,"source":{"path":"scene"},"codec":{"coefficient_count":513}})",
       App::CodecReplica, "coefficient_count");
   rejected(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_scale":1e-40}})",
       App::CodecReplica, "quantization_scale");
-  rejected(
+  // Effective steps outside the codec's bounds are the codec's to refuse.
+  const auto fine = scenario(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_scale":0.0001}})",
-      App::CodecReplica, "quantization_scale");
-  rejected(
-      R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":512,"quantization_scale":4}})",
-      App::CodecReplica, "quantization_scale");
-  const auto dc_only = scenario(
-      R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":1,"quantization_scale":64}})",
       App::CodecReplica);
-  ASSERT_TRUE(dc_only) << dc_only.status().message();
+  EXPECT_TRUE(fine) << fine.status().message();
+  const auto coarse = scenario(
+      R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":512,"quantization_scale":4}})",
+      App::CodecReplica);
+  EXPECT_TRUE(coarse) << coarse.status().message();
 }
 
 TEST(Config, MeshSourceRequiresHeightAndOneNonzeroUpDirection) {

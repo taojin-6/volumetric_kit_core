@@ -291,21 +291,6 @@ void read_calibration(const Json& json, Config& c, ParseState& state) {
   r.finish();
 }
 
-void resolve_weights(Codec& c) {
-  for (std::size_t z = 0; z < 8; ++z) {
-    for (std::size_t y = 0; y < 8; ++y) {
-      for (std::size_t x = 0; x < 8; ++x) {
-        float weight = 1.F;
-        if (c.quantization_table == QuantizationTable::Band)
-          weight += 0.25F * static_cast<float>(x + y + z);
-        if (c.quantization_table == QuantizationTable::Radial)
-          weight += 0.125F * static_cast<float>((x * x) + (y * y) + (z * z));
-        c.quantization_weights[x + (8 * y) + (64 * z)] = weight;
-      }
-    }
-  }
-}
-
 void positive(double value, std::string_view name) {
   if (!std::isfinite(value) || value <= 0)
     fail(name, "must be finite and positive");
@@ -362,8 +347,9 @@ bool supports(std::string_view field, App app) {
     return app == App::Scanner;
   if (field == "fusion.share_vertices")
     return is_one_of(app, {App::FuseReplica, App::FuseRender, App::FuseViewer});
-  if (field_in(field, {"fusion.dynamic", "fusion.depth_within_color",
-                       "fusion.hold_ms", "fusion.free_after"}))
+  if (field == "fusion.dynamic") return is_dataset(app) || is_live(app);
+  if (field_in(field, {"fusion.depth_within_color", "fusion.hold_ms",
+                       "fusion.free_after"}))
     return app == App::RigViewer;
   if (field == "fusion.occlusion_m")
     return app == App::RigViewer || app == App::Scanner;
@@ -401,7 +387,8 @@ bool supports(std::string_view field, App app) {
                                             App::FuseRender, App::GfxModel});
   if (field == "output.path")
     return is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender});
-  if (field == "output.prefix") return is_codec(app);
+  if (field_in(field, {"output.prefix", "output.csv", "output.stream"}))
+    return is_codec(app);
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live(app) || is_gfx(app);
@@ -423,6 +410,7 @@ bool supports(std::string_view field, App app) {
 bool ignored_when_inspecting(std::string_view field) {
   return field == "fusion" || field.rfind("fusion.", 0) == 0 ||
          field == "source.sdf_mode" || field == "source.shell_voxels" ||
+         field == "output.csv" || field == "output.stream" ||
          (field.rfind("codec.", 0) == 0 && field != "codec.inspect_only");
 }
 
@@ -470,6 +458,11 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
           is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender}));
   path_check(c.output.prefix, "output.prefix");
   path_check(c.output.screenshot, "output.screenshot");
+  path_check(c.output.csv, "output.csv");
+  path_check(c.output.stream, "output.stream");
+  // Compared after resolution, so two spellings of one path are refused too.
+  if (!c.output.stream.empty() && c.output.stream == c.output.csv)
+    fail("output.stream", "must differ from output.csv");
   if (is_dataset(app) && c.source.format != "replica")
     fail("source.format", "only replica is supported");
   if (is_live(app)) {
@@ -564,25 +557,6 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         c.codec.quantization_table != QuantizationTable::Band &&
         c.codec.quantization_table != QuantizationTable::Radial)
       fail("codec.quantization_table", "unknown choice");
-    // Retained coefficients use increasing total frequency, ties x,y,z.
-    std::uint32_t retained = 0;
-    for (int sum = 0; sum <= 21; ++sum) {
-      for (int x = 0; x < 8; ++x) {
-        for (int y = 0; y < 8; ++y) {
-          const int z = sum - x - y;
-          if (z < 0 || z >= 8) continue;
-          if (retained++ >= c.codec.coefficient_count) continue;
-          const float weight =
-              c.codec.quantization_weights[static_cast<std::size_t>(x) +
-                                           (8 * static_cast<std::size_t>(y)) +
-                                           (64 * static_cast<std::size_t>(z))];
-          const float step = weight * c.codec.quantization_scale;
-          if (!std::isfinite(step) || step < 6.90555025e-4F || step > 64.F)
-            fail("codec.quantization_scale",
-                 "a retained coefficient step is outside [6.90555025e-4, 64]");
-        }
-      }
-    }
   }
   positive(c.window.width, "window.width");
   positive(c.window.height, "window.height");
@@ -672,7 +646,6 @@ void resolve(Config& c, App app, std::string_view directory,
     c.fusion.truncation_m = 4.F * c.fusion.voxel_size_m;
   if (c.operation == Operation::Stream) c.output.path.clear();
   if (!state.up_axis.empty()) c.source.up_vector = axis_vector(state.up_axis);
-  resolve_weights(c.codec);
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()
                                          : std::filesystem::path(directory);
@@ -683,6 +656,8 @@ void resolve(Config& c, App app, std::string_view directory,
   resolve_path(c.output.path, base);
   resolve_path(c.output.prefix, base);
   resolve_path(c.output.screenshot, base);
+  resolve_path(c.output.csv, base);
+  resolve_path(c.output.stream, base);
   resolve_path(c.diagnostics.dump_directory, base);
   if (is_dataset(app) && c.source.camera_parameters.empty() &&
       !c.source.path.empty())
@@ -729,6 +704,7 @@ Config defaults_impl(Application application) {
   if (application == App::FuseOrbbec) c.output.path = "fuse_orbbec.ply";
   if (application == App::FuseRender) c.output.path = "fuse_render.png";
   if (application == App::FuseViewer) c.render.shading = Shading::Lit;
+  if (application == App::RigViewer) c.fusion.dynamic = true;
   if (is_gfx(application)) {
     c.window.width = application == App::GfxTriangle ? 800 : 1024;
     c.window.height = application == App::GfxTriangle ? 600 : 720;
@@ -748,7 +724,6 @@ Config defaults_impl(Application application) {
     c.source.kind = SourceKind::None;
     c.operation = Operation::Project;
   }
-  resolve_weights(c.codec);
   return c;
 }
 
@@ -807,6 +782,8 @@ Result<Config> parse(std::string_view text, Application application,
       q.string("path", c.output.path, true);
       q.string("prefix", c.output.prefix, true);
       q.string("screenshot", c.output.screenshot, true);
+      q.string("csv", c.output.csv, true);
+      q.string("stream", c.output.stream, true);
       q.finish();
     }
     if (const auto* v = r.take("diagnostics")) {
