@@ -15,8 +15,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   configure reads the core's package more than once: a project that finds the
   core, or adds it from source, and then finds a sibling whose package config
   re-finds it (#31). `cmake/vkc_require_core.cmake` now defines its commands
-  once per configure. A package config that reached the core only through
-  another sibling's can find it directly once it requires 0.6.1.
+  once per configure, and a copy older than 0.6.1 read after it no longer
+  breaks them. Such a copy read twice still recurses. A package config that
+  reached the core only through another sibling's can now find it directly
+  with `find_dependency(volumetric_kit_core 0.6.1 CONFIG)`: the full version
+  refuses a 0.6.0 install before its config is read, where `0.6` would accept
+  it.
 
 ## [0.6.0] - 2026-10-12
 

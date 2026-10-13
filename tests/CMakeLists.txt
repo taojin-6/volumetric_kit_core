@@ -520,11 +520,13 @@ endforeach()
 # leaves the sibling not found, the message naming it, and the config read no
 # further; the consumer's configure finishes unless it found the sibling
 # REQUIRED. After the consumer adds the core itself (VKC_SIBLING_CORE_FIRST),
-# the sibling is found and the consumer's own vkc_require_core passes. Its
-# source core gets this build's tiers, so the stage's targets file finds them
-# all defined, and this build's dependencies.
+# the sibling is found and the consumer's own vkc_require_core passes. A core
+# added from source gets this build's tiers, so the stage's targets file finds
+# them all defined, and this build's fetched VMA and nlohmann_json, so it
+# downloads nothing. A refusal then names it: the stage's copy of
+# vkc_require_core.cmake leaves its commands in place.
+_vkc_message_regex(_vkc_past "read past vkc_require_core")
 if(VKC_INSTALL)
-  _vkc_message_regex(_vkc_past "read past vkc_require_core")
   set(_vkc_source_core
       "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
       -DVKC_WITH_VULKAN=${VKC_WITH_VULKAN} -DVKC_WITH_CONFIG=${VKC_WITH_CONFIG})
@@ -537,8 +539,15 @@ if(VKC_INSTALL)
     list(APPEND _vkc_source_core
          "-DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=${_vkc_json_source}")
   endif()
-  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan required
-                       after_find_package after_subdirectory)
+  foreach(
+    _vkc_require
+    ${PROJECT_VERSION}
+    ${_vkc_too_new}
+    vulkan
+    required
+    after_find_package
+    after_subdirectory
+    refused_after_subdirectory)
     set(_vkc_name vkc_require_core_package_${_vkc_require})
     set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_require})
     if(_vkc_require STREQUAL "vulkan")
@@ -553,6 +562,9 @@ if(VKC_INSTALL)
     elseif(_vkc_require STREQUAL "after_subdirectory")
       set(_vkc_args -DVKC_SIBLING_REQUIRE=${PROJECT_VERSION}
                     -DVKC_SIBLING_CORE_FIRST=subdirectory ${_vkc_source_core})
+    elseif(_vkc_require STREQUAL "refused_after_subdirectory")
+      set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_too_new}
+                    -DVKC_SIBLING_CORE_FIRST=subdirectory ${_vkc_source_core})
     endif()
     add_test(
       NAME ${_vkc_name}
@@ -564,7 +576,13 @@ if(VKC_INSTALL)
         "-DCMAKE_PREFIX_PATH=${_vkc_stage}" ${_vkc_args})
     set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
                                                  vkc_require_core_stage)
-    if(_vkc_require MATCHES "^after_")
+    if(_vkc_require STREQUAL "refused_after_subdirectory")
+      _vkc_message_regex(
+        _vkc_pass
+        "vkc_sibling not found: vkc_sibling needs volumetric_kit_core ${_vkc_too_new} or newer, but the core at ${PROJECT_SOURCE_DIR} is ${PROJECT_VERSION}"
+      )
+      set(_vkc_fail "${_vkc_past}|required the core itself")
+    elseif(_vkc_require MATCHES "^after_")
       set(_vkc_pass
           "${_vkc_past}.+vkc_sibling found.+required the core itself.+Generating done"
       )
@@ -613,6 +631,44 @@ if(VKC_INSTALL)
                                                  "${_vkc_fail}")
   endforeach()
 endif()
+
+# The core added from source, then an installed copy older than 0.6.1 read by
+# the sibling's config (require_core_package/pre_0_6_1/), which defines the
+# commands again: requiring this version, the sibling is found and the
+# consumer's own call passes; requiring the next minor, the sibling is left not
+# found, its config read no further, and the consumer's own call fails.
+foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new})
+  set(_vkc_name vkc_require_core_package_pre_0_6_1_${_vkc_require})
+  add_test(
+    NAME ${_vkc_name}
+    COMMAND
+      "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/require_core_package"
+      -B "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+      "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DCMAKE_PREFIX_PATH=${CMAKE_CURRENT_SOURCE_DIR}/require_core_package/pre_0_6_1"
+      -DVKC_SIBLING_REQUIRE=${_vkc_require}
+      -DVKC_SIBLING_CORE_FIRST=subdirectory
+      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}")
+  if(_vkc_require STREQUAL PROJECT_VERSION)
+    set(_vkc_pass
+        "${_vkc_past}.+vkc_sibling found.+required the core itself.+Generating done"
+    )
+    set(_vkc_fail "CMake Error")
+  else()
+    _vkc_message_regex(
+      _vkc_head
+      "vkc_sibling not found: vkc_sibling needs volumetric_kit_core ${_vkc_too_new} or newer"
+    )
+    _vkc_message_regex(
+      _vkc_tail
+      "vkc_sibling_consumer needs volumetric_kit_core ${_vkc_too_new} or newer")
+    set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
+    set(_vkc_fail "${_vkc_past}|required the core itself")
+  endif()
+  set_tests_properties(
+    ${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION "${_vkc_pass}"
+                            FAIL_REGULAR_EXPRESSION "${_vkc_fail}")
+endforeach()
 
 # The same functions misused, or called before the core is added, must say so.
 function(_vkc_call_test name call message)

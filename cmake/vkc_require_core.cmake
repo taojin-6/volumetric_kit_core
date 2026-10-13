@@ -21,12 +21,15 @@
 #
 # Sets <out> to the core's version, or with MAJOR_MINOR to its MAJOR.MINOR.
 
-# Define the commands once per configure. Each read of the core's package
-# includes this file, and a project that added the core from source may also
-# read an installed copy's. CMake keeps a redefined command as _<name>, so a
-# second definition would make _vkc_require_core the first vkc_require_core
-# macro, which then calls itself. Commands are global, so the guard is one of
-# them; include_guard() would key on the file's path.
+# Define the commands once per configure, from the copy read first, which came
+# with the targets, so a refusal names that core. Each read of the core's
+# package includes this file, and a project that added the core from source may
+# also read an installed copy's. Commands are global, so the guard is one of
+# them; include_guard() would key on the file's path. A copy older than 0.6.1
+# has no guard: read after this one, it makes _vkc_require_core this file's
+# vkc_require_core macro (CMake keeps a redefined command as _<name>). So that
+# macro calls _vkc_require_core_checks; calling _vkc_require_core, it would call
+# itself.
 if(COMMAND _vkc_core_version_of)
   return()
 endif()
@@ -70,7 +73,7 @@ endfunction()
 # vkc_require_core's checks. With PACKAGE, a refusal sets <package>_FOUND,
 # <package>_NOT_FOUND_MESSAGE and _vkc_require_core_refused in the caller's
 # scope instead of failing the configure.
-function(_vkc_require_core)
+function(_vkc_require_core_checks)
   list(JOIN ARGV " " _call)
   set(_call "vkc_require_core(${_call})")
   set(min_version "${ARGV0}")
@@ -168,7 +171,7 @@ endfunction()
 # A macro, so that a refusal under PACKAGE returns from the package config, as
 # find_dependency's does.
 macro(vkc_require_core)
-  _vkc_require_core(${ARGV})
+  _vkc_require_core_checks(${ARGV})
   if(_vkc_require_core_refused)
     unset(_vkc_require_core_refused)
     return()
