@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-12
+
+### Fixed
+
+- `vkc_require_core` no longer recurses until CMake stops it when one
+  configure reads the core's package more than once: a project that finds the
+  core, or adds it from source, and then finds a sibling whose package config
+  re-finds it (#31). `cmake/vkc_require_core.cmake` now defines its commands
+  once per configure. A package config that reached the core only through
+  another sibling's can find it directly once it requires 0.6.1.
+
 ## [0.6.0] - 2026-10-12
 
 ### Added

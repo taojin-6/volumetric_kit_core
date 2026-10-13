@@ -519,10 +519,26 @@ endforeach()
 # PACKAGE, against the stage: a core too old, or one without the vulkan tier,
 # leaves the sibling not found, the message naming it, and the config read no
 # further; the consumer's configure finishes unless it found the sibling
-# REQUIRED.
+# REQUIRED. After the consumer adds the core itself (VKC_SIBLING_CORE_FIRST),
+# the sibling is found and the consumer's own vkc_require_core passes. Its
+# source core gets this build's tiers, so the stage's targets file finds them
+# all defined, and this build's dependencies.
 if(VKC_INSTALL)
   _vkc_message_regex(_vkc_past "read past vkc_require_core")
-  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan required)
+  set(_vkc_source_core
+      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+      -DVKC_WITH_VULKAN=${VKC_WITH_VULKAN} -DVKC_WITH_CONFIG=${VKC_WITH_CONFIG})
+  if(VKC_WITH_VULKAN)
+    list(APPEND _vkc_source_core
+         "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}")
+  endif()
+  if(VKC_WITH_CONFIG)
+    FetchContent_GetProperties(nlohmann_json SOURCE_DIR _vkc_json_source)
+    list(APPEND _vkc_source_core
+         "-DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=${_vkc_json_source}")
+  endif()
+  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan required
+                       after_find_package after_subdirectory)
     set(_vkc_name vkc_require_core_package_${_vkc_require})
     set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_require})
     if(_vkc_require STREQUAL "vulkan")
@@ -531,6 +547,12 @@ if(VKC_INSTALL)
     elseif(_vkc_require STREQUAL "required")
       set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_too_new}
                     -DVKC_SIBLING_REQUIRED=ON)
+    elseif(_vkc_require STREQUAL "after_find_package")
+      set(_vkc_args -DVKC_SIBLING_REQUIRE=${PROJECT_VERSION}
+                    -DVKC_SIBLING_CORE_FIRST=find_package)
+    elseif(_vkc_require STREQUAL "after_subdirectory")
+      set(_vkc_args -DVKC_SIBLING_REQUIRE=${PROJECT_VERSION}
+                    -DVKC_SIBLING_CORE_FIRST=subdirectory ${_vkc_source_core})
     endif()
     add_test(
       NAME ${_vkc_name}
@@ -542,8 +564,13 @@ if(VKC_INSTALL)
         "-DCMAKE_PREFIX_PATH=${_vkc_stage}" ${_vkc_args})
     set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
                                                  vkc_require_core_stage)
-    if(_vkc_require STREQUAL PROJECT_VERSION OR (_vkc_require STREQUAL "vulkan"
-                                                 AND VKC_WITH_VULKAN))
+    if(_vkc_require MATCHES "^after_")
+      set(_vkc_pass
+          "${_vkc_past}.+vkc_sibling found.+required the core itself.+Generating done"
+      )
+      set(_vkc_fail "CMake Error")
+    elseif(_vkc_require STREQUAL PROJECT_VERSION
+           OR (_vkc_require STREQUAL "vulkan" AND VKC_WITH_VULKAN))
       set(_vkc_pass "${_vkc_past}.+vkc_sibling found.+Generating done")
       set(_vkc_fail "CMake Error")
     else()

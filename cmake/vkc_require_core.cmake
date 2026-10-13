@@ -21,6 +21,16 @@
 #
 # Sets <out> to the core's version, or with MAJOR_MINOR to its MAJOR.MINOR.
 
+# Define the commands once per configure. Each read of the core's package
+# includes this file, and a project that added the core from source may also
+# read an installed copy's. CMake keeps a redefined command as _<name>, so a
+# second definition would make _vkc_require_core the first vkc_require_core
+# macro, which then calls itself. Commands are global, so the guard is one of
+# them; include_guard() would key on the file's path.
+if(COMMAND _vkc_core_version_of)
+  return()
+endif()
+
 # Sets <out> to the version volumetric_kit::core_base carries (NOTFOUND on a
 # core older than 0.1.0), or fails the configure in <caller> without the core.
 function(_vkc_core_version_of out caller)
