@@ -992,17 +992,18 @@ conversion's own rule -- at least half a voxel's diagonal, thinner than the
 truncation -- frozen at the 4-voxel band CodecMesh could not change. Once
 CodecMesh takes `fusion.truncation_m`, that copy refuses valid shells and
 admits invalid ones. The user gave the bound to the mesh conversion's
-library in recon, which checks it before any GPU work; core keeps finite and
-positive.
+library in recon, which is to check it before any GPU work (today
+`MeshIntegrator::integrate` checks it, after GPU setup); core keeps finite
+and positive.
 
 **Amended 2026-10-14 (core 0.7.0): a mesh source states its unit or its
 height.** CodecMesh required `height_m`, the height recon scales its input
 to: right for an input that declares no unit, wrong for one that does. The
 schema serves generic temporal mesh sequences, of which today's is one: a
-sequence either declares its unit (`metres_per_unit`) or has its height
-fitted over the whole range by the consumer. Exactly one is required, so no
-scenario carries two scales to reconcile; core checks only that the one
-given is finite and positive, and reads no mesh.
+sequence either declares its unit (`metres_per_unit`) or will have its
+height fitted over the whole range by the consumer. Exactly one is required,
+so no scenario carries two scales to reconcile; core checks only that the
+one given is finite and positive, and reads no mesh.
 
 **Amended 2026-10-14 (core 0.7.0): `codec.entropy` goes.** The key chose
 where the codec's rANS coder ran: `host`, `device` or `auto`. Recon's codec

@@ -129,9 +129,9 @@ unknown extension object.
 - Codec fields: `coefficient_count`, `quantization_scale`,
   `quantization_table` (`uniform`/`band`/`radial`), `segment_size`, `sweep`;
   `encode_every` belongs to CodecReplica and `inspect_only` to CodecMesh.
-  Core checks a
-  `coefficient_count` in [1, 512] and a positive normal scale; the codec maps
-  the table to its weights and checks each kept coefficient's step at runtime.
+  Core checks a `coefficient_count` in [1, 512] and a positive normal scale;
+  the codec maps the table to its weights and checks each kept coefficient's
+  step at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
   `overlay` only where UI is supported. Model dimensions are at most 16384.
   Scanner accepts no window section. No window/device handles are serialized.
@@ -147,9 +147,9 @@ unknown extension object.
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec limits are positive; RigViewer uses zero
   for unlimited; gfx uses -1 for unlimited and permits zero frames. CodecMesh's
-  `frames` is instead an exact count, default 1, of numbered meshes from
-  number `first`, default 0 and nonnegative; the last number,
-  `first + frames - 1`, must not exceed INT32_MAX. Scanner has no run limits.
+  `frames` is instead an exact count, at least 1, of numbered meshes from
+  number `first`, which is nonnegative; the last number, `first + frames - 1`,
+  must not exceed INT32_MAX. Scanner has no run limits.
 - Calibration projection fields: `image_width`, `image_height`,
   `intrinsics` (fx,fy,cx,cy), `distortion` (k1,k2,p1,p2,k3), `point` (x,y,z).
   Focal lengths/dimensions and the point's z must be positive, all values

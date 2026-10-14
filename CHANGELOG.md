@@ -25,38 +25,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - `config::Source::allow_holes` (`source.allow_holes`, default false,
   CodecMesh): signed mode admits a mesh whose only defect is boundary edges.
   Refused with `sdf_mode` `shell`, even when false.
-- CodecMesh accepts `fusion.truncation_m`, with every profile's sentinel
-  (absent or nonpositive is four voxels) and 127-block bound.
+- CodecMesh accepts `fusion.truncation_m`, with the shared sentinel (absent
+  or nonpositive is four voxels) and 127-block bound.
 - Mesh inspection (`codec.inspect_only`) accepts `run` and either scale, and
   refuses `allow_holes`, as it refuses the other SDF settings.
 
 ### Changed
 
-- CodecMesh's `source.shell_voxels` only needs to be finite and positive.
-  Core's [0.8660254, 4) range was the mesh conversion's rule frozen at a
-  4-voxel band; with the truncation configurable, the bound is the
-  consumer's (DECISIONS.md, the 2026-10-11 entry's amendments).
+- CodecMesh's `source.shell_voxels` only needs to be finite and positive,
+  where core refused one outside [0.8660254, 4); the bound is the consumer's
+  (DECISIONS.md, the 2026-10-11 entry's amendments).
 - A CodecMesh scenario with neither `height_m` nor `metres_per_unit` is
   refused naming `source`, where 0.6 named `source.height_m`.
 
 ### Removed
 
-- `config::Entropy` and `config::Codec::entropy` (`codec.entropy`). The
-  codec has coded on the device alone since recon #237, so `auto` and
-  `device` meant the same and recon refused `host` (DECISIONS.md, the
-  2026-10-11 entry's amendments). The schema is closed, so a scenario that
-  still sets `codec.entropy`, to any value, now fails to load:
+- `config::Entropy` and `config::Codec::entropy` (`codec.entropy`;
+  DECISIONS.md, the 2026-10-11 entry's amendments). A scenario that still
+  sets `codec.entropy`, to any value, now fails to load:
   `codec.entropy: unknown field`.
 
 ### Migration
 
 - Consumers of the new settings require core 0.7.0. A default-constructed
   `Run` has `first` 0; `Source` has `metres_per_unit` 0 and `allow_holes`
-  false. Existing CodecMesh scenarios load unchanged and resolve one frame
-  from number 0.
+  false. A CodecMesh scenario without `codec.entropy` loads unchanged and
+  resolves one frame from number 0.
+- A CodecMesh consumer reads `metres_per_unit` as well as `height_m`: a
+  scenario that gives the unit leaves `height_m` 0, where every CodecMesh
+  config 0.6 loaded had a positive `height_m`.
 - A CodecMesh consumer must refuse at runtime what core now loads: a `run`
   range with no pattern in `source.path` to number, and a `shell_voxels`
-  outside its conversion's bound (one of 4 or more now loads).
+  outside its conversion's bound, since core loads any finite, positive one.
 - Delete `codec.entropy` from every scenario, and code that reads
   `config::Codec::entropy` or names `config::Entropy`; the codec behaves as
   `auto` and `device` did.
