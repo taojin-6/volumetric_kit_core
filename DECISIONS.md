@@ -985,3 +985,21 @@ step bounds, free to disagree with the codec it configures. The user gave
 those rules to the codec. Core keeps the table choice and the generic type
 and range checks; recon maps the table to weights and refuses an
 out-of-bounds step at runtime, so a scenario with one loads.
+
+**Amended 2026-10-14 (core 0.7.0): the mesh conversion's shell bound is
+recon's too.** Core refused a `shell_voxels` outside [√3/2, 4): the
+conversion's own rule -- at least half a voxel's diagonal, thinner than the
+truncation -- frozen at the 4-voxel band CodecMesh could not change. Once
+CodecMesh takes `fusion.truncation_m`, that copy refuses valid shells and
+admits invalid ones. The user gave the bound to the mesh conversion's
+library in recon, which checks it before any GPU work; core keeps finite and
+positive.
+
+**Amended 2026-10-14 (core 0.7.0): a mesh source states its unit or its
+height.** CodecMesh required `height_m`, the height recon scales its input
+to: right for an input that declares no unit, wrong for one that does. The
+schema serves generic temporal mesh sequences, of which today's is one: a
+sequence either declares its unit (`metres_per_unit`) or has its height
+fitted over the whole range by the consumer. Exactly one is required, so no
+scenario carries two scales to reconcile; core checks only that the one
+given is finite and positive, and reads no mesh.

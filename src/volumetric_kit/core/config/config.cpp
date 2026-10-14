@@ -197,7 +197,9 @@ void read_source(const Json& json, Config& c, ParseState& state) {
   NUM(depth_height);
   NUM(fps);
   NUM(height_m);
+  NUM(metres_per_unit);
   NUM(shell_voxels);
+  BOOL(allow_holes);
 #undef STR
 #undef NUM
 #undef BOOL
@@ -327,17 +329,19 @@ bool supports(std::string_view field, App app) {
                 "source.depth_height", "source.fps"}))
     return is_live(app);
   if (field == "source.host_clock") return app == App::FuseOrbbec;
-  if (field_in(field, {"source.height_m", "source.up_axis", "source.up_vector",
-                       "source.sdf_mode", "source.shell_voxels"}))
+  if (field_in(field, {"source.height_m", "source.metres_per_unit",
+                       "source.up_axis", "source.up_vector", "source.sdf_mode",
+                       "source.shell_voxels", "source.allow_holes"}))
     return app == App::CodecMesh;
   if (field == "fusion") return !is_gfx(app) && app != App::CalibProjectPoint;
   if (field == "fusion.voxel_size_m")
     return !is_gfx(app) && app != App::CalibProjectPoint;
-  if (field_in(field, {"fusion.truncation_m", "fusion.min_depth_m",
-                       "fusion.max_depth_m", "fusion.max_weight"}))
-    return is_dataset(app) ||
-           is_one_of(app, {App::FuseOrbbec, App::RigViewer}) ||
-           (app == App::Scanner && field == "fusion.truncation_m");
+  if (field == "fusion.truncation_m")
+    return is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::RigViewer,
+                                              App::Scanner, App::CodecMesh});
+  if (field_in(field, {"fusion.min_depth_m", "fusion.max_depth_m",
+                       "fusion.max_weight"}))
+    return is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::RigViewer});
   if (field_in(field, {"fusion.stride", "fusion.mesh_every",
                        "fusion.dirty_every", "fusion.device_extract"}))
     return app == App::FuseReplica;
@@ -391,8 +395,10 @@ bool supports(std::string_view field, App app) {
     return is_codec(app);
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
-    return is_dataset(app) || is_live(app) || is_gfx(app);
+    return is_dataset(app) || is_live(app) || is_gfx(app) ||
+           app == App::CodecMesh;
   if (field == "run.sets") return app == App::RigViewer;
+  if (field == "run.first") return app == App::CodecMesh;
   if (field == "calibration") return app == App::CalibProjectPoint;
   if (field_in(field, {"calibration.image_width", "calibration.image_height",
                        "calibration.intrinsics", "calibration.distortion",
@@ -410,7 +416,8 @@ bool supports(std::string_view field, App app) {
 bool ignored_when_inspecting(std::string_view field) {
   return field == "fusion" || field.rfind("fusion.", 0) == 0 ||
          field == "source.sdf_mode" || field == "source.shell_voxels" ||
-         field == "output.csv" || field == "output.stream" ||
+         field == "source.allow_holes" || field == "output.csv" ||
+         field == "output.stream" ||
          (field.rfind("codec.", 0) == 0 && field != "codec.inspect_only");
 }
 
@@ -490,7 +497,17 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (app == App::Scanner && c.source.driver != "arkit")
     fail("source.driver", "only arkit is supported");
   if (app == App::CodecMesh) {
-    positive(c.source.height_m, "source.height_m");
+    // A declared unit, or a height the consumer fits the mesh to.
+    const bool height = has(state, "source.height_m");
+    const bool unit = has(state, "source.metres_per_unit");
+    if (height && unit)
+      fail("source", "height_m and metres_per_unit are mutually exclusive");
+    if (!height && !unit)
+      fail("source", "height_m or metres_per_unit is required");
+    if (height)
+      positive(c.source.height_m, "source.height_m");
+    else
+      positive(c.source.metres_per_unit, "source.metres_per_unit");
     if (has(state, "source.up_axis") && has(state, "source.up_vector"))
       fail("source", "up_axis and up_vector are mutually exclusive");
     if (!c.source.up_vector)
@@ -505,9 +522,10 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     if (c.source.sdf_mode != SdfMode::Signed &&
         c.source.sdf_mode != SdfMode::Shell)
       fail("source.sdf_mode", "unknown choice");
-    if (!std::isfinite(c.source.shell_voxels) ||
-        c.source.shell_voxels < 0.8660254F || c.source.shell_voxels >= 4.F)
-      fail("source.shell_voxels", "must be in [0.8660254, 4)");
+    // Its bound against voxel and truncation is the mesh conversion's.
+    positive(c.source.shell_voxels, "source.shell_voxels");
+    if (has(state, "source.allow_holes") && c.source.sdf_mode == SdfMode::Shell)
+      fail("source.allow_holes", "is not used by source.sdf_mode shell");
   }
   positive(c.fusion.voxel_size_m, "fusion.voxel_size_m");
   if (c.fusion.voxel_size_m > std::numeric_limits<float>::max() / 8.F)
@@ -573,8 +591,14 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (c.render.shading == Shading::Normals &&
       (app == App::FuseViewer || app == App::FuseRender))
     fail("render.shading", "normals is only supported by rig_viewer");
-  if ((is_dataset(app) || app == App::FuseOrbbec) && c.run.frames < 1)
+  if ((is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::CodecMesh})) &&
+      c.run.frames < 1)
     fail("run.frames", "must be positive");
+  nonnegative(c.run.first, "run.first");
+  // The last frame number, first + frames - 1, must be an int too.
+  if (app == App::CodecMesh && std::int64_t{c.run.first} + c.run.frames - 1 >
+                                   std::numeric_limits<std::int32_t>::max())
+    fail("run.frames", "run.first + run.frames - 1 must not exceed INT32_MAX");
   if (app == App::RigViewer && c.run.frames < 0)
     fail("run.frames", "must be nonnegative");
   if (is_gfx(app) && c.run.frames < -1)
@@ -695,6 +719,7 @@ Config defaults_impl(Application application) {
   if (application == App::CodecMesh) {
     c.source.kind = SourceKind::Mesh;
     c.operation = Operation::Codec;
+    c.run.frames = 1;
   }
   if (is_codec(application) || application == App::RigViewer ||
       application == App::Scanner)
@@ -775,6 +800,7 @@ Result<Config> parse(std::string_view text, Application application,
       Reader q(*v, "run", state);
       q.number("frames", c.run.frames);
       q.number("sets", c.run.sets);
+      q.number("first", c.run.first);
       q.finish();
     }
     if (const auto* v = r.take("output")) {

@@ -58,10 +58,14 @@ vkc::Status run() {
   VKC_ASSIGN(
       const auto mesh,
       vkc::config::parse(
-          R"({"version":1,"operation":"codec","source":{"kind":"mesh","path":"mesh.ply","height_m":2,"up_axis":"y"}})",
+          R"({"version":1,"operation":"codec","source":{"kind":"mesh","path":"f%05d.obj","metres_per_unit":2,"up_axis":"y","allow_holes":true},"fusion":{"voxel_size_m":0.005,"truncation_m":0.04},"run":{"first":1,"frames":150}})",
           vkc::config::Application::CodecMesh));
   if (!mesh.source.up_vector.has_value())
     return vkc::Status::invalid_argument("mesh direction was not resolved");
+  if (mesh.source.metres_per_unit != 2 || mesh.source.height_m != 0 ||
+      !mesh.source.allow_holes || mesh.fusion.truncation_m != 0.04F ||
+      mesh.run.first != 1 || mesh.run.frames != 150)
+    return vkc::Status::invalid_argument("mesh sequence was not read");
   VKC_ASSIGN(
       const auto codec,
       vkc::config::parse(

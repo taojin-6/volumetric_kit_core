@@ -90,6 +90,22 @@ TEST(Config, ApplicationDefaultsPreserveExistingBehavior) {
   EXPECT_TRUE(codec->output.prefix.empty());
   EXPECT_TRUE(codec->output.csv.empty());
   EXPECT_TRUE(codec->output.stream.empty());
+  const auto mesh = scenario(
+      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"}})",
+      App::CodecMesh, "/scenario");
+  ASSERT_TRUE(mesh) << mesh.status().message();
+  // One mesh, number 0; a 4-voxel band; signed, holes refused.
+  EXPECT_EQ(mesh->run.frames, 1);
+  EXPECT_EQ(mesh->run.first, 0);
+  EXPECT_EQ(mesh->fusion.voxel_size_m, 0.01F);
+  EXPECT_EQ(mesh->fusion.truncation_m, 4.F * 0.01F);
+  EXPECT_EQ(mesh->source.sdf_mode, SdfMode::Signed);
+  EXPECT_FALSE(mesh->source.allow_holes);
+  EXPECT_EQ(mesh->source.height_m, 2.);
+  EXPECT_EQ(mesh->source.metres_per_unit, 0.);
+  EXPECT_EQ(config::Run{}.first, 0);
+  EXPECT_FALSE(config::Source{}.allow_holes);
+  EXPECT_EQ(config::Source{}.metres_per_unit, 0.);
   const auto live = scenario(R"({"version":1})", App::FuseOrbbec, "/scenario");
   ASSERT_TRUE(live) << live.status().message();
   EXPECT_EQ(live->source.color_codec, ColorCodec::Hevc);
@@ -483,7 +499,7 @@ TEST(Config, CodecSettingsKeepGenericChecksAndLeaveStepsToTheCodec) {
   EXPECT_TRUE(coarse) << coarse.status().message();
 }
 
-TEST(Config, MeshSourceRequiresHeightAndOneNonzeroUpDirection) {
+TEST(Config, MeshSourceRequiresOneScaleAndOneNonzeroUpDirection) {
   const auto parsed = scenario(
       R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"-y"}})",
       App::CodecMesh, "/scenario");
@@ -510,6 +526,189 @@ TEST(Config, MeshSourceRequiresHeightAndOneNonzeroUpDirection) {
   rejected(
       R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"bad"}})",
       App::CodecMesh, "up_axis");
+
+  // The scale is a declared unit or a height to fit: exactly one of the two.
+  const auto unit = scenario(
+      R"({"version":1,"source":{"path":"mesh.ply","metres_per_unit":0.001,"up_axis":"z"}})",
+      App::CodecMesh);
+  ASSERT_TRUE(unit) << unit.status().message();
+  EXPECT_EQ(unit->source.metres_per_unit, 0.001);
+  EXPECT_EQ(unit->source.height_m, 0.);
+  // Inspection takes either, as it reads the mesh at its scale.
+  for (const char* scale : {R"("height_m":1.7)", R"("metres_per_unit":2.5)"}) {
+    const auto inspected = scenario(
+        std::string(R"({"version":1,"source":{"path":"mesh.ply",)") + scale +
+            R"(,"up_axis":"y"},"codec":{"inspect_only":true}})",
+        App::CodecMesh);
+    ASSERT_TRUE(inspected) << inspected.status().message();
+  }
+  const std::string head = R"({"version":1,"source":{"path":"mesh.ply",)";
+  const std::string tail = R"("up_axis":"y"}})";
+  rejected(head + tail, App::CodecMesh,
+           "source: height_m or metres_per_unit is required");
+  for (const char* both : {R"("height_m":1.7,"metres_per_unit":1,)",
+                           R"("metres_per_unit":1,"height_m":1.7,)",
+                           R"("height_m":0,"metres_per_unit":1,)"}) {
+    rejected(head + both + tail, App::CodecMesh,
+             "source: height_m and metres_per_unit are mutually exclusive");
+  }
+  for (const char* scale : {"height_m", "metres_per_unit"}) {
+    const std::string field = std::string("source.") + scale;
+    // 1e-999 rounds to zero.
+    for (const char* value : {"0", "-1", "-0.5", "1e-999"}) {
+      rejected(head + "\"" + scale + "\":" + value + "," + tail, App::CodecMesh,
+               field + ": must be finite and positive");
+    }
+    rejected(head + "\"" + scale + "\":1e999," + tail, App::CodecMesh,
+             "overflow");
+    rejected(head + "\"" + scale + "\":\"1\"," + tail, App::CodecMesh,
+             field + ": expected a number");
+  }
+  rejected(R"({"version":1,"source":{"path":"scene","metres_per_unit":1}})",
+           App::CodecReplica,
+           "source.metres_per_unit: is not used by this application");
+}
+
+TEST(Config, MeshSequenceRangeIsGenericAndThePatternIsTheConsumers) {
+  // A CodecMesh scenario with these source fields and this run section.
+  const auto mesh = [](const std::string& path, const std::string& run) {
+    return R"({"version":1,"source":{"path":")" + path +
+           R"(","height_m":1.7,"up_axis":"y"},"run":)" + run + "}";
+  };
+  // Core resolves the path and leaves its frame-number pattern alone.
+  const auto sequence =
+      scenario(mesh("Frame_%05d_textured.obj", R"({"first":1,"frames":150})"),
+               App::CodecMesh, "/scenario");
+  ASSERT_TRUE(sequence) << sequence.status().message();
+  EXPECT_EQ(sequence->source.path, "/scenario/Frame_%05d_textured.obj");
+  EXPECT_EQ(sequence->run.first, 1);
+  EXPECT_EQ(sequence->run.frames, 150);
+  // A count without a pattern loads; the consumer refuses it at runtime.
+  const auto plain = scenario(mesh("mesh.ply", R"({"frames":5})"),
+                              App::CodecMesh, "/scenario");
+  ASSERT_TRUE(plain) << plain.status().message();
+  EXPECT_EQ(plain->run.first, 0);
+  EXPECT_EQ(plain->run.frames, 5);
+  const auto from = scenario(mesh("f%d.obj", R"({"first":7})"), App::CodecMesh);
+  ASSERT_TRUE(from) << from.status().message();
+  EXPECT_EQ(from->run.first, 7);
+  EXPECT_EQ(from->run.frames, 1);
+  // The last frame number may be INT32_MAX itself.
+  const auto last = scenario(
+      mesh("f%d.obj", R"({"first":2147483600,"frames":48})"), App::CodecMesh);
+  ASSERT_TRUE(last) << last.status().message();
+  EXPECT_EQ(last->run.first + (last->run.frames - 1), 2147483647);
+
+  // frames is an exact count, so it is at least one.
+  for (const char* frames : {"0", "-1"}) {
+    rejected(mesh("f%d.obj", std::string(R"({"frames":)") + frames + "}"),
+             App::CodecMesh, "run.frames: must be positive");
+  }
+  rejected(mesh("f%d.obj", R"({"first":-1})"), App::CodecMesh,
+           "run.first: must be finite and nonnegative");
+  rejected(mesh("f%d.obj", R"({"first":1.5})"), App::CodecMesh,
+           "run.first: expected an integer");
+  rejected(mesh("f%d.obj", R"({"first":2147483648})"), App::CodecMesh,
+           "run.first: integer is out of range");
+  for (const char* run : {R"({"first":2147483600,"frames":100})",
+                          R"({"first":2147483600,"frames":49})",
+                          R"({"first":2147483647,"frames":2})"}) {
+    rejected(mesh("f%d.obj", run), App::CodecMesh,
+             "run.frames: run.first + run.frames - 1 must not exceed "
+             "INT32_MAX");
+  }
+  rejected(mesh("f%d.obj", R"({"sets":1})"), App::CodecMesh,
+           "run.sets: is not used by this application");
+  // Only CodecMesh numbers its input.
+  for (const auto app : {App::CodecReplica, App::FuseReplica}) {
+    rejected(R"({"version":1,"source":{"path":"scene"},"run":{"first":0}})",
+             app, "run.first: is not used by this application");
+  }
+  rejected(R"({"version":1,"run":{"first":1}})", App::FuseOrbbec,
+           "run.first: is not used by this application");
+  rejected(
+      R"({"version":1,"source":{"sync_config":"sync.json"},"run":{"first":1}})",
+      App::RigViewer, "run.first: is not used by this application");
+
+  // Inspection reads the whole range.
+  const auto inspected = scenario(
+      R"({"version":1,"source":{"path":"f%d.obj","height_m":1.7,"up_axis":"y"},"codec":{"inspect_only":true},"run":{"first":1,"frames":3}})",
+      App::CodecMesh);
+  ASSERT_TRUE(inspected) << inspected.status().message();
+  EXPECT_EQ(inspected->run.frames, 3);
+}
+
+TEST(Config, CodecMeshTruncationAndHoles) {
+  const std::string source =
+      R"({"version":1,"source":{"path":"mesh.ply","height_m":1.7,"up_axis":"y")";
+  // The paper's band: eight 5 mm voxels.
+  const auto band = scenario(
+      source + R"(},"fusion":{"voxel_size_m":0.005,"truncation_m":0.04}})",
+      App::CodecMesh);
+  ASSERT_TRUE(band) << band.status().message();
+  EXPECT_EQ(band->fusion.truncation_m, 0.04F);
+  for (const char* trunc : {"0", "-1"}) {
+    const auto sentinel = scenario(
+        source + R"(},"fusion":{"voxel_size_m":0.005,"truncation_m":)" + trunc +
+            "}}",
+        App::CodecMesh);
+    ASSERT_TRUE(sentinel) << sentinel.status().message();
+    EXPECT_EQ(sentinel->fusion.truncation_m, 4.F * 0.005F);
+  }
+  // 127 blocks of eight 5 mm voxels is 5.08 m.
+  const auto wide = scenario(
+      source + R"(},"fusion":{"voxel_size_m":0.005,"truncation_m":5}})",
+      App::CodecMesh);
+  ASSERT_TRUE(wide) << wide.status().message();
+  EXPECT_EQ(wide->fusion.truncation_m, 5.F);
+  rejected(source + R"(},"fusion":{"voxel_size_m":0.005,"truncation_m":5.1}})",
+           App::CodecMesh,
+           "fusion.truncation_m: must be at most 127 blocks of eight voxels");
+  // Inspection converts nothing, so it refuses the whole section.
+  rejected(
+      source +
+          R"(},"codec":{"inspect_only":true},"fusion":{"truncation_m":0.04}})",
+      App::CodecMesh, "fusion: is not used when codec.inspect_only is enabled");
+
+  // Holes: signed mode only, and only when asked.
+  for (const char* mode : {"", R"(,"sdf_mode":"signed")"}) {
+    for (const char* allow : {"true", "false"}) {
+      const auto holes = scenario(
+          source + mode + R"(,"allow_holes":)" + allow + "}}", App::CodecMesh);
+      ASSERT_TRUE(holes) << holes.status().message();
+      EXPECT_EQ(holes->source.allow_holes, std::string_view(allow) == "true");
+    }
+  }
+  for (const char* allow : {"true", "false"}) {
+    rejected(source + R"(,"sdf_mode":"shell","allow_holes":)" + allow + "}}",
+             App::CodecMesh,
+             "source.allow_holes: is not used by source.sdf_mode shell");
+    rejected(source + R"(,"allow_holes":)" + allow +
+                 R"(},"codec":{"inspect_only":true}})",
+             App::CodecMesh,
+             "source.allow_holes: is not used when codec.inspect_only is "
+             "enabled");
+    rejected(
+        std::string(R"({"version":1,"source":{"path":"scene","allow_holes":)") +
+            allow + "}}",
+        App::CodecReplica,
+        "source.allow_holes: is not used by this application");
+  }
+  rejected(source + R"(,"allow_holes":1}})", App::CodecMesh,
+           "source.allow_holes: expected a boolean");
+
+  // The shell's bound against voxel and truncation is the conversion's.
+  for (const char* shell : {"0.5", "5"}) {
+    const auto loaded = scenario(
+        source + R"(,"sdf_mode":"shell","shell_voxels":)" + shell + "}}",
+        App::CodecMesh);
+    ASSERT_TRUE(loaded) << loaded.status().message();
+  }
+  for (const char* shell : {"0", "-1"}) {
+    rejected(source + R"(,"sdf_mode":"shell","shell_voxels":)" + shell + "}}",
+             App::CodecMesh,
+             "source.shell_voxels: must be finite and positive");
+  }
 }
 
 TEST(Config, KnownButUnusedSettingsAreRejectedRatherThanSilentlyIgnored) {
@@ -524,6 +723,7 @@ TEST(Config, KnownButUnusedSettingsAreRejectedRatherThanSilentlyIgnored) {
   rejected(R"({"version":1,"source":{"serial":"A"}})", App::GfxModel,
            "source.serial");
   rejected(R"({"version":1,"run":{"sets":1}})", App::GfxModel, "run.sets");
+  rejected(R"({"version":1,"run":{"first":0}})", App::GfxModel, "run.first");
   rejected(
       R"({"version":1,"output":{"screenshot":"a.png"},"run":{"frames":1}})",
       App::GfxModel, "run.frames");

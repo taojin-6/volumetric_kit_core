@@ -7,6 +7,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-14
+
+### Added
+
+- `config::Run::first` (`run.first`, default 0) for `Application::CodecMesh`,
+  which also accepts `run.frames` now: frames `first` to
+  `first + frames - 1` of a numbered mesh sequence. CodecMesh's `frames` is
+  an exact count, default 1, where a dataset's is a limit. Refused: a
+  negative `first`, `frames` below 1, and a last number past INT32_MAX,
+  naming `run.frames`; other profiles refuse `run.first`. A frame-number
+  pattern in `source.path`, such as `%05d`, is the consumer's to read: core
+  resolves the path and leaves `%` alone.
+- `config::Source::metres_per_unit` (`source.metres_per_unit`, CodecMesh):
+  the input's declared unit, finite and positive. It is the alternative to
+  `source.height_m`: exactly one of the two is required.
+- `config::Source::allow_holes` (`source.allow_holes`, default false,
+  CodecMesh): signed mode admits a mesh whose only defect is boundary edges.
+  Refused with `sdf_mode` `shell`, even when false.
+- CodecMesh accepts `fusion.truncation_m`, with every profile's sentinel
+  (absent or nonpositive is four voxels) and 127-block bound.
+- Mesh inspection (`codec.inspect_only`) accepts `run` and either scale, and
+  refuses `allow_holes`, as it refuses the other SDF settings.
+
+### Changed
+
+- CodecMesh's `source.shell_voxels` only needs to be finite and positive.
+  Core's [0.8660254, 4) range was the mesh conversion's rule frozen at a
+  4-voxel band; with the truncation configurable, the bound is the
+  consumer's (DECISIONS.md, the 2026-10-11 entry's amendments).
+- A CodecMesh scenario with neither `height_m` nor `metres_per_unit` is
+  refused naming `source`, where 0.6 named `source.height_m`.
+
+### Migration
+
+- Consumers of the new settings require core 0.7.0. A default-constructed
+  `Run` has `first` 0; `Source` has `metres_per_unit` 0 and `allow_holes`
+  false. Existing CodecMesh scenarios load unchanged and resolve one frame
+  from number 0.
+- A CodecMesh consumer now refuses at runtime what core loads: a `run`
+  range with no pattern in `source.path` to number, and a `shell_voxels`
+  outside its conversion's bound (one of 4 or more now loads).
+
 ## [0.6.1] - 2026-10-12
 
 ### Fixed
