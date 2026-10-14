@@ -43,8 +43,6 @@ enum class ColorCodec { Hevc, Mjpeg };
 enum class SdfMode { Signed, Shell };
 /// @brief Quantization weight preset.
 enum class QuantizationTable { Uniform, Band, Radial };
-/// @brief Entropy-code implementation selection.
-enum class Entropy { Auto, Host, Device };
 /// @brief Surface shading selection.
 enum class Shading { Unlit, Lit, Normals };
 
@@ -113,7 +111,6 @@ struct Codec {
   std::uint32_t coefficient_count = 64;
   float quantization_scale = 0.2F;
   QuantizationTable quantization_table = QuantizationTable::Uniform;
-  Entropy entropy = Entropy::Auto;
   std::uint32_t segment_size = 64;
   int encode_every = 1;
   bool sweep = false;

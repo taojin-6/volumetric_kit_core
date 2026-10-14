@@ -39,6 +39,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - A CodecMesh scenario with neither `height_m` nor `metres_per_unit` is
   refused naming `source`, where 0.6 named `source.height_m`.
 
+### Removed
+
+- `config::Entropy` and `config::Codec::entropy` (`codec.entropy`). The
+  codec has coded on the device alone since recon #237, so `auto` and
+  `device` meant the same and recon refused `host` (DECISIONS.md, the
+  2026-10-11 entry's amendments). The schema is closed, so a scenario that
+  still sets `codec.entropy`, to any value, now fails to load:
+  `codec.entropy: unknown field`.
+
 ### Migration
 
 - Consumers of the new settings require core 0.7.0. A default-constructed
@@ -48,6 +57,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - A CodecMesh consumer now refuses at runtime what core loads: a `run`
   range with no pattern in `source.path` to number, and a `shell_voxels`
   outside its conversion's bound (one of 4 or more now loads).
+- Delete `codec.entropy` from every scenario, and code that reads
+  `config::Codec::entropy` or names `config::Entropy`; the codec behaves as
+  `auto` and `device` did.
 
 ## [0.6.1] - 2026-10-12
 

@@ -253,10 +253,6 @@ void read_codec(const Json& json, Config& c, ParseState& state) {
            {{"uniform", QuantizationTable::Uniform},
             {"band", QuantizationTable::Band},
             {"radial", QuantizationTable::Radial}});
-  r.choice("entropy", c.codec.entropy,
-           {{"auto", Entropy::Auto},
-            {"host", Entropy::Host},
-            {"device", Entropy::Device}});
   r.finish();
 }
 void read_window(const Json& json, Config& c, ParseState& state) {
@@ -568,9 +564,6 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
       fail("codec.quantization_scale", "must be positive and normal");
     positive(c.codec.segment_size, "codec.segment_size");
     nonnegative(c.codec.encode_every, "codec.encode_every");
-    if (c.codec.entropy != Entropy::Auto && c.codec.entropy != Entropy::Host &&
-        c.codec.entropy != Entropy::Device)
-      fail("codec.entropy", "unknown choice");
     if (c.codec.quantization_table != QuantizationTable::Uniform &&
         c.codec.quantization_table != QuantizationTable::Band &&
         c.codec.quantization_table != QuantizationTable::Radial)

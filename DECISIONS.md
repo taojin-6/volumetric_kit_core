@@ -1003,3 +1003,11 @@ sequence either declares its unit (`metres_per_unit`) or has its height
 fitted over the whole range by the consumer. Exactly one is required, so no
 scenario carries two scales to reconcile; core checks only that the one
 given is finite and positive, and reads no mesh.
+
+**Amended 2026-10-14 (core 0.7.0): `codec.entropy` goes.** The key chose
+where the codec's rANS coder ran: `host`, `device` or `auto`. Recon's codec
+has coded on the device alone since recon #237, so `auto` and `device` meant
+the same and recon refused `host`: a choice with one answer, which the codec
+owns. Core removes the key and its enum rather than keep a setting no
+consumer can act on. The schema stays closed, so a scenario that still sets
+it fails to load, naming it, rather than having it silently ignored.

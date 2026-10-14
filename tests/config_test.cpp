@@ -482,6 +482,19 @@ TEST(Config, CodecSettingsKeepGenericChecksAndLeaveStepsToTheCodec) {
   rejected(
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"steep"}})",
       App::CodecReplica, "codec.quantization_table");
+  // The codec codes on the device alone, so there is no entropy choice left.
+  for (const char* entropy : {"auto", "host", "device"}) {
+    rejected(
+        std::string(
+            R"({"version":1,"source":{"path":"scene"},"codec":{"entropy":")") +
+            entropy + "\"}}",
+        App::CodecReplica, "codec.entropy: unknown field");
+    rejected(
+        std::string(
+            R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"},"codec":{"entropy":")") +
+            entropy + "\"}}",
+        App::CodecMesh, "codec.entropy: unknown field");
+  }
   rejected(
       R"({"version":1,"source":{"path":"scene"},"codec":{"coefficient_count":513}})",
       App::CodecReplica, "coefficient_count");

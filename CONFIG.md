@@ -127,9 +127,9 @@ unknown extension object.
   extraction/dynamic fields are accepted only by their actual consumers.
   CodecMesh accepts voxel size and, from core 0.7.0, truncation.
 - Codec fields: `coefficient_count`, `quantization_scale`,
-  `quantization_table` (`uniform`/`band`/`radial`), `entropy`
-  (`auto`/`host`/`device`), `segment_size`, `sweep`; `encode_every` belongs to
-  CodecReplica and `inspect_only` to CodecMesh. Core checks a
+  `quantization_table` (`uniform`/`band`/`radial`), `segment_size`, `sweep`;
+  `encode_every` belongs to CodecReplica and `inspect_only` to CodecMesh.
+  Core checks a
   `coefficient_count` in [1, 512] and a positive normal scale; the codec maps
   the table to its weights and checks each kept coefficient's step at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
