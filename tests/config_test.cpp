@@ -688,6 +688,24 @@ TEST(Config, CodecMeshTruncationAndHoles) {
       source +
           R"(},"codec":{"inspect_only":true},"fusion":{"truncation_m":0.04}})",
       App::CodecMesh, "fusion: is not used when codec.inspect_only is enabled");
+  // Truncation alone joins CodecMesh: a mesh has no depth limits or weights,
+  // and the live profiles that do keep them.
+  for (const char* key : {"min_depth_m", "max_depth_m", "max_weight"}) {
+    const std::string field = std::string("fusion.") + key;
+    rejected(source + R"(},"fusion":{")" + key + R"(":1}})", App::CodecMesh,
+             field + ": is not used by this application");
+    const auto live = scenario(
+        std::string(
+            R"({"version":1,"source":{"sync_config":"sync.json"},"fusion":{")") +
+            key + R"(":1}})",
+        App::RigViewer);
+    ASSERT_TRUE(live) << live.status().message();
+  }
+  const auto rig = scenario(
+      R"({"version":1,"source":{"sync_config":"sync.json"},"fusion":{"truncation_m":0.05}})",
+      App::RigViewer);
+  ASSERT_TRUE(rig) << rig.status().message();
+  EXPECT_EQ(rig->fusion.truncation_m, 0.05F);
 
   // Holes: signed mode only, and only when asked.
   for (const char* mode : {"", R"(,"sdf_mode":"signed")"}) {
