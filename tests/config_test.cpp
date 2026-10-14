@@ -555,26 +555,32 @@ TEST(Config, MeshSourceRequiresOneScaleAndOneNonzeroUpDirection) {
         App::CodecMesh);
     ASSERT_TRUE(inspected) << inspected.status().message();
   }
-  const std::string head = R"({"version":1,"source":{"path":"mesh.ply",)";
-  const std::string tail = R"("up_axis":"y"}})";
-  rejected(head + tail, App::CodecMesh,
+  // A mesh source with these scale fields, each followed by a comma.
+  const auto scaled = [](const std::string& fields) {
+    return R"({"version":1,"source":{"path":"mesh.ply",)" + fields +
+           R"("up_axis":"y"}})";
+  };
+  // A mesh source with one scale field.
+  const auto one = [&scaled](const char* key, const char* value) {
+    return scaled(R"(")" + std::string(key) + R"(":)" + value + ",");
+  };
+  rejected(scaled(""), App::CodecMesh,
            "source: height_m or metres_per_unit is required");
   for (const char* both : {R"("height_m":1.7,"metres_per_unit":1,)",
                            R"("metres_per_unit":1,"height_m":1.7,)",
                            R"("height_m":0,"metres_per_unit":1,)"}) {
-    rejected(head + both + tail, App::CodecMesh,
+    rejected(scaled(both), App::CodecMesh,
              "source: height_m and metres_per_unit are mutually exclusive");
   }
   for (const char* scale : {"height_m", "metres_per_unit"}) {
     const std::string field = std::string("source.") + scale;
     // 1e-999 rounds to zero.
     for (const char* value : {"0", "-1", "-0.5", "1e-999"}) {
-      rejected(head + "\"" + scale + "\":" + value + "," + tail, App::CodecMesh,
+      rejected(one(scale, value), App::CodecMesh,
                field + ": must be finite and positive");
     }
-    rejected(head + "\"" + scale + "\":1e999," + tail, App::CodecMesh,
-             "overflow");
-    rejected(head + "\"" + scale + "\":\"1\"," + tail, App::CodecMesh,
+    rejected(one(scale, "1e999"), App::CodecMesh, "overflow");
+    rejected(one(scale, R"("1")"), App::CodecMesh,
              field + ": expected a number");
   }
   rejected(R"({"version":1,"source":{"path":"scene","metres_per_unit":1}})",
