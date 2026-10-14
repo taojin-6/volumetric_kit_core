@@ -54,7 +54,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `Run` has `first` 0; `Source` has `metres_per_unit` 0 and `allow_holes`
   false. Existing CodecMesh scenarios load unchanged and resolve one frame
   from number 0.
-- A CodecMesh consumer now refuses at runtime what core loads: a `run`
+- A CodecMesh consumer must refuse at runtime what core now loads: a `run`
   range with no pattern in `source.path` to number, and a `shell_voxels`
   outside its conversion's bound (one of 4 or more now loads).
 - Delete `codec.entropy` from every scenario, and code that reads
