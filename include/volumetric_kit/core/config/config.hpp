@@ -112,6 +112,9 @@ struct Codec {
   float quantization_scale = 0.2F;
   QuantizationTable quantization_table = QuantizationTable::Uniform;
   std::uint32_t segment_size = 64;
+  /// An I-frame every `intra_period` frames, zero-motion P-frames between
+  /// them; 1, the default, codes every frame intra.
+  std::uint32_t intra_period = 1;
   int encode_every = 1;
   bool sweep = false;
   bool inspect_only = false;

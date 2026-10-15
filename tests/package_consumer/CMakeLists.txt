@@ -26,7 +26,7 @@ set(VKC_CONSUME
 option(VKC_CONSUMER_GTEST "Provide googletest, and a GPU test on the fixtures"
        ON)
 set(VKC_CONSUMER_REQUIRE
-    "0.7.0"
+    "0.8.0"
     CACHE STRING "The oldest volumetric_kit_core this consumer builds with")
 option(VKC_CONSUMER_REQUIRE_CONFIG "Require the config tier" OFF)
 option(VKC_CONSUMER_REQUIRE_VULKAN "Require the core's vulkan tier" OFF)

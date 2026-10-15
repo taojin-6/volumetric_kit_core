@@ -246,6 +246,7 @@ void read_codec(const Json& json, Config& c, ParseState& state) {
   r.number("coefficient_count", c.codec.coefficient_count);
   r.number("quantization_scale", c.codec.quantization_scale);
   r.number("segment_size", c.codec.segment_size);
+  r.number("intra_period", c.codec.intra_period);
   r.number("encode_every", c.codec.encode_every);
   r.boolean("sweep", c.codec.sweep);
   r.boolean("inspect_only", c.codec.inspect_only);
@@ -563,6 +564,7 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         c.codec.quantization_scale <= 0)
       fail("codec.quantization_scale", "must be positive and normal");
     positive(c.codec.segment_size, "codec.segment_size");
+    positive(c.codec.intra_period, "codec.intra_period");
     nonnegative(c.codec.encode_every, "codec.encode_every");
     if (c.codec.quantization_table != QuantizationTable::Uniform &&
         c.codec.quantization_table != QuantizationTable::Band &&

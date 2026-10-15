@@ -3,6 +3,7 @@
 #include "volumetric_kit/core/config/config.hpp"
 
 #include <cfenv>
+#include <cstdint>
 #include <cstdlib>  // IWYU pragma: keep; glibc declares mkdtemp here.
 #include <filesystem>
 #include <limits>
@@ -510,6 +511,51 @@ TEST(Config, CodecSettingsKeepGenericChecksAndLeaveStepsToTheCodec) {
       R"({"version":1,"source":{"path":"scene"},"codec":{"quantization_table":"radial","coefficient_count":512,"quantization_scale":4}})",
       App::CodecReplica);
   EXPECT_TRUE(coarse) << coarse.status().message();
+}
+
+TEST(Config, IntraPeriodIsAPositiveCountForBothCodecs) {
+  EXPECT_EQ(Codec{}.intra_period, 1U);
+  const std::string replica = R"({"version":1,"source":{"path":"scene"})";
+  const std::string mesh =
+      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
+  const auto with_period = [](const std::string& source, const char* period) {
+    return source + R"(,"codec":{"intra_period":)" + period + "}}";
+  };
+  for (const auto app : {App::CodecReplica, App::CodecMesh}) {
+    const std::string& source = app == App::CodecReplica ? replica : mesh;
+    const auto omitted = scenario(source + "}", app);
+    ASSERT_TRUE(omitted) << omitted.status().message();
+    EXPECT_EQ(omitted->codec.intra_period, 1U);
+    for (const std::uint32_t period : {1U, 30U, 4294967295U}) {
+      const auto parsed =
+          scenario(with_period(source, std::to_string(period).c_str()), app);
+      ASSERT_TRUE(parsed) << parsed.status().message();
+      EXPECT_EQ(parsed->codec.intra_period, period);
+    }
+    rejected(with_period(source, "0"), app,
+             "codec.intra_period: must be finite and positive");
+    for (const char* period : {"-1", "4294967296"}) {
+      rejected(with_period(source, period), app,
+               "codec.intra_period: integer is out of range");
+    }
+    for (const char* period : {"1.5", "8.0", R"("8")", "true", "null", "[8]"}) {
+      rejected(with_period(source, period), app,
+               "codec.intra_period: expected an integer");
+    }
+  }
+  // The codec section, and so the period, belongs to the codec profiles.
+  rejected(with_period(replica, "8"), App::FuseReplica,
+           "codec: is not used by this application");
+  rejected(with_period(R"({"version":1)", "8"), App::GfxModel,
+           "codec: is not used by this application");
+  // Inspection codes nothing, so it refuses a period, even the default.
+  for (const char* period : {"1", "8"}) {
+    rejected(mesh + R"(,"codec":{"inspect_only":true,"intra_period":)" +
+                 period + "}}",
+             App::CodecMesh,
+             "codec.intra_period: is not used when codec.inspect_only is "
+             "enabled");
+  }
 }
 
 TEST(Config, MeshSourceRequiresOneScaleAndOneNonzeroUpDirection) {
