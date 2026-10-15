@@ -717,8 +717,9 @@ TEST(Config, OnlyTheMeshPathTheUserWroteCarriesAPattern) {
             R"(","height_m":1.7,"up_axis":"y"},"output":{"csv":"rows.csv"}})",
         App::CodecMesh, base);
     EXPECT_TRUE(parsed) << parsed.status().message();
-    if (parsed) EXPECT_EQ(parsed->output.csv, std::string(base) + "/rows.csv");
-    return parsed ? parsed->source.path : std::string();
+    if (!parsed) return std::string();
+    EXPECT_EQ(parsed->output.csv, std::string(base) + "/rows.csv");
+    return parsed->source.path;
   };
   // A '%' in the scenario's directory is text; the user's own is pattern.
   EXPECT_EQ(mesh_path("cube.obj", "/pct/50%off"), "/pct/50%%off/cube.obj");
