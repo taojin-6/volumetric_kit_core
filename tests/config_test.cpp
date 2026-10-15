@@ -548,7 +548,13 @@ TEST(Config, IntraPeriodIsAPositiveCountForBothCodecs) {
            "codec: is not used by this application");
   rejected(with_period(R"({"version":1)", "8"), App::GfxModel,
            "codec: is not used by this application");
-  // Inspection codes nothing, so it refuses a period, even the default.
+  // Inspection codes nothing, so an enabled inspect_only refuses a period,
+  // even the default; a disabled one does not.
+  const auto coded =
+      scenario(mesh + R"(,"codec":{"inspect_only":false,"intra_period":8}})",
+               App::CodecMesh);
+  ASSERT_TRUE(coded) << coded.status().message();
+  EXPECT_EQ(coded->codec.intra_period, 8U);
   for (const char* period : {"1", "8"}) {
     rejected(mesh + R"(,"codec":{"inspect_only":true,"intra_period":)" +
                  period + "}}",

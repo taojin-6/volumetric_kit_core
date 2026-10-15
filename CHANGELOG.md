@@ -14,15 +14,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - `config::Codec::intra_period` (`codec.intra_period`, default 1) for
   `Application::CodecReplica` and `CodecMesh`: an I-frame every
   `intra_period` frames, zero-motion P-frames between them. Refused: a value
-  that is not a positive integer, naming `codec.intra_period`, and any period
-  under `codec.inspect_only`.
+  that is not an integer in [1, 2^32 - 1], naming `codec.intra_period`, and
+  any period under `codec.inspect_only`.
 
 ### Migration
 
 - Consumers of the setting require core 0.8.0 and map it to their encoder
-  (recon: `EncoderConfig::intra_period`). Existing scenarios load unchanged
-  and resolve 1, all-intra. A consumer that loads 0.8.0 without mapping it
-  would ignore a scenario's period: map it, or refuse a period other than 1.
+  (recon: `EncoderConfig::intra_period`), or refuse a period other than 1;
+  existing scenarios load unchanged.
 
 ## [0.7.0] - 2026-10-14
 
