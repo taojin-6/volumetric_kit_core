@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.6.0 CONFIG)
+vkc_require_core(0.7.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -83,7 +83,7 @@ does not override the requested operation or source discriminator.
 | --- | --- | --- | --- |
 | `FuseReplica` | `fuse` | `dataset`, `replica`; path required | voxel 0.02 m, frames 2^30, mesh every 50, output `fuse_room0.ply` |
 | `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
-| `CodecMesh` | `codec` | `mesh`; path, positive height, one up direction required | voxel 0.01 m, signed SDF, shell thickness 1.5 voxels |
+| `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
 | `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; fusion output `fuse_orbbec.ply` |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
@@ -109,21 +109,29 @@ unknown extension object.
   Only `FuseOrbbec` accepts `host_clock`. Serial and sync-config selection are
   exclusive; applying sync requires a sync config; host-clock mode forbids one.
   Width/height overrides are pairs. Scanner accepts only `kind`/`driver`.
-- Mesh fields: `path`, `height_m`, either `up_axis` (`x`, `y`, `z`, optionally
+- Mesh fields: `path`; exactly one of `height_m` (a height the consumer
+  scales the input to) and `metres_per_unit` (the input's declared unit, core
+  0.7.0), finite and positive; either `up_axis` (`x`, `y`, `z`, optionally
   signed) or `up_vector` (three finite numbers with finite positive squared
-  length), `sdf_mode` (`signed`/`shell`), `shell_voxels`.
+  length); `sdf_mode` (`signed`/`shell`); `shell_voxels`; and `allow_holes`
+  (core 0.7.0, default false), which lets signed mode admit a mesh whose only
+  defect is boundary edges and is refused with `shell`, even when false. A
+  frame-number pattern in `path` is the consumer's to read: core resolves the
+  path and leaves `%` alone. Core checks only that `shell_voxels` is finite
+  and positive; its bound against the voxel size and truncation is the
+  consumer's mesh conversion's.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
   `max_depth_m`, `max_weight`. Every dataset and Orbbec profile accepts the
   boolean `dynamic` (core 0.6.0): Dynamic integration when true, Classic when
   false; only RigViewer defaults to true. Other application-specific
   extraction/dynamic fields are accepted only by their actual consumers.
-  CodecMesh accepts only voxel size and derives truncation from it.
+  CodecMesh accepts voxel size and, from core 0.7.0, truncation.
 - Codec fields: `coefficient_count`, `quantization_scale`,
-  `quantization_table` (`uniform`/`band`/`radial`), `entropy`
-  (`auto`/`host`/`device`), `segment_size`, `sweep`; `encode_every` belongs to
-  CodecReplica and `inspect_only` to CodecMesh. Core checks a
-  `coefficient_count` in [1, 512] and a positive normal scale; the codec maps
-  the table to its weights and checks each kept coefficient's step at runtime.
+  `quantization_table` (`uniform`/`band`/`radial`), `segment_size`, `sweep`;
+  `encode_every` belongs to CodecReplica and `inspect_only` to CodecMesh.
+  Core checks a `coefficient_count` in [1, 512] and a positive normal scale;
+  the codec maps the table to its weights and checks each kept coefficient's
+  step at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
   `overlay` only where UI is supported. Model dimensions are at most 16384.
   Scanner accepts no window section. No window/device handles are serialized.
@@ -136,9 +144,12 @@ unknown extension object.
   core 0.6.0; `screenshot` for GfxModel. An empty string disables each
   optional output; fusion/export operations require a nonempty `path`. `csv`
   and `stream` must differ once resolved.
-- Run fields: `frames`, plus `sets` for RigViewer. Dataset/FuseOrbbec limits
-  are positive; RigViewer uses zero for unlimited; gfx uses -1 for unlimited
-  and permits zero frames. Scanner has no run limits.
+- Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
+  for CodecMesh. Dataset/FuseOrbbec limits are positive; RigViewer uses zero
+  for unlimited; gfx uses -1 for unlimited and permits zero frames. CodecMesh's
+  `frames` is instead an exact count, at least 1, of numbered meshes from
+  number `first`, which is nonnegative; the last number, `first + frames - 1`,
+  must not exceed INT32_MAX. Scanner has no run limits.
 - Calibration projection fields: `image_width`, `image_height`,
   `intrinsics` (fx,fy,cx,cy), `distortion` (k1,k2,p1,p2,k3), `point` (x,y,z).
   Focal lengths/dimensions and the point's z must be positive, all values
@@ -169,8 +180,9 @@ silently ignored by an application that does not consume it. In particular:
 - Stream mode rejects an explicit `fusion` or `output` section, even empty or
   equal to defaults. This preserves recon's stream-only option exclusions.
 - Headless model screenshots reject explicit frame limits or overlay settings.
-- Mesh inspection rejects fusion, SDF, encoder and `csv`/`stream` output
-  settings it would not use.
+- Mesh inspection rejects fusion, SDF (`sdf_mode`, `shell_voxels`,
+  `allow_holes`), encoder and `csv`/`stream` output settings it would not
+  use. It accepts `run` and either scale.
 - JSON integers remain integers; floating-point syntax cannot silently become
   an integer setting. Directed rounding cannot hide numeric overflow.
 - Configuration input is limited to one MiB and 32 nesting levels. `load`

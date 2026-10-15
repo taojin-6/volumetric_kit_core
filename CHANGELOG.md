@@ -7,6 +7,60 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-14
+
+### Added
+
+- `config::Run::first` (`run.first`, default 0) for `Application::CodecMesh`,
+  which also accepts `run.frames` now: frames `first` to
+  `first + frames - 1` of a numbered mesh sequence. CodecMesh's `frames` is
+  an exact count, default 1, where a dataset's is a limit. Refused: a
+  negative `first`, `frames` below 1, and a last number past INT32_MAX,
+  naming `run.frames`; other profiles refuse `run.first`. A frame-number
+  pattern in `source.path`, such as `%05d`, is the consumer's to read: core
+  resolves the path and leaves `%` alone.
+- `config::Source::metres_per_unit` (`source.metres_per_unit`, CodecMesh):
+  the input's declared unit, finite and positive. It is the alternative to
+  `source.height_m`: exactly one of the two is required.
+- `config::Source::allow_holes` (`source.allow_holes`, default false,
+  CodecMesh): signed mode admits a mesh whose only defect is boundary edges.
+  Refused with `sdf_mode` `shell`, even when false.
+- CodecMesh accepts `fusion.truncation_m`, with the shared sentinel (absent
+  or nonpositive is four voxels) and 127-block bound.
+- Mesh inspection (`codec.inspect_only`) accepts `run` and either scale, and
+  refuses `allow_holes`, as it refuses the other SDF settings.
+
+### Changed
+
+- CodecMesh's `source.shell_voxels` only needs to be finite and positive,
+  where core refused one outside [0.8660254, 4); the bound is the consumer's
+  (DECISIONS.md, the 2026-10-11 entry's amendments).
+- A CodecMesh scenario with neither `height_m` nor `metres_per_unit` is
+  refused naming `source`, where 0.6 named `source.height_m`.
+
+### Removed
+
+- `config::Entropy` and `config::Codec::entropy` (`codec.entropy`;
+  DECISIONS.md, the 2026-10-11 entry's amendments). A scenario that still
+  sets `codec.entropy`, to any value, now fails to load:
+  `codec.entropy: unknown field`.
+
+### Migration
+
+- Consumers of the new settings require core 0.7.0. A default-constructed
+  `Run` has `first` 0; `Source` has `metres_per_unit` 0 and `allow_holes`
+  false. A CodecMesh scenario without `codec.entropy` loads unchanged and
+  resolves one frame from number 0.
+- A CodecMesh consumer reads `metres_per_unit` as well as `height_m`: a
+  scenario that gives the unit leaves `height_m` 0, where every CodecMesh
+  config 0.6 loaded had a positive `height_m`.
+- A CodecMesh consumer must refuse at runtime what core now loads: a `run`
+  range with no pattern in `source.path` to number, and a `shell_voxels`
+  outside its conversion's bound, since core loads any finite, positive one.
+- Delete `codec.entropy` from every scenario, and code that reads
+  `config::Codec::entropy` or names `config::Entropy`; the codec behaves as
+  `auto` and `device` did.
+
 ## [0.6.1] - 2026-10-12
 
 ### Fixed

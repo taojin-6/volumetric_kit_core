@@ -985,3 +985,30 @@ step bounds, free to disagree with the codec it configures. The user gave
 those rules to the codec. Core keeps the table choice and the generic type
 and range checks; recon maps the table to weights and refuses an
 out-of-bounds step at runtime, so a scenario with one loads.
+
+**Amended 2026-10-14 (core 0.7.0): the mesh conversion's shell bound is
+recon's too.** Core refused a `shell_voxels` outside [√3/2, 4): the
+conversion's own rule -- at least half a voxel's diagonal, thinner than the
+truncation -- frozen at the 4-voxel band CodecMesh could not change. Once
+CodecMesh takes `fusion.truncation_m`, that copy refuses valid shells and
+admits invalid ones. The user gave the bound to the mesh conversion's
+library in recon, which is to check it before any GPU work (today
+`MeshIntegrator::integrate` checks it, after GPU setup); core keeps finite
+and positive.
+
+**Amended 2026-10-14 (core 0.7.0): a mesh source states its unit or its
+height.** CodecMesh required `height_m`, the height recon scales its input
+to: right for an input that declares no unit, wrong for one that does. The
+schema serves generic temporal mesh sequences, of which today's is one: a
+sequence either declares its unit (`metres_per_unit`) or will have its
+height fitted over the whole range by the consumer. Exactly one is required,
+so no scenario carries two scales to reconcile; core checks only that the
+one given is finite and positive, and reads no mesh.
+
+**Amended 2026-10-14 (core 0.7.0): `codec.entropy` goes.** The key chose
+where the codec's rANS coder ran: `host`, `device` or `auto`. Recon's codec
+has coded on the device alone since recon #237, so `auto` and `device` meant
+the same and recon refused `host`: a choice with one answer, which the codec
+owns. Core removes the key and its enum rather than keep a setting no
+consumer can act on. The schema stays closed, so a scenario that still sets
+it fails to load, naming it, rather than having it silently ignored.

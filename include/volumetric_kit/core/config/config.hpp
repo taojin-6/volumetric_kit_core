@@ -43,8 +43,6 @@ enum class ColorCodec { Hevc, Mjpeg };
 enum class SdfMode { Signed, Shell };
 /// @brief Quantization weight preset.
 enum class QuantizationTable { Uniform, Band, Radial };
-/// @brief Entropy-code implementation selection.
-enum class Entropy { Auto, Host, Device };
 /// @brief Surface shading selection.
 enum class Shading { Unlit, Lit, Normals };
 
@@ -54,6 +52,8 @@ struct Source {
   SourceKind kind = SourceKind::None;
   std::string format;
   std::string driver;
+  /// Resolved against the config file. A CodecMesh consumer may read a
+  /// frame-number pattern in it; core reads none, so `%` is plain text here.
   std::string path;
   std::string camera_parameters;
   std::string serial;
@@ -68,10 +68,18 @@ struct Source {
   std::uint32_t depth_width = 640;
   std::uint32_t depth_height = 576;
   std::uint32_t fps = 30;
+  /// CodecMesh scale: exactly one of `height_m` (a height the consumer scales
+  /// the input to) and `metres_per_unit` (the input's declared unit) is
+  /// positive; the other stays 0.
   double height_m = 0;
+  double metres_per_unit = 0;
   std::optional<std::array<double, 3>> up_vector;
   SdfMode sdf_mode = SdfMode::Signed;
+  /// Core checks only that it is finite and positive; its bound is the
+  /// consumer's mesh conversion's.
   float shell_voxels = 1.5F;
+  /// Signed mode admits a mesh whose only defect is boundary edges.
+  bool allow_holes = false;
 };
 /// @brief Fusion and mesh extraction settings.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
@@ -103,7 +111,6 @@ struct Codec {
   std::uint32_t coefficient_count = 64;
   float quantization_scale = 0.2F;
   QuantizationTable quantization_table = QuantizationTable::Uniform;
-  Entropy entropy = Entropy::Auto;
   std::uint32_t segment_size = 64;
   int encode_every = 1;
   bool sweep = false;
@@ -141,10 +148,14 @@ struct Output {
   std::string stream;
 };
 /// @brief Run limits; a negative frame limit means unlimited where supported.
+/// For CodecMesh, `frames` is instead an exact count of numbered meshes from
+/// number `first`, where a dataset's is a limit that stops at its last frame.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Run {
   int frames = -1;
   int sets = 0;
+  /// CodecMesh's first frame number.
+  int first = 0;
 };
 /// @brief Settings for the small calibration projection demonstration.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
