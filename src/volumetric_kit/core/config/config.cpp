@@ -658,6 +658,15 @@ void resolve_path(std::string& path, const std::filesystem::path& base) {
   if (p.is_relative()) p = base / p;
   path = p.lexically_normal().string();
 }
+// `base` with each '%' doubled, which a printf-style pattern reads as text.
+std::filesystem::path escape_percent(const std::filesystem::path& base) {
+  std::string escaped;
+  for (const char ch : base.string()) {
+    escaped += ch;
+    if (ch == '%') escaped += '%';
+  }
+  return escaped;
+}
 void resolve(Config& c, App app, std::string_view directory,
              const ParseState& state) {
   if (app != App::Scanner &&
@@ -668,7 +677,10 @@ void resolve(Config& c, App app, std::string_view directory,
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()
                                          : std::filesystem::path(directory);
-  resolve_path(c.source.path, base);
+  // CodecMesh's path is a frame-number pattern; only what the user wrote is
+  // pattern, so the directory joined onto it is escaped.
+  resolve_path(c.source.path,
+               app == App::CodecMesh ? escape_percent(base) : base);
   resolve_path(c.source.camera_parameters, base);
   resolve_path(c.source.sync_config, base);
   resolve_path(c.source.calibration, base);

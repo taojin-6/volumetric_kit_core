@@ -17,11 +17,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   that is not an integer in [1, 2^32 - 1], naming `codec.intra_period`, and
   any period under `codec.inspect_only`.
 
+### Changed
+
+- A relative CodecMesh `source.path` is joined to the scenario's directory
+  with each `%` in that directory escaped as `%%`, so a `%` there is no
+  longer read as pattern (DECISIONS.md, the 2026-10-11 entry's amendments).
+  Absolute paths and every other path are unchanged.
+
 ### Migration
 
 - Consumers of the setting require core 0.8.0 and map it to their encoder
   (recon: `EncoderConfig::intra_period`), or refuse a period other than 1;
   existing scenarios load unchanged.
+- A CodecMesh consumer reads each `%%` in `source.path` as a literal `%`.
 
 ## [0.7.0] - 2026-10-14
 

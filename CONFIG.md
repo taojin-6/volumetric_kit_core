@@ -116,9 +116,10 @@ unknown extension object.
   length); `sdf_mode` (`signed`/`shell`); `shell_voxels`; and `allow_holes`
   (core 0.7.0, default false), which lets signed mode admit a mesh whose only
   defect is boundary edges and is refused with `shell`, even when false. A
-  frame-number pattern in `path` is the consumer's to read: core resolves the
-  path and leaves `%` alone. Core checks only that `shell_voxels` is finite
-  and positive; its bound against the voxel size and truncation is the
+  frame-number pattern in `path` is the consumer's to read; core escapes each
+  `%` in the scenario's own directory as `%%` (core 0.8.0), so only the path
+  the user wrote carries the pattern. Core checks only that `shell_voxels` is
+  finite and positive; its bound against the voxel size and truncation is the
   consumer's mesh conversion's.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
   `max_depth_m`, `max_weight`. Every dataset and Orbbec profile accepts the

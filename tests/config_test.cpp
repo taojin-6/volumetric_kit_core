@@ -709,6 +709,42 @@ TEST(Config, MeshSequenceRangeIsGenericAndThePatternIsTheConsumers) {
   EXPECT_EQ(inspected->run.frames, 3);
 }
 
+TEST(Config, OnlyTheMeshPathTheUserWroteCarriesAPattern) {
+  // CodecMesh's source.path, resolved against this base directory.
+  const auto mesh_path = [](const std::string& path, const char* base) {
+    const auto parsed = scenario(
+        R"({"version":1,"source":{"path":")" + path +
+            R"(","height_m":1.7,"up_axis":"y"},"output":{"csv":"rows.csv"}})",
+        App::CodecMesh, base);
+    EXPECT_TRUE(parsed) << parsed.status().message();
+    if (parsed) EXPECT_EQ(parsed->output.csv, std::string(base) + "/rows.csv");
+    return parsed ? parsed->source.path : std::string();
+  };
+  // A '%' in the scenario's directory is text; the user's own is pattern.
+  EXPECT_EQ(mesh_path("cube.obj", "/pct/50%off"), "/pct/50%%off/cube.obj");
+  EXPECT_EQ(mesh_path("mesh.obj", "/pct/take%d"), "/pct/take%%d/mesh.obj");
+  EXPECT_EQ(mesh_path("f%05d.obj", "/pct/take%d"), "/pct/take%%d/f%05d.obj");
+  EXPECT_EQ(mesh_path("a%%b.obj", "/pct"), "/pct/a%%b.obj");
+  // A ../ removes the escaped directories it leaves.
+  EXPECT_EQ(mesh_path("../cube.obj", "/pct/50%off"), "/pct/cube.obj");
+  EXPECT_EQ(mesh_path("../b/f%d.obj", "/1%/a%b"), "/1%%/b/f%d.obj");
+  // An absolute path is all the user's.
+  EXPECT_EQ(mesh_path("/data/50%off/f%05d.obj", "/pct/take%d"),
+            "/data/50%off/f%05d.obj");
+  // No other profile's path is a pattern.
+  for (const auto app : {App::FuseReplica, App::CodecReplica}) {
+    const auto replica = scenario(R"({"version":1,"source":{"path":"scene"}})",
+                                  app, "/pct/50%off");
+    ASSERT_TRUE(replica) << replica.status().message();
+    EXPECT_EQ(replica->source.path, "/pct/50%off/scene");
+    EXPECT_EQ(replica->source.camera_parameters, "/pct/50%off/cam_params.json");
+  }
+  const auto model = scenario(R"({"version":1,"source":{"path":"cube.glb"}})",
+                              App::GfxModel, "/pct/take%d");
+  ASSERT_TRUE(model) << model.status().message();
+  EXPECT_EQ(model->source.path, "/pct/take%d/cube.glb");
+}
+
 TEST(Config, CodecMeshTruncationAndHoles) {
   const std::string source =
       R"({"version":1,"source":{"path":"mesh.ply","height_m":1.7,"up_axis":"y")";

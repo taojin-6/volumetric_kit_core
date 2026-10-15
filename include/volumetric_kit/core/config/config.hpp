@@ -52,8 +52,9 @@ struct Source {
   SourceKind kind = SourceKind::None;
   std::string format;
   std::string driver;
-  /// Resolved against the config file. A CodecMesh consumer may read a
-  /// frame-number pattern in it; core reads none, so `%` is plain text here.
+  /// Resolved against the config file. For CodecMesh it is a frame-number
+  /// pattern for the consumer to read, `%%` being a literal `%`, so core
+  /// escapes each `%` in the config file's directory.
   std::string path;
   std::string camera_parameters;
   std::string serial;
