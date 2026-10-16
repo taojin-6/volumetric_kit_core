@@ -31,6 +31,7 @@
 #include "command_batch_barriers.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
+#include "volumetric_kit/core/testing/write_image.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
@@ -185,43 +186,10 @@ class BatchTest : public test::VulkanDeviceTest {
     EXPECT_TRUE(made.ok()) << made.status().message();
     if (!made.ok()) return Image{};
     Image image = *std::move(made);
-    BufferDesc staging_desc;
-    staging_desc.size = texels.size();
-    staging_desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    staging_desc.memory = MemoryUsage::Staging;
-    Result<Buffer> staging = allocator().create_buffer(staging_desc);
-    EXPECT_TRUE(staging.ok());
-    if (!staging.ok()) return Image{};
-    std::memcpy(staging->mapped(), texels.data(), texels.size());
-    VkImage raw = image.handle();
-    const Status s = device().submit_single_time([&](VkCommandBuffer cmd) {
-      VkImageMemoryBarrier b{};
-      b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-      b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.image = raw;
-      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                           nullptr, 1, &b);
-      VkBufferImageCopy region{};
-      region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      region.imageExtent = {width, height, 1};
-      vkCmdCopyBufferToImage(cmd, staging->handle(), raw,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-      b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                           nullptr, 1, &b);
-    });
-    EXPECT_TRUE(s.ok()) << s.message();
-    image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+    const Status written =
+        test::write_image(device(), allocator(), image, texels.data(),
+                          texels.size(), VK_IMAGE_LAYOUT_GENERAL);
+    EXPECT_TRUE(written.ok()) << written.message();
     return image;
   }
 

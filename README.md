@@ -173,7 +173,8 @@ support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
   (an instance and a physical device), `test::VulkanDeviceTest` (plus a
   device and an allocator) or, for a cross-family test, `test::SharedDeviceTest`
   (a compute library's and a renderer's devices on two queue families). The
-  tests in a process share the instance and devices
+  tests in a process share the instances and devices; a two-family device
+  brings an instance of its own
   (`volumetric_kit/core/testing/vulkan_fixture.hpp`).
 - A test that is a `main()` of its own links
   `volumetric_kit::core_test_policy`, which needs no googletest, and returns
@@ -181,6 +182,8 @@ support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
   (`volumetric_kit/core/testing/vulkan_policy.hpp`). Its cross-family cases
   make a `test::TwoFamilyDevice`
   (`volumetric_kit/core/testing/two_family_device.hpp`).
+- Either kind fills an image from host texels with `test::write_image`
+  (`volumetric_kit/core/testing/write_image.hpp`).
 
 An application that fetches several siblings (as `ios` fetches `recon` and
 `gfx`) declares `volumetric_kit_core` **first**, at least as new as every

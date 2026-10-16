@@ -106,7 +106,8 @@ if(VKC_WITH_VULKAN)
     vulkan_external_memory
     vulkan_shared_device
     testing_vulkan_fixture
-    testing_two_family_device)
+    testing_two_family_device
+    testing_write_image)
     add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
     target_link_libraries(
       vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_test_support
@@ -239,6 +240,9 @@ if(VKC_WITH_VULKAN)
       --unset=VKC_TEST_VALIDATION --unset=VKC_TEST_SYNC_VALIDATION
       "VK_DRIVER_FILES=${_vkc_no_driver}" "VK_ICD_FILENAMES=${_vkc_no_driver}")
   set(_vkc_skipped "\\[  SKIPPED \\]")
+  # The fixtures' skip without a device (no_device in support/), told from their
+  # other skips.
+  set(_vkc_no_device "no Vulkan device for this test")
 
   add_test(
     NAME vkc_testing_requires_a_device
@@ -302,9 +306,11 @@ if(VKC_WITH_VULKAN)
   set_tests_properties(vkc_testing_own_instance_runs_sync_validation
                        PROPERTIES SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
 
-  # The two-family fixture: two tests in one process borrow one device; a buffer
-  # left on it fails the run as it goes; requirements it cannot share or serve
-  # headless fail SetUp; and it skips on one family.
+  # The two-family fixture: two tests in one process borrow one device, and
+  # fixtures that differ in a requirement or level get their own; a buffer left
+  # on it fails the run as it goes; requirements it cannot share or serve
+  # headless fail SetUp; and it skips on one family. Without a device, each
+  # skips.
   #
   # MoltenVK's specialized families (MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES) give
   # one family that does both graphics and compute, as lavapipe's single family
@@ -317,6 +323,24 @@ if(VKC_WITH_VULKAN)
   )
   set_tests_properties(vkc_testing_shares_the_two_family_device
                        PROPERTIES SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
+
+  # One device per key: either library's requirements, and the level, whose
+  # probe runs apart as it needs the layer.
+  add_test(
+    NAME vkc_testing_keys_the_two_family_device
+    COMMAND
+      "${_vkc_probe}"
+      "--gtest_filter=TwoFamilyProbe.MakesTheDevice:ComputeKeyProbe.*:GraphicsKeyProbe.*:SameKeyProbe.*"
+  )
+  add_test(
+    NAME vkc_testing_keys_the_two_family_level
+    COMMAND
+      "${CMAKE_COMMAND}" -E env --unset=VKC_TEST_SYNC_VALIDATION
+      "${_vkc_probe}"
+      "--gtest_filter=TwoFamilyProbe.MakesTheDevice:SyncKeyProbe.*")
+  set_tests_properties(
+    vkc_testing_keys_the_two_family_device vkc_testing_keys_the_two_family_level
+    PROPERTIES SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
 
   add_test(NAME vkc_testing_reports_a_two_family_leak
            COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0
@@ -335,25 +359,31 @@ if(VKC_WITH_VULKAN)
   set_tests_properties(
     vkc_testing_two_family_refuses_chained
     PROPERTIES PASS_REGULAR_EXPRESSION "cannot compare a feature_chain"
-               FAIL_REGULAR_EXPRESSION "the body ran")
+               FAIL_REGULAR_EXPRESSION "the body ran" SKIP_REGULAR_EXPRESSION
+               "${_vkc_skipped}")
   set_tests_properties(
     vkc_testing_two_family_refuses_presenting
     PROPERTIES PASS_REGULAR_EXPRESSION "is headless" FAIL_REGULAR_EXPRESSION
-               "the body ran")
+               "the body ran" SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
 
   add_test(
     NAME vkc_testing_skips_on_one_family
     COMMAND "${CMAKE_COMMAND}" -E env MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1
             "${_vkc_probe}" --gtest_filter=OneFamilyProbe.*)
+  # Its pass is itself a skip, so only the skip without a device is one.
   set_tests_properties(
     vkc_testing_skips_on_one_family
     PROPERTIES PASS_REGULAR_EXPRESSION
                "puts both libraries on one queue family"
-               FAIL_REGULAR_EXPRESSION "the body ran")
+               FAIL_REGULAR_EXPRESSION
+               "the body ran"
+               SKIP_REGULAR_EXPRESSION
+               "${_vkc_no_device}")
 
   # MoltenVK has several families of one queue each, so the cross-family tests
   # run there rather than skip, on its default families and on its specialized
-  # ones, where the compute library's family does no graphics.
+  # ones, where the compute library's family does no graphics. Any skip but the
+  # one without a device fails.
   if(APPLE)
     foreach(_vkc_specialized 0 1)
       set(_vkc_name
@@ -365,8 +395,9 @@ if(VKC_WITH_VULKAN)
           MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=${_vkc_specialized}
           "$<TARGET_FILE:vkc_testing_two_family_device_test>"
           --gtest_filter=CrossFamilyTest.*)
-      set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
-                                                   "${_vkc_skipped}")
+      set_tests_properties(
+        ${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION "${_vkc_skipped}"
+                                SKIP_REGULAR_EXPRESSION "${_vkc_no_device}")
     endforeach()
   endif()
 

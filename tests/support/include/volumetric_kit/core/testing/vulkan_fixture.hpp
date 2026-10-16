@@ -20,13 +20,13 @@
 /// (@ref volumetric_kit::core::test::VulkanTest::validation); it then gets it
 /// wherever the layer is installed.
 ///
-/// The tests in a process share one instance per validation level, and one
-/// device -- or two-family device -- per level and set of requirements: the
-/// first test that needs one makes it, and it is destroyed after the last
-/// test. Each test makes and
-/// destroys its own objects on them. An object a test never destroys is
-/// reported as the shared device is destroyed, failing the run rather than a
-/// named test.
+/// The tests in a process share one instance per validation level, one device
+/// per level and set of requirements, and one two-family device, with an
+/// instance of its own, per level and pair of requirements: the first test
+/// that needs one makes it, and it is destroyed after the last test. Each test
+/// makes and destroys its own objects on them. An object a test never destroys
+/// is reported as the shared device is destroyed, failing the run rather than
+/// a named test.
 ///
 /// @code
 /// namespace test = volumetric_kit::core::test;
@@ -203,10 +203,11 @@ class VulkanDeviceTest : public VulkanTest {
 /// shared queue -- so a test on it always crosses families. It runs under the
 /// validation layer wherever the layer is installed, as the fixture asks for
 /// @ref Validation::On by default.
-/// @ref VulkanTest::instance and @ref VulkanTest::physical are the fixture's,
-/// which it selects for both requirements merged, only to skip or fail
-/// without a device; the shared device's own are those of
-/// `two_family().shared()`.
+///
+/// The two-family device brings its own instance. The fixture's instance and
+/// physical device only decide, for both requirements merged, whether to skip
+/// or fail without a device, so they are hidden from a test on it: use
+/// `two_family().shared().instance()` and `.physical()`.
 ///
 /// The two-family device is shared as @ref VulkanDeviceTest's device is, and
 /// requirements carrying a `feature_chain` fail `SetUp` for the same reason,
@@ -268,6 +269,10 @@ class SharedDeviceTest : public VulkanTest {
   TwoFamilyDevice& two_family();
 
  private:
+  // Another instance than the two-family device's.
+  using VulkanTest::instance;
+  using VulkanTest::physical;
+
   detail::TwoFamilySlot* slot_ = nullptr;  // to mark it lost
   TwoFamilyDevice* device_ = nullptr;
 };

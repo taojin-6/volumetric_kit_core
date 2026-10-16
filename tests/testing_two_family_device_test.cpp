@@ -1,19 +1,27 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// core_test_support's two-family device and the SharedDeviceTest fixture on
-// it: each library on the family SharedDevice carves for it, a buffer and an
-// image written on the compute family read back exactly on the renderer's,
-// and the writes' refusals. What needs a process of its own -- one device per
-// process, a leak, the skip on one family, another family layout -- runs
-// from testing_vulkan_fixture_probe.cpp (CMakeLists.txt).
+// core_test_policy's two-family device and core_test_support's
+// SharedDeviceTest fixture on it: each library on the family SharedDevice
+// carves for it, writes on the compute library's queue, a buffer and an image
+// written there read back exactly on the renderer's, and the writes' own
+// refusals (test::write_image's are testing_write_image_test.cpp's). What
+// needs a process of its own -- one device per process and per key, a leak,
+// the skip on one family, another family layout -- runs from
+// testing_vulkan_fixture_probe.cpp (CMakeLists.txt).
 
 #include "volumetric_kit/core/testing/two_family_device.hpp"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -89,6 +97,35 @@ TEST_F(TwoFamilyDeviceTest, CrossesFamiliesExactlyWhereSharedDeviceTakesTwo) {
 
 // --- the fixture -------------------------------------------------------------
 
+// What a fixture on `Base` can call: SharedDeviceTest hides VulkanTest's
+// instance and physical device, which are another instance's than the
+// two-family device's. Access is checked in substitution, here from inside a
+// fixture.
+template <typename Base>
+class Reaches : public Base {
+  template <typename T, typename = void>
+  struct Instance : std::false_type {};
+  template <typename T>
+  struct Instance<T, std::void_t<decltype(std::declval<const T&>().instance())>>
+      : std::true_type {};
+  template <typename T, typename = void>
+  struct Physical : std::false_type {};
+  template <typename T>
+  struct Physical<T, std::void_t<decltype(std::declval<const T&>().physical())>>
+      : std::true_type {};
+
+ public:
+  static constexpr bool kInstance = Instance<Reaches>::value;
+  static constexpr bool kPhysical = Physical<Reaches>::value;
+};
+static_assert(Reaches<test::VulkanTest>::kInstance &&
+                  Reaches<test::VulkanTest>::kPhysical,
+              "a VulkanTest fixture reaches its instance and physical device");
+static_assert(!Reaches<test::SharedDeviceTest>::kInstance &&
+                  !Reaches<test::SharedDeviceTest>::kPhysical,
+              "a SharedDeviceTest fixture reaches only the two-family "
+              "device's instance and physical device");
+
 class CrossFamilyTest : public test::SharedDeviceTest {
  protected:
   // A buffer of `bytes` on the compute library's allocator, CONCURRENT
@@ -151,10 +188,53 @@ TEST_F(CrossFamilyTest, HandsEachLibraryItsOwnFamily) {
   EXPECT_NE(two.compute().queue_family(), two.graphics().queue_family());
   EXPECT_EQ(two.families()[0], two.compute().queue_family());
   EXPECT_EQ(two.families()[1], two.graphics().queue_family());
-  // Validated wherever the layer is installed, as the fixture asks.
+  // Validated wherever the layer is installed, as the fixture asks: where
+  // the fixture's own instance -- hidden from a test, so named here -- is.
   EXPECT_GE(active_validation(), test::Validation::On);
   EXPECT_EQ(two.shared().instance().validation_logged(),
-            instance().validation_logged());
+            VulkanTest::instance().validation_logged());
+}
+
+// A write on the compute library's queue cannot finish while the test holds
+// that queue's mutex, so one that finishes sooner went to another queue, and
+// a cross-family test on it would be a same-family one.
+TEST_F(CrossFamilyTest, WritesSubmitOnTheComputeLibrarysQueue) {
+  test::TwoFamilyDevice& two = two_family();
+  ASSERT_NE(two.compute().submit_mutex(), two.graphics().submit_mutex());
+  const auto waits_for_compute =
+      [&](const std::function<Status()>& write) -> ::testing::AssertionResult {
+    std::unique_lock<std::mutex> hold(*two.compute().submit_mutex());
+    std::atomic<bool> done{false};
+    Status status;
+    std::thread writer([&] {
+      status = write();
+      done = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    const bool early = done;
+    hold.unlock();
+    writer.join();
+    if (early) {
+      return ::testing::AssertionFailure()
+             << "it completed with the compute queue held";
+    }
+    if (!status.ok()) return ::testing::AssertionFailure() << status.message();
+    return ::testing::AssertionSuccess();
+  };
+
+  Result<Buffer> shared_buffer = buffer(64);
+  ASSERT_TRUE(shared_buffer.ok()) << shared_buffer.status().message();
+  const std::vector<std::uint8_t> bytes(64, 3);
+  EXPECT_TRUE(waits_for_compute([&] {
+    return two.write_buffer(*shared_buffer, 0, bytes.data(), 64);
+  })) << "write_buffer";
+
+  Result<Image> shared_image = image({4, 4}, VK_FORMAT_R8G8B8A8_UNORM);
+  ASSERT_TRUE(shared_image.ok()) << shared_image.status().message();
+  EXPECT_TRUE(waits_for_compute([&] {
+    return two.write_image(*shared_image, bytes.data(), 64,
+                           VK_IMAGE_LAYOUT_GENERAL);
+  })) << "write_image";
 }
 
 TEST_F(CrossFamilyTest, ABufferWrittenOnComputeReadsBackExactlyOnGraphics) {
@@ -221,8 +301,9 @@ TEST_F(CrossFamilyTest, AnImageWrittenOnComputeCopiesExactlyOnGraphics) {
 TEST_F(CrossFamilyTest, WritesRefuseWhatTheRendererCouldNotRead) {
   test::TwoFamilyDevice& two = two_family();
   const std::vector<std::uint8_t> bytes(64, 1);
-  const auto refused = [](const Status& status) {
-    return status.domain() == Status::Code::InvalidArgument;
+  const auto refused = [](const Status& status, const char* what) {
+    return status.domain() == Status::Code::InvalidArgument &&
+           says(status, what);
   };
 
   // An EXCLUSIVE buffer: the renderer's read would be undefined.
@@ -230,65 +311,36 @@ TEST_F(CrossFamilyTest, WritesRefuseWhatTheRendererCouldNotRead) {
   ASSERT_TRUE(exclusive_buffer.ok());
   const Status buffer_refusal =
       two.write_buffer(*exclusive_buffer, 0, bytes.data(), 64);
-  EXPECT_TRUE(refused(buffer_refusal) && says(buffer_refusal, "EXCLUSIVE"))
-      << buffer_refusal.message();
+  EXPECT_TRUE(refused(buffer_refusal, "EXCLUSIVE")) << buffer_refusal.message();
+  // An empty one is no sharing refusal, even of no bytes.
+  for (const VkDeviceSize size : {VkDeviceSize{64}, VkDeviceSize{0}}) {
+    const Status empty = two.write_buffer(Buffer{}, 0, bytes.data(), size);
+    EXPECT_TRUE(refused(empty, "empty")) << empty.message();
+  }
   // CommandBatch's own refusal comes through.
   Result<Buffer> small = buffer(32);
   ASSERT_TRUE(small.ok());
-  EXPECT_TRUE(refused(two.write_buffer(*small, 0, bytes.data(), 64)));
+  EXPECT_EQ(two.write_buffer(*small, 0, bytes.data(), 64).domain(),
+            Status::Code::InvalidArgument);
 
   // Images, each refused before anything is recorded: the layout stays.
-  constexpr VkExtent2D kExtent = {4, 4};
-  const auto stays = [&](Image& target, VkDeviceSize size, const void* texels,
-                         VkImageLayout layout, const char* what) {
-    const Status status = two.write_image(target, texels, size, layout);
-    EXPECT_TRUE(refused(status) && says(status, what)) << status.message();
+  const auto stays = [&](Image& target, VkDeviceSize size, const char* what) {
+    const Status status =
+        two.write_image(target, bytes.data(), size, VK_IMAGE_LAYOUT_GENERAL);
+    EXPECT_TRUE(refused(status, what)) << status.message();
     EXPECT_EQ(target.layout(), VK_IMAGE_LAYOUT_UNDEFINED) << what;
   };
   Image empty;
-  stays(empty, 64, bytes.data(), VK_IMAGE_LAYOUT_GENERAL, "empty");
+  stays(empty, 64, "empty");
   Result<Image> exclusive =
-      image(kExtent, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      image({4, 4}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             /*exclusive=*/true);
   ASSERT_TRUE(exclusive.ok()) << exclusive.status().message();
-  stays(*exclusive, 64, bytes.data(), VK_IMAGE_LAYOUT_GENERAL, "EXCLUSIVE");
-  Result<Image> depth =
-      image(kExtent, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-  ASSERT_TRUE(depth.ok()) << depth.status().message();
-  stays(*depth, 64, bytes.data(), VK_IMAGE_LAYOUT_GENERAL, "format");
-  Result<Image> source_only =
-      image(kExtent, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-  ASSERT_TRUE(source_only.ok()) << source_only.status().message();
-  stays(*source_only, 64, bytes.data(), VK_IMAGE_LAYOUT_GENERAL,
-        "TRANSFER_DST");
-  Result<Image> good = image(kExtent, VK_FORMAT_R8G8B8A8_UNORM);
+  stays(*exclusive, 64, "EXCLUSIVE");
+  // test::write_image's refusals come through.
+  Result<Image> good = image({4, 4}, VK_FORMAT_R8G8B8A8_UNORM);
   ASSERT_TRUE(good.ok()) << good.status().message();
-  stays(*good, 63, bytes.data(), VK_IMAGE_LAYOUT_GENERAL, "takes 64 bytes");
-  stays(*good, 68, bytes.data(), VK_IMAGE_LAYOUT_GENERAL, "takes 64 bytes");
-  stays(*good, 64, nullptr, VK_IMAGE_LAYOUT_GENERAL, "null");
-  stays(*good, 64, bytes.data(), VK_IMAGE_LAYOUT_UNDEFINED, "UNDEFINED");
-  stays(*good, 64, bytes.data(), VK_IMAGE_LAYOUT_PREINITIALIZED, "UNDEFINED");
-
-  // A multisampled image, where the device can make one to copy into.
-  ImageDesc desc;
-  desc.extent = kExtent;
-  desc.format = VK_FORMAT_R8G8B8A8_UNORM;
-  desc.usage =
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-  desc.samples = VK_SAMPLE_COUNT_4_BIT;
-  desc.with_view = false;
-  desc.queue_families = two.families().data();
-  desc.queue_family_count = test::TwoFamilyDevice::kFamilyCount;
-  VkImageFormatProperties properties{};
-  if (vkGetPhysicalDeviceImageFormatProperties(
-          two.shared().physical().handle(), desc.format, VK_IMAGE_TYPE_2D,
-          VK_IMAGE_TILING_OPTIMAL, desc.usage, 0, &properties) == VK_SUCCESS &&
-      (properties.sampleCounts & VK_SAMPLE_COUNT_4_BIT) != 0) {
-    Result<Image> multisampled = two.compute_allocator().create_image(desc);
-    ASSERT_TRUE(multisampled.ok()) << multisampled.status().message();
-    stays(*multisampled, 64, bytes.data(), VK_IMAGE_LAYOUT_GENERAL,
-          "multisampled");
-  }
+  stays(*good, 63, "takes 64 bytes");
 }
 
 }  // namespace

@@ -112,6 +112,66 @@ TEST_F(TwoFamilyProbe, BorrowsTheSameDevice) {
   EXPECT_EQ(two_family().shared().device(), g_two_family);
 }
 
+// Run in one process after MakesTheDevice, fixtures that differ from it in
+// either library's requirements, or in level, get two-family devices of their
+// own, and one that does not shares it. Each difference is one every device
+// meets: it changes the key, not the device.
+class ComputeKeyProbe : public test::SharedDeviceTest {
+ protected:
+  DeviceRequirements compute_requirements() const override {
+    DeviceRequirements reqs;
+    reqs.timeline_semaphore = false;
+    return reqs;
+  }
+};
+
+TEST_F(ComputeKeyProbe, GetsADeviceOfItsOwn) {
+  ASSERT_NE(g_two_family, VK_NULL_HANDLE) << "run after MakesTheDevice";
+  EXPECT_NE(two_family().shared().device(), g_two_family);
+}
+
+class GraphicsKeyProbe : public test::SharedDeviceTest {
+ protected:
+  DeviceRequirements graphics_requirements() const override {
+    DeviceRequirements reqs;
+    reqs.queue_flags = VK_QUEUE_GRAPHICS_BIT;
+    reqs.timeline_semaphore = false;
+    return reqs;
+  }
+};
+
+TEST_F(GraphicsKeyProbe, GetsADeviceOfItsOwn) {
+  ASSERT_NE(g_two_family, VK_NULL_HANDLE) << "run after MakesTheDevice";
+  EXPECT_NE(two_family().shared().device(), g_two_family);
+}
+
+class SyncKeyProbe : public test::SharedDeviceTest {
+ protected:
+  test::Validation validation() const override {
+    return test::Validation::Sync;
+  }
+};
+
+// Run without VKC_TEST_SYNC_VALIDATION, which would raise MakesTheDevice's
+// level to this one.
+TEST_F(SyncKeyProbe, GetsADeviceOfItsOwn) {
+  ASSERT_NE(g_two_family, VK_NULL_HANDLE) << "run after MakesTheDevice";
+  ASSERT_LT(test::requested_validation(), test::Validation::Sync)
+      << "run without VKC_TEST_SYNC_VALIDATION";
+  if (!two_family().shared().instance().validation_logged()) {
+    GTEST_SKIP() << "the validation layer is not installed, or does not load: "
+                    "both levels are off";
+  }
+  EXPECT_NE(two_family().shared().device(), g_two_family);
+}
+
+class SameKeyProbe : public test::SharedDeviceTest {};
+
+TEST_F(SameKeyProbe, SharesTheDevice) {
+  ASSERT_NE(g_two_family, VK_NULL_HANDLE) << "run after MakesTheDevice";
+  EXPECT_EQ(two_family().shared().device(), g_two_family);
+}
+
 // Leaves a buffer on the compute library's device, which the layer reports as
 // the two-family device is destroyed after the last test.
 TEST_F(TwoFamilyProbe, LeavesABuffer) {

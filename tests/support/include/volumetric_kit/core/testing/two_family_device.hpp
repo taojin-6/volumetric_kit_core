@@ -148,35 +148,25 @@ class TwoFamilyDevice {
   /// @param offset  The byte offset into @p dst.
   /// @param data    The bytes; null only when @p bytes is 0.
   /// @param bytes   How many.
-  /// @return OK; @ref Status::Code::InvalidArgument for an `EXCLUSIVE` @p dst
-  ///         across families, whose read on the renderer's family would be
-  ///         undefined with nothing to report it, or for what
+  /// @return OK; @ref Status::Code::InvalidArgument for an empty @p dst, an
+  ///         `EXCLUSIVE` one across families, whose read on the renderer's
+  ///         family would be undefined with nothing to report it, or for what
   ///         @ref CommandBatch::upload refuses; or a submit's failure.
   Status write_buffer(const Buffer& dst, VkDeviceSize offset, const void* data,
                       VkDeviceSize bytes);
 
-  /// @brief Write tightly packed texels into the whole of mip 0, layer 0 of
-  ///        @p dst on the compute library's queue, leave it in @p layout, and
-  ///        wait for its fence, as @ref write_buffer.
-  ///
-  /// The image's contents before are discarded. On success its recorded
-  /// layout (@ref Image::layout) is @p layout; on a refusal, nothing is
-  /// recorded or changed.
-  /// @param dst     A single-sample image of an uncompressed single-plane
-  ///                color format (@ref texel_bytes is not 0), with
-  ///                `TRANSFER_DST` usage, `CONCURRENT` where
-  ///                @ref crosses_families.
+  /// @brief @ref test::write_image on the compute library's queue and
+  ///        allocator, for the renderer to read: mip 0, layer 0 written,
+  ///        the whole image left in @p layout, the fence waited for.
+  /// @param dst     As @ref test::write_image takes it, and `CONCURRENT`
+  ///                where @ref crosses_families.
   /// @param texels  Width x height x depth texels, rows packed.
-  /// @param bytes   Their size: exactly the texels' count times
-  ///                @ref texel_bytes.
-  /// @param layout  The layout to leave it in, such as
-  ///                `TRANSFER_SRC_OPTIMAL` for a copy; neither `UNDEFINED`
-  ///                nor `PREINITIALIZED`.
-  /// @return OK; @ref Status::Code::InvalidArgument for an empty image, an
-  ///         `EXCLUSIVE` one across families, one of another format, sample
-  ///         count or usage, a byte count that is not the image's, null
-  ///         texels, or such a layout; or a staging allocation's or a
-  ///         submit's failure.
+  /// @param bytes   Their size, as @ref test::write_image says.
+  /// @param layout  The layout to leave it in, as @ref test::write_image
+  ///                says.
+  /// @return OK; @ref Status::Code::InvalidArgument for an `EXCLUSIVE` image
+  ///         across families, or for what @ref test::write_image refuses; or
+  ///         its staging allocation's or submit's failure.
   Status write_image(Image& dst, const void* texels, VkDeviceSize bytes,
                      VkImageLayout layout);
 

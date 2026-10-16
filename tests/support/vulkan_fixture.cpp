@@ -241,12 +241,14 @@ class Registry {
   std::vector<std::unique_ptr<detail::TwoFamilySlot>> two_families_;
 };
 
-// No instance or device: the test skips, or fails where one is required.
+// No instance or device: the test skips, or fails where one is required. The
+// skip's fixed opening is what a CTest entry matches to tell it from the
+// fixture's other skips (tests/CMakeLists.txt).
 void no_device(const std::string& why) {
   if (device_required()) {
     FAIL() << "VKC_REQUIRE_VULKAN_DEVICE is set, and " << why;
   }
-  GTEST_SKIP() << why;
+  GTEST_SKIP() << "no Vulkan device for this test: " << why;
 }
 
 class VulkanEnvironment final : public ::testing::Environment {
