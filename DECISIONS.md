@@ -1064,3 +1064,31 @@ wrote, so core escapes each `%` in it as `%%` before joining. What the user
 wrote, including an absolute path, is unchanged; every `%` in the result is
 pattern text, which the consumer unescapes. No other path is a pattern, so
 no other is escaped.
+
+## 2026-10-16 — calib's Mac runners, and each repository's own share of a host
+
+`calib`'s macOS legs move to self-hosted `mac` runners on the Mac that serves
+`recon` and `gfx`, registered with this repository's runner tooling; the rest
+of its CI stays GitHub-hosted (calib's DECISIONS.md). `select_repo`
+(`tools/runners/common.sh`) records which systems carry each repository's
+runners: calib's, macOS alone.
+
+- **A runner's parallel level is the host's cores divided by its own
+  repository's runners there**: 5 on the 10-core Mac with 2 per repository.
+  Setting up one repository no longer rewrites or restarts another's runners.
+  This reverses 652eba2 (2026-10-10), which divided by every runner on the
+  host, of every repository. A push runs one repository's CI, so its jobs
+  rarely overlap another's, yet the whole-host split sized every job for the
+  overlap: with three repositories' 6 runners on the Mac each job got 10 / 6
+  = 1 thread, and 2 with two repositories, while the other cores idled. The
+  cost: when repositories' jobs do overlap, up to 6 × 5 threads share 10
+  cores, so those jobs run slower and their builds need more memory at once.
+- **A build passes its level.** A bare `--parallel` ignores
+  `CMAKE_BUILD_PARALLEL_LEVEL` ([tools/runners/README.md](tools/runners/README.md)),
+  so the level never limited a family workflow's build step. Each
+  repository's workflows pass it, in their own change; this repository's do
+  from this one.
+- **calib is private, and the Mac's runners all run as one user,** so a job of
+  `recon` or `gfx` can read calib's checkouts and its runners' credentials
+  there. Calib's code on the Mac is as safe as those repositories' owner-only
+  policies keep their runners ("Only the owner triggers CI").

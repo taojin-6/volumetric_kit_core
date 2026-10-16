@@ -5,8 +5,10 @@
 # Runs setup-runners.sh and teardown-runners.sh against a fake HOME, with
 # stubs in place of the runner's config.sh and svc.sh, gh, curl, sudo and the
 # host prerequisites, and checks what they did to which runner. No real runner
-# or service is touched. The scripts run under the bash running this, so
-# `/bin/bash test_runner_scripts.sh` tests them under macOS's bash 3.2.
+# or service is touched. The host has $STUB_CORES cores (default 24), and with
+# STUB_OS set, `uname -s` names that system instead of this one's. The scripts
+# run under the bash running this, so `/bin/bash test_runner_scripts.sh` tests
+# them under macOS's bash 3.2.
 # shellcheck disable=SC2016 # the stubs' variables expand when the stubs run
 set -euo pipefail
 
@@ -30,6 +32,9 @@ stub() {
   chmod +x "$stubs/$1"
 }
 stub sudo 'exec "$@"'
+stub uname 'if [ "$1" = -s ] && [ -n "${STUB_OS:-}" ]; then echo "$STUB_OS"; else exec '"$(command -v uname)"' "$@"; fi'
+stub nproc 'echo "${STUB_CORES:-24}"'
+stub sysctl '[ "$*" = "-n hw.ncpu" ] && echo "${STUB_CORES:-24}"'
 stub curl '
 echo "curl $*" >>"$CALLS"
 case "$*" in
@@ -128,16 +133,26 @@ done
 status=0
 teardown || status=$?
 expect "teardown-runners.sh needs a repository" "$status" 2
+status=0
+teardown core || status=$?
+expect "teardown-runners.sh rejects 'core'" "$status" 2
+# calib's Linux legs are GitHub-hosted, so it has runners only on Macs.
+status=0
+STUB_OS=Linux setup calib || status=$?
+expect "setup-runners.sh refuses calib on a Linux host, before it asks gh or registers anything" \
+  "$status $(calls '^(config|gh|curl) ') $(grep -c 'volumetric_kit_calib has no self-hosted runners on Linux' "$tmp/out" || true)" \
+  "2 0 1"
 
 # --- Registration -----------------------------------------------------------
 
 if [ "$(uname -s)" = Linux ]; then
-  n=6 label=vk-linux-gpu cores="$(nproc)" install="install $user"
+  n=6 label=vk-linux-gpu install="install $user"
 else
-  n=2 label=mac cores="$(sysctl -n hw.ncpu)" install="install"
+  n=2 label=mac install="install"
 fi
+cores=24
 host="$(hostname -s)"
-# share RUNNERS: the build levels with the cores split across RUNNERS.
+# share RUNNERS: the build level with the cores split across RUNNERS.
 share() {
   local threads=$((cores / $1))
   [ "$threads" -ge 1 ] || threads=1
@@ -185,8 +200,8 @@ for i in $(seq 1 "$n"); do
   [ "$(running "ci-runners/volumetric_kit_recon/runner-$i")" = no ] || up=$((up + 1))
 done
 expect "every runner of the repository runs" "$up" "$n"
-threads="$(share $((n + 2)))"
-expect "the cores are split across every repository's runners; an old level is replaced in place, once, and other lines kept" \
+threads="$(share "$n")"
+expect "the cores are split across the repository's runners alone; an old level is replaced in place, once, and other lines kept" \
   "$(env_of ci-runners/volumetric_kit_recon/runner-1)" "CTEST_PARALLEL_LEVEL=$threads
 LANG=C.UTF-8
 CMAKE_BUILD_PARALLEL_LEVEL=$threads"
@@ -194,14 +209,12 @@ expect "a new runner gets the same levels" \
   "$(env_of "ci-runners/volumetric_kit_recon/runner-$n")" "$(levels "$threads")"
 expect "a running runner whose .env changed restarts" \
   "$(calls '^svc ci-runners/volumetric_kit_recon/runner-1 stop$')" 1
-expect "another repository's runners get the share too, keeping their other lines" \
+expect "another repository's runners keep their .env" \
   "$(env_of ci-runners/volumetric_kit_gfx/runner-1) $(env_of ci-runners/volumetric_kit_gfx/runner-2)" \
-  "LANG=C
-$(levels "$threads") LANG=C
-$(levels "$threads")"
-expect "another repository's running runner restarts, and its paused one stays paused" \
-  "$(calls '^svc ci-runners/volumetric_kit_gfx/runner-1 stop$') $(running ci-runners/volumetric_kit_gfx/runner-1) $(running ci-runners/volumetric_kit_gfx/runner-2)" \
-  "1 yes no"
+  "LANG=C LANG=C"
+expect "another repository's runners are not restarted, and its paused one stays paused" \
+  "$(calls '^svc ci-runners/volumetric_kit_gfx/') $(running ci-runners/volumetric_kit_gfx/runner-1) $(running ci-runners/volumetric_kit_gfx/runner-2)" \
+  "0 yes no"
 
 : >"$CALLS"
 status=0
@@ -231,8 +244,8 @@ for case in STUB_INSTALL_FAILS STUB_START_FAILS; do
 done
 
 # A host whose runners are still in the pre-layout directories gets no second
-# set, and its thread split counts them, every repository's. One whose service
-# is gone is reinstalled, and an unregistered leftover is left alone.
+# set, and its thread split counts them, but no other repository's. One whose
+# service is gone is reinstalled, and an unregistered leftover is left alone.
 fresh_home
 for i in $(seq 1 "$n"); do runner "actions-runner-recon-$i" recon; done
 rm "$HOME/actions-runner-recon-1/.service" "$HOME/actions-runner-recon-1/.running"
@@ -249,12 +262,10 @@ expect "it leaves an unregistered leftover alone" \
   "$(calls '^svc ci-runners/') $(env_of ci-runners/volumetric_kit_recon/runner-1)" "0 <none>"
 expect "it reinstalls and starts a pre-layout runner's service" \
   "$(calls "^svc actions-runner-recon-1 $install\$") $(running actions-runner-recon-1)" "1 yes"
-threads="$(share $((n + 1)))"
-expect "they get a split across every pre-layout runner" \
-  "$(env_of "actions-runner-recon-$n")" "$(levels "$threads")"
-expect "another repository's pre-layout runner gets it too" \
-  "$(env_of actions-runner-1)" "LANG=C
-$(levels "$threads")"
+expect "they get the split across the repository's pre-layout runners" \
+  "$(env_of "actions-runner-recon-$n")" "$(levels "$(share "$n")")"
+expect "another repository's pre-layout runner keeps its .env" \
+  "$(env_of actions-runner-1)" "LANG=C"
 
 fresh_home
 for i in $(seq 2 "$n"); do runner "actions-runner-recon-$i" recon; done
@@ -280,6 +291,55 @@ expect "a pre-layout host short of a runner other than the first succeeds" "$sta
 [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
 expect "it names the new runner after a free number, not a working runner's" \
   "$(calls "^config ci-runners/volumetric_kit_recon/runner-2 .* --name $host-recon-2 ") $(calls '^config ')" "1 1"
+
+# --- calib, on a Mac ---------------------------------------------------------
+
+# A 10-core Mac, faked on any host, carrying recon's and gfx's runners with
+# the level the whole-host split gave them (10 cores over 4 runners): calib's
+# runners get the cores split across calib's own, and recon's and gfx's are
+# left alone.
+on_mac() { STUB_OS=Darwin STUB_CORES="$1" "${@:2}"; }
+fresh_home
+for repo in recon gfx; do
+  for i in 1 2; do runner "ci-runners/volumetric_kit_$repo/runner-$i" "$repo" "$(levels 2)\n"; done
+done
+cache_tarball
+status=0
+on_mac 10 setup calib || status=$?
+expect "calib's runners register on a Mac" "$status" 0
+[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+registered=0
+for i in 1 2; do
+  grep -qF "config ci-runners/volumetric_kit_calib/runner-$i --unattended --url https://github.com/taojin-6/volumetric_kit_calib --token REGTOKEN --labels mac --name $host-calib-$i " "$CALLS" &&
+    registered=$((registered + 1))
+done
+expect "it registers 2, named and labelled mac, and runs them" \
+  "$registered $(calls '^config ') $(running ci-runners/volumetric_kit_calib/runner-1) $(running ci-runners/volumetric_kit_calib/runner-2)" \
+  "2 2 yes yes"
+expect "each gets the cores split across calib's 2 runners: 5 of 10" \
+  "$(env_of ci-runners/volumetric_kit_calib/runner-1) $(env_of ci-runners/volumetric_kit_calib/runner-2)" \
+  "$(levels 5) $(levels 5)"
+expect "recon's and gfx's runners keep their levels and are not restarted" \
+  "$(env_of ci-runners/volumetric_kit_recon/runner-1) $(env_of ci-runners/volumetric_kit_gfx/runner-2) $(calls '^svc ci-runners/volumetric_kit_(recon|gfx)/')" \
+  "$(levels 2) $(levels 2) 0"
+: >"$CALLS"
+status=0
+on_mac 10 setup recon || status=$?
+expect "a re-run for recon gives its runners 5 and restarts them, leaving gfx's and calib's alone" \
+  "$status $(env_of ci-runners/volumetric_kit_recon/runner-2) $(calls '^svc ci-runners/volumetric_kit_recon/runner-[12] stop$') $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(calls '^svc ci-runners/volumetric_kit_(gfx|calib)/')" \
+  "0 $(levels 5) 2 $(levels 2) 0"
+status=0
+on_mac 1 setup calib || status=$?
+expect "with fewer cores than runners, each gets 1" \
+  "$status $(env_of ci-runners/volumetric_kit_calib/runner-1)" "0 $(levels 1)"
+status=0
+on_mac 10 teardown calib || status=$?
+remaining=""
+for dir in "$HOME"/ci-runners/*/runner-*; do
+  [ -d "$dir" ] && remaining="$remaining ${dir#"$HOME"/ci-runners/}"
+done
+expect "teardown removes calib's runners and only them" "$status$remaining" \
+  "0 volumetric_kit_gfx/runner-1 volumetric_kit_gfx/runner-2 volumetric_kit_recon/runner-1 volumetric_kit_recon/runner-2"
 
 # --- Teardown ---------------------------------------------------------------
 

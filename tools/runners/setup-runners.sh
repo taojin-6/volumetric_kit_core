@@ -6,7 +6,7 @@
 # hosts (label vk-linux-gpu) or Macs (label mac). README.md has the
 # prerequisites and the layout.
 #
-#   bash tools/runners/setup-runners.sh <recon|gfx>
+#   bash tools/runners/setup-runners.sh <recon|gfx|calib>
 #
 # Run as the user that owns ~/ci-runners (on Linux it calls sudo for the
 # services). Safe to re-run: registered runners are kept, so no new token is
@@ -18,10 +18,17 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 [ $# -eq 1 ] || {
-  echo "usage: $0 <recon|gfx>" >&2
+  echo "usage: $0 <recon|gfx|calib>" >&2
   exit 2
 }
 select_repo "$1"
+case " $RUNNER_OSES " in
+  *" $OS "*) ;;
+  *)
+    echo "$REPO has no self-hosted runners on $OS (README.md)" >&2
+    exit 2
+    ;;
+esac
 
 case "$(uname -m)" in
   x86_64) PKG_ARCH=x64 ;;
@@ -109,24 +116,20 @@ while [ "$have" -lt "$N" ]; do
 done
 find_runner_dirs
 
-# The parallel levels split the host's cores across every runner on it, of
-# every repository and in either layout, so they are written into all of
-# them: adding a repository's runners shrinks the others' share. They reach
-# jobs that run on the host, not job containers, whose workflows set their own.
-HOST_RUNNER_DIRS=()
-for dir in "$BASE"/*/runner-*/ "$HOME"/actions-runner-*/; do
-  if [ -f "${dir}.runner" ]; then HOST_RUNNER_DIRS+=("${dir%/}"); fi
-done
-THREADS=$((CORES / ${#HOST_RUNNER_DIRS[@]}))
+# The parallel levels split the host's cores across the repository's runners,
+# in either layout; other repositories' runners keep theirs (DECISIONS.md,
+# 2026-10-16). They reach jobs that run on the host, not job containers, whose
+# workflows set their own.
+THREADS=$((CORES / ${#RUNNER_DIRS[@]}))
 [ "$THREADS" -ge 1 ] || THREADS=1
 broken=0
-for dir in "${HOST_RUNNER_DIRS[@]}"; do
+for dir in "${RUNNER_DIRS[@]}"; do
   echo "==> $dir"
   ENV_CHANGED=0
   set_env "$dir/.env" CMAKE_BUILD_PARALLEL_LEVEL "$THREADS"
   set_env "$dir/.env" CTEST_PARALLEL_LEVEL "$THREADS"
-  # The runner reads .env only when it starts, so a running one restarts. A
-  # stopped one, such as another repository's paused runner, stays stopped.
+  # The runner reads .env only when it starts, so a running one restarts; a
+  # stopped one reads it when the loop below starts it.
   if [ "$ENV_CHANGED" -eq 1 ] && service_running "$dir"; then
     echo "    .env changed; restarting the runner"
     { svc "$dir" stop >/dev/null && start_service "$dir"; } || broken=$((broken + 1))

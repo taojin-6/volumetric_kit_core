@@ -17,6 +17,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   install nothing on the self-hosted Mac
   ([tools/runners/README.md](tools/runners/README.md#upgrading-homebrew)).
 
+### Changed
+
+- `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take
+  `calib`, whose runners are Mac-only, so `setup-runners.sh` refuses it on
+  Linux. A repository's runners split the host's cores among themselves
+  alone, and setting one repository up leaves the others' runners as they
+  are (DECISIONS.md, the 2026-10-16 entry). On a host set up before, run
+  `setup-runners.sh` once for each of its repositories, while CI is idle.
+- CI's build steps pass the parallel level rather than a bare `--parallel`,
+  which ignores it ([tools/runners/README.md](tools/runners/README.md)).
+
 ## [0.10.0] - 2026-10-16
 
 ### Added

@@ -3,19 +3,22 @@
 `recon` and `gfx` run their GPU legs on self-hosted runners: Linux GPU hosts
 (label `vk-linux-gpu`), where each leg runs in an OS-matched container with
 the GPU passed through (`--gpus all`), and a Mac (label `mac`), where jobs run
-natively for the Apple toolchain and MoltenVK on its GPU. Lint, sanitizers
-and the `required` gate stay on GitHub-hosted runners. Each repository's
-`ci.yml` says which legs go where; this directory is the host side, for both.
+natively for the Apple toolchain and MoltenVK on its GPU. `calib` runs only
+its macOS legs on the Mac, so it has runners only on Macs, and
+`setup-runners.sh` refuses it on Linux. Lint, sanitizers, the `required` gate
+and calib's Linux legs stay on GitHub-hosted runners. Each repository's
+`ci.yml` says which legs go where; this directory is the host side, for all
+three.
 
 | File | Does |
 | --- | --- |
-| `setup-runners.sh <recon\|gfx>` | registers a repository's runners on this host |
-| `teardown-runners.sh <recon\|gfx>` | stops, deregisters and deletes them |
+| `setup-runners.sh <recon\|gfx\|calib>` | registers a repository's runners on this host |
+| `teardown-runners.sh <recon\|gfx\|calib>` | stops, deregisters and deletes them |
 | `common.sh` | what the two scripts share |
 | `homebrew-key.sh <formula>...` | prints a cache key of their installed Homebrew versions ([Upgrading Homebrew](#upgrading-homebrew)) |
 
 Runners on a personal account belong to one repository, so a host serving
-both carries a set for each.
+several carries a set for each.
 
 ## Who can trigger CI
 
@@ -97,11 +100,16 @@ root-equivalent: fine for a personal machine, not for a shared one.
 2. **Homebrew** (<https://brew.sh>) and the formulae the legs use
    ([Upgrading Homebrew](#upgrading-homebrew)).
 3. In Terminal, as the login user: `bash tools/runners/setup-runners.sh recon`,
-   and again with `gfx`. Each registers 2 runners labelled `mac` (Debug and
-   Release in parallel), each a launchd LaunchAgent.
+   and again with `gfx` and `calib`. Each registers 2 runners labelled `mac`
+   (Debug and Release in parallel), each a launchd LaunchAgent. Their jobs
+   run as that user and can read its `gh` login, which acts on every
+   repository of the account: run `gh auth logout` once they are registered,
+   and log in again only to register or tear down.
 4. Keep the Mac awake and logged in, since a LaunchAgent runs only in the
    user's session: `sudo pmset -a sleep 0 disablesleep 1`, and enable
-   automatic login in System Settings.
+   automatic login in System Settings. macOS offers automatic login only
+   with FileVault off; with it on, the runners stay offline after a restart
+   until someone logs in.
 
 ## What setup-runners.sh does
 
@@ -124,15 +132,22 @@ root-equivalent: fine for a personal machine, not for a shared one.
 - Each runner is a service, installed if it is not and started if it is not
   running. A service that does not install or start fails the run, after the
   other runners are set up.
-- Every runner on the host, of every repository, gets
-  `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL` in its `.env`: the
-  host's cores divided by the runners registered on it. Adding a
-  repository's runners thus shrinks the others' share in the same run. The
-  levels reach jobs that run on the host (the Mac's), not job containers,
-  whose workflows set their own.
-- The runner reads `.env` only when it starts, so a running runner whose
-  `.env` changed, of any repository, is restarted, which cancels a job
-  running on it: run the script while CI is idle.
+- Each of the repository's runners gets `CMAKE_BUILD_PARALLEL_LEVEL` and
+  `CTEST_PARALLEL_LEVEL` in its `.env`: the host's cores divided by the
+  repository's runners on it, 5 on a 10-core Mac with 2
+  ([DECISIONS.md](../../DECISIONS.md), the 2026-10-16 entry). Other
+  repositories' runners keep theirs, so jobs of several repositories at once
+  oversubscribe the cores.
+- The levels reach jobs that run on the host (the Mac's), not job
+  containers, whose workflows set their own. A step honours them only when
+  it passes them or gives no `--parallel`: a bare `cmake --build --parallel`
+  runs the build tool's default, with Makefiles an unbounded `make -j`, and a
+  bare `ctest --parallel` one test per core. A workflow therefore passes
+  `--parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"`,
+  and to `ctest` the same with `CTEST_PARALLEL_LEVEL`.
+- The runner reads `.env` only when it starts, so a running runner of the
+  repository whose `.env` changed is restarted, which cancels a job running
+  on it: run the script while CI is idle.
 
 ## Upgrading Homebrew
 

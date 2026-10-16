@@ -71,8 +71,10 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON -DVKC_WITH_CONFIG=ON \
             -DVKC_TEST_SHARDS=4
 
+      # The level, not a bare --parallel, which ignores it and runs an
+      # unbounded make -j (tools/runners/README.md).
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
       - name: Test
         env:

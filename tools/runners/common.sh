@@ -16,12 +16,17 @@ die() {
   exit 1
 }
 
-# Sets REPO, SLUG and RUNNER_ROOT for a repository's short name, or exits 2.
+# Sets REPO, SLUG and RUNNER_ROOT for a repository's short name, and
+# RUNNER_OSES, the systems (as `uname -s` names them) whose hosts carry its
+# runners, or exits 2. calib's Linux legs run on GitHub-hosted runners, so it
+# has runners only on Macs.
 select_repo() {
+  # shellcheck disable=SC2034 # setup-runners.sh reads RUNNER_OSES
   case "${1:-}" in
-    recon | gfx) ;;
+    recon | gfx) RUNNER_OSES="Linux Darwin" ;;
+    calib) RUNNER_OSES="Darwin" ;;
     *)
-      echo "unknown repository '${1:-}': expected recon or gfx" >&2
+      echo "unknown repository '${1:-}': expected recon, gfx or calib" >&2
       exit 2
       ;;
   esac
