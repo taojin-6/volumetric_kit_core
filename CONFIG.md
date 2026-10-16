@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.7.0 CONFIG)
+vkc_require_core(0.8.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -116,9 +116,10 @@ unknown extension object.
   length); `sdf_mode` (`signed`/`shell`); `shell_voxels`; and `allow_holes`
   (core 0.7.0, default false), which lets signed mode admit a mesh whose only
   defect is boundary edges and is refused with `shell`, even when false. A
-  frame-number pattern in `path` is the consumer's to read: core resolves the
-  path and leaves `%` alone. Core checks only that `shell_voxels` is finite
-  and positive; its bound against the voxel size and truncation is the
+  frame-number pattern in `path` is the consumer's to read; core escapes each
+  `%` in the scenario's own directory as `%%` (core 0.8.0), so only the path
+  the user wrote carries the pattern. Core checks only that `shell_voxels` is
+  finite and positive; its bound against the voxel size and truncation is the
   consumer's mesh conversion's.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
   `max_depth_m`, `max_weight`. Every dataset and Orbbec profile accepts the
@@ -127,11 +128,13 @@ unknown extension object.
   extraction/dynamic fields are accepted only by their actual consumers.
   CodecMesh accepts voxel size and, from core 0.7.0, truncation.
 - Codec fields: `coefficient_count`, `quantization_scale`,
-  `quantization_table` (`uniform`/`band`/`radial`), `segment_size`, `sweep`;
-  `encode_every` belongs to CodecReplica and `inspect_only` to CodecMesh.
-  Core checks a `coefficient_count` in [1, 512] and a positive normal scale;
-  the codec maps the table to its weights and checks each kept coefficient's
-  step at runtime.
+  `quantization_table` (`uniform`/`band`/`radial`), `segment_size`,
+  `intra_period` (core 0.8.0), `sweep`; `encode_every` belongs to
+  CodecReplica and `inspect_only` to CodecMesh. The encoder writes an I-frame
+  every `intra_period` frames and zero-motion P-frames between them; the
+  default, 1, is all-intra. Core checks a `coefficient_count` in [1, 512], a
+  positive normal scale and a positive `intra_period`; the codec maps the
+  table to its weights and checks each kept coefficient's step at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
   `overlay` only where UI is supported. Model dimensions are at most 16384.
   Scanner accepts no window section. No window/device handles are serialized.

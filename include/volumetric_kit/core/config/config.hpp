@@ -52,8 +52,9 @@ struct Source {
   SourceKind kind = SourceKind::None;
   std::string format;
   std::string driver;
-  /// Resolved against the config file. A CodecMesh consumer may read a
-  /// frame-number pattern in it; core reads none, so `%` is plain text here.
+  /// Resolved against the config file. For CodecMesh it is a frame-number
+  /// pattern for the consumer to read, `%%` being a literal `%`, so core
+  /// escapes each `%` in the config file's directory.
   std::string path;
   std::string camera_parameters;
   std::string serial;
@@ -112,6 +113,9 @@ struct Codec {
   float quantization_scale = 0.2F;
   QuantizationTable quantization_table = QuantizationTable::Uniform;
   std::uint32_t segment_size = 64;
+  /// An I-frame every `intra_period` frames, zero-motion P-frames between
+  /// them; 1, the default, codes every frame intra.
+  std::uint32_t intra_period = 1;
   int encode_every = 1;
   bool sweep = false;
   bool inspect_only = false;

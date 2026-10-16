@@ -3,6 +3,7 @@
 #include "volumetric_kit/core/config/config.hpp"
 
 #include <cfenv>
+#include <cstdint>
 #include <cstdlib>  // IWYU pragma: keep; glibc declares mkdtemp here.
 #include <filesystem>
 #include <limits>
@@ -512,6 +513,57 @@ TEST(Config, CodecSettingsKeepGenericChecksAndLeaveStepsToTheCodec) {
   EXPECT_TRUE(coarse) << coarse.status().message();
 }
 
+TEST(Config, IntraPeriodIsAPositiveCountForBothCodecs) {
+  EXPECT_EQ(Codec{}.intra_period, 1U);
+  const std::string replica = R"({"version":1,"source":{"path":"scene"})";
+  const std::string mesh =
+      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
+  const auto with_period = [](const std::string& source, const char* period) {
+    return source + R"(,"codec":{"intra_period":)" + period + "}}";
+  };
+  for (const auto app : {App::CodecReplica, App::CodecMesh}) {
+    const std::string& source = app == App::CodecReplica ? replica : mesh;
+    const auto omitted = scenario(source + "}", app);
+    ASSERT_TRUE(omitted) << omitted.status().message();
+    EXPECT_EQ(omitted->codec.intra_period, 1U);
+    for (const std::uint32_t period : {1U, 30U, 4294967295U}) {
+      const auto parsed =
+          scenario(with_period(source, std::to_string(period).c_str()), app);
+      ASSERT_TRUE(parsed) << parsed.status().message();
+      EXPECT_EQ(parsed->codec.intra_period, period);
+    }
+    rejected(with_period(source, "0"), app,
+             "codec.intra_period: must be finite and positive");
+    for (const char* period : {"-1", "4294967296"}) {
+      rejected(with_period(source, period), app,
+               "codec.intra_period: integer is out of range");
+    }
+    for (const char* period : {"1.5", "8.0", R"("8")", "true", "null", "[8]"}) {
+      rejected(with_period(source, period), app,
+               "codec.intra_period: expected an integer");
+    }
+  }
+  // The codec section, and so the period, belongs to the codec profiles.
+  rejected(with_period(replica, "8"), App::FuseReplica,
+           "codec: is not used by this application");
+  rejected(with_period(R"({"version":1)", "8"), App::GfxModel,
+           "codec: is not used by this application");
+  // Inspection codes nothing, so an enabled inspect_only refuses a period,
+  // even the default; a disabled one does not.
+  const auto coded =
+      scenario(mesh + R"(,"codec":{"inspect_only":false,"intra_period":8}})",
+               App::CodecMesh);
+  ASSERT_TRUE(coded) << coded.status().message();
+  EXPECT_EQ(coded->codec.intra_period, 8U);
+  for (const char* period : {"1", "8"}) {
+    rejected(mesh + R"(,"codec":{"inspect_only":true,"intra_period":)" +
+                 period + "}}",
+             App::CodecMesh,
+             "codec.intra_period: is not used when codec.inspect_only is "
+             "enabled");
+  }
+}
+
 TEST(Config, MeshSourceRequiresOneScaleAndOneNonzeroUpDirection) {
   const auto parsed = scenario(
       R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"-y"}})",
@@ -655,6 +707,43 @@ TEST(Config, MeshSequenceRangeIsGenericAndThePatternIsTheConsumers) {
       App::CodecMesh);
   ASSERT_TRUE(inspected) << inspected.status().message();
   EXPECT_EQ(inspected->run.frames, 3);
+}
+
+TEST(Config, OnlyTheMeshPathTheUserWroteCarriesAPattern) {
+  // CodecMesh's source.path, resolved against this base directory.
+  const auto mesh_path = [](const std::string& path, const char* base) {
+    const auto parsed = scenario(
+        R"({"version":1,"source":{"path":")" + path +
+            R"(","height_m":1.7,"up_axis":"y"},"output":{"csv":"rows.csv"}})",
+        App::CodecMesh, base);
+    EXPECT_TRUE(parsed) << parsed.status().message();
+    if (!parsed) return std::string();
+    EXPECT_EQ(parsed->output.csv, std::string(base) + "/rows.csv");
+    return parsed->source.path;
+  };
+  // A '%' in the scenario's directory is text; the user's own is pattern.
+  EXPECT_EQ(mesh_path("cube.obj", "/pct/50%off"), "/pct/50%%off/cube.obj");
+  EXPECT_EQ(mesh_path("mesh.obj", "/pct/take%d"), "/pct/take%%d/mesh.obj");
+  EXPECT_EQ(mesh_path("f%05d.obj", "/pct/take%d"), "/pct/take%%d/f%05d.obj");
+  EXPECT_EQ(mesh_path("a%%b.obj", "/pct"), "/pct/a%%b.obj");
+  // A ../ removes the escaped directories it leaves.
+  EXPECT_EQ(mesh_path("../cube.obj", "/pct/50%off"), "/pct/cube.obj");
+  EXPECT_EQ(mesh_path("../b/f%d.obj", "/1%/a%b"), "/1%%/b/f%d.obj");
+  // An absolute path is all the user's.
+  EXPECT_EQ(mesh_path("/data/50%off/f%05d.obj", "/pct/take%d"),
+            "/data/50%off/f%05d.obj");
+  // No other profile's path is a pattern.
+  for (const auto app : {App::FuseReplica, App::CodecReplica}) {
+    const auto replica = scenario(R"({"version":1,"source":{"path":"scene"}})",
+                                  app, "/pct/50%off");
+    ASSERT_TRUE(replica) << replica.status().message();
+    EXPECT_EQ(replica->source.path, "/pct/50%off/scene");
+    EXPECT_EQ(replica->source.camera_parameters, "/pct/50%off/cam_params.json");
+  }
+  const auto model = scenario(R"({"version":1,"source":{"path":"cube.glb"}})",
+                              App::GfxModel, "/pct/take%d");
+  ASSERT_TRUE(model) << model.status().message();
+  EXPECT_EQ(model->source.path, "/pct/take%d/cube.glb");
 }
 
 TEST(Config, CodecMeshTruncationAndHoles) {

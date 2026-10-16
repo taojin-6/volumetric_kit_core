@@ -1012,3 +1012,13 @@ the same and recon refused `host`: a choice with one answer, which the codec
 owns. Core removes the key and its enum rather than keep a setting no
 consumer can act on. The schema stays closed, so a scenario that still sets
 it fails to load, naming it, rather than having it silently ignored.
+
+**Amended 2026-10-14 (core 0.8.0): a mesh path is pattern text throughout.**
+A CodecMesh consumer reads a printf-style frame-number pattern in
+`source.path`, but core joins the scenario's directory onto a relative path
+first, so a `%` in that directory was read as pattern: `50%off/` was refused
+and `take%d/` loaded `take0/`. The user cannot escape a directory they never
+wrote, so core escapes each `%` in it as `%%` before joining. What the user
+wrote, including an absolute path, is unchanged; every `%` in the result is
+pattern text, which the consumer unescapes. No other path is a pattern, so
+no other is escaped.

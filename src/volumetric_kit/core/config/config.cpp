@@ -246,6 +246,7 @@ void read_codec(const Json& json, Config& c, ParseState& state) {
   r.number("coefficient_count", c.codec.coefficient_count);
   r.number("quantization_scale", c.codec.quantization_scale);
   r.number("segment_size", c.codec.segment_size);
+  r.number("intra_period", c.codec.intra_period);
   r.number("encode_every", c.codec.encode_every);
   r.boolean("sweep", c.codec.sweep);
   r.boolean("inspect_only", c.codec.inspect_only);
@@ -563,6 +564,7 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         c.codec.quantization_scale <= 0)
       fail("codec.quantization_scale", "must be positive and normal");
     positive(c.codec.segment_size, "codec.segment_size");
+    positive(c.codec.intra_period, "codec.intra_period");
     nonnegative(c.codec.encode_every, "codec.encode_every");
     if (c.codec.quantization_table != QuantizationTable::Uniform &&
         c.codec.quantization_table != QuantizationTable::Band &&
@@ -656,6 +658,15 @@ void resolve_path(std::string& path, const std::filesystem::path& base) {
   if (p.is_relative()) p = base / p;
   path = p.lexically_normal().string();
 }
+// `base` with each '%' doubled, which a printf-style pattern reads as text.
+std::filesystem::path escape_percent(const std::filesystem::path& base) {
+  std::string escaped;
+  for (const char ch : base.string()) {
+    escaped += ch;
+    if (ch == '%') escaped += '%';
+  }
+  return escaped;
+}
 void resolve(Config& c, App app, std::string_view directory,
              const ParseState& state) {
   if (app != App::Scanner &&
@@ -666,7 +677,10 @@ void resolve(Config& c, App app, std::string_view directory,
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()
                                          : std::filesystem::path(directory);
-  resolve_path(c.source.path, base);
+  // CodecMesh's path is a frame-number pattern; only what the user wrote is
+  // pattern, so the directory joined onto it is escaped.
+  resolve_path(c.source.path,
+               app == App::CodecMesh ? escape_percent(base) : base);
   resolve_path(c.source.camera_parameters, base);
   resolve_path(c.source.sync_config, base);
   resolve_path(c.source.calibration, base);
