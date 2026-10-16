@@ -58,12 +58,14 @@ bool is_dataset(App app) {
 bool is_codec(App app) {
   return is_one_of(app, {App::CodecReplica, App::CodecMesh});
 }
-bool is_live(App app) {
+// The Orbbec profiles that can fuse. Not every live profile: CalibRig and
+// Scanner are live too.
+bool is_live_fusion(App app) {
   return is_one_of(app, {App::FuseOrbbec, App::RigViewer});
 }
-// The Orbbec profiles: the live ones, and CalibRig, which opens a rig from
-// its sync file alone.
-bool is_orbbec(App app) { return is_live(app) || app == App::CalibRig; }
+// The Orbbec profiles: those that can fuse, and CalibRig, which opens a rig
+// from its sync file alone.
+bool is_orbbec(App app) { return is_live_fusion(app) || app == App::CalibRig; }
 struct ParseState {
   std::vector<std::string> fields;
   std::string up_axis;
@@ -325,7 +327,7 @@ bool supports(std::string_view field, App app) {
     return is_orbbec(app) || app == App::Scanner;
   if (field_in(field,
                {"source.serial", "source.calibration", "source.apply_sync"}))
-    return is_live(app);
+    return is_live_fusion(app);
   if (field_in(field,
                {"source.sync_config", "source.color_codec",
                 "source.color_width", "source.color_height",
@@ -354,7 +356,7 @@ bool supports(std::string_view field, App app) {
     return app == App::Scanner;
   if (field == "fusion.share_vertices")
     return is_one_of(app, {App::FuseReplica, App::FuseRender, App::FuseViewer});
-  if (field == "fusion.dynamic") return is_dataset(app) || is_live(app);
+  if (field == "fusion.dynamic") return is_dataset(app) || is_live_fusion(app);
   if (field_in(field, {"fusion.depth_within_color", "fusion.hold_ms",
                        "fusion.free_after"}))
     return app == App::RigViewer;
@@ -401,7 +403,7 @@ bool supports(std::string_view field, App app) {
     return is_codec(app);
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
-    return is_dataset(app) || is_live(app) || is_gfx(app) ||
+    return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
            app == App::CodecMesh;
   if (field == "run.sets") return app == App::RigViewer;
   if (field == "run.first") return app == App::CodecMesh;
@@ -732,7 +734,7 @@ Config defaults_impl(Application application) {
             ? 400
             : 1 << 30;
   }
-  if (is_live(application)) {
+  if (is_live_fusion(application)) {
     c.source.kind = SourceKind::Live;
     c.source.driver = "orbbec";
     c.fusion.min_depth_m = 0.25F;
