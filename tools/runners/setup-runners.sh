@@ -25,7 +25,7 @@ select_repo "$1"
 case " $RUNNER_OSES " in
   *" $OS "*) ;;
   *)
-    echo "$REPO has no self-hosted runners on $OS (README.md)" >&2
+    echo "$REPO has no self-hosted runners on $OS, only on ${RUNNER_OSES// / and } (README.md)" >&2
     exit 2
     ;;
 esac
@@ -35,7 +35,7 @@ case "$(uname -m)" in
   aarch64 | arm64) PKG_ARCH=arm64 ;;
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
-case "$OS" in
+case "$OS" in # RUNNER_OSES, checked above, names only these two
   Linux)
     PKG_OS=linux
     LABEL=vk-linux-gpu
@@ -62,7 +62,6 @@ case "$OS" in
       echo "  generates with -G Xcode needs full Xcode (README.md, 'Macs'). Continuing."
     fi
     ;;
-  *) die "unsupported OS: $OS" ;;
 esac
 
 # The repository's runners already registered here, in either layout. New

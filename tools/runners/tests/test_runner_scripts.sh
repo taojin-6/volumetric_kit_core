@@ -136,11 +136,18 @@ expect "teardown-runners.sh needs a repository" "$status" 2
 status=0
 teardown core || status=$?
 expect "teardown-runners.sh rejects 'core'" "$status" 2
-# calib's Linux legs are GitHub-hosted, so it has runners only on Macs.
+# calib's Linux legs are GitHub-hosted, so it has runners only on Macs; and
+# no repository has runners on another system. The refusal names the systems
+# that have them.
 status=0
 STUB_OS=Linux setup calib || status=$?
 expect "setup-runners.sh refuses calib on a Linux host, before it asks gh or registers anything" \
-  "$status $(calls '^(config|gh|curl) ') $(grep -c 'volumetric_kit_calib has no self-hosted runners on Linux' "$tmp/out" || true)" \
+  "$status $(calls '^(config|gh|curl) ') $(grep -c 'volumetric_kit_calib has no self-hosted runners on Linux, only on Darwin ' "$tmp/out" || true)" \
+  "2 0 1"
+status=0
+STUB_OS=FreeBSD setup recon || status=$?
+expect "setup-runners.sh refuses a system with no runners, naming those that have them" \
+  "$status $(calls '^(config|gh|curl) ') $(grep -c 'volumetric_kit_recon has no self-hosted runners on FreeBSD, only on Linux and Darwin ' "$tmp/out" || true)" \
   "2 0 1"
 
 # --- Registration -----------------------------------------------------------

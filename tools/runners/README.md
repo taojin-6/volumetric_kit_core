@@ -142,9 +142,11 @@ root-equivalent: fine for a personal machine, not for a shared one.
   containers, whose workflows set their own. A step honours them only when
   it passes them or gives no `--parallel`: a bare `cmake --build --parallel`
   runs the build tool's default, with Makefiles an unbounded `make -j`, and a
-  bare `ctest --parallel` one test per core. A workflow therefore passes
-  `--parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"`,
-  and to `ctest` the same with `CTEST_PARALLEL_LEVEL`.
+  bare `ctest --parallel` one test per core. A build step therefore passes
+  `--parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"`.
+  `ctest` honours `CTEST_PARALLEL_LEVEL` with no `--parallel`, or with the
+  same form; only the form runs tests at once where the level is unset, as on
+  GitHub-hosted runners.
 - The runner reads `.env` only when it starts, so a running runner of the
   repository whose `.env` changed is restarted, which cancels a job running
   on it: run the script while CI is idle.
@@ -211,11 +213,11 @@ up, then tear the old one down.
   in again (macOS). Resume with `bash tools/runners/setup-runners.sh recon`,
   which starts every runner of the repository that is not running.
 - **Remove**, on the old host: `bash tools/runners/teardown-runners.sh recon`,
-  and again with `gfx`. It uninstalls each runner's service, deregisters the
-  runner and deletes its directory, and deletes the repository's leftovers
-  that never finished registering. It checks `gh` auth and mints one remove
-  token before it touches any runner, so if either fails every runner keeps
-  running. A runner GitHub will not deregister is kept, offline, with the
-  credentials a retry needs, and the script exits non-zero. Deregistering
-  matters: a registration left on a machine given away is a way into the
-  repository's CI.
+  and again with `gfx` and, on a Mac, `calib`. It uninstalls each runner's
+  service, deregisters the runner and deletes its directory, and deletes the
+  repository's leftovers that never finished registering. It checks `gh` auth
+  and mints one remove token before it touches any runner, so if either fails
+  every runner keeps running. A runner GitHub will not deregister is kept,
+  offline, with the credentials a retry needs, and the script exits non-zero.
+  Deregistering matters: a registration left on a machine given away is a way
+  into the repository's CI.
