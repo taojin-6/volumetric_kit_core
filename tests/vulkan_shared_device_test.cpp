@@ -176,9 +176,9 @@ TEST(QueuePlanChoice, TheRenderersFamilyPresentsItself) {
 
 // VulkanTest skips without a device and fails on validation errors from the
 // shared device's instance too: they reach the same log sink.
-using SharedDeviceTest = test::VulkanTest;
+using SharedDeviceCreateTest = test::VulkanTest;
 
-TEST_F(SharedDeviceTest, ASurfaceMakersFailureIsReturned) {
+TEST_F(SharedDeviceCreateTest, ASurfaceMakersFailureIsReturned) {
   SharedDeviceConfig config = windowless();
   config.graphics.needs_present = true;
   VkInstance seen = VK_NULL_HANDLE;
@@ -192,7 +192,7 @@ TEST_F(SharedDeviceTest, ASurfaceMakersFailureIsReturned) {
   EXPECT_NE(seen, VK_NULL_HANDLE);  // made on the shared instance
 }
 
-TEST_F(SharedDeviceTest, ADeviceLackingTheUnionIsNamed) {
+TEST_F(SharedDeviceCreateTest, ADeviceLackingTheUnionIsNamed) {
   SharedDeviceConfig config = windowless();
   config.graphics.extensions = {"VK_VKC_no_such_extension"};
   const Status s = SharedDevice::create(config).status();
@@ -201,7 +201,7 @@ TEST_F(SharedDeviceTest, ADeviceLackingTheUnionIsNamed) {
       << s.message();
 }
 
-TEST_F(SharedDeviceTest, BuildsOneDeviceBothLibrariesAdopt) {
+TEST_F(SharedDeviceCreateTest, BuildsOneDeviceBothLibrariesAdopt) {
   const SharedDeviceConfig config = windowless();
   Result<std::unique_ptr<SharedDevice>> made = SharedDevice::create(config);
   ASSERT_TRUE(made.ok()) << made.status().message();
@@ -270,7 +270,7 @@ TEST_F(SharedDeviceTest, BuildsOneDeviceBothLibrariesAdopt) {
 
 // The payloads declare what create enabled, a feature the chain alone set
 // included, so a library that adopts one can check for it.
-TEST_F(SharedDeviceTest, PayloadsDeclareWhatTheFeatureChainEnabled) {
+TEST_F(SharedDeviceCreateTest, PayloadsDeclareWhatTheFeatureChainEnabled) {
   if (instance().api_version() < VK_API_VERSION_1_2) {
     GTEST_SKIP() << "VkPhysicalDeviceVulkan12Features needs a 1.2 instance";
   }
@@ -307,7 +307,7 @@ TEST_F(SharedDeviceTest, PayloadsDeclareWhatTheFeatureChainEnabled) {
 
 // Requirements left at their defaults ask for compute alone; the renderer's
 // queue does graphics all the same, and its adopt still passes.
-TEST_F(SharedDeviceTest, TheRenderersQueueDoesGraphicsWhateverItsFlags) {
+TEST_F(SharedDeviceCreateTest, TheRenderersQueueDoesGraphicsWhateverItsFlags) {
   SharedDeviceConfig config = windowless();
   config.graphics = DeviceRequirements{};
   Result<std::unique_ptr<SharedDevice>> made = SharedDevice::create(config);
@@ -322,7 +322,7 @@ TEST_F(SharedDeviceTest, TheRenderersQueueDoesGraphicsWhateverItsFlags) {
 // The point of one device: a buffer the compute library writes is the
 // renderer's to read in place. Named for both families, it is CONCURRENT
 // exactly when they differ.
-TEST_F(SharedDeviceTest, ABufferCrossesBetweenTheLibrariesInPlace) {
+TEST_F(SharedDeviceCreateTest, ABufferCrossesBetweenTheLibrariesInPlace) {
   const SharedDeviceConfig config = windowless();
   Result<std::unique_ptr<SharedDevice>> made = SharedDevice::create(config);
   ASSERT_TRUE(made.ok()) << made.status().message();
@@ -376,7 +376,7 @@ TEST_F(SharedDeviceTest, ABufferCrossesBetweenTheLibrariesInPlace) {
 // The two libraries submit from their own threads while a third drains: the
 // mutexes keep each queue's operations apart, which the validation layer
 // checks.
-TEST_F(SharedDeviceTest, BothLibrariesSubmitWhileItDrains) {
+TEST_F(SharedDeviceCreateTest, BothLibrariesSubmitWhileItDrains) {
   const SharedDeviceConfig config = windowless();
   Result<std::unique_ptr<SharedDevice>> made = SharedDevice::create(config);
   ASSERT_TRUE(made.ok()) << made.status().message();

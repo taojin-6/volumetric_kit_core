@@ -10,20 +10,23 @@
 /// @ref volumetric_kit::core::test::VulkanTest gives a test an instance and
 /// the best physical device for its requirements;
 /// @ref volumetric_kit::core::test::VulkanDeviceTest adds a device and an
-/// allocator. Both apply the environment's policy (`vulkan_policy.hpp`): a
-/// missing device skips or fails, a missing layer fails, and every error the
-/// layer reports fails the running test.
+/// allocator; @ref volumetric_kit::core::test::SharedDeviceTest gives a
+/// cross-family test a compute library's and a renderer's devices on two
+/// queue families (`two_family_device.hpp`). All apply the environment's
+/// policy (`vulkan_policy.hpp`): a missing device skips or fails, a missing
+/// layer fails, and every error the layer reports fails the running test.
 ///
 /// A fixture may ask for more validation than the environment does
 /// (@ref volumetric_kit::core::test::VulkanTest::validation); it then gets it
 /// wherever the layer is installed.
 ///
-/// The tests in a process share one instance per validation level, and one
-/// device per level and set of requirements: the first test that needs one
-/// makes it, and it is destroyed after the last test. Each test makes and
-/// destroys its own objects on them. An object a test never destroys is
-/// reported as the shared device is destroyed, failing the run rather than a
-/// named test.
+/// The tests in a process share one instance per validation level, one device
+/// per level and set of requirements, and one two-family device, with an
+/// instance of its own, per level and pair of requirements: the first test
+/// that needs one makes it, and it is destroyed after the last test. Each test
+/// makes and destroys its own objects on them. An object a test never destroys
+/// is reported as the shared device is destroyed, failing the run rather than
+/// a named test.
 ///
 /// @code
 /// namespace test = volumetric_kit::core::test;
@@ -51,6 +54,7 @@
 
 #include <gtest/gtest.h>
 
+#include "volumetric_kit/core/testing/two_family_device.hpp"  // IWYU pragma: export
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"  // IWYU pragma: export
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -62,6 +66,7 @@ namespace volumetric_kit::core::test {
 
 namespace detail {
 struct DeviceSlot;
+struct TwoFamilySlot;
 }  // namespace detail
 
 /// @brief A test with an instance and a physical device: shared, validated
@@ -132,7 +137,9 @@ class VulkanTest : public ::testing::Test {
  private:
   struct Capture;
 
-  friend class VulkanDeviceTest;  // completes SetUp in two steps
+  // Each completes SetUp in two steps.
+  friend class VulkanDeviceTest;
+  friend class SharedDeviceTest;
 
   std::unique_ptr<Capture> capture_;
   const Instance* instance_ = nullptr;
@@ -185,6 +192,89 @@ class VulkanDeviceTest : public VulkanTest {
   detail::DeviceSlot* slot_ = nullptr;  // the shared device's, to mark it lost
   Device* device_ = nullptr;
   std::optional<Allocator> allocator_;
+};
+
+/// @brief A @ref VulkanTest with the process's @ref TwoFamilyDevice for its
+///        two requirements: a compute library's device and a renderer's, on
+///        one headless `SharedDevice`, each with an allocator.
+///
+/// It skips where the shared device puts both libraries on one queue family
+/// -- two queues of one family, which `SharedDevice::create` prefers, or one
+/// shared queue -- so a test on it always crosses families. It runs under the
+/// validation layer wherever the layer is installed, as the fixture asks for
+/// @ref Validation::On by default.
+///
+/// The two-family device brings its own instance. The fixture's instance and
+/// physical device only decide, for both requirements merged, whether to skip
+/// or fail without a device, so they are hidden from a test on it: use
+/// `two_family().shared().instance()` and `.physical()`.
+///
+/// The two-family device is shared as @ref VulkanDeviceTest's device is, and
+/// requirements carrying a `feature_chain` fail `SetUp` for the same reason,
+/// as does a renderer that presents: there is no surface. `TearDown` waits
+/// for both queues to go idle; a test that loses the device fails, and the
+/// next one gets a new one.
+///
+/// @code
+/// class DepthCloudCrossFamily : public test::SharedDeviceTest {
+///  protected:
+///   DeviceRequirements graphics_requirements() const override {
+///     return gfx::device_requirements();
+///   }
+/// };
+///
+/// TEST_F(DepthCloudCrossFamily, DrawsWhatComputeWrote) {
+///   test::TwoFamilyDevice& two = two_family();
+///   BufferDesc desc;
+///   desc.size = bytes;
+///   desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+///                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+///   desc.queue_families = two.families().data();
+///   desc.queue_family_count = test::TwoFamilyDevice::kFamilyCount;
+///   Result<Buffer> depth = two.compute_allocator().create_buffer(desc);
+///   ASSERT_TRUE(depth.ok()) << depth.status().message();
+///   ASSERT_TRUE(two.write_buffer(*depth, 0, metres.data(), bytes).ok());
+///   // ... draw *depth on two.graphics(); a validation error fails this test.
+/// }
+/// @endcode
+class SharedDeviceTest : public VulkanTest {
+ public:
+  ~SharedDeviceTest() override;
+
+ protected:
+  SharedDeviceTest();
+
+  /// @return The compute library's requirements; the defaults unless a
+  ///         fixture overrides it.
+  virtual DeviceRequirements compute_requirements() const { return {}; }
+  /// @return The renderer's requirements; a graphics queue unless a fixture
+  ///         overrides it.
+  virtual DeviceRequirements graphics_requirements() const;
+  /// @return @ref Validation::On, unless a fixture overrides it.
+  Validation validation() const override { return Validation::On; }
+  /// @return Both requirements merged, with each library's queue capability,
+  ///         as `SharedDevice::create` merges them: what the fixture's
+  ///         physical device must meet. A `feature_chain` and presenting,
+  ///         which `SetUp` refuses, are left out.
+  DeviceRequirements requirements() const final;
+
+  /// @brief @ref VulkanTest::SetUp, then borrow the shared two-family device;
+  ///        skips where it has one family.
+  void SetUp() override;
+  /// @brief Wait for both queues to go idle.
+  void TearDown() override;
+
+  /// @return The process's two-family device for these requirements, which
+  ///         crosses families. @pre `SetUp` completed.
+  TwoFamilyDevice& two_family();
+
+ private:
+  // Another instance than the two-family device's.
+  using VulkanTest::instance;
+  using VulkanTest::physical;
+
+  detail::TwoFamilySlot* slot_ = nullptr;  // to mark it lost
+  TwoFamilyDevice* device_ = nullptr;
 };
 
 namespace detail {

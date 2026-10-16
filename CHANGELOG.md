@@ -7,6 +7,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-16
+
+### Added
+
+- `test::TwoFamilyDevice` (`core_test_policy`,
+  `volumetric_kit/core/testing/two_family_device.hpp`): a headless
+  `SharedDevice` adopted by a compute library and a renderer with their own
+  requirements, an allocator each, `families()` for a `CONCURRENT` resource,
+  and `write_buffer` / `write_image` on the compute queue, fence-waited.
+  `crosses_families()` is true exactly under `QueuePlan::TwoFamilies`.
+- `test::write_image` (`core_test_policy`,
+  `volumetric_kit/core/testing/write_image.hpp`): fills mip 0, layer 0 of a
+  color image from host texels on any device's queue, leaves the whole image
+  in a layout its usage allows, and records it.
+- `test::SharedDeviceTest` (`core_test_support`, `vulkan_fixture.hpp`): the
+  GoogleTest fixture on it, one per process for each validation level and pair
+  of requirements, validated wherever the layer is installed; it skips where
+  the shared device has one family (DECISIONS.md, "One Vulkan test fixture for
+  the family"). It hides `VulkanTest`'s instance and physical device, which
+  are not the two-family device's.
+
+### Changed
+
+- The fixtures' skip without a device opens with "no Vulkan device for this
+  test: ", which a CTest `SKIP_REGULAR_EXPRESSION` can match.
+
+### Migration
+
+- Nothing changes for existing tests. A sibling's cross-family test requires
+  core 0.10.0 and moves its own `SharedDevice` setup onto these: recon's
+  `sensor_apple_pixel_buffer_importer_test` and `sensor_picture_readback_test`
+  onto `TwoFamilyDevice`, and the fill in `test_image::make` onto
+  `test::write_image`.
+
 ## [0.9.0] - 2026-10-16
 
 ### Added

@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 
-# core_test_policy: the environment's policy, needing no test framework
-# (vulkan_policy.hpp). core_test_support: the GoogleTest fixtures on it
-# (vulkan_fixture.hpp), linking the consumer's GTest::gtest, which a consumer
-# without googletest need not provide. Each is built only for a target that
-# links it, and static, so the shared instances and devices are the test
-# binary's own.
-add_library(core_test_policy STATIC EXCLUDE_FROM_ALL vulkan_policy.cpp)
+# core_test_policy: the environment's policy, the two-family device and the
+# image write, needing no test framework (vulkan_policy.hpp,
+# two_family_device.hpp, write_image.hpp). core_test_support: the GoogleTest
+# fixtures on them (vulkan_fixture.hpp), linking the consumer's GTest::gtest,
+# which a consumer without googletest need not provide. Each is built only for a
+# target that links it, and static, so the shared instances and devices are the
+# test binary's own.
+add_library(core_test_policy STATIC EXCLUDE_FROM_ALL
+            vulkan_policy.cpp two_family_device.cpp write_image.cpp)
 add_library(volumetric_kit::core_test_policy ALIAS core_test_policy)
 target_include_directories(core_test_policy
                            PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

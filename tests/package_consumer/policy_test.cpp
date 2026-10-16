@@ -4,15 +4,21 @@
 // A sibling's GPU test that is a main() of its own, on
 // volumetric_kit::core_test_policy alone, with no googletest: the
 // environment's validation, a skip without a device unless
-// VKC_REQUIRE_VULKAN_DEVICE is set, and a failure on the layer's errors.
+// VKC_REQUIRE_VULKAN_DEVICE is set, a failure on the layer's errors, an image
+// written from texels, and the two-family device.
 
+#include <cstdint>
 #include <cstdio>
+#include <memory>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
+#include "volumetric_kit/core/testing/write_image.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 
@@ -56,6 +62,33 @@ int run() {
     std::fprintf(stderr, "%s\n", buffer.status().message().c_str());
     return 1;
   }
+  vkc::ImageDesc image_desc;
+  image_desc.extent = {1, 1};
+  image_desc.format = VK_FORMAT_R8G8B8A8_UNORM;
+  image_desc.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  image_desc.with_view = false;
+  vkc::Result<vkc::Image> image = allocator->create_image(image_desc);
+  if (!image) {
+    std::fprintf(stderr, "%s\n", image.status().message().c_str());
+    return 1;
+  }
+  const std::uint32_t texel = 0xFF00FF00U;
+  if (const vkc::Status written =
+          test::write_image(*device, *allocator, *image, &texel, sizeof(texel),
+                            VK_IMAGE_LAYOUT_GENERAL);
+      !written.ok()) {
+    std::fprintf(stderr, "%s\n", written.message().c_str());
+    return 1;
+  }
+  vkc::Result<std::unique_ptr<test::TwoFamilyDevice>> two =
+      test::TwoFamilyDevice::create({}, {});
+  if (!two) {
+    std::fprintf(stderr, "%s\n", two.status().message().c_str());
+    return 1;
+  }
+  std::printf("%s: %s\n",
+              (*two)->crosses_families() ? "two families" : "one family",
+              (*two)->shared().summary().c_str());
   return 0;
 }
 
