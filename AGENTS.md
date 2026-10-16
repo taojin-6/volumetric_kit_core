@@ -123,6 +123,7 @@ cmake -S "$core_root" -B "$core_root/build-tidy" \
 cmake --build "$core_root/build-tidy" --parallel
 # the runner tooling's tests; they touch no runner:
 bash "$core_root/tools/runners/tests/test_runner_scripts.sh"
+bash "$core_root/tools/runners/tests/test_homebrew_key.sh"
 ```
 
 - Use the pinned formatting tools in `.pre-commit-config.yaml` and the pinned

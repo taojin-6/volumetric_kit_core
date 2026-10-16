@@ -12,6 +12,7 @@ and the `required` gate stay on GitHub-hosted runners. Each repository's
 | `setup-runners.sh <recon\|gfx>` | registers a repository's runners on this host |
 | `teardown-runners.sh <recon\|gfx>` | stops, deregisters and deletes them |
 | `common.sh` | what the two scripts share |
+| `homebrew-key.sh <formula>...` | prints a cache key of their installed Homebrew versions ([Upgrading Homebrew](#upgrading-homebrew)) |
 
 Runners on a personal account belong to one repository, so a host serving
 both carries a set for each.
@@ -131,6 +132,41 @@ root-equivalent: fine for a personal machine, not for a shared one.
 - The runner reads `.env` only when it starts, so a running runner whose
   `.env` changed, of any repository, is restarted, which cancels a job
   running on it: run the script while CI is idle.
+
+## Upgrading Homebrew
+
+Run `brew update && brew upgrade` on a Mac freely while CI is idle: caches
+key on the installed versions, so the next run rebuilds what changed. An
+upgrade while a job runs can still break that job, whose formulae change
+under it. Why the caches need it: [DECISIONS.md](../../DECISIONS.md#a-brew-upgrade-needs-no-cache-clearing).
+
+A leg's key is what `homebrew-key.sh` prints for the formulae it uses: 16
+hex digits that change whenever the installed version of one of them, or of
+anything they depend on, does, and `none` off macOS or without `brew`. It
+only reads. A workflow gets it from this repository's action, by commit:
+
+```yaml
+- id: brew # after the step that installs the formulae
+  uses: taojin-6/volumetric_kit_core/.github/actions/homebrew-key@<commit>
+  with:
+    formulae: cmake glm ffmpeg pkgconf
+- uses: actions/cache@v6
+  with:
+    path: build/_deps
+    key: deps-<leg>-brew${{ steps.brew.outputs.key }}-${{ hashFiles('third_party/CMakeLists.txt') }}
+    restore-keys: deps-<leg>-brew${{ steps.brew.outputs.key }}-
+```
+
+- List every formula the build finds: one left out is covered only as a
+  listed formula's dependency.
+- Keep the key inside every `restore-keys` prefix, so a fallback never
+  restores a tree built on other versions.
+- A tree a runner keeps on disk between jobs, outside the cache, needs the
+  same check: record the key beside it and delete the tree when it differs.
+- Workflows never update or upgrade Homebrew: they set
+  `HOMEBREW_NO_AUTO_UPDATE` and install only missing formulae, since
+  `brew install` upgrades one that is installed but outdated unless
+  `HOMEBREW_NO_INSTALL_UPGRADE` is set.
 
 ## Pausing, moving and removing a host
 

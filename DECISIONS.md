@@ -894,6 +894,31 @@ workflow stops only a fork that leaves it in.
 - **The runner tooling has one copy, here,** parametrized by repository, so a
   fix reaches every repository's runners.
 
+### A brew upgrade needs no cache clearing
+
+The Mac runners build on the Mac's Homebrew, which the owner upgrades by hand
+and CI never does. A build keeps absolute paths into Homebrew's Cellar, which
+name each formula's version (`/opt/homebrew/Cellar/<formula>/<version>/`):
+pkg-config's results in `CMakeCache.txt`, and compiled objects' header
+dependencies. `brew upgrade` deletes the old version's directory, so a tree
+cached before an upgrade failed to configure, build or link until it was
+cleared by hand.
+
+- **Mac caches key on the installed versions** of the formulae a leg uses and
+  of their installed dependencies, recursively, and on Homebrew's prefix:
+  the key `tools/runners/homebrew-key.sh` prints, which workflows get from
+  `.github/actions/homebrew-key`. After an upgrade the next run misses once
+  and builds on the new versions. The key has this one home; the siblings
+  use the action by commit, which brings the script at that commit.
+- **Versions, not Homebrew itself:** `brew update`, or an upgrade of
+  formulae no leg uses, keeps every cache. Keying on every installed formula
+  would rebuild everything after any upgrade, and recording only the
+  version-free `opt/` links is not in a build's hands: Homebrew's pkg-config
+  files name the Cellar.
+- **The cost:** the first run after an upgrade rebuilds what it changed, and
+  an upgrade during a job can still break that job, so upgrades wait until
+  CI is idle ([tools/runners/README.md](tools/runners/README.md#upgrading-homebrew)).
+
 ### Platforms
 
 The core builds for Linux, macOS, iOS and Android, with GCC or Clang
