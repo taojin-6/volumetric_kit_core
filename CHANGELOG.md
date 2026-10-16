@@ -7,8 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-16
+
 ### Added
 
+- `config::Application::CalibRig` and `config::Operation::Calibrate`
+  (`calibrate`): calib_rig's live view and capture (CONFIG.md). It requires
+  `source.sync_config` and `output.path`, its session root, with no default,
+  and takes `source.driver`, `color_codec`, the colour and depth sizes and
+  `fps` (default MJPEG 3840x2160, 640x576, 25 fps) and `window.width`,
+  `height` and `validation`. Refused: `color_codec` `hevc`,
+  `window.overlay`, and every other field and section. Other profiles refuse
+  `calibrate`.
 - `.github/actions/homebrew-key` and `tools/runners/homebrew-key.sh`: a cache
   key of the installed Homebrew versions a build uses, so a `brew upgrade`
   on the Mac starts the affected dependency builds fresh (DECISIONS.md, "A
@@ -33,6 +43,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   repositories, while CI is idle.
 - CI's build steps pass the parallel level rather than a bare `--parallel`,
   which ignores it ([tools/runners/README.md](tools/runners/README.md)).
+
+### Migration
+
+- calib_rig requires core 0.11.0 and loads its scenario with
+  `Application::CalibRig`. A `switch` that names every `Application` or
+  `Operation` gains a case for the new value; existing scenarios load
+  unchanged.
 
 ## [0.10.0] - 2026-10-16
 

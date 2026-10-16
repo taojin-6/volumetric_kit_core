@@ -30,10 +30,11 @@ enum class Application {
   GfxModel,
   GfxImage,
   Scanner,
-  CalibProjectPoint
+  CalibProjectPoint,
+  CalibRig
 };
 /// @brief The work requested by a scenario.
-enum class Operation { Fuse, Stream, Codec, View, Project };
+enum class Operation { Fuse, Stream, Codec, View, Project, Calibrate };
 /// @brief The source discriminator; branch-specific fields are checked
 /// centrally.
 enum class SourceKind { None, Dataset, Live, Mesh, Model };
@@ -143,9 +144,11 @@ struct Render {
   bool texture_stats = false;
 };
 /// @brief Output paths. An empty string disables each optional output;
-/// fusion/export applications require a nonempty path.
+/// fusion/export applications and CalibRig require a nonempty path.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Output {
+  /// A fusion or export program's file; for CalibRig, the directory each
+  /// session's own directory is created in.
   std::string path;
   std::string prefix;
   std::string screenshot;

@@ -77,6 +77,15 @@ vkc::Status run() {
   if (codec.codec.intra_period != 30 || codec.codec.update_size != 128)
     return vkc::Status::invalid_argument(
         "codec P-frame settings were not read");
+  VKC_ASSIGN(
+      const auto rig,
+      vkc::config::parse(
+          R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json"},"output":{"path":"sessions"}})",
+          vkc::config::Application::CalibRig, "/scenario"));
+  if (rig.operation != vkc::config::Operation::Calibrate ||
+      rig.source.color_codec != vkc::config::ColorCodec::Mjpeg ||
+      rig.source.color_width != 3840 || rig.output.path != "/scenario/sessions")
+    return vkc::Status::invalid_argument("calib_rig settings were not read");
 #endif
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");
