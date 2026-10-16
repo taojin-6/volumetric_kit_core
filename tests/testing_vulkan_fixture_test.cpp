@@ -3,7 +3,8 @@
 
 // core_test_support's fixture and the policy under it: what the environment
 // asks, the layer's settings, the log capture and exit codes, and a
-// validation error or hazard failing the test that commits it. What only a
+// validation error or hazard failing the test that commits it, on the
+// fixture's device or the two-family one. What only a
 // process of its own can show -- a missing device or layer, the shared
 // device, a leak reported as the process ends -- runs from
 // testing_vulkan_fixture_probe.cpp.
@@ -25,12 +26,15 @@
 #include "fill_comp.spv.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
+#include "volumetric_kit/core/vulkan/shared_device.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
@@ -303,6 +307,46 @@ TEST_F(SyncValidatedTest, AHazardFailsTheTest) {
   ASSERT_TRUE(submitted.ok()) << submitted.message();
   EXPECT_TRUE(only_vulkan_errors(failures))
       << "synchronization validation is off";
+}
+
+// The two-family fixture at a level of its own: the level reaches the shared
+// device's instance, whose layer reports to the same capture.
+class CrossFamilySyncTest : public test::SharedDeviceTest {
+ protected:
+  test::Validation validation() const override {
+    return test::Validation::Sync;
+  }
+
+  void SetUp() override {
+    SharedDeviceTest::SetUp();
+    if (base_setup_incomplete()) return;
+    if (!two_family().shared().instance().validation_logged()) {
+      GTEST_SKIP() << "the validation layer is not installed, or does not "
+                      "load";
+    }
+  }
+};
+
+TEST_F(CrossFamilySyncTest, AHazardOnTheComputeQueueFailsTheTest) {
+  test::TwoFamilyDevice& two = two_family();
+  BufferDesc desc;
+  desc.size = 64;
+  desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  desc.queue_families = two.families().data();
+  desc.queue_family_count = test::TwoFamilyDevice::kFamilyCount;
+  Result<Buffer> made = two.compute_allocator().create_buffer(desc);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const Buffer buffer = *std::move(made);
+  Status submitted;
+  const std::vector<::testing::TestPartResult> failures = failures_of([&] {
+    submitted = two.compute().submit_single_time([&](VkCommandBuffer cmd) {
+      vkCmdFillBuffer(cmd, buffer.handle(), 0, desc.size, 1);
+      vkCmdFillBuffer(cmd, buffer.handle(), 0, desc.size, 2);
+    });
+  });
+  ASSERT_TRUE(submitted.ok()) << submitted.message();
+  EXPECT_TRUE(only_vulkan_errors(failures))
+      << "synchronization validation is off on the shared device";
 }
 
 // The first layer with shader-access tracking.

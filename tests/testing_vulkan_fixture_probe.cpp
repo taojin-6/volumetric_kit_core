@@ -11,13 +11,16 @@
 #include <gtest/gtest.h>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
+#include "volumetric_kit/core/vulkan/shared_device.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
@@ -90,6 +93,91 @@ class LeafProbe : public MiddleProbe {
 
 TEST_F(LeafProbe, StopsWhereTheMiddleStopped) {
   ADD_FAILURE() << "the body ran after SetUp failed";
+}
+
+// --- the two-family fixture --------------------------------------------------
+
+class TwoFamilyProbe : public test::SharedDeviceTest {};
+
+// Run in one process, these two borrow one two-family device.
+VkDevice g_two_family = VK_NULL_HANDLE;
+
+TEST_F(TwoFamilyProbe, MakesTheDevice) {
+  g_two_family = two_family().shared().device();
+  ASSERT_NE(g_two_family, VK_NULL_HANDLE);
+}
+
+TEST_F(TwoFamilyProbe, BorrowsTheSameDevice) {
+  ASSERT_NE(g_two_family, VK_NULL_HANDLE) << "run after MakesTheDevice";
+  EXPECT_EQ(two_family().shared().device(), g_two_family);
+}
+
+// Leaves a buffer on the compute library's device, which the layer reports as
+// the two-family device is destroyed after the last test.
+TEST_F(TwoFamilyProbe, LeavesABuffer) {
+  if (!two_family().shared().instance().validation_logged()) {
+    GTEST_SKIP() << "the validation layer is not installed, or does not load";
+  }
+  VkBufferCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  info.size = 64;
+  info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VkBuffer buffer = VK_NULL_HANDLE;
+  ASSERT_EQ(
+      vkCreateBuffer(two_family().compute().handle(), &info, nullptr, &buffer),
+      VK_SUCCESS);
+}
+
+// Both libraries asking for a queue that does graphics and compute: on a
+// device where one family alone does both, the shared device has that family
+// only, and the fixture skips before the body.
+class OneFamilyProbe : public test::SharedDeviceTest {
+ protected:
+  DeviceRequirements compute_requirements() const override { return both(); }
+  DeviceRequirements graphics_requirements() const override { return both(); }
+
+ private:
+  static DeviceRequirements both() {
+    DeviceRequirements reqs;
+    reqs.queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    return reqs;
+  }
+};
+
+TEST_F(OneFamilyProbe, SkipsBeforeTheBody) {
+  ADD_FAILURE() << "the body ran on " << two_family().shared().summary();
+}
+
+// Requirements the fixture cannot share, or serve headless: SetUp fails.
+class ChainedTwoFamilyProbe : public test::SharedDeviceTest {
+ protected:
+  DeviceRequirements compute_requirements() const override {
+    static VkPhysicalDeviceVulkan11Features features = [] {
+      VkPhysicalDeviceVulkan11Features v11{};
+      v11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+      return v11;
+    }();
+    DeviceRequirements reqs;
+    reqs.feature_chain = &features;
+    return reqs;
+  }
+};
+
+TEST_F(ChainedTwoFamilyProbe, FailsSetUp) { ADD_FAILURE() << "the body ran"; }
+
+class PresentingTwoFamilyProbe : public test::SharedDeviceTest {
+ protected:
+  DeviceRequirements graphics_requirements() const override {
+    DeviceRequirements reqs;
+    reqs.queue_flags = VK_QUEUE_GRAPHICS_BIT;
+    reqs.needs_present = true;
+    return reqs;
+  }
+};
+
+TEST_F(PresentingTwoFamilyProbe, FailsSetUp) {
+  ADD_FAILURE() << "the body ran";
 }
 
 // An instance a test makes itself, from test::instance_config(): run under

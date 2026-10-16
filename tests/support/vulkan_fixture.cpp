@@ -20,6 +20,7 @@
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -39,6 +40,17 @@ struct DeviceSlot {
   Validation validation = Validation::Off;
   DeviceRequirements requirements;
   std::optional<Device> device;
+  std::string error;  // why there is no device
+  bool lost = false;  // replaced when next borrowed
+};
+
+// One shared two-family device, made for a validation level and both
+// libraries' requirements. It owns its instance.
+struct TwoFamilySlot {
+  Validation validation = Validation::Off;
+  DeviceRequirements compute;
+  DeviceRequirements graphics;
+  std::unique_ptr<TwoFamilyDevice> device;
   std::string error;  // why there is no device
   bool lost = false;  // replaced when next borrowed
 };
@@ -141,6 +153,33 @@ class Registry {
     return slot;
   }
 
+  detail::TwoFamilySlot& two_family(Validation validation,
+                                    const DeviceRequirements& compute,
+                                    const DeviceRequirements& graphics) {
+    auto found = std::find_if(
+        two_families_.begin(), two_families_.end(), [&](const auto& slot) {
+          return slot->validation == validation &&
+                 same_requirements(slot->compute, compute) &&
+                 same_requirements(slot->graphics, graphics);
+        });
+    if (found == two_families_.end()) {
+      auto slot = std::make_unique<detail::TwoFamilySlot>();
+      slot->validation = validation;
+      slot->compute = compute;
+      slot->graphics = graphics;
+      make(*slot);
+      two_families_.push_back(std::move(slot));
+      return *two_families_.back();
+    }
+    detail::TwoFamilySlot& slot = **found;
+    if (slot.lost) {
+      slot.device.reset();
+      slot.lost = false;
+      make(slot);
+    }
+    return slot;
+  }
+
   // An instance held while the tests run, so the loader never unloads the
   // driver between tests that make their own: a driver can take resources at
   // each load that its unload does not give back.
@@ -161,6 +200,7 @@ class Registry {
         errors.emplace_back(message);
       });
       devices_.clear();
+      two_families_.clear();
       instances_.clear();
       anchor_.reset();
     }
@@ -182,11 +222,23 @@ class Registry {
     }
   }
 
-  // Destroyed in reverse: the devices, each before the instance it was made
-  // from, then the anchor.
+  static void make(detail::TwoFamilySlot& slot) {
+    Result<std::unique_ptr<TwoFamilyDevice>> device =
+        TwoFamilyDevice::create(slot.compute, slot.graphics, slot.validation);
+    if (device) {
+      slot.device = *std::move(device);
+      slot.error.clear();
+    } else {
+      slot.error = "TwoFamilyDevice::create: " + device.status().message();
+    }
+  }
+
+  // Destroyed in reverse: the two-family devices, with their own instances;
+  // the devices, each before the instance it was made from; then the anchor.
   std::optional<Instance> anchor_;
   std::map<Validation, InstanceSlot> instances_;
   std::vector<std::unique_ptr<detail::DeviceSlot>> devices_;
+  std::vector<std::unique_ptr<detail::TwoFamilySlot>> two_families_;
 };
 
 // No instance or device: the test skips, or fails where one is required.
@@ -340,6 +392,80 @@ Allocator& VulkanDeviceTest::allocator() {
   VKC_CHECK(allocator_.has_value(),
             "VulkanDeviceTest::allocator() before SetUp");
   return *allocator_;
+}
+
+SharedDeviceTest::SharedDeviceTest() = default;
+
+SharedDeviceTest::~SharedDeviceTest() = default;
+
+DeviceRequirements SharedDeviceTest::graphics_requirements() const {
+  DeviceRequirements graphics;
+  graphics.queue_flags = VK_QUEUE_GRAPHICS_BIT;
+  return graphics;
+}
+
+DeviceRequirements SharedDeviceTest::requirements() const {
+  DeviceRequirements compute = compute_requirements();
+  compute.queue_flags |= VK_QUEUE_COMPUTE_BIT;
+  DeviceRequirements graphics = graphics_requirements();
+  graphics.queue_flags |= VK_QUEUE_GRAPHICS_BIT;
+  // Without what SetUp refuses, so a fixture asking for it fails there
+  // rather than skipping here for want of a device.
+  for (DeviceRequirements* side : {&compute, &graphics}) {
+    side->feature_chain = nullptr;
+    side->needs_present = false;
+  }
+  Result<DeviceRequirements> merged = merge(compute, graphics);
+  VKC_CHECK(merged.ok(), "requirements without feature chains merge");
+  return *std::move(merged);
+}
+
+void SharedDeviceTest::SetUp() {
+  VulkanTest::SetUp();
+  if (base_setup_incomplete()) return;
+  ready_ = false;
+  const DeviceRequirements compute = compute_requirements();
+  const DeviceRequirements graphics = graphics_requirements();
+  if (compute.feature_chain != nullptr || graphics.feature_chain != nullptr) {
+    FAIL() << "SharedDeviceTest shares its device among tests with equal "
+              "requirements, and cannot compare a feature_chain; make a "
+              "TwoFamilyDevice in the test, on a VulkanTest";
+  }
+  if (compute.needs_present || graphics.needs_present) {
+    FAIL() << "SharedDeviceTest is headless: neither library presents";
+  }
+  // The level VulkanTest's instance got: a layer only the fixture asked for,
+  // which did not load there, is not asked for again.
+  const Validation validation =
+      instance().validation_logged() ? active_validation() : Validation::Off;
+  detail::TwoFamilySlot& slot =
+      Registry::get().two_family(validation, compute, graphics);
+  if (!slot.device) {
+    FAIL() << slot.error;
+  }
+  slot_ = &slot;
+  device_ = slot.device.get();
+  if (!device_->crosses_families()) {
+    GTEST_SKIP() << "the shared device puts both libraries on one queue "
+                    "family: "
+                 << device_->shared().summary();
+  }
+  ready_ = true;
+}
+
+void SharedDeviceTest::TearDown() {
+  if (device_ == nullptr) return;
+  for (const Device* device : {&device_->compute(), &device_->graphics()}) {
+    const Status idle = device->wait_idle();
+    EXPECT_TRUE(idle.ok()) << "waiting for the device after the test: "
+                           << idle.message();
+    if (vk_result(idle) == VK_ERROR_DEVICE_LOST) slot_->lost = true;
+  }
+}
+
+TwoFamilyDevice& SharedDeviceTest::two_family() {
+  VKC_CHECK(ready_, "SharedDeviceTest::two_family() before SetUp");
+  return *device_;
 }
 
 namespace detail {

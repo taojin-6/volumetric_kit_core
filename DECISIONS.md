@@ -785,6 +785,17 @@ without it; and a `"vulkan"` error fails the running test.
 - **A fixture may ask for more** (`validation()`), met wherever the layer is
   installed -- elsewhere the test runs without it -- so barrier-heavy tests
   run under synchronization validation locally as well as in CI.
+- **Cross-family tests run on `SharedDevice`'s own carving.** The layer does
+  not report an `EXCLUSIVE` resource read from the wrong family, so a test of
+  a producer's buffer read in place by another library needs the two
+  families a product gets. `TwoFamilyDevice` (in `core_test_policy`, for
+  recon's `main()` tests) adopts a headless `SharedDevice` for both libraries'
+  requirements; `SharedDeviceTest` shares one per process as above, validated
+  wherever the layer is installed. Both cross families exactly where
+  `SharedDevice` takes `TwoFamilies`, whatever the family count; where it
+  puts both libraries on one family, no product crosses there, so the
+  fixture skips. Its writes on the compute queue refuse an `EXCLUSIVE`
+  destination for the same reason.
 
 ### One instance per process
 

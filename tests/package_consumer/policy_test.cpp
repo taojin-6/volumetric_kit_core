@@ -4,11 +4,14 @@
 // A sibling's GPU test that is a main() of its own, on
 // volumetric_kit::core_test_policy alone, with no googletest: the
 // environment's validation, a skip without a device unless
-// VKC_REQUIRE_VULKAN_DEVICE is set, and a failure on the layer's errors.
+// VKC_REQUIRE_VULKAN_DEVICE is set, a failure on the layer's errors, and the
+// two-family device.
 
 #include <cstdio>
+#include <memory>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -56,6 +59,15 @@ int run() {
     std::fprintf(stderr, "%s\n", buffer.status().message().c_str());
     return 1;
   }
+  vkc::Result<std::unique_ptr<test::TwoFamilyDevice>> two =
+      test::TwoFamilyDevice::create({}, {});
+  if (!two) {
+    std::fprintf(stderr, "%s\n", two.status().message().c_str());
+    return 1;
+  }
+  std::printf("%s: %s\n",
+              (*two)->crosses_families() ? "two families" : "one family",
+              (*two)->shared().summary().c_str());
   return 0;
 }
 
