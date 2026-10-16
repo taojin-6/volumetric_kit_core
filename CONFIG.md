@@ -178,10 +178,10 @@ unknown extension object.
   `run.frames`; a directory requires a positive count. Other profiles reject
   both fields.
 - `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
-  `source.sync_config` names the rig, of any number of cameras; `driver`,
-  `color_codec`, the colour and depth sizes and `fps` are the modes its preset
-  check holds every camera to. Colour must be `mjpeg`, since a capture saves
-  each camera's JPEG. Its required `output.path` is the directory each
+  `source.sync_config` names the rig, of any number of cameras, and `driver`
+  is `orbbec`; `color_codec`, the colour and depth sizes and `fps` are the
+  modes its preset check holds every camera to. Colour must be `mjpeg`, since
+  a capture saves each camera's JPEG. Its required `output.path` is the directory each
   session's own directory is created in; it has no default, so no session is
   written beside the scenario unasked. It accepts `window` `width`, `height`
   and `validation`, and refuses `overlay`, since its controls and marks are
