@@ -550,28 +550,70 @@ TEST(Config, CalibRigNeedsItsRigAndSessionRootAndRefusesWhatItDoesNotUse) {
            "operation: is not supported by this application");
 }
 
+TEST(Config, EachProfileKeepsItsOwnOrbbecSourceFields) {
+  // RigViewer opens its rig from a sync file, may write the sync roles and
+  // load poses, and states its modes.
+  const auto rig = scenario(
+      R"({"version":1,"source":{"sync_config":"rig.json","calibration":"poses.json","apply_sync":true,"color_codec":"hevc","color_width":3840,"color_height":2160,"depth_width":320,"depth_height":288,"fps":15}})",
+      App::RigViewer, "/scenario");
+  ASSERT_TRUE(rig) << rig.status().message();
+  EXPECT_EQ(rig->source.sync_config, "/scenario/rig.json");
+  EXPECT_EQ(rig->source.calibration, "/scenario/poses.json");
+  EXPECT_TRUE(rig->source.apply_sync);
+  EXPECT_EQ(rig->source.color_codec, ColorCodec::Hevc);
+  EXPECT_EQ(rig->source.color_width, 3840U);
+  EXPECT_EQ(rig->source.color_height, 2160U);
+  EXPECT_EQ(rig->source.depth_width, 320U);
+  EXPECT_EQ(rig->source.depth_height, 288U);
+  EXPECT_EQ(rig->source.fps, 15U);
+  // FuseOrbbec may open one camera by serial, on the host clock.
+  const auto one = scenario(
+      R"({"version":1,"source":{"serial":"CL2A141000N","calibration":"poses.json","host_clock":true,"color_codec":"mjpeg","fps":5}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(one) << one.status().message();
+  EXPECT_EQ(one->source.serial, "CL2A141000N");
+  EXPECT_EQ(one->source.calibration, "/scenario/poses.json");
+  EXPECT_TRUE(one->source.host_clock);
+  EXPECT_EQ(one->source.color_codec, ColorCodec::Mjpeg);
+  EXPECT_EQ(one->source.fps, 5U);
+  // Scanner takes only the kind and driver, and CalibProjectPoint no fusion.
+  for (const char* field :
+       {R"("sync_config":"rig.json")", R"("calibration":"poses.json")",
+        R"("color_codec":"mjpeg")", R"("fps":30)"}) {
+    const std::string_view text(field);
+    const std::string key(text.substr(1, text.find('"', 1) - 1));
+    rejected(std::string(R"({"version":1,"source":{)") + field + "}}",
+             App::Scanner,
+             "source." + key + ": is not used by this application");
+  }
+  rejected(R"({"version":1,"fusion":{}})", App::CalibProjectPoint,
+           "fusion: is not used by this application");
+}
+
 TEST(Config, LiveRelationsAndCountsAreCentral) {
   rejected(R"({"version":1,"source":{"serial":"A\u0000B"}})", App::FuseOrbbec,
-           "source.serial");
+           "source.serial: embedded NUL");
   rejected(R"({"version":1,"source":{"serial":"A","sync_config":"rig.json"}})",
-           App::FuseOrbbec, "source.serial");
+           App::FuseOrbbec,
+           "source.serial: cannot be combined with source.sync_config");
   rejected(R"({"version":1,"source":{"apply_sync":true}})", App::FuseOrbbec,
-           "source.apply_sync");
+           "source.apply_sync: requires source.sync_config");
   rejected(
       R"({"version":1,"source":{"host_clock":true,"sync_config":"rig.json"}})",
-      App::FuseOrbbec, "source.host_clock");
+      App::FuseOrbbec,
+      "source.host_clock: cannot be combined with source.sync_config");
   rejected(R"({"version":1,"source":{"color_width":3840}})", App::FuseOrbbec,
-           "color_height");
+           "source: color_width and color_height must be provided together");
   rejected(R"({"version":1,"source":{"depth_width":640,"depth_height":0}})",
-           App::FuseOrbbec, "source.depth_height");
+           App::FuseOrbbec, "source.depth_height: must be finite and positive");
   rejected(R"({"version":1,"source":{"fps":-1}})", App::FuseOrbbec,
-           "source.fps");
+           "source.fps: integer is out of range");
   rejected(R"({"version":1,"source":{"fps":4294967296}})", App::FuseOrbbec,
-           "source.fps");
+           "source.fps: integer is out of range");
   rejected(R"({"version":1,"run":{"frames":2147483648}})", App::FuseOrbbec,
-           "run.frames");
+           "run.frames: integer is out of range");
   rejected(R"({"version":1,"run":{"frames":0}})", App::FuseOrbbec,
-           "run.frames");
+           "run.frames: must be positive");
 }
 
 TEST(Config, FusionDefaultsAndBoundsDoNotDependOnTheConsumer) {
