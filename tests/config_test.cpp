@@ -564,6 +564,52 @@ TEST(Config, IntraPeriodIsAPositiveCountForBothCodecs) {
   }
 }
 
+TEST(Config, UpdateSizeIsAnyCountWithZeroTheCodecsDefault) {
+  EXPECT_EQ(Codec{}.update_size, 0U);
+  const std::string replica = R"({"version":1,"source":{"path":"scene"})";
+  const std::string mesh =
+      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
+  const auto with_size = [](const std::string& source, const char* size) {
+    return source + R"(,"codec":{"update_size":)" + size + "}}";
+  };
+  for (const auto app : {App::CodecReplica, App::CodecMesh}) {
+    const std::string& source = app == App::CodecReplica ? replica : mesh;
+    const auto omitted = scenario(source + "}", app);
+    ASSERT_TRUE(omitted) << omitted.status().message();
+    EXPECT_EQ(omitted->codec.update_size, 0U);
+    // Core admits any u32; the codec refuses one outside its range.
+    for (const std::uint32_t size : {0U, 1U, 64U, 1024U, 4294967295U}) {
+      const auto parsed =
+          scenario(with_size(source, std::to_string(size).c_str()), app);
+      ASSERT_TRUE(parsed) << parsed.status().message();
+      EXPECT_EQ(parsed->codec.update_size, size);
+    }
+    for (const char* size : {"-1", "4294967296"}) {
+      rejected(with_size(source, size), app,
+               "codec.update_size: integer is out of range");
+    }
+    for (const char* size : {"1.5", R"("64")", "true", "null"}) {
+      rejected(with_size(source, size), app,
+               "codec.update_size: expected an integer");
+    }
+  }
+  rejected(with_size(replica, "64"), App::FuseReplica,
+           "codec: is not used by this application");
+  // Inspection codes nothing, so an enabled inspect_only refuses a size,
+  // even the default; a disabled one does not.
+  const auto coded =
+      scenario(mesh + R"(,"codec":{"inspect_only":false,"update_size":64}})",
+               App::CodecMesh);
+  ASSERT_TRUE(coded) << coded.status().message();
+  EXPECT_EQ(coded->codec.update_size, 64U);
+  for (const char* size : {"0", "64"}) {
+    rejected(
+        mesh + R"(,"codec":{"inspect_only":true,"update_size":)" + size + "}}",
+        App::CodecMesh,
+        "codec.update_size: is not used when codec.inspect_only is enabled");
+  }
+}
+
 TEST(Config, MeshSourceRequiresOneScaleAndOneNonzeroUpDirection) {
   const auto parsed = scenario(
       R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"-y"}})",

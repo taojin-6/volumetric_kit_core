@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.8.0 CONFIG)
+vkc_require_core(0.9.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -129,12 +129,15 @@ unknown extension object.
   CodecMesh accepts voxel size and, from core 0.7.0, truncation.
 - Codec fields: `coefficient_count`, `quantization_scale`,
   `quantization_table` (`uniform`/`band`/`radial`), `segment_size`,
-  `intra_period` (core 0.8.0), `sweep`; `encode_every` belongs to
-  CodecReplica and `inspect_only` to CodecMesh. The encoder writes an I-frame
-  every `intra_period` frames and zero-motion P-frames between them; the
-  default, 1, is all-intra. Core checks a `coefficient_count` in [1, 512], a
-  positive normal scale and a positive `intra_period`; the codec maps the
-  table to its weights and checks each kept coefficient's step at runtime.
+  `intra_period` (core 0.8.0), `update_size` (core 0.9.0), `sweep`;
+  `encode_every` belongs to CodecReplica and `inspect_only` to CodecMesh. The
+  encoder writes an I-frame every `intra_period` frames and zero-motion
+  P-frames between them; the default, 1, is all-intra. `update_size` is the
+  P-frame update-segment size in entries; the default, 0, is the codec's own.
+  Core checks a `coefficient_count` in [1, 512], a positive normal scale, a
+  positive `intra_period` and an unsigned 32-bit `update_size`; the codec
+  maps the table to its weights and checks each kept coefficient's step and
+  the update size's range at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
   `overlay` only where UI is supported. Model dimensions are at most 16384.
   Scanner accepts no window section. No window/device handles are serialized.

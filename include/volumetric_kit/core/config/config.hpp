@@ -113,6 +113,9 @@ struct Codec {
   float quantization_scale = 0.2F;
   QuantizationTable quantization_table = QuantizationTable::Uniform;
   std::uint32_t segment_size = 64;
+  /// The P-frame update-segment size, in entries; 0, the default, is the
+  /// codec's own. The codec checks its range.
+  std::uint32_t update_size = 0;
   /// An I-frame every `intra_period` frames, zero-motion P-frames between
   /// them; 1, the default, codes every frame intra.
   std::uint32_t intra_period = 1;
