@@ -513,98 +513,118 @@ TEST(Config, CodecSettingsKeepGenericChecksAndLeaveStepsToTheCodec) {
   EXPECT_TRUE(coarse) << coarse.status().message();
 }
 
+// A scenario for codec profile `app` whose codec section is `fields`, or that
+// has no codec section when `fields` is empty.
+std::string codec_scenario(App app, const std::string& fields) {
+  std::string text =
+      app == App::CodecMesh
+          ? R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})"
+          : R"({"version":1,"source":{"path":"scene"})";
+  if (!fields.empty()) text += R"(,"codec":{)" + fields + "}";
+  return text + "}";
+}
+
 TEST(Config, IntraPeriodIsAPositiveCountForBothCodecs) {
   EXPECT_EQ(Codec{}.intra_period, 1U);
-  const std::string replica = R"({"version":1,"source":{"path":"scene"})";
-  const std::string mesh =
-      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
-  const auto with_period = [](const std::string& source, const char* period) {
-    return source + R"(,"codec":{"intra_period":)" + period + "}}";
+  const auto with_period = [](App app, const std::string& period) {
+    return codec_scenario(app, R"("intra_period":)" + period);
   };
   for (const auto app : {App::CodecReplica, App::CodecMesh}) {
-    const std::string& source = app == App::CodecReplica ? replica : mesh;
-    const auto omitted = scenario(source + "}", app);
+    const auto omitted = scenario(codec_scenario(app, ""), app);
     ASSERT_TRUE(omitted) << omitted.status().message();
     EXPECT_EQ(omitted->codec.intra_period, 1U);
     for (const std::uint32_t period : {1U, 30U, 4294967295U}) {
       const auto parsed =
-          scenario(with_period(source, std::to_string(period).c_str()), app);
+          scenario(with_period(app, std::to_string(period)), app);
       ASSERT_TRUE(parsed) << parsed.status().message();
       EXPECT_EQ(parsed->codec.intra_period, period);
     }
-    rejected(with_period(source, "0"), app,
+    rejected(with_period(app, "0"), app,
              "codec.intra_period: must be finite and positive");
     for (const char* period : {"-1", "4294967296"}) {
-      rejected(with_period(source, period), app,
+      rejected(with_period(app, period), app,
                "codec.intra_period: integer is out of range");
     }
     for (const char* period : {"1.5", "8.0", R"("8")", "true", "null", "[8]"}) {
-      rejected(with_period(source, period), app,
+      rejected(with_period(app, period), app,
                "codec.intra_period: expected an integer");
     }
   }
   // The codec section, and so the period, belongs to the codec profiles.
-  rejected(with_period(replica, "8"), App::FuseReplica,
+  rejected(with_period(App::CodecReplica, "8"), App::FuseReplica,
            "codec: is not used by this application");
-  rejected(with_period(R"({"version":1)", "8"), App::GfxModel,
+  rejected(R"({"version":1,"codec":{"intra_period":8}})", App::GfxModel,
            "codec: is not used by this application");
   // Inspection codes nothing, so an enabled inspect_only refuses a period,
   // even the default; a disabled one does not.
   const auto coded =
-      scenario(mesh + R"(,"codec":{"inspect_only":false,"intra_period":8}})",
+      scenario(codec_scenario(App::CodecMesh,
+                              R"("inspect_only":false,"intra_period":8)"),
                App::CodecMesh);
   ASSERT_TRUE(coded) << coded.status().message();
   EXPECT_EQ(coded->codec.intra_period, 8U);
   for (const char* period : {"1", "8"}) {
-    rejected(mesh + R"(,"codec":{"inspect_only":true,"intra_period":)" +
-                 period + "}}",
-             App::CodecMesh,
-             "codec.intra_period: is not used when codec.inspect_only is "
-             "enabled");
+    rejected(
+        codec_scenario(
+            App::CodecMesh,
+            std::string(R"("inspect_only":true,"intra_period":)") + period),
+        App::CodecMesh,
+        "codec.intra_period: is not used when codec.inspect_only is "
+        "enabled");
   }
 }
 
-TEST(Config, UpdateSizeIsAnyCountWithZeroTheCodecsDefault) {
+TEST(Config, UpdateSizeIsAnyCountWhereThereArePFrames) {
   EXPECT_EQ(Codec{}.update_size, 0U);
-  const std::string replica = R"({"version":1,"source":{"path":"scene"})";
-  const std::string mesh =
-      R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
-  const auto with_size = [](const std::string& source, const char* size) {
-    return source + R"(,"codec":{"update_size":)" + size + "}}";
+  const auto with_size = [](App app, const std::string& size) {
+    return codec_scenario(app, R"("intra_period":30,"update_size":)" + size);
   };
   for (const auto app : {App::CodecReplica, App::CodecMesh}) {
-    const std::string& source = app == App::CodecReplica ? replica : mesh;
-    const auto omitted = scenario(source + "}", app);
+    const auto omitted = scenario(codec_scenario(app, ""), app);
     ASSERT_TRUE(omitted) << omitted.status().message();
     EXPECT_EQ(omitted->codec.update_size, 0U);
-    // Core admits any u32; the codec refuses one outside its range.
+    // Core admits any u32, 0 selecting the codec's own size; the codec
+    // refuses one outside its range.
     for (const std::uint32_t size : {0U, 1U, 64U, 1024U, 4294967295U}) {
-      const auto parsed =
-          scenario(with_size(source, std::to_string(size).c_str()), app);
+      const auto parsed = scenario(with_size(app, std::to_string(size)), app);
       ASSERT_TRUE(parsed) << parsed.status().message();
       EXPECT_EQ(parsed->codec.update_size, size);
+      EXPECT_EQ(parsed->codec.intra_period, 30U);
+      EXPECT_EQ(parsed->codec.segment_size, Codec{}.segment_size);
     }
     for (const char* size : {"-1", "4294967296"}) {
-      rejected(with_size(source, size), app,
+      rejected(with_size(app, size), app,
                "codec.update_size: integer is out of range");
     }
-    for (const char* size : {"1.5", R"("64")", "true", "null"}) {
-      rejected(with_size(source, size), app,
+    for (const char* size :
+         {"1.5", "64.0", R"("64")", "true", "null", "[64]"}) {
+      rejected(with_size(app, size), app,
                "codec.update_size: expected an integer");
     }
+    // A period of 1, explicit or the default, codes no P-frame, so it refuses
+    // a size, even 0.
+    for (const char* fields :
+         {R"("update_size":64)", R"("intra_period":1,"update_size":0)"}) {
+      rejected(codec_scenario(app, fields), app,
+               "codec.update_size: is not used when codec.intra_period is 1");
+    }
   }
-  rejected(with_size(replica, "64"), App::FuseReplica,
+  rejected(with_size(App::CodecReplica, "64"), App::FuseReplica,
            "codec: is not used by this application");
   // Inspection codes nothing, so an enabled inspect_only refuses a size,
   // even the default; a disabled one does not.
   const auto coded =
-      scenario(mesh + R"(,"codec":{"inspect_only":false,"update_size":64}})",
+      scenario(codec_scenario(
+                   App::CodecMesh,
+                   R"("inspect_only":false,"intra_period":8,"update_size":64)"),
                App::CodecMesh);
   ASSERT_TRUE(coded) << coded.status().message();
   EXPECT_EQ(coded->codec.update_size, 64U);
   for (const char* size : {"0", "64"}) {
     rejected(
-        mesh + R"(,"codec":{"inspect_only":true,"update_size":)" + size + "}}",
+        codec_scenario(
+            App::CodecMesh,
+            std::string(R"("inspect_only":true,"update_size":)") + size),
         App::CodecMesh,
         "codec.update_size: is not used when codec.inspect_only is enabled");
   }

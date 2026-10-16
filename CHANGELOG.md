@@ -15,12 +15,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `Application::CodecReplica` and `CodecMesh`: the P-frame update-segment
   size in entries, 0 meaning the codec's own default. Refused: a value that
   is not an integer in [0, 2^32 - 1], naming `codec.update_size`, and any
-  size under `codec.inspect_only`; the codec checks its range.
+  size under `codec.inspect_only` or with `codec.intra_period` 1, which codes
+  no P-frame; the codec checks its range.
 
 ### Migration
 
-- Consumers require core 0.9.0 and map a nonzero size to their encoder
-  (recon: `EncoderConfig::update_size`); existing scenarios load unchanged.
+- Consumers of the setting require core 0.9.0 and map a nonzero size to their
+  encoder (recon: `EncoderConfig::update_size`), or refuse one; existing
+  scenarios load unchanged.
 
 ## [0.8.0] - 2026-10-14
 

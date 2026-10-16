@@ -133,11 +133,12 @@ unknown extension object.
   `encode_every` belongs to CodecReplica and `inspect_only` to CodecMesh. The
   encoder writes an I-frame every `intra_period` frames and zero-motion
   P-frames between them; the default, 1, is all-intra. `update_size` is the
-  P-frame update-segment size in entries; the default, 0, is the codec's own.
-  Core checks a `coefficient_count` in [1, 512], a positive normal scale, a
-  positive `intra_period` and an unsigned 32-bit `update_size`; the codec
-  maps the table to its weights and checks each kept coefficient's step and
-  the update size's range at runtime.
+  P-frame update-segment size in entries; 0, the default, selects the codec's
+  own size, and a period of 1 refuses an explicit size, even 0. Core checks a
+  `coefficient_count` in [1, 512], a positive normal scale, a positive
+  `intra_period` and an unsigned 32-bit `update_size`; the codec maps the
+  table to its weights and checks each kept coefficient's step and the update
+  size's range at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
   `overlay` only where UI is supported. Model dimensions are at most 16384.
   Scanner accepts no window section. No window/device handles are serialized.

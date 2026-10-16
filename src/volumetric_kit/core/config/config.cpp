@@ -565,8 +565,10 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         c.codec.quantization_scale <= 0)
       fail("codec.quantization_scale", "must be positive and normal");
     positive(c.codec.segment_size, "codec.segment_size");
-    // The reader admits any u32 update_size; its range is the codec's.
     positive(c.codec.intra_period, "codec.intra_period");
+    // All-intra coding writes no P-frame. The size's range is the codec's.
+    if (has(state, "codec.update_size") && c.codec.intra_period == 1)
+      fail("codec.update_size", "is not used when codec.intra_period is 1");
     nonnegative(c.codec.encode_every, "codec.encode_every");
     if (c.codec.quantization_table != QuantizationTable::Uniform &&
         c.codec.quantization_table != QuantizationTable::Band &&
