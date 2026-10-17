@@ -22,20 +22,13 @@ set -euo pipefail
   exit 2
 }
 select_repo "$1"
-case " $RUNNER_OSES " in
-  *" $OS "*) ;;
-  *)
-    echo "$REPO has no self-hosted runners on $OS, only on ${RUNNER_OSES// / and } (README.md)" >&2
-    exit 2
-    ;;
-esac
 
 case "$(uname -m)" in
   x86_64) PKG_ARCH=x64 ;;
   aarch64 | arm64) PKG_ARCH=arm64 ;;
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
-case "$OS" in # RUNNER_OSES, checked above, names only these two
+case "$OS" in
   Linux)
     PKG_OS=linux
     LABEL=vk-linux-gpu
@@ -63,6 +56,10 @@ case "$OS" in # RUNNER_OSES, checked above, names only these two
       echo "WARNING: xcodebuild does not run (Command Line Tools only?); a leg that"
       echo "  generates with -G Xcode needs full Xcode (README.md, 'Macs'). Continuing."
     fi
+    ;;
+  *)
+    echo "$REPO has no self-hosted runners on $OS, only on Linux and Darwin (README.md)" >&2
+    exit 2
     ;;
 esac
 

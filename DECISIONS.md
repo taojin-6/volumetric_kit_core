@@ -1069,15 +1069,13 @@ no other is escaped.
 
 `calib` runs every job on self-hosted runners, registered with this
 repository's runner tooling on the hosts that serve `recon` and `gfx`: its
-macOS legs on the Mac (`mac`), the rest on the Linux hosts (`vk-linux-gpu`;
-calib's DECISIONS.md says which job runs where). calib is private, so a job
-of its on a GitHub-hosted runner draws on the account's Actions minutes, and
-once they are spent, as on 2026-10-17, no such job runs; the public
-repositories' hosted jobs cost nothing. `select_repo`
-(`tools/runners/common.sh`) records which systems carry each repository's
-runners, Linux and macOS for all three, and a host gets as many runners of
-calib as of any repository: 6 on a Linux host, enough for a run's 4 Linux
-jobs at once on one host while the other is offline, and 2 on a Mac.
+macOS legs on the Mac (`mac`), its Linux jobs on the Linux hosts
+(`vk-linux-gpu`; calib's DECISIONS.md says which job runs where). calib is
+private, so a job of its on a GitHub-hosted runner draws on the account's
+Actions minutes, and once they are spent, as on 2026-10-17, no such job
+runs; the public repositories' hosted jobs cost nothing. A host gets as many
+runners of calib as of any repository: 6 on a Linux host, enough for a run's
+4 Linux jobs at once on one host while the other is offline, and 2 on a Mac.
 
 - **A runner's parallel level is the host's cores divided by its own
   repository's runners there**: 5 on the 10-core Mac with 2 per repository.
@@ -1094,7 +1092,9 @@ jobs at once on one host while the other is offline, and 2 on a Mac.
   so the level never limited a family workflow's build step. Each
   repository's workflows pass it, in their own change; this repository's do
   from this one.
-- **calib is private, and each host's runners all run as one user,** so a job
-  of `recon` or `gfx` can read calib's checkouts and its runners' credentials
-  there. Calib's code on the hosts is as safe as those repositories'
-  owner-only policies keep their runners ("Only the owner triggers CI").
+- **calib is private, yet a job of `recon` or `gfx` can read calib's
+  checkouts and its runners' credentials on a host they share:** on the Mac
+  every runner runs as one user, and on the Linux hosts each job container
+  is given the Docker socket, which is root-equivalent. Calib's code on the
+  hosts is as safe as those repositories' owner-only policies keep their
+  runners ("Only the owner triggers CI").

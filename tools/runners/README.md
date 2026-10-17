@@ -3,13 +3,13 @@
 `recon` and `gfx` run their GPU legs on self-hosted runners: Linux GPU hosts
 (label `vk-linux-gpu`), where each leg runs in an OS-matched container with
 the GPU passed through (`--gpus all`), and a Mac (label `mac`), where jobs run
-natively for the Apple toolchain and MoltenVK on its GPU. Their lint,
-sanitizers and `required` gate stay on GitHub-hosted runners, free for public
-repositories. `calib` is private, so its hosted jobs would draw on the
-account's Actions minutes and stop once those are spent: every calib job runs
-on these runners ([DECISIONS.md](../../DECISIONS.md), the 2026-10-16 entry).
-Each repository's `ci.yml` says which legs go where; this directory is the
-host side, for all three.
+natively for the Apple toolchain and MoltenVK on its GPU. Their other jobs
+stay on GitHub-hosted runners, free for public repositories. `calib` is
+private, so its hosted jobs would draw on the account's Actions minutes and
+stop once those are spent: every calib job runs on these runners
+([DECISIONS.md](../../DECISIONS.md), the 2026-10-16 entry). Each
+repository's `ci.yml` says which legs go where; this directory is the host
+side, for all three.
 
 | File | Does |
 | --- | --- |

@@ -16,13 +16,10 @@ die() {
   exit 1
 }
 
-# Sets REPO, SLUG and RUNNER_ROOT for a repository's short name, and
-# RUNNER_OSES, the systems (as `uname -s` names them) whose hosts carry its
-# runners -- Linux and macOS for every repository -- or exits 2.
+# Sets REPO, SLUG and RUNNER_ROOT for a repository's short name, or exits 2.
 select_repo() {
-  # shellcheck disable=SC2034 # setup-runners.sh reads RUNNER_OSES
   case "${1:-}" in
-    recon | gfx | calib) RUNNER_OSES="Linux Darwin" ;;
+    recon | gfx | calib) ;;
     *)
       echo "unknown repository '${1:-}': expected recon, gfx or calib" >&2
       exit 2
