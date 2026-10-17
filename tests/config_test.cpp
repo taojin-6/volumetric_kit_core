@@ -32,6 +32,7 @@ Result<Config> scenario(std::string_view text, App app,
       operation = "fuse";
     if (app == App::CodecReplica || app == App::CodecMesh) operation = "codec";
     if (app == App::CalibProjectPoint) operation = "project";
+    if (app == App::CalibRig) operation = "calibrate";
     if (text.find("\"operation\"") == std::string_view::npos)
       document.insert(1, std::string(R"("operation":")") + operation + "\"" +
                              (text.size() > 2 ? "," : ""));
@@ -39,7 +40,8 @@ Result<Config> scenario(std::string_view text, App app,
     if (app == App::FuseReplica || app == App::CodecReplica ||
         app == App::FuseRender || app == App::FuseViewer)
       kind = "dataset";
-    if (app == App::FuseOrbbec || app == App::RigViewer || app == App::Scanner)
+    if (app == App::FuseOrbbec || app == App::RigViewer ||
+        app == App::Scanner || app == App::CalibRig)
       kind = "live";
     if (app == App::CodecMesh) kind = "mesh";
     if (app == App::GfxModel) kind = "model";
@@ -396,28 +398,222 @@ TEST(Config, JpegDumpIsAnOptionalConfigRelativeLiveDiagnostic) {
       App::RigViewer, "diagnostics: is not used by this application");
 }
 
+// A CalibRig scenario: a rig's sync file and these further source fields, a
+// session root, and these further sections; each addition leads with a comma.
+std::string calib_rig(const std::string& source = "",
+                      const std::string& sections = "") {
+  return R"({"version":1,"source":{"sync_config":"rig.json")" + source +
+         R"(},"output":{"path":"sessions"})" + sections + "}";
+}
+
+TEST(Config, CalibRigOpensItsRigAtThePresetAndWritesUnderTheSessionRoot) {
+  const auto rig = scenario(calib_rig(), App::CalibRig, "/scenario");
+  ASSERT_TRUE(rig) << rig.status().message();
+  EXPECT_EQ(rig->operation, Operation::Calibrate);
+  EXPECT_EQ(rig->source.kind, SourceKind::Live);
+  EXPECT_EQ(rig->source.driver, "orbbec");
+  EXPECT_EQ(rig->source.sync_config, "/scenario/rig.json");
+  // The preset: 4K MJPEG colour and 640x576 depth at 25 fps.
+  EXPECT_EQ(rig->source.color_codec, ColorCodec::Mjpeg);
+  EXPECT_EQ(rig->source.color_width, 3840U);
+  EXPECT_EQ(rig->source.color_height, 2160U);
+  EXPECT_EQ(rig->source.depth_width, 640U);
+  EXPECT_EQ(rig->source.depth_height, 576U);
+  EXPECT_EQ(rig->source.fps, 25U);
+  EXPECT_EQ(rig->output.path, "/scenario/sessions");
+  EXPECT_EQ(rig->window.width, 1280);
+  EXPECT_EQ(rig->window.height, 720);
+  EXPECT_FALSE(rig->window.validation);
+  // The rig is the sync file's, of any number of cameras.
+  EXPECT_TRUE(rig->source.serial.empty());
+  EXPECT_TRUE(rig->source.calibration.empty());
+  EXPECT_FALSE(rig->source.apply_sync);
+
+  // The scenario may state other modes; the app holds every camera to them.
+  const auto stated = scenario(
+      calib_rig(
+          R"(,"driver":"orbbec","color_codec":"mjpeg","color_width":1920,"color_height":1080,"depth_width":320,"depth_height":288,"fps":15)",
+          R"(,"window":{"width":2560,"height":1440,"validation":true})"),
+      App::CalibRig, "/scenario");
+  ASSERT_TRUE(stated) << stated.status().message();
+  EXPECT_EQ(stated->source.color_codec, ColorCodec::Mjpeg);
+  EXPECT_EQ(stated->source.color_width, 1920U);
+  EXPECT_EQ(stated->source.color_height, 1080U);
+  EXPECT_EQ(stated->source.depth_width, 320U);
+  EXPECT_EQ(stated->source.depth_height, 288U);
+  EXPECT_EQ(stated->source.fps, 15U);
+  EXPECT_EQ(stated->window.width, 2560);
+  EXPECT_EQ(stated->window.height, 1440);
+  EXPECT_TRUE(stated->window.validation);
+
+  // Both paths are the scenario's: relative to its directory, or absolute.
+  const auto paths = scenario(
+      R"({"version":1,"source":{"sync_config":"../rigs/./one.json"},"output":{"path":"/data/calib/../sessions"}})",
+      App::CalibRig, "/scenario/config");
+  ASSERT_TRUE(paths) << paths.status().message();
+  EXPECT_EQ(paths->source.sync_config, "/scenario/rigs/one.json");
+  EXPECT_EQ(paths->output.path, "/data/sessions");
+  const auto under = scenario(
+      R"({"version":1,"source":{"sync_config":"/rigs/three.json"},"output":{"path":"../sessions"}})",
+      App::CalibRig, "/scenario/config");
+  ASSERT_TRUE(under) << under.status().message();
+  EXPECT_EQ(under->source.sync_config, "/rigs/three.json");
+  EXPECT_EQ(under->output.path, "/scenario/sessions");
+}
+
+TEST(Config, CalibRigNeedsItsRigAndSessionRootAndRefusesWhatItDoesNotUse) {
+  const auto refused = [](const std::string& text, const std::string& reason) {
+    rejected(text, App::CalibRig, reason);
+  };
+  // The rig and the session root have no default.
+  refused(R"({"version":1})", "source: is required");
+  refused(R"({"version":1,"source":{"driver":"orbbec"},"output":{"path":"s"}})",
+          "source.sync_config: is required");
+  refused(R"({"version":1,"source":{"sync_config":""},"output":{"path":"s"}})",
+          "source.sync_config: must not be empty");
+  for (const char* output :
+       {"", R"(,"output":{})", R"(,"output":{"path":""})"}) {
+    refused(std::string(R"({"version":1,"source":{"sync_config":"rig.json"})") +
+                output + "}",
+            "output.path: is required");
+  }
+
+  // A capture saves each camera's JPEG, so colour crosses the wire as MJPEG.
+  refused(calib_rig(R"(,"color_codec":"hevc")"),
+          "source.color_codec: must be mjpeg: a capture saves the camera's "
+          "JPEG");
+  refused(calib_rig(R"(,"color_codec":"h264")"),
+          "source.color_codec: unknown choice 'h264'");
+  refused(calib_rig(R"(,"driver":"arkit")"),
+          "source.driver: only orbbec is supported");
+  // The live profiles' mode rules hold.
+  refused(calib_rig(R"(,"color_width":3840)"),
+          "source: color_width and color_height must be provided together");
+  refused(calib_rig(R"(,"depth_height":576)"),
+          "source: depth_width and depth_height must be provided together");
+  refused(calib_rig(R"(,"color_width":0,"color_height":2160)"),
+          "source.color_width: must be finite and positive");
+  refused(calib_rig(R"(,"depth_width":640,"depth_height":-1)"),
+          "source.depth_height: integer is out of range");
+  refused(calib_rig(R"(,"fps":0)"), "source.fps: must be finite and positive");
+  refused(calib_rig(R"(,"fps":25.0)"), "source.fps: expected an integer");
+
+  // Source fields of the other profiles: one camera by serial, poses, writing
+  // the sync roles, host clocks, datasets and meshes.
+  for (const char* field :
+       {R"("serial":"CL2A141000N")", R"("calibration":"poses.json")",
+        R"("apply_sync":false)", R"("host_clock":false)", R"("path":"scene")",
+        R"("format":"replica")", R"("camera_parameters":"cam.json")",
+        R"("preload":false)", R"("height_m":1.7)", R"("up_axis":"y")",
+        R"("sdf_mode":"signed")", R"("allow_holes":false)"}) {
+    const std::string_view text(field);
+    const std::string key(text.substr(1, text.find('"', 1) - 1));
+    refused(calib_rig(std::string(",") + field),
+            "source." + key + ": is not used by this application");
+  }
+  // Sections it has no use for, even empty.
+  for (const char* section :
+       {"fusion", "codec", "render", "run", "calibration", "diagnostics"}) {
+    refused(calib_rig("", std::string(",\"") + section + "\":{}"),
+            std::string(section) + ": is not used by this application");
+  }
+  // Its controls and marks are its ImGui overlay, which cannot be turned off.
+  for (const char* overlay : {"true", "false"}) {
+    refused(
+        calib_rig("", std::string(R"(,"window":{"overlay":)") + overlay + "}"),
+        "window.overlay: is not used by this application");
+  }
+  for (const char* key : {"prefix", "csv", "stream", "screenshot"}) {
+    refused(
+        std::string(
+            R"({"version":1,"source":{"sync_config":"rig.json"},"output":{"path":"s",")") +
+            key + R"(":"out"}})",
+        std::string("output.") + key + ": is not used by this application");
+  }
+
+  // Calibrate is CalibRig's operation, and only its.
+  for (const char* operation : {"view", "stream", "fuse", "project", "codec"}) {
+    refused(
+        std::string(R"({"version":1,"operation":")") + operation +
+            R"(","source":{"sync_config":"rig.json"},"output":{"path":"s"}})",
+        "operation: is not supported by this application");
+  }
+  refused(
+      R"({"version":1,"source":{"kind":"dataset","sync_config":"rig.json"},"output":{"path":"s"}})",
+      "source.kind: is not supported by this application");
+  rejected(
+      R"({"version":1,"operation":"calibrate","source":{"sync_config":"rig.json"}})",
+      App::RigViewer, "operation: is not supported by this application");
+  rejected(R"({"version":1,"operation":"calibrate"})", App::FuseOrbbec,
+           "operation: is not supported by this application");
+  rejected(R"({"version":1,"operation":"calibrate"})", App::GfxImage,
+           "operation: is not supported by this application");
+}
+
+TEST(Config, EachProfileKeepsItsOwnOrbbecSourceFields) {
+  // RigViewer opens its rig from a sync file, may write the sync roles and
+  // load poses, and states its modes.
+  const auto rig = scenario(
+      R"({"version":1,"source":{"sync_config":"rig.json","calibration":"poses.json","apply_sync":true,"color_codec":"hevc","color_width":3840,"color_height":2160,"depth_width":320,"depth_height":288,"fps":15}})",
+      App::RigViewer, "/scenario");
+  ASSERT_TRUE(rig) << rig.status().message();
+  EXPECT_EQ(rig->source.sync_config, "/scenario/rig.json");
+  EXPECT_EQ(rig->source.calibration, "/scenario/poses.json");
+  EXPECT_TRUE(rig->source.apply_sync);
+  EXPECT_EQ(rig->source.color_codec, ColorCodec::Hevc);
+  EXPECT_EQ(rig->source.color_width, 3840U);
+  EXPECT_EQ(rig->source.color_height, 2160U);
+  EXPECT_EQ(rig->source.depth_width, 320U);
+  EXPECT_EQ(rig->source.depth_height, 288U);
+  EXPECT_EQ(rig->source.fps, 15U);
+  // FuseOrbbec may open one camera by serial, on the host clock.
+  const auto one = scenario(
+      R"({"version":1,"source":{"serial":"CL2A141000N","calibration":"poses.json","host_clock":true,"color_codec":"mjpeg","fps":5}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(one) << one.status().message();
+  EXPECT_EQ(one->source.serial, "CL2A141000N");
+  EXPECT_EQ(one->source.calibration, "/scenario/poses.json");
+  EXPECT_TRUE(one->source.host_clock);
+  EXPECT_EQ(one->source.color_codec, ColorCodec::Mjpeg);
+  EXPECT_EQ(one->source.fps, 5U);
+  // Scanner takes only the kind and driver, and CalibProjectPoint no fusion.
+  for (const char* field :
+       {R"("sync_config":"rig.json")", R"("calibration":"poses.json")",
+        R"("color_codec":"mjpeg")", R"("fps":30)"}) {
+    const std::string_view text(field);
+    const std::string key(text.substr(1, text.find('"', 1) - 1));
+    rejected(std::string(R"({"version":1,"source":{)") + field + "}}",
+             App::Scanner,
+             "source." + key + ": is not used by this application");
+  }
+  rejected(R"({"version":1,"fusion":{}})", App::CalibProjectPoint,
+           "fusion: is not used by this application");
+}
+
 TEST(Config, LiveRelationsAndCountsAreCentral) {
   rejected(R"({"version":1,"source":{"serial":"A\u0000B"}})", App::FuseOrbbec,
-           "source.serial");
+           "source.serial: embedded NUL");
   rejected(R"({"version":1,"source":{"serial":"A","sync_config":"rig.json"}})",
-           App::FuseOrbbec, "source.serial");
+           App::FuseOrbbec,
+           "source.serial: cannot be combined with source.sync_config");
   rejected(R"({"version":1,"source":{"apply_sync":true}})", App::FuseOrbbec,
-           "source.apply_sync");
+           "source.apply_sync: requires source.sync_config");
   rejected(
       R"({"version":1,"source":{"host_clock":true,"sync_config":"rig.json"}})",
-      App::FuseOrbbec, "source.host_clock");
+      App::FuseOrbbec,
+      "source.host_clock: cannot be combined with source.sync_config");
   rejected(R"({"version":1,"source":{"color_width":3840}})", App::FuseOrbbec,
-           "color_height");
+           "source: color_width and color_height must be provided together");
   rejected(R"({"version":1,"source":{"depth_width":640,"depth_height":0}})",
-           App::FuseOrbbec, "source.depth_height");
+           App::FuseOrbbec, "source.depth_height: must be finite and positive");
   rejected(R"({"version":1,"source":{"fps":-1}})", App::FuseOrbbec,
-           "source.fps");
+           "source.fps: integer is out of range");
   rejected(R"({"version":1,"source":{"fps":4294967296}})", App::FuseOrbbec,
-           "source.fps");
+           "source.fps: integer is out of range");
   rejected(R"({"version":1,"run":{"frames":2147483648}})", App::FuseOrbbec,
-           "run.frames");
+           "run.frames: integer is out of range");
   rejected(R"({"version":1,"run":{"frames":0}})", App::FuseOrbbec,
-           "run.frames");
+           "run.frames: must be positive");
 }
 
 TEST(Config, FusionDefaultsAndBoundsDoNotDependOnTheConsumer) {
