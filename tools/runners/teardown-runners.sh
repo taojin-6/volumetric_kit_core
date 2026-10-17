@@ -6,7 +6,7 @@
 # host, leaving other repositories' runners alone. Use it to decommission or
 # migrate a host (README.md).
 #
-#   bash tools/runners/teardown-runners.sh <recon|gfx>
+#   bash tools/runners/teardown-runners.sh <recon|gfx|calib>
 #
 # Run as the user that owns the runner directories, with gh authed, which
 # deregistering needs: without it, no registered runner is touched. It keeps
@@ -17,7 +17,7 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 [ $# -eq 1 ] || {
-  echo "usage: $0 <recon|gfx>" >&2
+  echo "usage: $0 <recon|gfx|calib>" >&2
   exit 2
 }
 select_repo "$1"

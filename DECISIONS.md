@@ -1064,3 +1064,37 @@ wrote, so core escapes each `%` in it as `%%` before joining. What the user
 wrote, including an absolute path, is unchanged; every `%` in the result is
 pattern text, which the consumer unescapes. No other path is a pattern, so
 no other is escaped.
+
+## 2026-10-16 — calib's runners, and each repository's own share of a host
+
+`calib` runs every job on self-hosted runners, registered with this
+repository's runner tooling on the hosts that serve `recon` and `gfx`: its
+macOS legs on the Mac (`mac`), its Linux jobs on the Linux hosts
+(`vk-linux-gpu`; calib's DECISIONS.md says which job runs where). calib is
+private, so a job of its on a GitHub-hosted runner draws on the account's
+Actions minutes, and once they are spent, as on 2026-10-17, no such job
+runs; the public repositories' hosted jobs cost nothing. A host gets as many
+runners of calib as of any repository: 6 on a Linux host, enough for a run's
+4 Linux jobs at once on one host while the other is offline, and 2 on a Mac.
+
+- **A runner's parallel level is the host's cores divided by its own
+  repository's runners there**: 5 on the 10-core Mac with 2 per repository.
+  Setting up one repository no longer rewrites or restarts another's runners.
+  This reverses 652eba2 (2026-10-10), which divided by every runner on the
+  host, of every repository. A push runs one repository's CI, so its jobs
+  rarely overlap another's, yet the whole-host split sized every job for the
+  overlap: with three repositories' 6 runners on the Mac each job got 10 / 6
+  = 1 thread, and 2 with two repositories, while the other cores idled. The
+  cost: when repositories' jobs do overlap, up to 6 × 5 threads share 10
+  cores, so those jobs run slower and their builds need more memory at once.
+- **A build passes its level.** A bare `--parallel` ignores
+  `CMAKE_BUILD_PARALLEL_LEVEL` ([tools/runners/README.md](tools/runners/README.md)),
+  so the level never limited a family workflow's build step. Each
+  repository's workflows pass it, in their own change; this repository's do
+  from this one.
+- **calib is private, yet a job of `recon` or `gfx` can read calib's
+  checkouts and its runners' credentials on a host they share:** on the Mac
+  every runner runs as one user, and on the Linux hosts each job container
+  is given the Docker socket, which is root-equivalent. Calib's code on the
+  hosts is as safe as those repositories' owner-only policies keep their
+  runners ("Only the owner triggers CI").
