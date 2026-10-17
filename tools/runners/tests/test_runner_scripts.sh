@@ -136,14 +136,8 @@ expect "teardown-runners.sh needs a repository" "$status" 2
 status=0
 teardown core || status=$?
 expect "teardown-runners.sh rejects 'core'" "$status" 2
-# calib's Linux legs are GitHub-hosted, so it has runners only on Macs; and
-# no repository has runners on another system. The refusal names the systems
-# that have them.
-status=0
-STUB_OS=Linux setup calib || status=$?
-expect "setup-runners.sh refuses calib on a Linux host, before it asks gh or registers anything" \
-  "$status $(calls '^(config|gh|curl) ') $(grep -c 'volumetric_kit_calib has no self-hosted runners on Linux, only on Darwin ' "$tmp/out" || true)" \
-  "2 0 1"
+# No repository has runners on a system but Linux and macOS; the refusal
+# names those.
 status=0
 STUB_OS=FreeBSD setup recon || status=$?
 expect "setup-runners.sh refuses a system with no runners, naming those that have them" \
@@ -347,6 +341,37 @@ for dir in "$HOME"/ci-runners/*/runner-*; do
 done
 expect "teardown removes calib's runners and only them" "$status$remaining" \
   "0 volumetric_kit_gfx/runner-1 volumetric_kit_gfx/runner-2 volumetric_kit_recon/runner-1 volumetric_kit_recon/runner-2"
+
+# --- calib, on a Linux host --------------------------------------------------
+
+# A 24-core Linux host, faked on any host, carrying recon's and gfx's 6
+# runners each with the level the whole-host split gave them (24 cores over
+# 12): calib registers 6 too, whose level is 24 / 6 = 4, and recon's and gfx's
+# are left alone.
+fresh_home
+for repo in recon gfx; do
+  for i in $(seq 1 6); do runner "ci-runners/volumetric_kit_$repo/runner-$i" "$repo" "$(levels 2)\n"; done
+done
+cache_tarball
+status=0
+STUB_OS=Linux STUB_CORES=24 setup calib || status=$?
+expect "calib's runners register on a Linux host" "$status" 0
+[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+registered=0 up=0
+for i in $(seq 1 6); do
+  grep -qF "config ci-runners/volumetric_kit_calib/runner-$i --unattended --url https://github.com/taojin-6/volumetric_kit_calib --token REGTOKEN --labels vk-linux-gpu --name $host-calib-$i " "$CALLS" &&
+    registered=$((registered + 1))
+  [ "$(running "ci-runners/volumetric_kit_calib/runner-$i")" = no ] || up=$((up + 1))
+done
+expect "it registers 6, named and labelled vk-linux-gpu, each a service of this user, and runs them" \
+  "$registered $(calls '^config ') $(calls "^svc ci-runners/volumetric_kit_calib/runner-[1-6] install $user\$") $up" \
+  "6 6 6 6"
+expect "each gets the cores split across calib's 6 runners: 4 of 24" \
+  "$(env_of ci-runners/volumetric_kit_calib/runner-1) $(env_of ci-runners/volumetric_kit_calib/runner-6)" \
+  "$(levels 4) $(levels 4)"
+expect "recon's and gfx's runners keep their levels and are not restarted" \
+  "$(env_of ci-runners/volumetric_kit_recon/runner-6) $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(calls '^svc ci-runners/volumetric_kit_(recon|gfx)/')" \
+  "$(levels 2) $(levels 2) 0"
 
 # --- Teardown ---------------------------------------------------------------
 

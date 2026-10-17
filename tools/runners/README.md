@@ -3,12 +3,13 @@
 `recon` and `gfx` run their GPU legs on self-hosted runners: Linux GPU hosts
 (label `vk-linux-gpu`), where each leg runs in an OS-matched container with
 the GPU passed through (`--gpus all`), and a Mac (label `mac`), where jobs run
-natively for the Apple toolchain and MoltenVK on its GPU. `calib` runs only
-its macOS legs on the Mac, so it has runners only on Macs, and
-`setup-runners.sh` refuses it on Linux. Lint, sanitizers, the `required` gate
-and calib's Linux legs stay on GitHub-hosted runners. Each repository's
-`ci.yml` says which legs go where; this directory is the host side, for all
-three.
+natively for the Apple toolchain and MoltenVK on its GPU. Their lint,
+sanitizers and `required` gate stay on GitHub-hosted runners, free for public
+repositories. `calib` is private, so its hosted jobs would draw on the
+account's Actions minutes and stop once those are spent: every calib job runs
+on these runners ([DECISIONS.md](../../DECISIONS.md), the 2026-10-16 entry).
+Each repository's `ci.yml` says which legs go where; this directory is the
+host side, for all three.
 
 | File | Does |
 | --- | --- |
@@ -76,10 +77,12 @@ EOF
    ```
 
 3. As the login user (not root):
-   `bash tools/runners/setup-runners.sh recon`, and again with `gfx`. Each
-   registers 6 runners labelled `vk-linux-gpu` -- a run has 3 Linux legs, so
-   6 let two runs, or both hosts' legs while one is offline, proceed -- each a
-   systemd service started at boot; it calls `sudo` for the services.
+   `bash tools/runners/setup-runners.sh recon`, and again with `gfx` and
+   `calib`. Each registers 6 runners labelled `vk-linux-gpu` -- a run has at
+   most 4 Linux jobs at once (calib's), so 6 fit a run on one host while the
+   other is offline, and two runs on both -- each a systemd service started
+   at boot; it calls `sudo` for the services. Log `gh` out afterwards, as on
+   a Mac (below).
 
 Until a `vk-linux-gpu` runner is online, the Linux legs stay pending and
 `ci / required` waits for them. Membership in the `docker` group is
@@ -213,8 +216,8 @@ up, then tear the old one down.
   in again (macOS). Resume with `bash tools/runners/setup-runners.sh recon`,
   which starts every runner of the repository that is not running.
 - **Remove**, on the old host: `bash tools/runners/teardown-runners.sh recon`,
-  and again with `gfx` and, on a Mac, `calib`. It uninstalls each runner's
-  service, deregisters the runner and deletes its directory, and deletes the
+  and again with `gfx` and `calib`. It uninstalls each runner's service,
+  deregisters the runner and deletes its directory, and deletes the
   repository's leftovers that never finished registering. It checks `gh` auth
   and mints one remove token before it touches any runner, so if either fails
   every runner keeps running. A runner GitHub will not deregister is kept,

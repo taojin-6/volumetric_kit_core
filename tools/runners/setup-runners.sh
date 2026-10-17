@@ -39,7 +39,9 @@ case "$OS" in # RUNNER_OSES, checked above, names only these two
   Linux)
     PKG_OS=linux
     LABEL=vk-linux-gpu
-    N=6 # 3 Linux legs per run; 6 let two runs, or both hosts' legs, proceed
+    # A run has at most 4 Linux jobs at once (calib's): 6 fit a run on one host
+    # while the other is offline, and two runs on both.
+    N=6
     CORES="$(nproc)"
     command -v docker >/dev/null 2>&1 ||
       die "install Docker Engine first: https://docs.docker.com/engine/install/ubuntu/"

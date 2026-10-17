@@ -20,10 +20,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 ### Changed
 
 - `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take
-  `calib`, whose runners are Mac-only, so `setup-runners.sh` refuses it on
-  Linux. A repository's runners split the host's cores among themselves
-  alone, and setting one repository up leaves the others' runners as they
-  are (DECISIONS.md, the 2026-10-16 entry). On a host set up before, run
+  `calib`, on the Linux hosts and the Mac alike, like `recon` and `gfx`. A
+  repository's runners split the host's cores among themselves alone, and
+  setting one repository up leaves the others' runners as they are
+  (DECISIONS.md, the 2026-10-16 entry). On a host set up before, run
   `setup-runners.sh` once for each of its repositories, while CI is idle.
 - CI's build steps pass the parallel level rather than a bare `--parallel`,
   which ignores it ([tools/runners/README.md](tools/runners/README.md)).

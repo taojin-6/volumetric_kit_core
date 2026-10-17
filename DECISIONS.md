@@ -1065,13 +1065,19 @@ wrote, including an absolute path, is unchanged; every `%` in the result is
 pattern text, which the consumer unescapes. No other path is a pattern, so
 no other is escaped.
 
-## 2026-10-16 — calib's Mac runners, and each repository's own share of a host
+## 2026-10-16 — calib's runners, and each repository's own share of a host
 
-`calib`'s macOS legs move to self-hosted `mac` runners on the Mac that serves
-`recon` and `gfx`, registered with this repository's runner tooling; the rest
-of its CI stays GitHub-hosted (calib's DECISIONS.md). `select_repo`
+`calib` runs every job on self-hosted runners, registered with this
+repository's runner tooling on the hosts that serve `recon` and `gfx`: its
+macOS legs on the Mac (`mac`), the rest on the Linux hosts (`vk-linux-gpu`;
+calib's DECISIONS.md says which job runs where). calib is private, so a job
+of its on a GitHub-hosted runner draws on the account's Actions minutes, and
+once they are spent, as on 2026-10-17, no such job runs; the public
+repositories' hosted jobs cost nothing. `select_repo`
 (`tools/runners/common.sh`) records which systems carry each repository's
-runners: calib's, macOS alone.
+runners, Linux and macOS for all three, and a host gets as many runners of
+calib as of any repository: 6 on a Linux host, enough for a run's 4 Linux
+jobs at once on one host while the other is offline, and 2 on a Mac.
 
 - **A runner's parallel level is the host's cores divided by its own
   repository's runners there**: 5 on the 10-core Mac with 2 per repository.
@@ -1088,7 +1094,7 @@ runners: calib's, macOS alone.
   so the level never limited a family workflow's build step. Each
   repository's workflows pass it, in their own change; this repository's do
   from this one.
-- **calib is private, and the Mac's runners all run as one user,** so a job of
-  `recon` or `gfx` can read calib's checkouts and its runners' credentials
-  there. Calib's code on the Mac is as safe as those repositories' owner-only
-  policies keep their runners ("Only the owner triggers CI").
+- **calib is private, and each host's runners all run as one user,** so a job
+  of `recon` or `gfx` can read calib's checkouts and its runners' credentials
+  there. Calib's code on the hosts is as safe as those repositories'
+  owner-only policies keep their runners ("Only the owner triggers CI").
