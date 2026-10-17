@@ -896,13 +896,13 @@ workflow stops only a fork that leaves it in.
 
 ### A brew upgrade needs no cache clearing
 
-The Mac runners build on the Mac's Homebrew, which the owner upgrades by hand
-and CI never does. A build keeps absolute paths into Homebrew's Cellar, which
-name each formula's version (`/opt/homebrew/Cellar/<formula>/<version>/`):
-pkg-config's results in `CMakeCache.txt`, and compiled objects' header
-dependencies. `brew upgrade` deletes the old version's directory, so a tree
-cached before an upgrade failed to configure, build or link until it was
-cleared by hand.
+The Mac runners build on the Mac's Homebrew, which only the owner changes, by
+hand, while CI is idle. A build keeps absolute paths into Homebrew's Cellar,
+which name each formula's version
+(`/opt/homebrew/Cellar/<formula>/<version>/`): pkg-config's results in
+`CMakeCache.txt`, and compiled objects' header dependencies. `brew upgrade`
+deletes the old version's directory, so a tree cached before an upgrade
+failed to configure, build or link until it was cleared by hand.
 
 - **Mac caches key on the installed versions** of the formulae a leg uses and
   of their installed dependencies, recursively, and on Homebrew's prefix:
@@ -915,6 +915,12 @@ cleared by hand.
   would rebuild everything after any upgrade, and recording only the
   version-free `opt/` links is not in a build's hands: Homebrew's pkg-config
   files name the Cellar.
+- **A job on the self-hosted Mac installs nothing:** it fails, naming any
+  formula missing. Installing one can upgrade installed dependencies that
+  other legs build against (`HOMEBREW_NO_INSTALL_UPGRADE` spares only the
+  named formula), and legs installing at once collide on Homebrew's locks;
+  calib decided this first (its DECISIONS.md, 2026-10-16). GitHub-hosted
+  runners, one job each, install what their image lacks.
 - **The cost:** the first run after an upgrade rebuilds what it changed, and
   an upgrade during a job can still break that job, so upgrades wait until
   CI is idle ([tools/runners/README.md](tools/runners/README.md#upgrading-homebrew)).
