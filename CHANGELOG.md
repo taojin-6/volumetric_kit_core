@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- `.github/actions/homebrew-key` and `tools/runners/homebrew-key.sh`: a cache
+  key of the installed Homebrew versions a build uses, so a `brew upgrade`
+  on the Mac starts the affected dependency builds fresh (DECISIONS.md, "A
+  brew upgrade needs no cache clearing"). Migrating, in `recon`, `gfx` and
+  `calib`: add the key to the Mac legs' `build/_deps` cache keys, and
+  install nothing on the self-hosted Mac
+  ([tools/runners/README.md](tools/runners/README.md#upgrading-homebrew)).
+
 ## [0.10.0] - 2026-10-16
 
 ### Added

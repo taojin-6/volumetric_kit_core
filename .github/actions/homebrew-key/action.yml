@@ -1,0 +1,33 @@
+name: Homebrew key
+description: >-
+  A cache key for the Homebrew formulae a build uses: 16 hex digits that
+  change whenever the installed version of one of them, or of anything they
+  depend on, does; "none" off macOS or without Homebrew.
+
+# tools/runners/homebrew-key.sh computes it, and tools/runners/README.md says
+# how a workflow uses it. Siblings use this action by commit, which brings the
+# script at that commit with it.
+inputs:
+  formulae:
+    description: The formulae the build uses, separated by spaces or newlines.
+    required: true
+outputs:
+  key:
+    description: The key, or "none".
+    value: ${{ steps.key.outputs.key }}
+runs:
+  using: composite
+  steps:
+    - id: key
+      name: Homebrew key
+      shell: bash
+      env:
+        FORMULAE: ${{ inputs.formulae }}
+      run: |
+        echo "::group::What the key hashes"
+        # shellcheck disable=SC2086 # one argument per formula
+        key="$(bash "$GITHUB_ACTION_PATH/../../../tools/runners/homebrew-key.sh" \
+          --verbose $FORMULAE)"
+        echo "::endgroup::"
+        echo "Homebrew key: $key"
+        echo "key=$key" >>"$GITHUB_OUTPUT"

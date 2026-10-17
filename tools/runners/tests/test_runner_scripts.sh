@@ -14,29 +14,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tools="$here/.."
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-failures=0
-count=0
-
-pass() {
-  count=$((count + 1))
-  echo "ok   $1"
-}
-
-fail() {
-  count=$((count + 1))
-  failures=$((failures + 1))
-  echo "FAIL $1"
-}
-
-# expect NAME ACTUAL WANT
-expect() {
-  if [ "$2" = "$3" ]; then
-    pass "$1"
-  else
-    fail "$1"
-    printf '     | got:  %s\n     | want: %s\n' "$2" "$3"
-  fi
-}
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+. "$here/lib.sh"
 
 # --- Stubs ------------------------------------------------------------------
 
@@ -352,5 +331,4 @@ expect "teardown with nothing to remove succeeds and touches nothing" \
   "$status $(calls '^(svc|config|gh) ')" "0 0"
 
 export HOME="$real_home"
-echo "$((count - failures)) of $count passed"
-[ "$failures" -eq 0 ]
+report

@@ -1,7 +1,8 @@
 name: lint
 
 # Lint gate: the pre-commit hooks (formatting, hygiene, shellcheck), clang-tidy
-# through the build, and the tests of the runner tooling in tools/runners/.
+# through the build, and the tests of the runner tooling in tools/runners/ and
+# of the homebrew-key action.
 # The formatters' output is deterministic across operating systems, so they run
 # on Linux alone; the tooling's tests also run on macOS, whose bash (3.2) the
 # runner scripts must work with. Invoked by ci.yml; its `lint` result covers
@@ -69,3 +70,21 @@ jobs:
       - uses: actions/checkout@v7
       # Under the system's bash: 3.2 on macOS.
       - run: /bin/bash tools/runners/tests/test_runner_scripts.sh
+      - run: /bin/bash tools/runners/tests/test_homebrew_key.sh
+      # The action as a sibling uses it: "none" on Linux, and on macOS a key
+      # from the runner's Homebrew.
+      - id: brew
+        uses: ./.github/actions/homebrew-key
+        with:
+          formulae: cmake pkgconf
+      - name: Check the action's key
+        env:
+          KEY: ${{ steps.brew.outputs.key }}
+        run: |
+          case "$RUNNER_OS" in
+            macOS) printf '%s\n' "$KEY" | grep -Eqx '[0-9a-f]{16}' ;;
+            *) [ "$KEY" = none ] ;;
+          esac || {
+            echo "::error::unexpected Homebrew key '$KEY' on $RUNNER_OS"
+            exit 1
+          }

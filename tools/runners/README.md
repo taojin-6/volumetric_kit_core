@@ -12,6 +12,7 @@ and the `required` gate stay on GitHub-hosted runners. Each repository's
 | `setup-runners.sh <recon\|gfx>` | registers a repository's runners on this host |
 | `teardown-runners.sh <recon\|gfx>` | stops, deregisters and deletes them |
 | `common.sh` | what the two scripts share |
+| `homebrew-key.sh <formula>...` | prints a cache key of their installed Homebrew versions ([Upgrading Homebrew](#upgrading-homebrew)) |
 
 Runners on a personal account belong to one repository, so a host serving
 both carries a set for each.
@@ -93,7 +94,8 @@ root-equivalent: fine for a personal machine, not for a shared one.
 
    `DEVELOPER_DIR` overrides `xcode-select`, and the runner, a LaunchAgent,
    inherits the login session's: make sure the session exports no stale one.
-2. **Homebrew** (<https://brew.sh>).
+2. **Homebrew** (<https://brew.sh>) and the formulae the legs use
+   ([Upgrading Homebrew](#upgrading-homebrew)).
 3. In Terminal, as the login user: `bash tools/runners/setup-runners.sh recon`,
    and again with `gfx`. Each registers 2 runners labelled `mac` (Debug and
    Release in parallel), each a launchd LaunchAgent.
@@ -131,6 +133,51 @@ root-equivalent: fine for a personal machine, not for a shared one.
 - The runner reads `.env` only when it starts, so a running runner whose
   `.env` changed, of any repository, is restarted, which cancels a job
   running on it: run the script while CI is idle.
+
+## Upgrading Homebrew
+
+Run `brew update && brew upgrade` on a Mac freely while CI is idle: caches
+key on the installed versions, so the next run rebuilds what changed. An
+upgrade while a job runs can still break that job, whose formulae change
+under it. Why the caches need it: [DECISIONS.md](../../DECISIONS.md#a-brew-upgrade-needs-no-cache-clearing).
+
+A leg's key is what `homebrew-key.sh` prints for the formulae it uses: 16
+hex digits that change whenever the installed version of one of them, or of
+anything they depend on, does, and `none` off macOS or without `brew`. It
+only reads, with Homebrew's auto-update off, and prints no key when brew
+fails. A workflow gets it from this repository's action, at the full SHA of
+the core commit the repository already pins, so it keeps one core pin:
+
+```yaml
+- name: Install or check the Homebrew formulae
+  id: formulae
+  run: |
+    pkgs="cmake glm ffmpeg pkgconf"
+    echo "formulae=$pkgs" >>"$GITHUB_OUTPUT"
+    # ... installs or checks $pkgs, as the last rule below says
+- name: Homebrew key
+  id: brew
+  uses: taojin-6/volumetric_kit_core/.github/actions/homebrew-key@<full SHA of the core pin>
+  with:
+    formulae: ${{ steps.formulae.outputs.formulae }}
+- name: Cache third-party deps
+  uses: actions/cache@v6
+  with:
+    path: build/_deps
+    key: deps-<leg>-brew${{ steps.brew.outputs.key }}-${{ hashFiles('third_party/CMakeLists.txt') }}
+    restore-keys: deps-<leg>-brew${{ steps.brew.outputs.key }}-
+```
+
+- Name the leg's formulae once, in the step that installs or checks them,
+  and pass that list to the action. List every formula the build finds: one
+  left out is covered only as a listed formula's dependency.
+- Keep the key inside every `restore-keys` prefix, so a fallback never
+  restores a tree built on other versions.
+- On the self-hosted Mac a job installs nothing: it fails, naming any
+  formula missing, and the owner installs that by hand while CI is idle
+  ([why](../../DECISIONS.md#a-brew-upgrade-needs-no-cache-clearing)).
+  GitHub-hosted runners install what their image lacks, with
+  `HOMEBREW_NO_AUTO_UPDATE` set.
 
 ## Pausing, moving and removing a host
 
