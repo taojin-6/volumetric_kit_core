@@ -19,9 +19,9 @@ die() {
 # Sets REPO, SLUG and RUNNER_ROOT for a repository's short name, or exits 2.
 select_repo() {
   case "${1:-}" in
-    recon | gfx) ;;
+    recon | gfx | calib) ;;
     *)
-      echo "unknown repository '${1:-}': expected recon or gfx" >&2
+      echo "unknown repository '${1:-}': expected recon, gfx or calib" >&2
       exit 2
       ;;
   esac

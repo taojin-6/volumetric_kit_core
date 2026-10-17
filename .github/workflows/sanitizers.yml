@@ -56,7 +56,7 @@ jobs:
             -DVKC_SANITIZE="address;undefined" -DVKC_TEST_SHARDS=4
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
