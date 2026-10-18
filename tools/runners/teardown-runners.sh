@@ -10,8 +10,8 @@
 #
 # Run as the user that owns the runner directories, with gh authed, which
 # deregistering needs: without it, no registered runner is touched. It calls
-# sudo to uninstall the services. It keeps
-# going past a runner it cannot remove, and exits non-zero if any is left.
+# sudo to uninstall the services. It keeps going past a runner it cannot
+# remove, and exits non-zero if any is left.
 set -uo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=common.sh
@@ -65,7 +65,13 @@ for dir in ${RUNNER_DIRS[@]+"${RUNNER_DIRS[@]}"}; do # empty: set -u, bash 3.2
 done
 for dir in ${leftovers[@]+"${leftovers[@]}"}; do
   echo "==> Removing $dir (not registered)"
-  uninstall_service "$dir" >/dev/null || true
+  # Its directory goes only with its service: a Mac's daemon left behind
+  # would be restarted, failing, for good.
+  if ! uninstall_service "$dir" >/dev/null; then
+    echo "    Kept $dir: its service did not uninstall; re-run"
+    kept=$((kept + 1))
+    continue
+  fi
   rm -rf "$dir"
 done
 

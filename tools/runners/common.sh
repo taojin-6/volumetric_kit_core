@@ -36,6 +36,7 @@ select_repo() {
 # LaunchDaemon in DAEMON_DIR, which comes up at boot with nobody logged in
 # (DECISIONS.md, 2026-10-17). The tests point DAEMON_DIR elsewhere.
 DAEMON_DIR="${RUNNER_DAEMON_DIR:-/Library/LaunchDaemons}"
+: "${USER:=$(id -un)}" # the user they run as; not every shell sets it
 
 # svc DIR ARGS...: the runner's own service script, run from its directory as
 # root (Linux only).
@@ -46,10 +47,17 @@ svc() {
 }
 
 # daemon_label DIR: runner $1's service name, which registering wrote into its
-# svc.sh: actions.runner.<owner>-<repo>.<runner name>. Empty for a runner that
-# never finished registering.
+# svc.sh: actions.runner.<owner>-<repo>.<runner name>. Without svc.sh, the
+# name of the plist its .service records, a daemon's or a LaunchAgent's; empty
+# for a runner that never finished registering.
 daemon_label() {
-  sed -n 's/^SVC_NAME="\(.*\)"$/\1/p' "$1/svc.sh" 2>/dev/null | head -n 1 | tr ' ' _
+  local label service
+  label="$(sed -n 's/^SVC_NAME="\(.*\)"$/\1/p' "$1/svc.sh" 2>/dev/null | head -n 1 | tr ' ' _)"
+  if [ -z "$label" ] && [ -f "$1/.service" ]; then
+    service="$(head -n 1 "$1/.service")"
+    case "$service" in */*.plist) label="$(basename "$service" .plist)" ;; esac
+  fi
+  echo "$label"
 }
 
 # daemon_xml DIR LABEL: the LaunchDaemon that runs runner $1: the runner's own
@@ -87,7 +95,7 @@ EOF
 daemon_loaded() {
   local label
   label="$(daemon_label "$1")"
-  [ -n "$label" ] && launchctl print "system/$label" >/dev/null 2>&1
+  [ -n "$label" ] && target_loaded "system/$label"
 }
 
 daemon_gone() { ! daemon_loaded "$1"; }
@@ -103,16 +111,28 @@ wait_for() {
   done
 }
 
-# remove_launch_agent DIR: deletes the per-user LaunchAgent an earlier setup
-# installed for runner $1, which would start a second listener on its
-# credentials at the next console login.
+# Whether launchd service target $1 is loaded.
+target_loaded() { launchctl print "$1" >/dev/null 2>&1; }
+target_gone() { ! target_loaded "$1"; }
+
+# remove_launch_agent DIR: unloads and deletes the per-user LaunchAgent an
+# earlier setup installed for runner $1, which would start a second listener
+# on its credentials at the next console login. The plist goes only once the
+# agent is unloaded, so a failed attempt is retried. Does nothing on Linux.
 remove_launch_agent() {
-  local label agent
+  local label agent target
+  [ "$OS" = Darwin ] || return 0
   label="$(daemon_label "$1")"
+  [ -n "$label" ] || return 0
   agent="$HOME/Library/LaunchAgents/$label.plist"
-  [ -n "$label" ] && [ -f "$agent" ] || return 0
+  target="gui/$(id -u)/$label"
+  [ -f "$agent" ] || target_loaded "$target" || return 0
   # As root, which reaches a login session from SSH too; with none, nothing runs.
-  sudo launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  sudo launchctl bootout "$target" 2>/dev/null || true
+  wait_for 30 target_gone "$target" || {
+    echo "error: launchd still has $target loaded" >&2
+    return 1
+  }
   rm -f "$agent"
 }
 
@@ -128,11 +148,12 @@ service_installed() {
   fi
 }
 
-# install_service DIR: installs runner $1's service, stopped. On macOS it also
-# writes .service, as svc.sh does: the runner will not deregister while it
-# exists.
+# install_service DIR: installs runner $1's service, stopped. On macOS the
+# daemon is written whole or not at all, since an installed one is never
+# rewritten, and .service is written as svc.sh does: the runner will not
+# deregister while it exists.
 install_service() {
-  local label plist
+  local label plist tmp
   if [ "$OS" = Linux ]; then
     svc "$1" install "$USER" # as this user, not root
     return
@@ -143,12 +164,18 @@ install_service() {
     return 1
   }
   plist="$DAEMON_DIR/$label.plist"
-  remove_launch_agent "$1"
-  mkdir -p "$HOME/Library/Logs/$label" &&
+  tmp="$(mktemp)" || return 1
+  if mkdir -p "$HOME/Library/Logs/$label" &&
     cp "$1/bin/runsvc.sh" "$1/runsvc.sh" && chmod u+x "$1/runsvc.sh" &&
-    daemon_xml "$1" "$label" | sudo tee "$plist" >/dev/null &&
-    sudo chmod 644 "$plist" &&
-    echo "$plist" >"$1/.service"
+    daemon_xml "$1" "$label" >"$tmp" && plutil -lint "$tmp" >/dev/null &&
+    sudo cp "$tmp" "$plist" && sudo chmod 644 "$plist" &&
+    echo "$plist" >"$1/.service"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  sudo rm -f "$plist"
+  return 1
 }
 
 # uninstall_service DIR: stops runner $1's service and uninstalls it, and on
@@ -216,7 +243,8 @@ service_running() {
     return 1
   fi
   label="$(daemon_label "$1")"
-  launchctl print "system/$label" 2>/dev/null | grep -q '^[[:space:]]*state = running'
+  out="$(launchctl print "system/$label" 2>/dev/null)" || return 1
+  grep -q '^[[:space:]]*state = running' <<<"$out"
 }
 
 # Starts runner directory $1's service and checks that it runs. A daemon

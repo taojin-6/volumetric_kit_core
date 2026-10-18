@@ -864,11 +864,11 @@ and catches only to return a `Status`.
 
 ### Only the owner triggers CI
 
-`recon` and `gfx` are public and run legs on self-hosted runners: persistent
-machines, one a Mac whose jobs run as its user. For a `pull_request` event
-GitHub runs the workflow files from the pull request itself, so a fork could
-send any job to those runners, and an `if:` in a workflow stops only a fork
-that leaves it in.
+`recon`, `gfx` and `calib` are public and run legs on self-hosted runners:
+persistent machines, one a Mac whose jobs run as its user. For a
+`pull_request` event GitHub runs the workflow files from the pull request
+itself, so a fork could send any job to those runners, and an `if:` in a
+workflow stops only a fork that leaves it in.
 
 - **GitHub enforces it, before any job.** Each family repository has an
   Actions policy whose one rule lets only the owner's account trigger a
@@ -1137,4 +1137,4 @@ which exists only while that user is logged in at the console.
   Linux, and their jobs run outside any login session, with no window server
   or unlocked login keychain. The Mac legs need neither: on daemons, calib's
   rig leg ran its 408 tests, GPU tests on MoltenVK included, with none
-  skipped. A cold start with FileVault on still waits for its password.
+  skipped.

@@ -8,8 +8,8 @@
 #
 #   bash tools/runners/setup-runners.sh <recon|gfx|calib>
 #
-# Run as the user that owns ~/ci-runners; it calls sudo for the services, so
-# it runs over SSH as well. Safe to re-run: registered runners are kept, so no
+# Run as the user that owns ~/ci-runners, in a terminal or over SSH; it calls
+# sudo for the services. Safe to re-run: registered runners are kept, so no
 # new token is needed, a stopped one is started, and a running one restarts
 # only when its .env changed.
 set -euo pipefail
@@ -135,7 +135,8 @@ for dir in "${RUNNER_DIRS[@]}"; do
 done
 
 # Each of the repository's runners is a service started at boot: installed if
-# it is not, and started if it is not running.
+# it is not, and started if it is not running. On macOS a LaunchAgent of an
+# earlier setup goes once the daemon is installed, before it starts.
 for dir in "${RUNNER_DIRS[@]}"; do
   if ! service_installed "$dir"; then
     echo "==> Installing the service of $dir"
@@ -144,6 +145,10 @@ for dir in "${RUNNER_DIRS[@]}"; do
       continue
     }
   fi
+  remove_launch_agent "$dir" || {
+    broken=$((broken + 1))
+    continue
+  }
   service_running "$dir" || start_service "$dir" || broken=$((broken + 1))
 done
 [ "$broken" -eq 0 ] || die "$broken runner services failed (above): fix the cause and re-run"

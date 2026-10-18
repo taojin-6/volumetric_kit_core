@@ -34,13 +34,22 @@ stub() {
   printf '#!/bin/sh\n%s\n' "$2" >"$stubs/$1"
   chmod +x "$stubs/$1"
 }
-stub sudo 'exec "$@"'
+stub sudo 'STUB_ROOT=1 exec "$@"'
 stub uname 'if [ "$1" = -s ] && [ -n "${STUB_OS:-}" ]; then echo "$STUB_OS"; else exec '"$(command -v uname)"' "$@"; fi'
 stub nproc 'echo "${STUB_CORES:-24}"'
 stub sysctl '[ "$*" = "-n hw.ncpu" ] && echo "${STUB_CORES:-24}"'
 stub sleep 'exit 0' # launchd's state changes below take calls, not time
-stub tee '[ -z "${STUB_INSTALL_FAILS:-}" ] || exit 1
-exec '"$(command -v tee)"' "$@"'
+# Only root writes a daemon, and STUB_INSTALL_FAILS makes the write fail.
+stub cp 'for last; do :; done
+case "$last" in
+  "$RUNNER_DAEMON_DIR"/*)
+    [ -n "${STUB_ROOT:-}" ] || { echo "cp: $last: Permission denied" >&2; exit 1; }
+    [ -z "${STUB_INSTALL_FAILS:-}" ] || exit 1 ;;
+esac
+exec '"$(command -v cp)"' "$@"'
+# macOS's own where it exists; elsewhere a property list is one that ends.
+stub plutil 'if [ -x /usr/bin/plutil ]; then exec /usr/bin/plutil "$@"; fi
+[ "$1" = -lint ] && grep -q "</plist>" "$2"'
 stub curl '
 echo "curl $*" >>"$CALLS"
 case "$*" in
@@ -60,42 +69,57 @@ case "$*" in
   *remove-token*) echo RMTOKEN ;;
 esac'
 
-# launchd's system domain. A daemon's state lives in its runner directory,
-# which its plist names: .loaded once bootstrapped, .running while it runs.
-# Like launchd, it refuses to bootstrap a loaded daemon, and a bootout returns
-# before the daemon is gone: it stays loaded for two more prints.
+# launchd. A daemon (system/LABEL) keeps its state in the runner directory its
+# plist names: .loaded once bootstrapped, .running while it runs; only root
+# changes it, and $RUNNER_DAEMON_DIR/LABEL.disabled refuses a bootstrap until
+# an enable. A LaunchAgent (gui/UID/LABEL) keeps LABEL.loaded in
+# $HOME/.stub-agents. As launchd does, it refuses to bootstrap a loaded
+# service, and a bootout returns before the service is gone: it stays loaded,
+# and running, for two more prints. STUB_BOOTOUT_FAILS makes a daemon's fail.
 stub launchctl '
 echo "launchctl $*" >>"$CALLS"
-dir_of() {
-  sed -n "s|.*<key>WorkingDirectory</key><string>\(.*\)</string>.*|\1|p" \
-    "$RUNNER_DAEMON_DIR/$1.plist" 2>/dev/null
-}
-[ "$1" != kickstart ] || [ "$2" != -k ] || shift
+kill=""
+if [ "$1" = kickstart ] && [ "$2" = -k ]; then
+  kill=1
+  shift 2
+  set -- kickstart "$@"
+fi
+d=""
 case "$2" in
-  system/*) d="$(dir_of "${2#system/}")" ;;
-  system) d="$(dir_of "$(basename "$3" .plist)")" ;;
-  *) exit 0 ;; # a login session, or none
+  system | system/*)
+    if [ "$2" = system ]; then label="$(basename "$3" .plist)"; else label="${2#system/}"; fi
+    d="$(sed -n "s|.*<key>WorkingDirectory</key><string>\(.*\)</string>.*|\1|p" \
+      "$RUNNER_DAEMON_DIR/$label.plist" 2>/dev/null)"
+    p="${d:-/nonexistent}/."
+    [ "$1" = print ] || [ -n "${STUB_ROOT:-}" ] || { echo "Operation not permitted" >&2; exit 1; } ;;
+  gui/*)
+    label="${2##*/}"
+    p="$HOME/.stub-agents/$label." ;;
+  *) exit 0 ;;
 esac
-loaded() { [ -n "$d" ] && [ -f "$d/.loaded" ]; }
+loaded() { [ -f "${p}loaded" ]; }
 case "$1" in
   print)
-    if [ -f "$d/.unloading" ]; then
-      left="$(cat "$d/.unloading")"
-      if [ "$left" -gt 0 ]; then echo $((left - 1)) >"$d/.unloading"; else rm -f "$d/.loaded" "$d/.unloading"; fi
+    if [ -f "${p}unloading" ]; then
+      left="$(cat "${p}unloading")"
+      if [ "$left" -gt 0 ]; then echo $((left - 1)) >"${p}unloading"; else rm -f "${p}loaded" "${p}running" "${p}unloading"; fi
     fi
     loaded || { echo "Could not find service" >&2; exit 113; }
-    if [ -f "$d/.running" ]; then echo "	state = running"; else echo "	state = not running"; fi ;;
+    if [ -f "${p}running" ]; then echo "	state = running"; else echo "	state = not running"; fi ;;
+  enable) rm -f "$RUNNER_DAEMON_DIR/$label.disabled" ;;
   bootstrap)
+    [ ! -f "$RUNNER_DAEMON_DIR/$label.disabled" ] || { echo "Bootstrap failed: 119: Service is disabled" >&2; exit 119; }
     [ -n "$d" ] && ! loaded || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
-    touch "$d/.loaded"
-    [ -n "${STUB_START_FAILS:-}" ] || touch "$d/.running" ;;
+    touch "${p}loaded"
+    [ -n "${STUB_START_FAILS:-}" ] || touch "${p}running" ;;
   kickstart)
-    loaded || exit 113
-    [ -n "${STUB_START_FAILS:-}" ] || touch "$d/.running" ;;
+    loaded && [ ! -f "${p}unloading" ] || exit 113
+    [ -z "$kill" ] || rm -f "${p}running"
+    [ -n "${STUB_START_FAILS:-}" ] || touch "${p}running" ;;
   bootout)
     loaded || exit 113
-    rm -f "$d/.running"
-    echo 2 >"$d/.unloading" ;;
+    [ -z "$d" ] || [ -z "${STUB_BOOTOUT_FAILS:-}" ] || exit 5
+    echo 2 >"${p}unloading" ;;
 esac
 exit 0'
 
@@ -172,16 +196,38 @@ runner() {
 label_of() { sed -n 's/^SVC_NAME="\(.*\)"$/\1/p' "$HOME/$1/svc.sh"; }
 daemon_of() { echo "$RUNNER_DAEMON_DIR/$(label_of "$1").plist"; }
 # pause DIR: its service stopped, as README's pause leaves it.
-pause() { rm -f "$HOME/$1/.running" "$HOME/$1/.loaded"; }
+pause() { rm -f "$HOME/$1/.running" "$HOME/$1/.loaded" "$HOME/$1/.unloading"; }
 # unservice DIR: its service never installed, or lost.
 unservice() {
-  rm -f "$(daemon_of "$1")" "$HOME/$1/.service" "$HOME/$1/.running" "$HOME/$1/.loaded"
+  pause "$1"
+  rm -f "$(daemon_of "$1")" "$HOME/$1/.service"
+}
+# agent DIR [none]: a LaunchAgent of runner DIR loaded in the login session, as
+# an earlier setup left it; with "none", its plist already deleted.
+agent_plist() { echo "$HOME/Library/LaunchAgents/$(label_of "$1").plist"; }
+agent_mark() { echo "$HOME/.stub-agents/$(label_of "$1").loaded"; }
+agent() {
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.stub-agents"
+  [ "${2:-}" = none ] || echo agent >"$(agent_plist "$1")"
+  touch "$(agent_mark "$1")"
+}
+# agent_state DIR: whether its agent is still loaded, and its plist still there.
+agent_state() {
+  local loaded=unloaded plist=deleted
+  [ ! -f "$(agent_mark "$1")" ] || loaded=loaded
+  [ ! -f "$(agent_plist "$1")" ] || plist=kept
+  echo "$loaded $plist"
 }
 
 calls() { grep -c -E -e "$1" "$CALLS" || true; }
 env_of() { cat "$HOME/$1/.env" 2>/dev/null || echo "<none>"; }
+# running DIR: whether its service runs: on macOS only while launchd has it.
 running() {
-  if [ -f "$HOME/$1/.running" ]; then echo yes; else echo no; fi
+  if [ -f "$HOME/$1/.running" ] && { [ "$os" = Linux ] || [ -f "$HOME/$1/.loaded" ]; }; then
+    echo yes
+  else
+    echo no
+  fi
 }
 levels() { printf 'CMAKE_BUILD_PARALLEL_LEVEL=%s\nCTEST_PARALLEL_LEVEL=%s' "$1" "$1"; }
 # daemons: the installed daemons' file names, each followed by a space.
@@ -369,6 +415,14 @@ CMAKE_BUILD_PARALLEL_LEVEL=$threads"
     expect "a loaded daemon that is not running is kicked, not loaded again (Darwin)" \
       "$status $(running ci-runners/volumetric_kit_recon/runner-1) $(calls '^launchctl kickstart system/') $(calls '^launchctl bootstrap ')" \
       "0 yes 1 0"
+    pause ci-runners/volumetric_kit_recon/runner-1
+    disabled="$RUNNER_DAEMON_DIR/$(label_of ci-runners/volumetric_kit_recon/runner-1).disabled"
+    touch "$disabled"
+    status=0
+    setup recon || status=$?
+    expect "a disabled daemon is enabled and started (Darwin)" \
+      "$status $(running ci-runners/volumetric_kit_recon/runner-1) $([ -f "$disabled" ] && echo disabled || echo enabled)" \
+      "0 yes enabled"
   fi
 
   # README's pause stops the repository's runners; on macOS it waits until
@@ -397,6 +451,9 @@ CMAKE_BUILD_PARALLEL_LEVEL=$threads"
     expect "setup fails when a service does not come up ($case, $os)" "$status" 1
     expect "it still sets up the other runners ($case, $os)" \
       "$(env_of "ci-runners/volumetric_kit_recon/runner-$n")" "$(levels "$(share "$n")")"
+    [ "$case" != STUB_INSTALL_FAILS ] ||
+      expect "a failed install leaves no service behind ($os)" \
+        "$(installed ci-runners/volumetric_kit_recon/runner-1)" no
   done
 
   # A host whose runners are still in the pre-layout directories gets no
@@ -415,8 +472,11 @@ CMAKE_BUILD_PARALLEL_LEVEL=$threads"
   expect "it asks gh for nothing and registers nothing ($os)" "$(calls '^(config|gh|curl) ')" 0
   expect "it counts only registered runners ($os)" \
     "$(grep -c "^Done: $n runners " "$tmp/out" || true)" 1
-  expect "it leaves an unregistered leftover alone ($os)" \
-    "$(calls '^svc ci-runners/') $(env_of ci-runners/volumetric_kit_recon/runner-1)" "0 <none>"
+  expect "it leaves an unregistered leftover's .env alone ($os)" \
+    "$(env_of ci-runners/volumetric_kit_recon/runner-1)" "<none>"
+  [ "$os" = Darwin ] || # a leftover names no daemon
+    expect "it leaves an unregistered leftover's service alone (Linux)" \
+      "$(calls '^svc ci-runners/')" 0
   expect "it reinstalls and starts a pre-layout runner's service ($os)" \
     "$(installed actions-runner-recon-1) $(running actions-runner-recon-1)" "yes yes"
   expect "they get the split across the repository's pre-layout runners ($os)" \
@@ -453,29 +513,54 @@ done
 # --- A Mac set up before: LaunchAgents ---------------------------------------
 
 # A runner installed as a per-user LaunchAgent, whose .service names that
-# agent, becomes a daemon: the agent is unloaded and deleted, so no console
-# login starts a second listener on the runner's credentials.
+# agent, becomes a daemon, and the agent is unloaded and deleted, so no
+# console login starts a second listener on the runner's credentials. So is
+# the agent of a runner that is a daemon already, and an agent whose plist is
+# gone but which is still loaded.
 os=Darwin
 export STUB_OS=Darwin
 fresh_home
 d=ci-runners/volumetric_kit_gfx/runner-1
 runner "$d" gfx
-runner ci-runners/volumetric_kit_gfx/runner-2 gfx "$(levels "$(share 2)")\n"
+runner ci-runners/volumetric_kit_gfx/runner-2 gfx "$(levels "$(share 3)")\n"
+runner ci-runners/volumetric_kit_gfx/runner-3 gfx "$(levels "$(share 3)")\n"
 unservice "$d"
-agent="$HOME/Library/LaunchAgents/$(label_of "$d").plist"
-mkdir -p "$HOME/Library/LaunchAgents"
-echo agent >"$agent"
-echo "$agent" >"$HOME/$d/.service"
+agent "$d"
+agent_plist "$d" >"$HOME/$d/.service"
+agent ci-runners/volumetric_kit_gfx/runner-2
+agent ci-runners/volumetric_kit_gfx/runner-3 none
 status=0
 setup gfx || status=$?
 expect "a Mac's LaunchAgent runner becomes a daemon that runs" \
   "$status $(installed "$d") $(running "$d") $(cat "$HOME/$d/.service")" \
   "0 yes yes $(daemon_of "$d")"
-expect "its agent is unloaded from the login session and deleted" \
-  "$(calls "^launchctl bootout gui/$(id -u)/$(label_of "$d")\$") $([ -f "$agent" ] && echo kept || echo deleted)" \
-  "1 deleted"
-expect "the repository's runner that was a daemon already is left alone" \
-  "$(calls '^launchctl (bootstrap|bootout|kickstart|enable) .*gfx\.runner-2')" 0
+expect "its agent is unloaded from the login session, waited for, and deleted" \
+  "$(calls "^launchctl bootout gui/$(id -u)/$(label_of "$d")\$") $(agent_state "$d")" \
+  "1 unloaded deleted"
+expect "so is a daemon's leftover agent, and a loaded agent whose plist is gone" \
+  "$(agent_state ci-runners/volumetric_kit_gfx/runner-2) $(agent_state ci-runners/volumetric_kit_gfx/runner-3)" \
+  "unloaded deleted unloaded deleted"
+expect "the runners that were daemons already are left running" \
+  "$(calls '^launchctl (bootstrap|bootout|kickstart|enable) system/.*gfx\.runner-[23]') $(running ci-runners/volumetric_kit_gfx/runner-2)" \
+  "0 yes"
+: >"$CALLS"
+status=0
+setup gfx || status=$?
+expect "a re-run with no agent left asks launchd to change nothing" \
+  "$status $(calls '^launchctl (bootstrap|bootout|kickstart|enable) ')" "0 0"
+
+# A daemon that cannot be written leaves the runner's agent loaded and in
+# place, and no daemon at all, so the runner stays up and a re-run installs.
+fresh_home
+runner "$d" gfx
+runner ci-runners/volumetric_kit_gfx/runner-2 gfx "$(levels "$(share 2)")\n"
+unservice "$d"
+agent "$d"
+status=0
+STUB_INSTALL_FAILS=1 setup gfx || status=$?
+expect "a failed install fails the run, keeps the agent and leaves no daemon" \
+  "$status $(grep -c '^error: 1 runner services failed' "$tmp/out") $(agent_state "$d") $(installed "$d") $([ -f "$HOME/$d/.service" ] && echo written || echo none)" \
+  "1 1 loaded kept no none"
 
 # --- calib, on a Mac ---------------------------------------------------------
 
@@ -537,8 +622,8 @@ expect "it unloads each daemon before deleting it" \
 
 # A 24-core Linux host, faked on any host, carrying recon's and gfx's 6
 # runners each with the level the whole-host split gave them (24 cores over
-# 12): calib registers 6 too, whose level is 24 / 6 = 4, and recon's and gfx's
-# are left alone.
+# 12): calib, standing in for any third repository there, registers 6 too,
+# whose level is 24 / 6 = 4, and recon's and gfx's are left alone.
 os=Linux
 export STUB_OS=Linux
 fresh_home
@@ -575,8 +660,19 @@ for os in Linux Darwin; do
   runner ci-runners/volumetric_kit_recon/runner-2 ""
   runner actions-runner-recon-3 recon
   runner actions-runner-recon-4 "" # its service left installed
-  cp "$runner_files/svc.sh" "$HOME/actions-runner-recon-4/"
-  echo unit >"$HOME/actions-runner-recon-4/.service"
+  if [ "$os" = Linux ]; then
+    cp "$runner_files/svc.sh" "$HOME/actions-runner-recon-4/"
+    echo unit >"$HOME/actions-runner-recon-4/.service"
+  else
+    # Its daemon still loaded and named only by .service; and runner-1 still
+    # has an earlier setup's agent.
+    leftover="$RUNNER_DAEMON_DIR/actions.runner.taojin-6-volumetric_kit_recon.leftover.plist"
+    printf '<key>WorkingDirectory</key><string>%s</string>\n' "$HOME/actions-runner-recon-4" >"$leftover"
+    echo "$leftover" >"$HOME/actions-runner-recon-4/.service"
+    touch "$HOME/actions-runner-recon-4/.loaded" "$HOME/actions-runner-recon-4/.running"
+    agent ci-runners/volumetric_kit_recon/runner-1
+    old_agent="$(agent_plist ci-runners/volumetric_kit_recon/runner-1) $(agent_mark ci-runners/volumetric_kit_recon/runner-1)"
+  fi
   runner actions-runner-1 gfx
   runner ci-runners/volumetric_kit_gfx/runner-1 gfx
   status=0
@@ -594,12 +690,29 @@ for os in Linux Darwin; do
   if [ "$os" = Linux ]; then
     expect "it uninstalls every service of theirs, a leftover's too (Linux)" "$(calls ' uninstall$')" 3
   else
-    expect "it unloads and deletes each daemon of theirs, and only theirs (Darwin)" \
+    expect "it unloads and deletes each daemon of theirs, a leftover's too, and only theirs (Darwin)" \
       "$(calls '^launchctl bootout system/') $(daemons)" \
-      "2 $(basename "$(daemon_of actions-runner-1)") $(basename "$(daemon_of ci-runners/volumetric_kit_gfx/runner-1)") "
+      "3 $(basename "$(daemon_of actions-runner-1)") $(basename "$(daemon_of ci-runners/volumetric_kit_gfx/runner-1)") "
+    remaining=""
+    # shellcheck disable=SC2086 # the plist and the stub's mark, split
+    for f in $old_agent; do [ ! -f "$f" ] || remaining="$remaining $f"; done
+    expect "it unloads and deletes a runner's agent (Darwin)" "$remaining" ""
   fi
   expect "it checks gh once and mints one remove token ($os)" \
     "$(calls '^gh auth status$') $(calls remove-token)" "1 1"
+
+  # A leftover whose daemon will not unload keeps its directory, and the run
+  # fails: deleted, the daemon would be restarted, failing, for good.
+  if [ "$os" = Darwin ]; then
+    fresh_home
+    d=ci-runners/volumetric_kit_recon/runner-1
+    runner "$d" recon
+    rm "$HOME/$d/.runner"
+    status=0
+    STUB_BOOTOUT_FAILS=1 teardown recon || status=$?
+    expect "a leftover whose daemon does not unload is kept, and teardown fails (Darwin)" \
+      "$status $([ -d "$HOME/$d" ] && echo kept) $(installed "$d")" "1 kept yes"
+  fi
 
   for case in STUB_REMOVE_FAILS STUB_GH_UNAUTHED; do
     fresh_home

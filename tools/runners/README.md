@@ -33,8 +33,8 @@ so pre-commit.ci and Dependabot are not installed.
 
 Outside code therefore reaches the runners only through the owner, and the
 owner reviews it first. The runners are persistent, the Mac's jobs run as its
-user, and the Linux hosts' `docker` group is root-equivalent. To
-give a fork's change CI, a maintainer first reads its whole diff, above all
+user, and the Linux hosts' `docker` group is root-equivalent. To give a
+fork's change CI, a maintainer first reads its whole diff, above all
 `.github/` and every build and test script, then pushes its branch to the
 repository and opens a pull request from there. Approving or re-running a
 fork's run counts the same: once the owner triggers it, it may run.
@@ -138,10 +138,10 @@ root-equivalent: fine for a personal machine, not for a shared one.
   Mac a LaunchDaemon in `/Library/LaunchDaemons` that `KeepAlive` restarts if
   it exits, labelled with the runner's own service name
   (`actions.runner.<owner>-<repo>.<runner>`), so one already installed under
-  it is kept. A runner an earlier setup made a LaunchAgent becomes a daemon,
-  and its agent is unloaded and deleted, or the next console login would start
-  a second listener on the runner's credentials. A service that does not
-  install or start fails the run, after the other runners are set up.
+  it is kept. A LaunchAgent an earlier setup installed for a runner is
+  unloaded and deleted ([DECISIONS.md](../../DECISIONS.md), the 2026-10-17
+  entry). A service that does not install or start fails the run, after the
+  other runners are set up.
 - Each of the repository's runners gets `CMAKE_BUILD_PARALLEL_LEVEL` and
   `CTEST_PARALLEL_LEVEL` in its `.env`: the host's cores divided by the
   repository's runners on it, 5 on a 10-core Mac with 2
@@ -160,8 +160,7 @@ root-equivalent: fine for a personal machine, not for a shared one.
 - The runner reads `.env` only when it starts, so a running runner of the
   repository whose `.env` changed is restarted, which cancels a job running
   on it: run the script while CI is idle. A Mac's daemon restarts in place
-  (`launchctl kickstart -k`): loading one again straight after unloading it
-  fails ("Bootstrap failed: 5").
+  (`launchctl kickstart -k`).
 
 ## Upgrading Homebrew
 
