@@ -1065,6 +1065,14 @@ wrote, including an absolute path, is unchanged; every `%` in the result is
 pattern text, which the consumer unescapes. No other path is a pattern, so
 no other is escaped.
 
+**Amended 2026-10-16 (core 0.11.0): a profile may narrow a shared key to one
+value.** CalibRig accepts `source.color_codec` only as `mjpeg`, as every
+Orbbec profile accepts `source.driver` only as `orbbec`. `codec.entropy` went
+because it had one answer in every profile. `color_codec` chooses between two
+codings for FuseOrbbec and RigViewer, and calib_rig requests it from each
+camera along with the sizes and rate, so its scenario states the coding a
+capture saves. A key with one answer in every profile still goes.
+
 ## 2026-10-16 — calib's runners, and each repository's own share of a host
 
 `calib` runs every job on self-hosted runners, registered with this

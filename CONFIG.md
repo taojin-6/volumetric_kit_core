@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.9.0 CONFIG)
+vkc_require_core(0.11.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -93,6 +93,7 @@ does not override the requested operation or source discriminator.
 | `GfxModel` | `view` | omitted for built-in cube; `model` with optional path | 1024x720, validation, unlimited frames; screenshot selects headless rendering |
 | `Scanner` | `fuse` | `live`, `arkit` | voxel 0.01 m, truncation 0.03 m, 1024 initial / 32768 maximum buckets, texture and timings enabled |
 | `CalibProjectPoint` | `project` | omitted | 1280x720, intrinsics [1000,1000,640,360], Brown distortion [-0.28,0.10,0.001,-0.0005,0], point [0.1,-0.2,2] |
+| `CalibRig` | `calibrate` | `live`, `orbbec`; sync config and `output.path` required | MJPEG colour 3840x2160, depth 640x576, 25 fps, 1280x720 window |
 
 The `Config` structs in
 [`config.hpp`](include/volumetric_kit/core/config/config.hpp) describe the
@@ -122,10 +123,11 @@ unknown extension object.
   finite and positive; its bound against the voxel size and truncation is the
   consumer's mesh conversion's.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
-  `max_depth_m`, `max_weight`. Every dataset and Orbbec profile accepts the
-  boolean `dynamic` (core 0.6.0): Dynamic integration when true, Classic when
-  false; only RigViewer defaults to true. Other application-specific
-  extraction/dynamic fields are accepted only by their actual consumers.
+  `max_depth_m`, `max_weight`. Every dataset profile, FuseOrbbec and RigViewer
+  accept the boolean `dynamic` (core 0.6.0): Dynamic integration when true,
+  Classic when false; only RigViewer defaults to true. Other
+  application-specific extraction/dynamic fields are accepted only by their
+  actual consumers.
   CodecMesh accepts voxel size and, from core 0.7.0, truncation.
 - Codec fields: `coefficient_count`, `quantization_scale`,
   `quantization_table` (`uniform`/`band`/`radial`), `segment_size`,
@@ -176,6 +178,17 @@ unknown extension object.
   `mjpeg`, since an H.265 frame is not self-contained, and must not exceed
   `run.frames`; a directory requires a positive count. Other profiles reject
   both fields.
+- `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
+  `source.sync_config` names the rig, of any number of cameras, and `driver`
+  is `orbbec`; `color_codec`, the colour and depth sizes and `fps` are the
+  modes its preset check holds every camera to. Colour must be `mjpeg`, since
+  a capture saves each camera's JPEG. Its required `output.path` is the
+  directory each session's own directory is created in; it has no default,
+  so no session is written beside the scenario unasked. It accepts `window`
+  `width`, `height` and `validation`, and refuses `overlay`, since its
+  controls and marks are the overlay. It refuses every other field and
+  section, `fusion` included: its capture-rule and detection thresholds are
+  calib's own, and the board is edited in the app.
 
 ## Validation and compatibility
 
@@ -198,8 +211,9 @@ silently ignored by an application that does not consume it. In particular:
 Recon's existing truncation sentinel is preserved: absent or nonpositive
 truncation resolves to four times the chosen voxel size. Scanner's explicit
 truncation must be positive and its default stays 0.03 m. Depth defaults are
-0.1–8 m for datasets and 0.25–5 m for Orbbec. Core checks the block-of-eight
-size, truncation ratio and bucket-index bounds before library construction.
+0.1–8 m for datasets and 0.25–5 m for FuseOrbbec and RigViewer. Core checks
+the block-of-eight size, truncation ratio and bucket-index bounds before
+library construction.
 
 `parse` and `load` return resolved settings for consumption. Field-presence
 tracking, defaults and validation remain private to decoding; there is no
