@@ -291,7 +291,9 @@ teardown || status=$?
 expect "teardown-runners.sh needs a repository" "$status" 2
 status=0
 teardown core || status=$?
-expect "teardown-runners.sh rejects 'core'" "$status" 2
+expect "teardown-runners.sh rejects 'core', naming the repositories it takes" \
+  "$status $(grep -c "unknown repository 'core': expected recon, gfx, calib or player" "$tmp/out" || true)" \
+  "2 1"
 # No repository has runners on a system but Linux and macOS; the refusal
 # names those.
 status=0
@@ -562,49 +564,64 @@ expect "a failed install fails the run, keeps the agent and leaves no daemon" \
   "$status $(grep -c '^error: 1 runner services failed' "$tmp/out") $(agent_state "$d") $(installed "$d") $([ -f "$HOME/$d/.service" ] && echo written || echo none)" \
   "1 1 loaded kept no none"
 
-# --- calib, on a Mac ---------------------------------------------------------
+# --- calib and player, beside the other repositories -------------------------
 
-# A 10-core Mac, faked on any host, carrying recon's and gfx's runners with
-# the level the whole-host split gave them (10 cores over 4 runners): calib's
-# runners get the cores split across calib's own, and recon's and gfx's are
-# left alone.
-on_mac() { STUB_CORES="$1" "${@:2}"; }
-fresh_home
-for repo in recon gfx; do
-  for i in 1 2; do runner "ci-runners/volumetric_kit_$repo/runner-$i" "$repo" "$(levels 2)\n"; done
+# A 24-core Linux host and a 10-core Mac, faked on any host, each carrying
+# every other repository's runners at a level of 2: calib's or player's
+# register with the cores split across their own, 4 of 24 or 5 of 10, and the
+# others' are left alone. calib goes last, so the cases after the loop start
+# from the Mac with its runners at 5 beside the other three repositories'.
+for os in Linux Darwin; do
+  export STUB_OS="$os"
+  if [ "$os" = Linux ]; then n=6 label=vk-linux-gpu ncores=24; else n=2 label=mac ncores=10; fi
+  for repo in player calib; do
+    fresh_home
+    others=""
+    for other in recon gfx calib player; do
+      [ "$other" != "$repo" ] || continue
+      others="$others${others:+|}$other"
+      for i in $(seq 1 "$n"); do runner "ci-runners/volumetric_kit_$other/runner-$i" "$other" "$(levels 2)\n"; done
+    done
+    cache_tarball
+    status=0
+    STUB_CORES="$ncores" setup "$repo" || status=$?
+    expect "$repo's runners register ($os)" "$status" 0
+    [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+    registered=0 services=0 up=0
+    for i in $(seq 1 "$n"); do
+      d="ci-runners/volumetric_kit_$repo/runner-$i"
+      grep -qF "config $d --unattended --url https://github.com/taojin-6/volumetric_kit_$repo --token REGTOKEN --labels $label --name $host-$repo-$i " "$CALLS" &&
+        registered=$((registered + 1))
+      [ "$(installed "$d")" = no ] || services=$((services + 1))
+      [ "$(running "$d")" = no ] || up=$((up + 1))
+    done
+    expect "it registers $n, named and labelled $label, and installs and runs their services ($repo, $os)" \
+      "$registered $(calls '^config ') $services $up" "$n $n $n $n"
+    expect "each gets the cores split across $repo's $n runners: $((ncores / n)) of $ncores ($os)" \
+      "$(env_of "ci-runners/volumetric_kit_$repo/runner-1") $(env_of "ci-runners/volumetric_kit_$repo/runner-$n")" \
+      "$(levels $((ncores / n))) $(levels $((ncores / n)))"
+    unchanged=0
+    for d in "$HOME"/ci-runners/volumetric_kit_*/runner-*; do
+      case "$d" in */volumetric_kit_"$repo"/*) continue ;; esac
+      [ "$(env_of "${d#"$HOME"/}")" != "$(levels 2)" ] || unchanged=$((unchanged + 1))
+    done
+    expect "the other repositories' runners ($others) keep their levels and are not restarted ($repo, $os)" \
+      "$unchanged $(touched "$others")" "$((3 * n)) 0"
+  done
 done
-cache_tarball
-status=0
-on_mac 10 setup calib || status=$?
-expect "calib's runners register on a Mac" "$status" 0
-[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
-registered=0
-for i in 1 2; do
-  grep -qF "config ci-runners/volumetric_kit_calib/runner-$i --unattended --url https://github.com/taojin-6/volumetric_kit_calib --token REGTOKEN --labels mac --name $host-calib-$i " "$CALLS" &&
-    registered=$((registered + 1))
-done
-expect "it registers 2, named and labelled mac, and runs them as daemons" \
-  "$registered $(calls '^config ') $(installed ci-runners/volumetric_kit_calib/runner-1) $(running ci-runners/volumetric_kit_calib/runner-1) $(running ci-runners/volumetric_kit_calib/runner-2)" \
-  "2 2 yes yes yes"
-expect "each gets the cores split across calib's 2 runners: 5 of 10" \
-  "$(env_of ci-runners/volumetric_kit_calib/runner-1) $(env_of ci-runners/volumetric_kit_calib/runner-2)" \
-  "$(levels 5) $(levels 5)"
-expect "recon's and gfx's runners keep their levels and are not restarted" \
-  "$(env_of ci-runners/volumetric_kit_recon/runner-1) $(env_of ci-runners/volumetric_kit_gfx/runner-2) $(touched 'recon|gfx')" \
-  "$(levels 2) $(levels 2) 0"
 : >"$CALLS"
 status=0
-on_mac 10 setup recon || status=$?
-expect "a re-run for recon gives its runners 5 and restarts them, leaving gfx's and calib's alone" \
-  "$status $(env_of ci-runners/volumetric_kit_recon/runner-2) $(restarts ci-runners/volumetric_kit_recon/runner-1) $(restarts ci-runners/volumetric_kit_recon/runner-2) $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(touched 'gfx|calib')" \
+STUB_CORES=10 setup recon || status=$?
+expect "a re-run for recon gives its runners 5 and restarts them, leaving the others' alone" \
+  "$status $(env_of ci-runners/volumetric_kit_recon/runner-2) $(restarts ci-runners/volumetric_kit_recon/runner-1) $(restarts ci-runners/volumetric_kit_recon/runner-2) $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(touched 'gfx|calib|player')" \
   "0 $(levels 5) 1 1 $(levels 2) 0"
 status=0
-on_mac 1 setup calib || status=$?
+STUB_CORES=1 setup calib || status=$?
 expect "with fewer cores than runners, each gets 1" \
   "$status $(env_of ci-runners/volumetric_kit_calib/runner-1)" "0 $(levels 1)"
 calib_daemon="$(daemon_of ci-runners/volumetric_kit_calib/runner-1)"
 status=0
-on_mac 10 teardown calib || status=$?
+STUB_CORES=10 teardown calib || status=$?
 remaining="" kept=""
 for dir in "$HOME"/ci-runners/*/runner-*; do
   [ -d "$dir" ] || continue
@@ -613,43 +630,10 @@ for dir in "$HOME"/ci-runners/*/runner-*; do
 done
 expect "teardown removes calib's runners and their daemons, and only them" \
   "$status$remaining | $(daemons)" \
-  "0 volumetric_kit_gfx/runner-1 volumetric_kit_gfx/runner-2 volumetric_kit_recon/runner-1 volumetric_kit_recon/runner-2 | $kept"
+  "0 volumetric_kit_gfx/runner-1 volumetric_kit_gfx/runner-2 volumetric_kit_player/runner-1 volumetric_kit_player/runner-2 volumetric_kit_recon/runner-1 volumetric_kit_recon/runner-2 | $kept"
 expect "it unloads each daemon before deleting it" \
   "$(calls "^launchctl bootout system/$(basename "$calib_daemon" .plist)\$") $([ -f "$calib_daemon" ] && echo kept || echo deleted)" \
   "1 deleted"
-
-# --- calib, on a Linux host --------------------------------------------------
-
-# A 24-core Linux host, faked on any host, carrying recon's and gfx's 6
-# runners each with the level the whole-host split gave them (24 cores over
-# 12): calib, standing in for any third repository there, registers 6 too,
-# whose level is 24 / 6 = 4, and recon's and gfx's are left alone.
-os=Linux
-export STUB_OS=Linux
-fresh_home
-for repo in recon gfx; do
-  for i in $(seq 1 6); do runner "ci-runners/volumetric_kit_$repo/runner-$i" "$repo" "$(levels 2)\n"; done
-done
-cache_tarball
-status=0
-STUB_CORES=24 setup calib || status=$?
-expect "calib's runners register on a Linux host" "$status" 0
-[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
-registered=0 up=0
-for i in $(seq 1 6); do
-  grep -qF "config ci-runners/volumetric_kit_calib/runner-$i --unattended --url https://github.com/taojin-6/volumetric_kit_calib --token REGTOKEN --labels vk-linux-gpu --name $host-calib-$i " "$CALLS" &&
-    registered=$((registered + 1))
-  [ "$(running "ci-runners/volumetric_kit_calib/runner-$i")" = no ] || up=$((up + 1))
-done
-expect "it registers 6, named and labelled vk-linux-gpu, each a service of this user, and runs them" \
-  "$registered $(calls '^config ') $(calls "^svc ci-runners/volumetric_kit_calib/runner-[1-6] install $user\$") $up" \
-  "6 6 6 6"
-expect "each gets the cores split across calib's 6 runners: 4 of 24" \
-  "$(env_of ci-runners/volumetric_kit_calib/runner-1) $(env_of ci-runners/volumetric_kit_calib/runner-6)" \
-  "$(levels 4) $(levels 4)"
-expect "recon's and gfx's runners keep their levels and are not restarted" \
-  "$(env_of ci-runners/volumetric_kit_recon/runner-6) $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(touched 'recon|gfx')" \
-  "$(levels 2) $(levels 2) 0"
 
 # --- Teardown ---------------------------------------------------------------
 

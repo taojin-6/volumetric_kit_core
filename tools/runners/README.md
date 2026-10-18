@@ -1,18 +1,18 @@
 # Self-hosted CI runners
 
-`recon` and `gfx` run their GPU legs on self-hosted runners: Linux GPU hosts
-(label `vk-linux-gpu`), where each leg runs in an OS-matched container with
-the GPU passed through (`--gpus all`), and a Mac (label `mac`), where jobs run
-natively for the Apple toolchain and MoltenVK on its GPU. `calib` runs its
-macOS legs on the Mac too, on its installed Homebrew. Every other job stays on
-GitHub-hosted runners, free for public repositories. Each repository's
-`ci.yml` says which legs go where; this directory is the host side, for all
-three.
+`recon`, `gfx` and `player` run their GPU legs on self-hosted runners: Linux
+GPU hosts (label `vk-linux-gpu`), where each leg runs in an OS-matched
+container with the GPU passed through (`--gpus all`), and a Mac (label
+`mac`), where jobs run natively for the Apple toolchain and MoltenVK on its
+GPU. `calib` runs its macOS legs on the Mac too, on its installed Homebrew.
+Every other job stays on GitHub-hosted runners, free for public repositories.
+Each repository's `ci.yml` says which legs go where; this directory is the
+host side, for all four.
 
 | File | Does |
 | --- | --- |
-| `setup-runners.sh <recon\|gfx\|calib>` | registers a repository's runners on this host |
-| `teardown-runners.sh <recon\|gfx\|calib>` | stops, deregisters and deletes them |
+| `setup-runners.sh <recon\|gfx\|calib\|player>` | registers a repository's runners on this host |
+| `teardown-runners.sh <recon\|gfx\|calib\|player>` | stops, deregisters and deletes them |
 | `common.sh` | what the two scripts share |
 | `homebrew-key.sh <formula>...` | prints a cache key of their installed Homebrew versions ([Upgrading Homebrew](#upgrading-homebrew)) |
 
@@ -75,11 +75,11 @@ EOF
    ```
 
 3. As the login user (not root):
-   `bash tools/runners/setup-runners.sh recon`, and again with `gfx`. Each
-   registers 6 runners labelled `vk-linux-gpu` -- a run has 2 Linux jobs, so
-   6 fit three runs on one host while the other is offline -- each a systemd
-   service started at boot; it calls `sudo` for the services. Log `gh` out
-   afterwards, as on a Mac (below).
+   `bash tools/runners/setup-runners.sh recon`, and again with `gfx` and
+   `player`. Each registers 6 runners labelled `vk-linux-gpu` -- a run has at
+   most 2 Linux jobs, so 6 fit three runs on one host while the other is
+   offline -- each a systemd service started at boot; it calls `sudo` for the
+   services. Log `gh` out afterwards, as on a Mac (below).
 
 Until a `vk-linux-gpu` runner is online, the Linux legs stay pending and
 `ci / required` waits for them. Membership in the `docker` group is
@@ -101,14 +101,14 @@ root-equivalent: fine for a personal machine, not for a shared one.
    ([Upgrading Homebrew](#upgrading-homebrew)).
 3. As the user the jobs run as, in Terminal or over SSH, with conda or any
    other environment deactivated: `bash tools/runners/setup-runners.sh recon`,
-   and again with `gfx` and `calib`. Each registers 2 runners labelled `mac`
-   (Debug and Release in parallel), each a system LaunchDaemon that runs as
-   that user; it calls `sudo` for them. A runner keeps the `PATH` it was
-   registered with, in its `.path`, and CMake searches that `PATH` for
-   packages, so an environment active then would shadow Homebrew's. The jobs
-   can read the user's `gh` login, which acts on every repository of the
-   account: run `gh auth logout` once they are registered, and log in again
-   only to register or tear down.
+   and again with `gfx`, `calib` and `player`. Each registers 2 runners
+   labelled `mac` (Debug and Release in parallel), each a system LaunchDaemon
+   that runs as that user; it calls `sudo` for them. A runner keeps the
+   `PATH` it was registered with, in its `.path`, and CMake searches that
+   `PATH` for packages, so an environment active then would shadow
+   Homebrew's. The jobs can read the user's `gh` login, which acts on every
+   repository of the account: run `gh auth logout` once they are registered,
+   and log in again only to register or tear down.
 4. Keep the Mac awake: `sudo pmset -a sleep 0 disablesleep 1`. The daemons
    start at boot, before anyone logs in, so the Mac needs no automatic login,
    which FileVault rules out ([DECISIONS.md](../../DECISIONS.md), the

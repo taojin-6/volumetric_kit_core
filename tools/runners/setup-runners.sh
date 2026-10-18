@@ -6,7 +6,7 @@
 # hosts (label vk-linux-gpu) or Macs (label mac). README.md has the
 # prerequisites and the layout.
 #
-#   bash tools/runners/setup-runners.sh <recon|gfx|calib>
+#   bash tools/runners/setup-runners.sh <recon|gfx|calib|player>
 #
 # Run as the user that owns ~/ci-runners, in a terminal or over SSH; it calls
 # sudo for the services. Safe to re-run: registered runners are kept, so no
@@ -18,7 +18,7 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 [ $# -eq 1 ] || {
-  echo "usage: $0 <recon|gfx|calib>" >&2
+  echo "usage: $0 <recon|gfx|calib|player>" >&2
   exit 2
 }
 select_repo "$1"
@@ -32,8 +32,8 @@ case "$OS" in
   Linux)
     PKG_OS=linux
     LABEL=vk-linux-gpu
-    # A run of recon or gfx has 2 Linux jobs: 6 fit three runs on one host while
-    # the other is offline.
+    # A run of recon, gfx or player has at most 2 Linux jobs: 6 fit three
+    # runs on one host while the other is offline.
     N=6
     CORES="$(nproc)"
     command -v docker >/dev/null 2>&1 ||
