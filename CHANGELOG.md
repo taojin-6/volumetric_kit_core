@@ -10,8 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 ### Changed
 
 - `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take
-  `player`, like `recon` and `gfx`, on the Linux hosts and the Mac. Setting
-  it up leaves the other repositories' runners as they are.
+  `player`, like `recon` and `gfx`, on the Linux hosts and the Mac.
 
 ## [0.11.0] - 2026-10-16
 
