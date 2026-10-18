@@ -864,8 +864,8 @@ and catches only to return a `Status`.
 
 ### Only the owner triggers CI
 
-`recon`, `gfx` and `calib` are public and run legs on self-hosted runners:
-persistent machines, one a Mac whose jobs run as its user. For a
+`recon`, `gfx`, `calib` and `player` are public and run legs on self-hosted
+runners: persistent machines, one a Mac whose jobs run as its user. For a
 `pull_request` event GitHub runs the workflow files from the pull request
 itself, so a fork could send any job to those runners, and an `if:` in a
 workflow stops only a fork that leaves it in.
@@ -1115,6 +1115,10 @@ threads rather than a hosted runner's 3 (calib's DECISIONS.md, 2026-10-16).
 It has no runners on the Linux hosts, which keep 6 for each of recon and gfx,
 whose runs have 2 Linux jobs. The private-checkout bullet above no longer
 applies.
+
+**Amended 2026-10-18: `player` has runners on the Linux hosts and the Mac,**
+as recon and gfx do, so overlapping jobs share the Mac's 10 cores among up to
+8 × 5 threads.
 
 ## 2026-10-17 — A Mac's runners are system daemons
 
