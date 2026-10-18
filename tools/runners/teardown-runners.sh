@@ -9,8 +9,9 @@
 #   bash tools/runners/teardown-runners.sh <recon|gfx|calib>
 #
 # Run as the user that owns the runner directories, with gh authed, which
-# deregistering needs: without it, no registered runner is touched. It keeps
-# going past a runner it cannot remove, and exits non-zero if any is left.
+# deregistering needs: without it, no registered runner is touched. It calls
+# sudo to uninstall the services. It keeps going past a runner it cannot
+# remove, and exits non-zero if any is left.
 set -uo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=common.sh
@@ -47,11 +48,6 @@ if [ "${#RUNNER_DIRS[@]}" -gt 0 ]; then
   [ -n "$token" ] || die "could not mint a remove token; no runner was touched"
 fi
 
-# remove_service DIR: uninstalls the runner's service, which stops it first.
-remove_service() {
-  if [ -f "$1/.service" ]; then svc "$1" uninstall >/dev/null; fi
-}
-
 kept=0
 for dir in ${RUNNER_DIRS[@]+"${RUNNER_DIRS[@]}"}; do # empty: set -u, bash 3.2
   echo "==> Removing $dir"
@@ -59,7 +55,7 @@ for dir in ${RUNNER_DIRS[@]+"${RUNNER_DIRS[@]}"}; do # empty: set -u, bash 3.2
   # directory is deleted only once it is deregistered: it holds the
   # credentials deregistering needs, so deleting it first would strand an
   # offline registration that nothing on this host can remove.
-  if ! { remove_service "$dir" && (cd "$dir" && ./config.sh remove --token "$token"); }; then
+  if ! { uninstall_service "$dir" >/dev/null && (cd "$dir" && ./config.sh remove --token "$token"); }; then
     echo "    Kept $dir (still registered, and offline): re-run, or remove it under"
     echo "    Settings -> Actions -> Runners and then: rm -rf $dir"
     kept=$((kept + 1))
@@ -69,7 +65,13 @@ for dir in ${RUNNER_DIRS[@]+"${RUNNER_DIRS[@]}"}; do # empty: set -u, bash 3.2
 done
 for dir in ${leftovers[@]+"${leftovers[@]}"}; do
   echo "==> Removing $dir (not registered)"
-  remove_service "$dir" || true
+  # Its directory goes only with its service: a Mac's daemon left behind
+  # would be restarted, failing, for good.
+  if ! uninstall_service "$dir" >/dev/null; then
+    echo "    Kept $dir: its service did not uninstall; re-run"
+    kept=$((kept + 1))
+    continue
+  fi
   rm -rf "$dir"
 done
 

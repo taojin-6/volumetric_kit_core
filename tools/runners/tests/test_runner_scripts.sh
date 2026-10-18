@@ -3,12 +3,14 @@
 # Copyright (c) 2026 Tao Jin
 #
 # Runs setup-runners.sh and teardown-runners.sh against a fake HOME, with
-# stubs in place of the runner's config.sh and svc.sh, gh, curl, sudo and the
-# host prerequisites, and checks what they did to which runner. No real runner
-# or service is touched. The host has $STUB_CORES cores (default 24), and with
-# STUB_OS set, `uname -s` names that system instead of this one's. The scripts
-# run under the bash running this, so `/bin/bash test_runner_scripts.sh` tests
-# them under macOS's bash 3.2.
+# stubs in place of the runner's config.sh and svc.sh, launchctl, gh, curl,
+# sudo and the host prerequisites, and checks what they did to which runner.
+# No real runner or service is touched: macOS's daemons go to a scratch
+# directory (RUNNER_DAEMON_DIR). The host has $STUB_CORES cores (default 24),
+# and with STUB_OS set, `uname -s` names that system instead of this one's, so
+# the cases run as Linux and as macOS on any host. The scripts run under the
+# bash running this, so `/bin/bash test_runner_scripts.sh` tests them under
+# macOS's bash 3.2.
 # shellcheck disable=SC2016 # the stubs' variables expand when the stubs run
 set -euo pipefail
 
@@ -25,16 +27,29 @@ stubs="$tmp/stubs"
 runner_files="$tmp/runner-files"
 mkdir -p "$stubs" "$runner_files"
 export CALLS="$tmp/calls.log" RUNNER_FILES="$runner_files"
+export RUNNER_DAEMON_DIR="$tmp/daemons"
 
 # stub NAME BODY: an executable NAME on the stubs' PATH.
 stub() {
   printf '#!/bin/sh\n%s\n' "$2" >"$stubs/$1"
   chmod +x "$stubs/$1"
 }
-stub sudo 'exec "$@"'
+stub sudo 'STUB_ROOT=1 exec "$@"'
 stub uname 'if [ "$1" = -s ] && [ -n "${STUB_OS:-}" ]; then echo "$STUB_OS"; else exec '"$(command -v uname)"' "$@"; fi'
 stub nproc 'echo "${STUB_CORES:-24}"'
 stub sysctl '[ "$*" = "-n hw.ncpu" ] && echo "${STUB_CORES:-24}"'
+stub sleep 'exit 0' # launchd's state changes below take calls, not time
+# Only root writes a daemon, and STUB_INSTALL_FAILS makes the write fail.
+stub cp 'for last; do :; done
+case "$last" in
+  "$RUNNER_DAEMON_DIR"/*)
+    [ -n "${STUB_ROOT:-}" ] || { echo "cp: $last: Permission denied" >&2; exit 1; }
+    [ -z "${STUB_INSTALL_FAILS:-}" ] || exit 1 ;;
+esac
+exec '"$(command -v cp)"' "$@"'
+# macOS's own where it exists; elsewhere a property list is one that ends.
+stub plutil 'if [ -x /usr/bin/plutil ]; then exec /usr/bin/plutil "$@"; fi
+[ "$1" = -lint ] && grep -q "</plist>" "$2"'
 stub curl '
 echo "curl $*" >>"$CALLS"
 case "$*" in
@@ -54,11 +69,65 @@ case "$*" in
   *remove-token*) echo RMTOKEN ;;
 esac'
 
+# launchd. A daemon (system/LABEL) keeps its state in the runner directory its
+# plist names: .loaded once bootstrapped, .running while it runs; only root
+# changes it, and $RUNNER_DAEMON_DIR/LABEL.disabled refuses a bootstrap until
+# an enable. A LaunchAgent (gui/UID/LABEL) keeps LABEL.loaded in
+# $HOME/.stub-agents. As launchd does, it refuses to bootstrap a loaded
+# service, and a bootout returns before the service is gone: it stays loaded,
+# and running, for two more prints. STUB_BOOTOUT_FAILS makes a daemon's fail.
+stub launchctl '
+echo "launchctl $*" >>"$CALLS"
+kill=""
+if [ "$1" = kickstart ] && [ "$2" = -k ]; then
+  kill=1
+  shift 2
+  set -- kickstart "$@"
+fi
+d=""
+case "$2" in
+  system | system/*)
+    if [ "$2" = system ]; then label="$(basename "$3" .plist)"; else label="${2#system/}"; fi
+    d="$(sed -n "s|.*<key>WorkingDirectory</key><string>\(.*\)</string>.*|\1|p" \
+      "$RUNNER_DAEMON_DIR/$label.plist" 2>/dev/null)"
+    p="${d:-/nonexistent}/."
+    [ "$1" = print ] || [ -n "${STUB_ROOT:-}" ] || { echo "Operation not permitted" >&2; exit 1; } ;;
+  gui/*)
+    label="${2##*/}"
+    p="$HOME/.stub-agents/$label." ;;
+  *) exit 0 ;;
+esac
+loaded() { [ -f "${p}loaded" ]; }
+case "$1" in
+  print)
+    if [ -f "${p}unloading" ]; then
+      left="$(cat "${p}unloading")"
+      if [ "$left" -gt 0 ]; then echo $((left - 1)) >"${p}unloading"; else rm -f "${p}loaded" "${p}running" "${p}unloading"; fi
+    fi
+    loaded || { echo "Could not find service" >&2; exit 113; }
+    if [ -f "${p}running" ]; then echo "	state = running"; else echo "	state = not running"; fi ;;
+  enable) rm -f "$RUNNER_DAEMON_DIR/$label.disabled" ;;
+  bootstrap)
+    [ ! -f "$RUNNER_DAEMON_DIR/$label.disabled" ] || { echo "Bootstrap failed: 119: Service is disabled" >&2; exit 119; }
+    [ -n "$d" ] && ! loaded || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
+    touch "${p}loaded"
+    [ -n "${STUB_START_FAILS:-}" ] || touch "${p}running" ;;
+  kickstart)
+    loaded && [ ! -f "${p}unloading" ] || exit 113
+    [ -z "$kill" ] || rm -f "${p}running"
+    [ -n "${STUB_START_FAILS:-}" ] || touch "${p}running" ;;
+  bootout)
+    loaded || exit 113
+    [ -z "$d" ] || [ -z "${STUB_BOOTOUT_FAILS:-}" ] || exit 5
+    echo 2 >"${p}unloading" ;;
+esac
+exit 0'
+
 # The runner's own scripts. Registering writes .runner and generates svc.sh,
-# as the real config.sh does, and deregistering is refused while the service
-# is installed. svc.sh keeps the service's state in .service (installed, as
-# the real one does) and .running, and prints its status the way the real one
-# does on each OS; like the real one on macOS, a failed start exits 0.
+# naming the runner's service, as the real config.sh does, and deregistering
+# is refused while .service exists. svc.sh keeps the service's state in
+# .service (installed, as the real one does) and .running, and prints its
+# status the way the real one does on Linux.
 printf '%s\n' '#!/bin/sh' \
   'echo "config ${PWD#"$HOME"/} $*" >>"$CALLS"' \
   'if [ "$1" = remove ]; then' \
@@ -66,9 +135,14 @@ printf '%s\n' '#!/bin/sh' \
   '  [ ! -f .service ] || { echo "Uninstall service first" >&2; exit 1; }' \
   '  rm -f .runner; exit 0' \
   'fi' \
-  'while [ $# -gt 0 ]; do [ "$1" = --url ] && url="$2"; shift; done' \
+  'while [ $# -gt 0 ]; do' \
+  '  case "$1" in --url) url="$2" ;; --name) name="$2" ;; esac' \
+  '  shift' \
+  'done' \
   'printf "{\n  \"gitHubUrl\": \"%s\"\n}\n" "$url" >.runner' \
-  'cp "$RUNNER_FILES/svc.sh" .' >"$runner_files/config.sh"
+  'owner_repo="$(echo "${url#https://github.com/}" | tr / -)"' \
+  '{ echo "#!/bin/sh"; echo "SVC_NAME=\"actions.runner.$owner_repo.$name\""; tail -n +2 "$RUNNER_FILES/svc.sh"; } >svc.sh' \
+  'chmod +x svc.sh' >"$runner_files/config.sh"
 printf '%s\n' '#!/bin/sh' \
   'echo "svc ${PWD#"$HOME"/} $*" >>"$CALLS"' \
   'case "$1" in' \
@@ -80,43 +154,125 @@ printf '%s\n' '#!/bin/sh' \
   '    [ -f .service ] || { echo "not installed"; exit 1; }' \
   '    if [ -f .running ]; then printf "Started:\n   Active: active (running)\n"; else echo Stopped; fi ;;' \
   'esac' >"$runner_files/svc.sh"
-chmod +x "$runner_files/config.sh" "$runner_files/svc.sh"
+printf '#!/bin/sh\n' >"$runner_files/runsvc.sh"
+chmod +x "$runner_files/config.sh" "$runner_files/svc.sh" "$runner_files/runsvc.sh"
 
 export PATH="$stubs:$PATH"
 real_home="$HOME"
 user="${USER:-$(id -un)}"
 export USER="$user"
 
-# fresh_home: an empty HOME and calls log.
+# fresh_home: an empty HOME, daemon directory and calls log.
 fresh_home() {
   export HOME="$tmp/home"
-  rm -rf "$HOME"
-  mkdir -p "$HOME"
+  rm -rf "$HOME" "$RUNNER_DAEMON_DIR"
+  mkdir -p "$HOME" "$RUNNER_DAEMON_DIR"
   : >"$CALLS"
 }
 
 # runner DIR REPO [ENV]: a runner directory registered to REPO, its service
-# installed and running, as setup-runners.sh leaves one; with REPO empty, one
-# that never finished registering. ENV is its .env (none if absent).
+# installed and running, as setup-runners.sh leaves one -- for Linux and for
+# macOS alike, so it serves either; with REPO empty, one that never finished
+# registering. ENV is its .env (none if absent).
 runner() {
-  mkdir -p "$HOME/$1"
-  cp "$runner_files/config.sh" "$HOME/$1/"
+  local d="$HOME/$1" label
+  mkdir -p "$d/bin"
+  cp "$runner_files/config.sh" "$d/"
+  cp "$runner_files/runsvc.sh" "$d/bin/"
   if [ -n "$2" ]; then
+    label="actions.runner.taojin-6-volumetric_kit_$2.$(basename "$1")"
     printf '{\n  "gitHubUrl": "https://github.com/taojin-6/volumetric_kit_%s"\n}\n' \
-      "$2" >"$HOME/$1/.runner"
-    cp "$runner_files/svc.sh" "$HOME/$1/"
-    echo unit >"$HOME/$1/.service"
-    touch "$HOME/$1/.running"
+      "$2" >"$d/.runner"
+    { echo '#!/bin/sh'; echo "SVC_NAME=\"$label\""; tail -n +2 "$runner_files/svc.sh"; } >"$d/svc.sh"
+    chmod +x "$d/svc.sh"
+    echo unit >"$d/.service"
+    touch "$d/.running" "$d/.loaded"
+    printf '<key>WorkingDirectory</key><string>%s</string>\n' "$d" \
+      >"$RUNNER_DAEMON_DIR/$label.plist"
   fi
-  if [ $# -ge 3 ]; then printf '%b' "$3" >"$HOME/$1/.env"; fi
+  if [ $# -ge 3 ]; then printf '%b' "$3" >"$d/.env"; fi
+}
+
+label_of() { sed -n 's/^SVC_NAME="\(.*\)"$/\1/p' "$HOME/$1/svc.sh"; }
+daemon_of() { echo "$RUNNER_DAEMON_DIR/$(label_of "$1").plist"; }
+# pause DIR: its service stopped, as README's pause leaves it.
+pause() { rm -f "$HOME/$1/.running" "$HOME/$1/.loaded" "$HOME/$1/.unloading"; }
+# unservice DIR: its service never installed, or lost.
+unservice() {
+  pause "$1"
+  rm -f "$(daemon_of "$1")" "$HOME/$1/.service"
+}
+# agent DIR [none]: a LaunchAgent of runner DIR loaded in the login session, as
+# an earlier setup left it; with "none", its plist already deleted.
+agent_plist() { echo "$HOME/Library/LaunchAgents/$(label_of "$1").plist"; }
+agent_mark() { echo "$HOME/.stub-agents/$(label_of "$1").loaded"; }
+agent() {
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.stub-agents"
+  [ "${2:-}" = none ] || echo agent >"$(agent_plist "$1")"
+  touch "$(agent_mark "$1")"
+}
+# agent_state DIR: whether its agent is still loaded, and its plist still there.
+agent_state() {
+  local loaded=unloaded plist=deleted
+  [ ! -f "$(agent_mark "$1")" ] || loaded=loaded
+  [ ! -f "$(agent_plist "$1")" ] || plist=kept
+  echo "$loaded $plist"
 }
 
 calls() { grep -c -E -e "$1" "$CALLS" || true; }
 env_of() { cat "$HOME/$1/.env" 2>/dev/null || echo "<none>"; }
+# running DIR: whether its service runs: on macOS only while launchd has it.
 running() {
-  if [ -f "$HOME/$1/.running" ]; then echo yes; else echo no; fi
+  if [ -f "$HOME/$1/.running" ] && { [ "$os" = Linux ] || [ -f "$HOME/$1/.loaded" ]; }; then
+    echo yes
+  else
+    echo no
+  fi
 }
 levels() { printf 'CMAKE_BUILD_PARALLEL_LEVEL=%s\nCTEST_PARALLEL_LEVEL=%s' "$1" "$1"; }
+# daemons: the installed daemons' file names, each followed by a space.
+daemons() {
+  local f
+  for f in "$RUNNER_DAEMON_DIR"/*.plist; do
+    if [ -f "$f" ]; then printf '%s ' "${f##*/}"; fi
+  done
+}
+
+# The service as $os sees it: its .service on Linux, its daemon on macOS.
+installed() {
+  if { [ "$os" = Linux ] && [ -f "$HOME/$1/.service" ]; } ||
+    { [ "$os" = Darwin ] && [ -f "$(daemon_of "$1")" ]; }; then
+    echo yes
+  else
+    echo no
+  fi
+}
+# restarts DIR: how often its service was restarted -- svc.sh's stop and
+# start on Linux, a kickstart -k on macOS.
+restarts() {
+  if [ "$os" = Linux ]; then
+    calls "^svc $1 stop\$"
+  else
+    calls "^launchctl kickstart -k system/$(label_of "$1")\$"
+  fi
+}
+# changes: the services installed, started, stopped or uninstalled.
+changes() {
+  if [ "$os" = Linux ]; then
+    calls '^svc [^ ]* (install|start|stop|uninstall)( |$)'
+  else
+    calls '^launchctl (bootstrap|bootout|kickstart|enable) '
+  fi
+}
+# touched REPOS: the service calls, reading their state included, on the
+# runners of REPOS, an alternation.
+touched() {
+  if [ "$os" = Linux ]; then
+    calls "^svc [^ ]*volumetric_kit_($1)/"
+  else
+    calls "^launchctl .*volumetric_kit_($1)\."
+  fi
+}
 
 setup() { "$BASH" "$tools/setup-runners.sh" "$@" >"$tmp/out" 2>&1; }
 teardown() { "$BASH" "$tools/teardown-runners.sh" "$@" >"$tmp/out" 2>&1; }
@@ -146,11 +302,6 @@ expect "setup-runners.sh refuses a system with no runners, naming those that hav
 
 # --- Registration -----------------------------------------------------------
 
-if [ "$(uname -s)" = Linux ]; then
-  n=6 label=vk-linux-gpu install="install $user"
-else
-  n=2 label=mac install="install"
-fi
 cores=24
 host="$(hostname -s)"
 # share RUNNERS: the build level with the cores split across RUNNERS.
@@ -161,8 +312,9 @@ share() {
 }
 # cache_tarball: a cached runner tarball for the version the release page
 # redirects to, so nothing downloads. Like the real one, it has no svc.sh.
-mkdir -p "$tmp/tarball"
+mkdir -p "$tmp/tarball/bin"
 cp "$runner_files/config.sh" "$tmp/tarball/"
+cp "$runner_files/runsvc.sh" "$tmp/tarball/bin/"
 cache_tarball() {
   local os arch
   mkdir -p "$HOME/ci-runners"
@@ -173,125 +325,242 @@ cache_tarball() {
   done
 }
 
-fresh_home
-runner ci-runners/volumetric_kit_recon/runner-1 recon \
-  'CTEST_PARALLEL_LEVEL=999\nLANG=C.UTF-8\nCTEST_PARALLEL_LEVEL=999\n'
-runner ci-runners/volumetric_kit_gfx/runner-1 gfx 'LANG=C\n'
-runner ci-runners/volumetric_kit_gfx/runner-2 gfx 'LANG=C\n'
-rm "$HOME/ci-runners/volumetric_kit_gfx/runner-2/.running" # paused
-cache_tarball
-status=0
-setup recon || status=$?
-expect "registration succeeds" "$status" 0
-[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
-expect "one registration token is minted" "$(calls registration-token)" 1
-expect "nothing is downloaded when the tarball is cached" "$(calls '^curl .*/download/')" 0
-expect "a registered runner is not registered again" \
-  "$(calls '^config ci-runners/volumetric_kit_recon/runner-1 ')" 0
-registered=0
-for i in $(seq 2 "$n"); do
-  grep -qF "config ci-runners/volumetric_kit_recon/runner-$i --unattended --url https://github.com/taojin-6/volumetric_kit_recon --token REGTOKEN --labels $label --name $host-recon-$i " "$CALLS" &&
-    registered=$((registered + 1))
-done
-expect "the missing runners are registered, named and labelled" "$registered" "$((n - 1))"
-expect "each new runner's service is installed" \
-  "$(calls "^svc ci-runners/volumetric_kit_recon/runner-[0-9]* $install\$")" "$((n - 1))"
-up=0
-for i in $(seq 1 "$n"); do
-  [ "$(running "ci-runners/volumetric_kit_recon/runner-$i")" = no ] || up=$((up + 1))
-done
-expect "every runner of the repository runs" "$up" "$n"
-threads="$(share "$n")"
-expect "the cores are split across the repository's runners alone; an old level is replaced in place, once, and other lines kept" \
-  "$(env_of ci-runners/volumetric_kit_recon/runner-1)" "CTEST_PARALLEL_LEVEL=$threads
+for os in Linux Darwin; do
+  export STUB_OS="$os"
+  if [ "$os" = Linux ]; then n=6 label=vk-linux-gpu; else n=2 label=mac; fi
+
+  fresh_home
+  runner ci-runners/volumetric_kit_recon/runner-1 recon \
+    'CTEST_PARALLEL_LEVEL=999\nLANG=C.UTF-8\nCTEST_PARALLEL_LEVEL=999\n'
+  runner ci-runners/volumetric_kit_gfx/runner-1 gfx 'LANG=C\n'
+  runner ci-runners/volumetric_kit_gfx/runner-2 gfx 'LANG=C\n'
+  pause ci-runners/volumetric_kit_gfx/runner-2
+  cache_tarball
+  status=0
+  setup recon || status=$?
+  expect "registration succeeds ($os)" "$status" 0
+  [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+  expect "one registration token is minted ($os)" "$(calls registration-token)" 1
+  expect "nothing is downloaded when the tarball is cached ($os)" "$(calls '^curl .*/download/')" 0
+  expect "a registered runner is not registered again ($os)" \
+    "$(calls '^config ci-runners/volumetric_kit_recon/runner-1 ')" 0
+  registered=0 services=0 up=0
+  for i in $(seq 1 "$n"); do
+    d="ci-runners/volumetric_kit_recon/runner-$i"
+    [ "$i" -eq 1 ] ||
+      ! grep -qF "config $d --unattended --url https://github.com/taojin-6/volumetric_kit_recon --token REGTOKEN --labels $label --name $host-recon-$i " "$CALLS" ||
+      registered=$((registered + 1))
+    [ "$(installed "$d")" = no ] || services=$((services + 1))
+    [ "$(running "$d")" = no ] || up=$((up + 1))
+  done
+  expect "the missing runners are registered, named and labelled ($os)" "$registered" "$((n - 1))"
+  expect "every runner of the repository has its service installed, and runs ($os)" \
+    "$services $up" "$n $n"
+  if [ "$os" = Linux ]; then
+    expect "each new runner's service is installed as this user (Linux)" \
+      "$(calls "^svc ci-runners/volumetric_kit_recon/runner-[0-9]* install $user\$")" "$((n - 1))"
+  else
+    d=ci-runners/volumetric_kit_recon/runner-2
+    daemon="$(daemon_of "$d")"
+    expect "a new runner's daemon runs its runsvc.sh as this user, kept alive, with HOME (Darwin)" \
+      "$(grep -c -F -e "<key>Label</key><string>$(label_of "$d")</string>" \
+        -e "<string>$HOME/$d/runsvc.sh</string>" -e "<key>UserName</key><string>$user</string>" \
+        -e '<key>KeepAlive</key><true/>' -e "<key>HOME</key><string>$HOME</string>" "$daemon")" 5
+    expect "its runsvc.sh is the runner's, executable, and its .service names the daemon (Darwin)" \
+      "$([ -x "$HOME/$d/runsvc.sh" ] && echo executable) $(cat "$HOME/$d/.service")" \
+      "executable $daemon"
+    if command -v plutil >/dev/null 2>&1; then
+      expect "the daemon is a valid property list (Darwin)" \
+        "$(plutil -lint "$daemon" >/dev/null 2>&1 && echo valid)" valid
+    fi
+  fi
+  threads="$(share "$n")"
+  expect "the cores are split across the repository's runners alone; an old level is replaced in place, once, and other lines kept ($os)" \
+    "$(env_of ci-runners/volumetric_kit_recon/runner-1)" "CTEST_PARALLEL_LEVEL=$threads
 LANG=C.UTF-8
 CMAKE_BUILD_PARALLEL_LEVEL=$threads"
-expect "a new runner gets the same levels" \
-  "$(env_of "ci-runners/volumetric_kit_recon/runner-$n")" "$(levels "$threads")"
-expect "a running runner whose .env changed restarts" \
-  "$(calls '^svc ci-runners/volumetric_kit_recon/runner-1 stop$')" 1
-expect "another repository's runners keep their .env" \
-  "$(env_of ci-runners/volumetric_kit_gfx/runner-1) $(env_of ci-runners/volumetric_kit_gfx/runner-2)" \
-  "LANG=C LANG=C"
-expect "another repository's runners are not restarted, and its paused one stays paused" \
-  "$(calls '^svc ci-runners/volumetric_kit_gfx/') $(running ci-runners/volumetric_kit_gfx/runner-1) $(running ci-runners/volumetric_kit_gfx/runner-2)" \
-  "0 yes no"
+  expect "a new runner gets the same levels ($os)" \
+    "$(env_of "ci-runners/volumetric_kit_recon/runner-$n")" "$(levels "$threads")"
+  expect "a running runner whose .env changed restarts ($os)" \
+    "$(restarts ci-runners/volumetric_kit_recon/runner-1)" 1
+  [ "$os" = Linux ] ||
+    expect "a daemon restarts in place, with nothing unloaded (Darwin)" \
+      "$(calls '^launchctl bootout ')" 0
+  expect "another repository's runners keep their .env ($os)" \
+    "$(env_of ci-runners/volumetric_kit_gfx/runner-1) $(env_of ci-runners/volumetric_kit_gfx/runner-2)" \
+    "LANG=C LANG=C"
+  expect "another repository's runners are not restarted, and its paused one stays paused ($os)" \
+    "$(touched gfx) $(running ci-runners/volumetric_kit_gfx/runner-1) $(running ci-runners/volumetric_kit_gfx/runner-2)" \
+    "0 yes no"
 
-: >"$CALLS"
-status=0
-setup recon || status=$?
-expect "a re-run succeeds" "$status" 0
-expect "a re-run asks gh for nothing and registers nothing" "$(calls '^(config|gh|curl) ')" 0
-expect "a re-run installs, stops and starts nothing" "$(calls ' (install|stop|start)')" 0
-
-# A paused runner of the repository is started by a re-run, and a service
-# that does not install or start fails the run, which still sets up the rest.
-rm "$HOME/ci-runners/volumetric_kit_recon/runner-1/.running"
-: >"$CALLS"
-status=0
-setup recon || status=$?
-expect "a re-run starts the repository's paused runner" \
-  "$status $(running ci-runners/volumetric_kit_recon/runner-1)" "0 yes"
-for case in STUB_INSTALL_FAILS STUB_START_FAILS; do
-  fresh_home
-  for i in $(seq 1 "$n"); do runner "ci-runners/volumetric_kit_recon/runner-$i" recon; done
-  rm "$HOME/ci-runners/volumetric_kit_recon/runner-1/.service" \
-    "$HOME/ci-runners/volumetric_kit_recon/runner-1/.running"
+  : >"$CALLS"
   status=0
-  env "$case=1" "$BASH" "$tools/setup-runners.sh" recon >"$tmp/out" 2>&1 || status=$?
-  expect "setup fails when a service does not come up ($case)" "$status" 1
-  expect "it still sets up the other runners ($case)" \
-    "$(env_of "ci-runners/volumetric_kit_recon/runner-$n")" "$(levels "$(share "$n")")"
+  setup recon || status=$?
+  expect "a re-run succeeds ($os)" "$status" 0
+  expect "a re-run asks gh for nothing and registers nothing ($os)" "$(calls '^(config|gh|curl) ')" 0
+  expect "a re-run installs, stops and starts nothing ($os)" "$(changes)" 0
+
+  # A paused runner of the repository is started by a re-run; on macOS so is
+  # a loaded daemon that is not running, kicked rather than loaded again.
+  pause ci-runners/volumetric_kit_recon/runner-1
+  status=0
+  setup recon || status=$?
+  expect "a re-run starts the repository's paused runner ($os)" \
+    "$status $(running ci-runners/volumetric_kit_recon/runner-1)" "0 yes"
+  if [ "$os" = Darwin ]; then
+    rm "$HOME/ci-runners/volumetric_kit_recon/runner-1/.running"
+    : >"$CALLS"
+    status=0
+    setup recon || status=$?
+    expect "a loaded daemon that is not running is kicked, not loaded again (Darwin)" \
+      "$status $(running ci-runners/volumetric_kit_recon/runner-1) $(calls '^launchctl kickstart system/') $(calls '^launchctl bootstrap ')" \
+      "0 yes 1 0"
+    pause ci-runners/volumetric_kit_recon/runner-1
+    disabled="$RUNNER_DAEMON_DIR/$(label_of ci-runners/volumetric_kit_recon/runner-1).disabled"
+    touch "$disabled"
+    status=0
+    setup recon || status=$?
+    expect "a disabled daemon is enabled and started (Darwin)" \
+      "$status $(running ci-runners/volumetric_kit_recon/runner-1) $([ -f "$disabled" ] && echo disabled || echo enabled)" \
+      "0 yes enabled"
+  fi
+
+  # README's pause stops the repository's runners; on macOS it waits until
+  # launchd lets go of each, so a re-run straight after can load it again.
+  status=0
+  "$BASH" -c '. "$1/common.sh"; select_repo recon; find_runner_dirs
+    for d in "${RUNNER_DIRS[@]}"; do stop_service "$d"; done' _ "$tools" >"$tmp/out" 2>&1 ||
+    status=$?
+  expect "README's pause stops the repository's runners ($os)" \
+    "$status $(running ci-runners/volumetric_kit_recon/runner-1) $(running "ci-runners/volumetric_kit_recon/runner-$n") $(running ci-runners/volumetric_kit_gfx/runner-1)" \
+    "0 no no yes"
+  status=0
+  setup recon || status=$?
+  expect "a re-run straight after starts them again ($os)" \
+    "$status $(running ci-runners/volumetric_kit_recon/runner-1) $(running "ci-runners/volumetric_kit_recon/runner-$n")" \
+    "0 yes yes"
+
+  # A service that does not install or start fails the run, which still sets
+  # up the rest.
+  for case in STUB_INSTALL_FAILS STUB_START_FAILS; do
+    fresh_home
+    for i in $(seq 1 "$n"); do runner "ci-runners/volumetric_kit_recon/runner-$i" recon; done
+    unservice ci-runners/volumetric_kit_recon/runner-1
+    status=0
+    env "$case=1" "$BASH" "$tools/setup-runners.sh" recon >"$tmp/out" 2>&1 || status=$?
+    expect "setup fails when a service does not come up ($case, $os)" "$status" 1
+    expect "it still sets up the other runners ($case, $os)" \
+      "$(env_of "ci-runners/volumetric_kit_recon/runner-$n")" "$(levels "$(share "$n")")"
+    [ "$case" != STUB_INSTALL_FAILS ] ||
+      expect "a failed install leaves no service behind ($os)" \
+        "$(installed ci-runners/volumetric_kit_recon/runner-1)" no
+  done
+
+  # A host whose runners are still in the pre-layout directories gets no
+  # second set, and its thread split counts them, but no other repository's.
+  # One whose service is gone is reinstalled, and an unregistered leftover is
+  # left alone.
+  fresh_home
+  for i in $(seq 1 "$n"); do runner "actions-runner-recon-$i" recon; done
+  unservice actions-runner-recon-1
+  runner actions-runner-1 gfx 'LANG=C\n'
+  runner ci-runners/volumetric_kit_recon/runner-1 ""
+  status=0
+  setup recon || status=$?
+  expect "a full run on a pre-layout host succeeds ($os)" "$status" 0
+  [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+  expect "it asks gh for nothing and registers nothing ($os)" "$(calls '^(config|gh|curl) ')" 0
+  expect "it counts only registered runners ($os)" \
+    "$(grep -c "^Done: $n runners " "$tmp/out" || true)" 1
+  expect "it leaves an unregistered leftover's .env alone ($os)" \
+    "$(env_of ci-runners/volumetric_kit_recon/runner-1)" "<none>"
+  [ "$os" = Darwin ] || # a leftover names no daemon
+    expect "it leaves an unregistered leftover's service alone (Linux)" \
+      "$(calls '^svc ci-runners/')" 0
+  expect "it reinstalls and starts a pre-layout runner's service ($os)" \
+    "$(installed actions-runner-recon-1) $(running actions-runner-recon-1)" "yes yes"
+  expect "they get the split across the repository's pre-layout runners ($os)" \
+    "$(env_of "actions-runner-recon-$n")" "$(levels "$(share "$n")")"
+  expect "another repository's pre-layout runner keeps its .env ($os)" \
+    "$(env_of actions-runner-1)" "LANG=C"
+
+  fresh_home
+  for i in $(seq 2 "$n"); do runner "actions-runner-recon-$i" recon; done
+  cache_tarball
+  status=0
+  setup recon || status=$?
+  expect "a pre-layout host short of runners succeeds ($os)" "$status" 0
+  [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+  expect "it registers only the missing one ($os)" \
+    "$(calls '^config ci-runners/volumetric_kit_recon/runner-1 ') $(calls '^config ')" "1 1"
+
+  # recon's pre-layout runners have the names new ones get, so a new runner
+  # must not take a number one of them holds: --replace would take over its
+  # registration.
+  fresh_home
+  for i in $(seq 1 "$n"); do
+    [ "$i" -eq 2 ] || runner "actions-runner-recon-$i" recon
+  done
+  cache_tarball
+  status=0
+  setup recon || status=$?
+  expect "a pre-layout host short of a runner other than the first succeeds ($os)" "$status" 0
+  [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+  expect "it names the new runner after a free number, not a working runner's ($os)" \
+    "$(calls "^config ci-runners/volumetric_kit_recon/runner-2 .* --name $host-recon-2 ") $(calls '^config ')" "1 1"
 done
 
-# A host whose runners are still in the pre-layout directories gets no second
-# set, and its thread split counts them, but no other repository's. One whose
-# service is gone is reinstalled, and an unregistered leftover is left alone.
-fresh_home
-for i in $(seq 1 "$n"); do runner "actions-runner-recon-$i" recon; done
-rm "$HOME/actions-runner-recon-1/.service" "$HOME/actions-runner-recon-1/.running"
-runner actions-runner-1 gfx 'LANG=C\n'
-runner ci-runners/volumetric_kit_recon/runner-1 ""
-status=0
-setup recon || status=$?
-expect "a full run on a pre-layout host succeeds" "$status" 0
-[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
-expect "it asks gh for nothing and registers nothing" "$(calls '^(config|gh|curl) ')" 0
-expect "it counts only registered runners" \
-  "$(grep -c "^Done: $n runners " "$tmp/out" || true)" 1
-expect "it leaves an unregistered leftover alone" \
-  "$(calls '^svc ci-runners/') $(env_of ci-runners/volumetric_kit_recon/runner-1)" "0 <none>"
-expect "it reinstalls and starts a pre-layout runner's service" \
-  "$(calls "^svc actions-runner-recon-1 $install\$") $(running actions-runner-recon-1)" "1 yes"
-expect "they get the split across the repository's pre-layout runners" \
-  "$(env_of "actions-runner-recon-$n")" "$(levels "$(share "$n")")"
-expect "another repository's pre-layout runner keeps its .env" \
-  "$(env_of actions-runner-1)" "LANG=C"
+# --- A Mac set up before: LaunchAgents ---------------------------------------
 
+# A runner installed as a per-user LaunchAgent, whose .service names that
+# agent, becomes a daemon, and the agent is unloaded and deleted, so no
+# console login starts a second listener on the runner's credentials. So is
+# the agent of a runner that is a daemon already, and an agent whose plist is
+# gone but which is still loaded.
+os=Darwin
+export STUB_OS=Darwin
 fresh_home
-for i in $(seq 2 "$n"); do runner "actions-runner-recon-$i" recon; done
-cache_tarball
+d=ci-runners/volumetric_kit_gfx/runner-1
+runner "$d" gfx
+runner ci-runners/volumetric_kit_gfx/runner-2 gfx "$(levels "$(share 3)")\n"
+runner ci-runners/volumetric_kit_gfx/runner-3 gfx "$(levels "$(share 3)")\n"
+unservice "$d"
+agent "$d"
+agent_plist "$d" >"$HOME/$d/.service"
+agent ci-runners/volumetric_kit_gfx/runner-2
+agent ci-runners/volumetric_kit_gfx/runner-3 none
 status=0
-setup recon || status=$?
-expect "a pre-layout host short of runners succeeds" "$status" 0
-[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
-expect "it registers only the missing one" \
-  "$(calls '^config ci-runners/volumetric_kit_recon/runner-1 ') $(calls '^config ')" "1 1"
+setup gfx || status=$?
+expect "a Mac's LaunchAgent runner becomes a daemon that runs" \
+  "$status $(installed "$d") $(running "$d") $(cat "$HOME/$d/.service")" \
+  "0 yes yes $(daemon_of "$d")"
+expect "its agent is unloaded from the login session, waited for, and deleted" \
+  "$(calls "^launchctl bootout gui/$(id -u)/$(label_of "$d")\$") $(agent_state "$d")" \
+  "1 unloaded deleted"
+expect "so is a daemon's leftover agent, and a loaded agent whose plist is gone" \
+  "$(agent_state ci-runners/volumetric_kit_gfx/runner-2) $(agent_state ci-runners/volumetric_kit_gfx/runner-3)" \
+  "unloaded deleted unloaded deleted"
+expect "the runners that were daemons already are left running" \
+  "$(calls '^launchctl (bootstrap|bootout|kickstart|enable) system/.*gfx\.runner-[23]') $(running ci-runners/volumetric_kit_gfx/runner-2)" \
+  "0 yes"
+: >"$CALLS"
+status=0
+setup gfx || status=$?
+expect "a re-run with no agent left asks launchd to change nothing" \
+  "$status $(calls '^launchctl (bootstrap|bootout|kickstart|enable) ')" "0 0"
 
-# recon's pre-layout runners have the names new ones get, so a new runner
-# must not take a number one of them holds: --replace would take over its
-# registration.
+# A daemon that cannot be written leaves the runner's agent loaded and in
+# place, and no daemon at all, so the runner stays up and a re-run installs.
 fresh_home
-for i in $(seq 1 "$n"); do
-  [ "$i" -eq 2 ] || runner "actions-runner-recon-$i" recon
-done
-cache_tarball
+runner "$d" gfx
+runner ci-runners/volumetric_kit_gfx/runner-2 gfx "$(levels "$(share 2)")\n"
+unservice "$d"
+agent "$d"
 status=0
-setup recon || status=$?
-expect "a pre-layout host short of a runner other than the first succeeds" "$status" 0
-[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
-expect "it names the new runner after a free number, not a working runner's" \
-  "$(calls "^config ci-runners/volumetric_kit_recon/runner-2 .* --name $host-recon-2 ") $(calls '^config ')" "1 1"
+STUB_INSTALL_FAILS=1 setup gfx || status=$?
+expect "a failed install fails the run, keeps the agent and leaves no daemon" \
+  "$status $(grep -c '^error: 1 runner services failed' "$tmp/out") $(agent_state "$d") $(installed "$d") $([ -f "$HOME/$d/.service" ] && echo written || echo none)" \
+  "1 1 loaded kept no none"
 
 # --- calib, on a Mac ---------------------------------------------------------
 
@@ -299,7 +568,7 @@ expect "it names the new runner after a free number, not a working runner's" \
 # the level the whole-host split gave them (10 cores over 4 runners): calib's
 # runners get the cores split across calib's own, and recon's and gfx's are
 # left alone.
-on_mac() { STUB_OS=Darwin STUB_CORES="$1" "${@:2}"; }
+on_mac() { STUB_CORES="$1" "${@:2}"; }
 fresh_home
 for repo in recon gfx; do
   for i in 1 2; do runner "ci-runners/volumetric_kit_$repo/runner-$i" "$repo" "$(levels 2)\n"; done
@@ -314,47 +583,56 @@ for i in 1 2; do
   grep -qF "config ci-runners/volumetric_kit_calib/runner-$i --unattended --url https://github.com/taojin-6/volumetric_kit_calib --token REGTOKEN --labels mac --name $host-calib-$i " "$CALLS" &&
     registered=$((registered + 1))
 done
-expect "it registers 2, named and labelled mac, and runs them" \
-  "$registered $(calls '^config ') $(running ci-runners/volumetric_kit_calib/runner-1) $(running ci-runners/volumetric_kit_calib/runner-2)" \
-  "2 2 yes yes"
+expect "it registers 2, named and labelled mac, and runs them as daemons" \
+  "$registered $(calls '^config ') $(installed ci-runners/volumetric_kit_calib/runner-1) $(running ci-runners/volumetric_kit_calib/runner-1) $(running ci-runners/volumetric_kit_calib/runner-2)" \
+  "2 2 yes yes yes"
 expect "each gets the cores split across calib's 2 runners: 5 of 10" \
   "$(env_of ci-runners/volumetric_kit_calib/runner-1) $(env_of ci-runners/volumetric_kit_calib/runner-2)" \
   "$(levels 5) $(levels 5)"
 expect "recon's and gfx's runners keep their levels and are not restarted" \
-  "$(env_of ci-runners/volumetric_kit_recon/runner-1) $(env_of ci-runners/volumetric_kit_gfx/runner-2) $(calls '^svc ci-runners/volumetric_kit_(recon|gfx)/')" \
+  "$(env_of ci-runners/volumetric_kit_recon/runner-1) $(env_of ci-runners/volumetric_kit_gfx/runner-2) $(touched 'recon|gfx')" \
   "$(levels 2) $(levels 2) 0"
 : >"$CALLS"
 status=0
 on_mac 10 setup recon || status=$?
 expect "a re-run for recon gives its runners 5 and restarts them, leaving gfx's and calib's alone" \
-  "$status $(env_of ci-runners/volumetric_kit_recon/runner-2) $(calls '^svc ci-runners/volumetric_kit_recon/runner-[12] stop$') $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(calls '^svc ci-runners/volumetric_kit_(gfx|calib)/')" \
-  "0 $(levels 5) 2 $(levels 2) 0"
+  "$status $(env_of ci-runners/volumetric_kit_recon/runner-2) $(restarts ci-runners/volumetric_kit_recon/runner-1) $(restarts ci-runners/volumetric_kit_recon/runner-2) $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(touched 'gfx|calib')" \
+  "0 $(levels 5) 1 1 $(levels 2) 0"
 status=0
 on_mac 1 setup calib || status=$?
 expect "with fewer cores than runners, each gets 1" \
   "$status $(env_of ci-runners/volumetric_kit_calib/runner-1)" "0 $(levels 1)"
+calib_daemon="$(daemon_of ci-runners/volumetric_kit_calib/runner-1)"
 status=0
 on_mac 10 teardown calib || status=$?
-remaining=""
+remaining="" kept=""
 for dir in "$HOME"/ci-runners/*/runner-*; do
-  [ -d "$dir" ] && remaining="$remaining ${dir#"$HOME"/ci-runners/}"
+  [ -d "$dir" ] || continue
+  remaining="$remaining ${dir#"$HOME"/ci-runners/}"
+  kept="$kept$(basename "$(daemon_of "${dir#"$HOME"/}")") "
 done
-expect "teardown removes calib's runners and only them" "$status$remaining" \
-  "0 volumetric_kit_gfx/runner-1 volumetric_kit_gfx/runner-2 volumetric_kit_recon/runner-1 volumetric_kit_recon/runner-2"
+expect "teardown removes calib's runners and their daemons, and only them" \
+  "$status$remaining | $(daemons)" \
+  "0 volumetric_kit_gfx/runner-1 volumetric_kit_gfx/runner-2 volumetric_kit_recon/runner-1 volumetric_kit_recon/runner-2 | $kept"
+expect "it unloads each daemon before deleting it" \
+  "$(calls "^launchctl bootout system/$(basename "$calib_daemon" .plist)\$") $([ -f "$calib_daemon" ] && echo kept || echo deleted)" \
+  "1 deleted"
 
 # --- calib, on a Linux host --------------------------------------------------
 
 # A 24-core Linux host, faked on any host, carrying recon's and gfx's 6
 # runners each with the level the whole-host split gave them (24 cores over
-# 12): calib registers 6 too, whose level is 24 / 6 = 4, and recon's and gfx's
-# are left alone.
+# 12): calib, standing in for any third repository there, registers 6 too,
+# whose level is 24 / 6 = 4, and recon's and gfx's are left alone.
+os=Linux
+export STUB_OS=Linux
 fresh_home
 for repo in recon gfx; do
   for i in $(seq 1 6); do runner "ci-runners/volumetric_kit_$repo/runner-$i" "$repo" "$(levels 2)\n"; done
 done
 cache_tarball
 status=0
-STUB_OS=Linux STUB_CORES=24 setup calib || status=$?
+STUB_CORES=24 setup calib || status=$?
 expect "calib's runners register on a Linux host" "$status" 0
 [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
 registered=0 up=0
@@ -370,57 +648,95 @@ expect "each gets the cores split across calib's 6 runners: 4 of 24" \
   "$(env_of ci-runners/volumetric_kit_calib/runner-1) $(env_of ci-runners/volumetric_kit_calib/runner-6)" \
   "$(levels 4) $(levels 4)"
 expect "recon's and gfx's runners keep their levels and are not restarted" \
-  "$(env_of ci-runners/volumetric_kit_recon/runner-6) $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(calls '^svc ci-runners/volumetric_kit_(recon|gfx)/')" \
+  "$(env_of ci-runners/volumetric_kit_recon/runner-6) $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(touched 'recon|gfx')" \
   "$(levels 2) $(levels 2) 0"
 
 # --- Teardown ---------------------------------------------------------------
 
-fresh_home
-runner ci-runners/volumetric_kit_recon/runner-1 recon
-runner ci-runners/volumetric_kit_recon/runner-2 ""
-runner actions-runner-recon-3 recon
-runner actions-runner-recon-4 "" # its service left installed
-cp "$runner_files/svc.sh" "$HOME/actions-runner-recon-4/"
-echo unit >"$HOME/actions-runner-recon-4/.service"
-runner actions-runner-1 gfx
-runner ci-runners/volumetric_kit_gfx/runner-1 gfx
-status=0
-teardown recon || status=$?
-expect "teardown succeeds" "$status" 0
-[ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
-remaining=""
-for dir in "$HOME"/ci-runners/*/runner-* "$HOME"/actions-runner-*; do
-  [ -d "$dir" ] && remaining="$remaining ${dir#"$HOME"/}"
-done
-expect "it deletes the repository's runners and leftovers, and only them" "$remaining" \
-  " ci-runners/volumetric_kit_gfx/runner-1 actions-runner-1"
-expect "it deregisters each registered runner" \
-  "$(calls '^config .* remove --token RMTOKEN$') $(calls '^config ci-runners/volumetric_kit_recon/runner-2')" "2 0"
-expect "it uninstalls every service of theirs, a leftover's too" "$(calls ' uninstall$')" 3
-expect "it checks gh once and mints one remove token" \
-  "$(calls '^gh auth status$') $(calls remove-token)" "1 1"
-
-for case in STUB_REMOVE_FAILS STUB_GH_UNAUTHED; do
+for os in Linux Darwin; do
+  export STUB_OS="$os"
   fresh_home
   runner ci-runners/volumetric_kit_recon/runner-1 recon
-  status=0
-  env "$case=1" "$BASH" "$tools/teardown-runners.sh" recon >"$tmp/out" 2>&1 || status=$?
-  expect "teardown fails when it cannot deregister ($case)" "$status" 1
-  if [ -f "$HOME/ci-runners/volumetric_kit_recon/runner-1/.runner" ]; then
-    pass "it keeps the runner's credentials for a retry ($case)"
+  runner ci-runners/volumetric_kit_recon/runner-2 ""
+  runner actions-runner-recon-3 recon
+  runner actions-runner-recon-4 "" # its service left installed
+  if [ "$os" = Linux ]; then
+    cp "$runner_files/svc.sh" "$HOME/actions-runner-recon-4/"
+    echo unit >"$HOME/actions-runner-recon-4/.service"
   else
-    fail "it keeps the runner's credentials for a retry ($case)"
+    # Its daemon still loaded and named only by .service; and runner-1 still
+    # has an earlier setup's agent.
+    leftover="$RUNNER_DAEMON_DIR/actions.runner.taojin-6-volumetric_kit_recon.leftover.plist"
+    printf '<key>WorkingDirectory</key><string>%s</string>\n' "$HOME/actions-runner-recon-4" >"$leftover"
+    echo "$leftover" >"$HOME/actions-runner-recon-4/.service"
+    touch "$HOME/actions-runner-recon-4/.loaded" "$HOME/actions-runner-recon-4/.running"
+    agent ci-runners/volumetric_kit_recon/runner-1
+    old_agent="$(agent_plist ci-runners/volumetric_kit_recon/runner-1) $(agent_mark ci-runners/volumetric_kit_recon/runner-1)"
   fi
-done
-expect "without gh auth it leaves the runner running" \
-  "$(calls ' uninstall$') $(running ci-runners/volumetric_kit_recon/runner-1)" "0 yes"
+  runner actions-runner-1 gfx
+  runner ci-runners/volumetric_kit_gfx/runner-1 gfx
+  status=0
+  teardown recon || status=$?
+  expect "teardown succeeds ($os)" "$status" 0
+  [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+  remaining=""
+  for dir in "$HOME"/ci-runners/*/runner-* "$HOME"/actions-runner-*; do
+    [ -d "$dir" ] && remaining="$remaining ${dir#"$HOME"/}"
+  done
+  expect "it deletes the repository's runners and leftovers, and only them ($os)" "$remaining" \
+    " ci-runners/volumetric_kit_gfx/runner-1 actions-runner-1"
+  expect "it deregisters each registered runner ($os)" \
+    "$(calls '^config .* remove --token RMTOKEN$') $(calls '^config ci-runners/volumetric_kit_recon/runner-2')" "2 0"
+  if [ "$os" = Linux ]; then
+    expect "it uninstalls every service of theirs, a leftover's too (Linux)" "$(calls ' uninstall$')" 3
+  else
+    expect "it unloads and deletes each daemon of theirs, a leftover's too, and only theirs (Darwin)" \
+      "$(calls '^launchctl bootout system/') $(daemons)" \
+      "3 $(basename "$(daemon_of actions-runner-1)") $(basename "$(daemon_of ci-runners/volumetric_kit_gfx/runner-1)") "
+    remaining=""
+    # shellcheck disable=SC2086 # the plist and the stub's mark, split
+    for f in $old_agent; do [ ! -f "$f" ] || remaining="$remaining $f"; done
+    expect "it unloads and deletes a runner's agent (Darwin)" "$remaining" ""
+  fi
+  expect "it checks gh once and mints one remove token ($os)" \
+    "$(calls '^gh auth status$') $(calls remove-token)" "1 1"
 
-fresh_home
-runner actions-runner-1 gfx
-status=0
-teardown recon || status=$?
-expect "teardown with nothing to remove succeeds and touches nothing" \
-  "$status $(calls '^(svc|config|gh) ')" "0 0"
+  # A leftover whose daemon will not unload keeps its directory, and the run
+  # fails: deleted, the daemon would be restarted, failing, for good.
+  if [ "$os" = Darwin ]; then
+    fresh_home
+    d=ci-runners/volumetric_kit_recon/runner-1
+    runner "$d" recon
+    rm "$HOME/$d/.runner"
+    status=0
+    STUB_BOOTOUT_FAILS=1 teardown recon || status=$?
+    expect "a leftover whose daemon does not unload is kept, and teardown fails (Darwin)" \
+      "$status $([ -d "$HOME/$d" ] && echo kept) $(installed "$d")" "1 kept yes"
+  fi
+
+  for case in STUB_REMOVE_FAILS STUB_GH_UNAUTHED; do
+    fresh_home
+    runner ci-runners/volumetric_kit_recon/runner-1 recon
+    status=0
+    env "$case=1" "$BASH" "$tools/teardown-runners.sh" recon >"$tmp/out" 2>&1 || status=$?
+    expect "teardown fails when it cannot deregister ($case, $os)" "$status" 1
+    if [ -f "$HOME/ci-runners/volumetric_kit_recon/runner-1/.runner" ]; then
+      pass "it keeps the runner's credentials for a retry ($case, $os)"
+    else
+      fail "it keeps the runner's credentials for a retry ($case, $os)"
+    fi
+  done
+  expect "without gh auth it leaves the runner running ($os)" \
+    "$(changes) $(running ci-runners/volumetric_kit_recon/runner-1)" "0 yes"
+
+  fresh_home
+  runner actions-runner-1 gfx
+  status=0
+  teardown recon || status=$?
+  expect "teardown with nothing to remove succeeds and touches nothing ($os)" \
+    "$status $(calls '^(svc|config|gh|launchctl) ')" "0 0"
+done
+unset STUB_OS
 
 export HOME="$real_home"
 report

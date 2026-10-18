@@ -8,10 +8,10 @@
 #
 #   bash tools/runners/setup-runners.sh <recon|gfx|calib>
 #
-# Run as the user that owns ~/ci-runners (on Linux it calls sudo for the
-# services). Safe to re-run: registered runners are kept, so no new token is
-# needed, a stopped one is started, and a running one restarts only when its
-# .env changed.
+# Run as the user that owns ~/ci-runners, in a terminal or over SSH; it calls
+# sudo for the services. Safe to re-run: registered runners are kept, so no
+# new token is needed, a stopped one is started, and a running one restarts
+# only when its .env changed.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=common.sh
@@ -32,8 +32,8 @@ case "$OS" in
   Linux)
     PKG_OS=linux
     LABEL=vk-linux-gpu
-    # A run has at most 4 Linux jobs at once (calib's): 6 fit a run on one host
-    # while the other is offline, and two runs on both.
+    # A run of recon or gfx has 2 Linux jobs: 6 fit three runs on one host while
+    # the other is offline.
     N=6
     CORES="$(nproc)"
     command -v docker >/dev/null 2>&1 ||
@@ -130,24 +130,25 @@ for dir in "${RUNNER_DIRS[@]}"; do
   # stopped one reads it when the loop below starts it.
   if [ "$ENV_CHANGED" -eq 1 ] && service_running "$dir"; then
     echo "    .env changed; restarting the runner"
-    { svc "$dir" stop >/dev/null && start_service "$dir"; } || broken=$((broken + 1))
+    restart_service "$dir" || broken=$((broken + 1))
   fi
 done
 
-# Each of the repository's runners is a service, started at boot (Linux) or
-# login (macOS): installed if it is not, and started if it is not running.
+# Each of the repository's runners is a service started at boot: installed if
+# it is not, and started if it is not running. On macOS a LaunchAgent of an
+# earlier setup goes once the daemon is installed, before it starts.
 for dir in "${RUNNER_DIRS[@]}"; do
-  if [ ! -f "$dir/.service" ]; then
+  if ! service_installed "$dir"; then
     echo "==> Installing the service of $dir"
-    if [ "$OS" = Linux ]; then
-      svc "$dir" install "$USER" # as this user, not root
-    else
-      svc "$dir" install
-    fi || {
+    install_service "$dir" || {
       broken=$((broken + 1))
       continue
     }
   fi
+  remove_launch_agent "$dir" || {
+    broken=$((broken + 1))
+    continue
+  }
   service_running "$dir" || start_service "$dir" || broken=$((broken + 1))
 done
 [ "$broken" -eq 0 ] || die "$broken runner services failed (above): fix the cause and re-run"
@@ -156,5 +157,6 @@ echo "Done: ${#RUNNER_DIRS[@]} runners of $REPO labelled '$LABEL', $THREADS buil
 if [ "$OS" = Linux ]; then
   echo "Check they are running: systemctl list-units 'actions.runner.*' --no-pager"
 else
-  echo "Keep this Mac awake and logged in: sudo pmset -a sleep 0 disablesleep 1"
+  echo "Check they are running: sudo launchctl list | grep actions.runner"
+  echo "Keep this Mac awake: sudo pmset -a sleep 0 disablesleep 1"
 fi
