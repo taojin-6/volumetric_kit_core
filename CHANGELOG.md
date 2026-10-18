@@ -19,6 +19,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
+- `tools/runners/`: a Mac's runners are system LaunchDaemons, which start at
+  boot with nobody logged in, rather than LaunchAgents, so `setup-runners.sh`
+  and `teardown-runners.sh` call `sudo` on a Mac too, and work over SSH
+  (DECISIONS.md, the 2026-10-17 entry). On a Mac set up before, run
+  `setup-runners.sh` once for each of its repositories while CI is idle: it
+  moves LaunchAgent runners to daemons and keeps daemons already installed
+  under the runners' service names.
 - `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take
   `calib`, on the Linux hosts and the Mac alike, like `recon` and `gfx`. A
   repository's runners split the host's cores among themselves alone, and

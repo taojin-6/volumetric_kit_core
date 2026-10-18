@@ -865,10 +865,10 @@ and catches only to return a `Status`.
 ### Only the owner triggers CI
 
 `recon` and `gfx` are public and run legs on self-hosted runners: persistent
-machines, one a Mac whose jobs run in its logged-in user session. For a
-`pull_request` event GitHub runs the workflow files from the pull request
-itself, so a fork could send any job to those runners, and an `if:` in a
-workflow stops only a fork that leaves it in.
+machines, one a Mac whose jobs run as its user. For a `pull_request` event
+GitHub runs the workflow files from the pull request itself, so a fork could
+send any job to those runners, and an `if:` in a workflow stops only a fork
+that leaves it in.
 
 - **GitHub enforces it, before any job.** Each family repository has an
   Actions policy whose one rule lets only the owner's account trigger a
@@ -1098,3 +1098,43 @@ runners of calib as of any repository: 6 on a Linux host, enough for a run's
   is given the Docker socket, which is root-equivalent. Calib's code on the
   hosts is as safe as those repositories' owner-only policies keep their
   runners ("Only the owner triggers CI").
+
+**Amended 2026-10-17: calib is public, and only its macOS legs use the
+runners.** Its hosted jobs cost nothing now, so its Ubuntu builds, lint,
+sanitizers and gate run on GitHub-hosted runners, and its macOS legs on the
+Mac, where its Homebrew formulae are installed and a job builds with 5
+threads rather than a hosted runner's 3 (calib's DECISIONS.md, 2026-10-16).
+It has no runners on the Linux hosts, which keep 6 for each of recon and gfx,
+whose runs have 2 Linux jobs. The private-checkout bullet above no longer
+applies.
+
+## 2026-10-17 — A Mac's runners are system daemons
+
+Each Mac runner is a LaunchDaemon in `/Library/LaunchDaemons` that runs as
+the user who registered it, from the same runner directory, with the same
+credentials and logs. It was a per-user LaunchAgent, as the runner's own
+`svc.sh` installs one, and an agent lives in launchd's `gui/<uid>` domain,
+which exists only while that user is logged in at the console.
+
+- **No login, no runners.** FileVault rules out automatic login, so after a
+  restart, a macOS update's included, the runners sat offline at the login
+  window until someone logged in. The family's Mac has run its runners as
+  daemons, converted by hand, since 2026-09-29. Registering over SSH could not
+  start an agent at all: on 2026-10-17 `launchctl load` failed for calib's,
+  and `launchctl bootstrap gui/<uid>` found no such domain.
+- **A daemon is labelled with the runner's service name**
+  (`actions.runner.<owner>-<repo>.<runner>`), the name the hand-made daemons
+  carry, so setup keeps those. It is the runner's LaunchAgent template plus
+  `KeepAlive`, which restarts a listener that exits, and the `HOME` and
+  `USER` a login session gave the agent. An earlier setup's agent is unloaded
+  and deleted: at the next console login it would start a second listener on
+  the runner's credentials.
+- **A restart is in place** (`launchctl kickstart -k`), and a stop waits until
+  launchd has let go of the daemon: on 2026-10-17 a `launchctl bootstrap`
+  straight after a `bootout` failed ("Bootstrap failed: 5") and left a
+  runner down until it was loaded again by hand.
+- **The cost:** setting up or tearing down a Mac's runners needs `sudo`, as on
+  Linux, and their jobs run outside any login session, with no window server
+  or unlocked login keychain. The Mac legs need neither: on daemons, calib's
+  rig leg ran its 408 tests, GPU tests on MoltenVK included, with none
+  skipped. A cold start with FileVault on still waits for its password.

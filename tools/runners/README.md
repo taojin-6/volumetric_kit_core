@@ -3,13 +3,11 @@
 `recon` and `gfx` run their GPU legs on self-hosted runners: Linux GPU hosts
 (label `vk-linux-gpu`), where each leg runs in an OS-matched container with
 the GPU passed through (`--gpus all`), and a Mac (label `mac`), where jobs run
-natively for the Apple toolchain and MoltenVK on its GPU. Their other jobs
-stay on GitHub-hosted runners, free for public repositories. `calib` is
-private, so its hosted jobs would draw on the account's Actions minutes and
-stop once those are spent: every calib job runs on these runners
-([DECISIONS.md](../../DECISIONS.md), the 2026-10-16 entry). Each
-repository's `ci.yml` says which legs go where; this directory is the host
-side, for all three.
+natively for the Apple toolchain and MoltenVK on its GPU. `calib` runs its
+macOS legs on the Mac too, on its installed Homebrew. Every other job stays on
+GitHub-hosted runners, free for public repositories. Each repository's
+`ci.yml` says which legs go where; this directory is the host side, for all
+three.
 
 | File | Does |
 | --- | --- |
@@ -34,8 +32,8 @@ should end the same way, but that has not been tried. Bots are refused too,
 so pre-commit.ci and Dependabot are not installed.
 
 Outside code therefore reaches the runners only through the owner, and the
-owner reviews it first. The runners are persistent, the Mac's jobs run in its
-login session, and the Linux hosts' `docker` group is root-equivalent. To
+owner reviews it first. The runners are persistent, the Mac's jobs run as its
+user, and the Linux hosts' `docker` group is root-equivalent. To
 give a fork's change CI, a maintainer first reads its whole diff, above all
 `.github/` and every build and test script, then pushes its branch to the
 repository and opens a pull request from there. Approving or re-running a
@@ -77,12 +75,11 @@ EOF
    ```
 
 3. As the login user (not root):
-   `bash tools/runners/setup-runners.sh recon`, and again with `gfx` and
-   `calib`. Each registers 6 runners labelled `vk-linux-gpu` -- a run has at
-   most 4 Linux jobs at once (calib's), so 6 fit a run on one host while the
-   other is offline, and two runs on both -- each a systemd service started
-   at boot; it calls `sudo` for the services. Log `gh` out afterwards, as on
-   a Mac (below).
+   `bash tools/runners/setup-runners.sh recon`, and again with `gfx`. Each
+   registers 6 runners labelled `vk-linux-gpu` -- a run has 2 Linux jobs, so
+   6 fit three runs on one host while the other is offline -- each a systemd
+   service started at boot; it calls `sudo` for the services. Log `gh` out
+   afterwards, as on a Mac (below).
 
 Until a `vk-linux-gpu` runner is online, the Linux legs stay pending and
 `ci / required` waits for them. Membership in the `docker` group is
@@ -98,21 +95,25 @@ root-equivalent: fine for a personal machine, not for a shared one.
    sudo xcodebuild -license accept
    ```
 
-   `DEVELOPER_DIR` overrides `xcode-select`, and the runner, a LaunchAgent,
-   inherits the login session's: make sure the session exports no stale one.
+   The runners take the `xcode-select` choice: they run outside any login
+   session, so a `DEVELOPER_DIR` a shell exports does not reach them.
 2. **Homebrew** (<https://brew.sh>) and the formulae the legs use
    ([Upgrading Homebrew](#upgrading-homebrew)).
-3. In Terminal, as the login user: `bash tools/runners/setup-runners.sh recon`,
+3. As the user the jobs run as, in Terminal or over SSH, with conda or any
+   other environment deactivated: `bash tools/runners/setup-runners.sh recon`,
    and again with `gfx` and `calib`. Each registers 2 runners labelled `mac`
-   (Debug and Release in parallel), each a launchd LaunchAgent. Their jobs
-   run as that user and can read its `gh` login, which acts on every
-   repository of the account: run `gh auth logout` once they are registered,
-   and log in again only to register or tear down.
-4. Keep the Mac awake and logged in, since a LaunchAgent runs only in the
-   user's session: `sudo pmset -a sleep 0 disablesleep 1`, and enable
-   automatic login in System Settings. macOS offers automatic login only
-   with FileVault off; with it on, the runners stay offline after a restart
-   until someone logs in.
+   (Debug and Release in parallel), each a system LaunchDaemon that runs as
+   that user; it calls `sudo` for them. A runner keeps the `PATH` it was
+   registered with, in its `.path`, and CMake searches that `PATH` for
+   packages, so an environment active then would shadow Homebrew's. The jobs
+   can read the user's `gh` login, which acts on every repository of the
+   account: run `gh auth logout` once they are registered, and log in again
+   only to register or tear down.
+4. Keep the Mac awake: `sudo pmset -a sleep 0 disablesleep 1`. The daemons
+   start at boot, before anyone logs in, so the Mac needs no automatic login,
+   which FileVault rules out ([DECISIONS.md](../../DECISIONS.md), the
+   2026-10-17 entry). With FileVault on, a cold start still waits for its
+   password at the unlock screen.
 
 ## What setup-runners.sh does
 
@@ -133,8 +134,14 @@ root-equivalent: fine for a personal machine, not for a shared one.
   Actions -> Runners -> New self-hosted runner. It installs the runner's
   latest release, reusing a cached tarball only if the archive is whole.
 - Each runner is a service, installed if it is not and started if it is not
-  running. A service that does not install or start fails the run, after the
-  other runners are set up.
+  running: a systemd unit on Linux, through the runner's `svc.sh`, and on a
+  Mac a LaunchDaemon in `/Library/LaunchDaemons` that `KeepAlive` restarts if
+  it exits, labelled with the runner's own service name
+  (`actions.runner.<owner>-<repo>.<runner>`), so one already installed under
+  it is kept. A runner an earlier setup made a LaunchAgent becomes a daemon,
+  and its agent is unloaded and deleted, or the next console login would start
+  a second listener on the runner's credentials. A service that does not
+  install or start fails the run, after the other runners are set up.
 - Each of the repository's runners gets `CMAKE_BUILD_PARALLEL_LEVEL` and
   `CTEST_PARALLEL_LEVEL` in its `.env`: the host's cores divided by the
   repository's runners on it, 5 on a 10-core Mac with 2
@@ -152,7 +159,9 @@ root-equivalent: fine for a personal machine, not for a shared one.
   GitHub-hosted runners.
 - The runner reads `.env` only when it starts, so a running runner of the
   repository whose `.env` changed is restarted, which cancels a job running
-  on it: run the script while CI is idle.
+  on it: run the script while CI is idle. A Mac's daemon restarts in place
+  (`launchctl kickstart -k`): loading one again straight after unloading it
+  fails ("Bootstrap failed: 5").
 
 ## Upgrading Homebrew
 
@@ -209,14 +218,15 @@ up, then tear the old one down.
 
   ```sh
   bash -c '. tools/runners/common.sh; select_repo recon; find_runner_dirs
-    for d in "${RUNNER_DIRS[@]}"; do svc "$d" stop; done'
+    for d in "${RUNNER_DIRS[@]}"; do stop_service "$d"; done'
   ```
 
-  The runners stay offline until the host restarts (Linux) or the user logs
-  in again (macOS). Resume with `bash tools/runners/setup-runners.sh recon`,
-  which starts every runner of the repository that is not running.
+  The runners stay offline until the host restarts. Resume with
+  `bash tools/runners/setup-runners.sh recon`, which starts every runner of
+  the repository that is not running.
 - **Remove**, on the old host: `bash tools/runners/teardown-runners.sh recon`,
-  and again with `gfx` and `calib`. It uninstalls each runner's service,
+  and again with each other repository there. It uninstalls each runner's
+  service (a Mac's daemon only once launchd has let go of it),
   deregisters the runner and deletes its directory, and deletes the
   repository's leftovers that never finished registering. It checks `gh` auth
   and mints one remove token before it touches any runner, so if either fails
