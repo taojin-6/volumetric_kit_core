@@ -23,8 +23,13 @@ set -euo pipefail
   exit 2
 }
 select_repo "$1"
-if [ -n "${MoltenVK_ROOT:-}" ] && [ ! -d "$MoltenVK_ROOT" ]; then
-  die "MoltenVK_ROOT is not a directory: $MoltenVK_ROOT"
+if [ -n "${MoltenVK_ROOT:-}" ]; then
+  # Absolute: the jobs run in the runners' own directories.
+  case "$MoltenVK_ROOT" in
+    /*) ;;
+    *) die "MoltenVK_ROOT is not an absolute path: $MoltenVK_ROOT" ;;
+  esac
+  [ -d "$MoltenVK_ROOT" ] || die "MoltenVK_ROOT is not a directory: $MoltenVK_ROOT"
 fi
 
 case "$(uname -m)" in

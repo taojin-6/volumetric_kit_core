@@ -642,7 +642,8 @@ expect "it unloads each daemon before deleting it" \
 
 # The shell's MoltenVK_ROOT goes into every runner's .env, and a running runner
 # restarts to read it; unset, each .env is kept, a MoltenVK_ROOT line too; and
-# one naming no directory stops setup, naming it, before anything changes.
+# one naming no directory, or a relative one, stops setup, naming it, before
+# anything changes.
 os=Darwin
 export STUB_OS=Darwin
 fresh_home
@@ -668,6 +669,12 @@ status=0
 MoltenVK_ROOT="$tmp/no-such-dir" STUB_CORES=10 setup player || status=$?
 expect "a MoltenVK_ROOT naming no directory stops setup, naming it, before any change" \
   "$status $(grep -c "^error: MoltenVK_ROOT is not a directory: $tmp/no-such-dir\$" "$tmp/out") $([ "$(env_of "$p1")" = "$kept" ] && echo kept) $(calls '^(config|gh|curl|launchctl) ')" \
+  "1 1 kept 0"
+: >"$CALLS"
+status=0
+(cd "$tmp" && MoltenVK_ROOT=MoltenVK STUB_CORES=10 setup player) || status=$?
+expect "a relative MoltenVK_ROOT stops setup, naming it, before any change" \
+  "$status $(grep -c '^error: MoltenVK_ROOT is not an absolute path: MoltenVK$' "$tmp/out") $([ "$(env_of "$p1")" = "$kept" ] && echo kept) $(calls '^(config|gh|curl|launchctl) ')" \
   "1 1 kept 0"
 
 # --- Teardown ---------------------------------------------------------------

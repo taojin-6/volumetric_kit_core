@@ -117,7 +117,8 @@ root-equivalent: fine for a personal machine, not for a shared one.
 5. **MoltenVK's iOS release**, for the legs that build for iOS, installed once
    as the core's [README.md](../../README.md#prerequisites) says. Setup writes
    a `MoltenVK_ROOT` the shell sets into each runner's `.env`; unset, it keeps
-   the `.env` as it is, and naming no directory, it stops before any change:
+   the `.env` as it is, and naming no absolute path to a directory, it stops
+   before any change:
 
    ```sh
    export MoltenVK_ROOT=$HOME/ws/volumetric_kit/third_party/MoltenVK_ios_v1.4.2/MoltenVK
@@ -178,6 +179,9 @@ Run `brew update && brew upgrade` on a Mac freely while CI is idle: caches
 key on the installed versions, so the next run rebuilds what changed. An
 upgrade while a job runs can still break that job, whose formulae change
 under it. Why the caches need it: [DECISIONS.md](../../DECISIONS.md#a-brew-upgrade-needs-no-cache-clearing).
+When an upgrade moves `molten-vk`, install MoltenVK's iOS release of the
+same version and re-run step 5 of [Macs](#macs) with its path
+([DECISIONS.md](../../DECISIONS.md), the 2026-10-19 entry).
 
 A leg's key is what `homebrew-key.sh` prints for the formulae it uses: 16
 hex digits that change whenever the installed version of one of them, or of
