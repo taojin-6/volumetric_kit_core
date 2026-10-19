@@ -73,8 +73,10 @@ iOS release (`MoltenVK-ios.tar`, 1.4.2 or newer, from
 every repository, by convention at
 `<workspace>/third_party/MoltenVK_ios_v<version>/MoltenVK`; glm comes from
 the host's headers (`brew install glm`). An application that adds the core
-first configures with CMake's own iOS support, with no toolchain file, and
-names that directory with `-DMoltenVK_ROOT` or the environment:
+first configures with CMake 3.24 or newer and its own iOS support, with no
+toolchain file, and names that directory with `-DMoltenVK_ROOT`, which the
+build remembers and prefers, or with the environment, read at each
+configure:
 
 ```sh
 cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
@@ -83,7 +85,8 @@ cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
 ```
 
 `cmake/vkc_ios.cmake` does the rest (DECISIONS.md, the 2026-10-19 entry).
-The installed package is not supported on iOS.
+The installed package is not supported on iOS. On macOS, the tier's tests
+also need full Xcode with its iOS platform, since some configure for iOS.
 
 ## Build and test
 

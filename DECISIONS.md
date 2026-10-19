@@ -1175,12 +1175,14 @@ recon's and gfx's finds of Vulkan and glm.
   no floor.
 - **One knob, `MoltenVK_ROOT`**: the release's `MoltenVK/` directory, a
   prerequisite installed once outside every repository, read from `-D` or
-  else the environment, as recon reads `OrbbecSDK_ROOT`. The module derives
-  `Vulkan_LIBRARY` and `Vulkan_INCLUDE_DIR` from it, FORCEd so that a new
-  root takes effect, and `core_vulkan` links PUBLIC the system frameworks the
-  library needs, so an app names only its own. It refuses a release older
-  than 1.4.2, which fixes 1x1 drawables after a swapchain rebuild; the floor
-  rises in step with Homebrew's molten-vk, which backs the macOS legs.
+  else the environment, as recon reads `OrbbecSDK_ROOT`, and else taken from
+  the last configure, since Xcode re-runs CMake without the shell's
+  environment. The module derives `Vulkan_LIBRARY` and `Vulkan_INCLUDE_DIR`
+  from it, FORCEd so that a new root takes effect, and `core_vulkan` links
+  PUBLIC the system frameworks the library needs, so an app names only its
+  own. It refuses a release older than 1.4.2, which fixes 1x1 drawables after
+  a swapchain rebuild; the floor rises in step with Homebrew's molten-vk,
+  which backs the macOS legs.
 - **glm from the host's headers, header-only.** recon and gfx find
   `glm::glm`, but an iOS build searches packages in the SDK only, and
   Homebrew's `glm::glm` is a macOS dylib, which an iOS link refuses. The
@@ -1198,9 +1200,9 @@ recon's and gfx's finds of Vulkan and glm.
 - **No installed package on iOS.** Its `find_dependency(Vulkan)` knows nothing
   of `MoltenVK_ROOT`, and no iOS application installs the core.
 - **Tested at configure** on macOS, against stubs of the release and of
-  Homebrew's glm (`tests/ios_consumer/`): the seeds, the floor, the
-  frameworks, glm and the messages are all decided there. Core has no
-  self-hosted runner, and a hosted one has no MoltenVK; the real compile and
-  link are the siblings' iOS steps on the self-hosted Mac, whose runners get
-  `MoltenVK_ROOT` from setup
+  Homebrew's glm (`tests/ios_consumer/`): the root, the Vulkan entries, the
+  floor, the frameworks, glm and the messages are all decided there. Core has
+  no self-hosted runner, and a hosted one has no MoltenVK; the real compile
+  and link are the siblings' iOS steps on the self-hosted Mac, whose runners
+  get `MoltenVK_ROOT` from setup
   ([tools/runners/README.md](tools/runners/README.md#macs)).

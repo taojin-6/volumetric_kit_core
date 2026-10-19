@@ -14,23 +14,22 @@
 # Reads:
 #
 # * MoltenVK_ROOT: the MoltenVK/ directory of MoltenVK's iOS release (it holds
-#   include/ and static/), a prerequisite installed once outside every
-#   repository. Read from -D, else from the environment. Required, at
-#   VKC_MOLTENVK_MIN_VERSION or newer.
+#   include/ and static/), at VKC_MOLTENVK_MIN_VERSION or newer. Required: from
+#   -D, which the build remembers, else from the environment, else the root the
+#   last configure took.
 # * VKC_GLM_INCLUDE_DIR: the directory holding glm/glm.hpp. Found among the
 #   host's installed packages (Homebrew's glm on a Mac) unless set.
 #
 # Sets:
 #
 # * Vulkan_LIBRARY and Vulkan_INCLUDE_DIR: MoltenVK's static library and
-#   headers, FORCEd so that a new MoltenVK_ROOT takes effect. Every
-#   find_package(Vulkan) then makes Vulkan::Vulkan from them: iOS has no loader,
-#   and so no validation layer.
+#   headers, FORCEd. Every find_package(Vulkan) then makes Vulkan::Vulkan from
+#   them.
 # * VKC_MOLTENVK_FRAMEWORKS: the system frameworks the static library needs at
 #   an app's link; core_vulkan links them PUBLIC.
 # * glm::glm: the answer to every find_package(glm CONFIG), the host's glm
-#   headers, header-only. Homebrew's own glm::glm is a macOS dylib, and an iOS
-#   build searches packages in the SDK only.
+#   headers, header-only, on a directory of this build that holds only a link to
+#   the glm/ found.
 if(CMAKE_VERSION VERSION_LESS 3.24)
   # CMAKE_FIND_PACKAGE_REDIRECTS_DIR, for glm.
   message(
@@ -38,26 +37,36 @@ if(CMAKE_VERSION VERSION_LESS 3.24)
       "An iOS build needs CMake 3.24 or newer; this is ${CMAKE_VERSION}.")
 endif()
 
-# 1.4.2 fixes 1x1 drawables after a swapchain rebuild. Raise it in step with
-# Homebrew's molten-vk, which backs the macOS legs that stand in for iOS.
 set(VKC_MOLTENVK_MIN_VERSION 1.4.2)
 
-if(NOT MoltenVK_ROOT AND DEFINED ENV{MoltenVK_ROOT})
+# Typed, so that a relative -D is taken against the directory cmake runs in.
+set(MoltenVK_ROOT
+    ""
+    CACHE PATH "The MoltenVK/ directory of MoltenVK's iOS release")
+if(NOT MoltenVK_ROOT)
   set(MoltenVK_ROOT "$ENV{MoltenVK_ROOT}")
+endif()
+if(NOT MoltenVK_ROOT)
+  set(MoltenVK_ROOT "${_VKC_MOLTENVK_ROOT}")
 endif()
 set(_vkc_mvk_lib
     "${MoltenVK_ROOT}/static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a")
 if(NOT MoltenVK_ROOT OR NOT EXISTS "${_vkc_mvk_lib}")
+  if(MoltenVK_ROOT)
+    set(_vkc_missing "Not found: ${_vkc_mvk_lib}")
+  else()
+    set(_vkc_missing "MoltenVK_ROOT is not set.")
+  endif()
   message(
     FATAL_ERROR
       "An iOS build links MoltenVK's iOS release statically, a prerequisite "
       "installed once. Point -DMoltenVK_ROOT, or the MoltenVK_ROOT environment "
       "variable, at the MoltenVK/ directory of MoltenVK-ios.tar "
       "${VKC_MOLTENVK_MIN_VERSION} or newer "
-      "(https://github.com/KhronosGroup/MoltenVK/releases). Not found: "
-      "${_vkc_mvk_lib}")
+      "(https://github.com/KhronosGroup/MoltenVK/releases). ${_vkc_missing}")
 endif()
-file(STRINGS "${MoltenVK_ROOT}/include/MoltenVK/mvk_private_api.h" _vkc_mvk_defs
+set(_vkc_mvk_header "${MoltenVK_ROOT}/include/MoltenVK/mvk_private_api.h")
+file(STRINGS "${_vkc_mvk_header}" _vkc_mvk_defs
      REGEX "^#define MVK_VERSION_(MAJOR|MINOR|PATCH) +[0-9]+")
 set(_vkc_mvk_version "")
 foreach(_vkc_part MAJOR MINOR PATCH)
@@ -66,6 +75,9 @@ foreach(_vkc_part MAJOR MINOR PATCH)
   list(APPEND _vkc_mvk_version "${CMAKE_MATCH_1}")
 endforeach()
 list(JOIN _vkc_mvk_version "." _vkc_mvk_version)
+if(NOT _vkc_mvk_version MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+  message(FATAL_ERROR "No MoltenVK version in ${_vkc_mvk_header}.")
+endif()
 if(_vkc_mvk_version VERSION_LESS VKC_MOLTENVK_MIN_VERSION)
   message(
     FATAL_ERROR
@@ -73,6 +85,9 @@ if(_vkc_mvk_version VERSION_LESS VKC_MOLTENVK_MIN_VERSION)
       "${VKC_MOLTENVK_MIN_VERSION}, the oldest an iOS build takes.")
 endif()
 message(STATUS "MoltenVK ${_vkc_mvk_version} (iOS, static): ${MoltenVK_ROOT}")
+set(_VKC_MOLTENVK_ROOT
+    "${MoltenVK_ROOT}"
+    CACHE INTERNAL "The MoltenVK_ROOT the last iOS configure took")
 set(Vulkan_LIBRARY
     "${_vkc_mvk_lib}"
     CACHE FILEPATH "MoltenVK's iOS static library" FORCE)
@@ -90,11 +105,6 @@ find_path(VKC_GLM_INCLUDE_DIR glm/glm.hpp NO_CMAKE_FIND_ROOT_PATH
           DOC "The directory holding glm/glm.hpp, for an iOS build's glm::glm")
 set(_vkc_glm_config "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/glm-config.cmake")
 if(EXISTS "${VKC_GLM_INCLUDE_DIR}/glm/glm.hpp")
-  # Homebrew links every package's headers into one include/, whose Vulkan
-  # headers must not reach an iOS compile beside MoltenVK's. So glm::glm names a
-  # directory of this build holding only a link to the glm/ found: the link, not
-  # the keg it resolves to, since an upgrade deletes the old keg and an Xcode
-  # build does not re-run CMake for a file that is gone.
   set(_vkc_glm_include "${PROJECT_BINARY_DIR}/vkc_ios/include")
   file(MAKE_DIRECTORY "${_vkc_glm_include}")
   file(CREATE_LINK "${VKC_GLM_INCLUDE_DIR}/glm" "${_vkc_glm_include}/glm"

@@ -506,10 +506,13 @@ if(VKC_WITH_VULKAN)
 
   # cmake/vkc_ios.cmake as an iOS application meets it (ios_consumer/): Xcode
   # configures for iOS against the fixture's stubs of MoltenVK and Homebrew's
-  # glm, with MoltenVK_ROOT from -D (from the environment in one case) and the
-  # VMA this build fetched, so nothing need be installed. Configure only; the
-  # reroot case re-points the consumer case's build at a newer MoltenVK.
-  if(APPLE)
+  # glm, with the VMA this build fetched, so only Xcode's iOS platform need be
+  # installed (README.md, "Prerequisites"). Configure only. MoltenVK_ROOT comes
+  # from a relative -D (consumer), from the environment (environment), from
+  # neither in the environment case's build (rerun, as Xcode re-runs CMake), and
+  # from -D beside an older one in the environment, re-pointing the consumer
+  # case's build at a newer MoltenVK (reroot).
+  if(APPLE AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
     _vkc_message_regex(
       _vkc_frameworks
       "-framework Metal, -framework Foundation, -framework QuartzCore, -framework CoreGraphics, -framework IOSurface, -framework UIKit"
@@ -518,25 +521,41 @@ if(VKC_WITH_VULKAN)
     _vkc_message_regex(_vkc_upgraded
                        "after an upgrade, glm::glm has // glm 1.0.4")
     set(_vkc_glm "${_vkc_holds}.+${_vkc_upgraded}.+Generating done")
-    foreach(_vkc_case consumer environment reroot old_moltenvk no_moltenvk
-                      no_glm)
+    foreach(
+      _vkc_case
+      consumer
+      environment
+      rerun
+      reroot
+      old_moltenvk
+      no_version
+      no_moltenvk
+      no_glm)
       set(_vkc_name vkc_ios_${_vkc_case})
       set(_vkc_dir "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}")
-      set(_vkc_version 1.4.2)
+      set(_vkc_release 1.4.2)
       set(_vkc_env --unset=MoltenVK_ROOT)
       set(_vkc_args "")
-      if(_vkc_case STREQUAL "reroot")
+      if(_vkc_case STREQUAL "rerun")
+        set(_vkc_dir "${CMAKE_CURRENT_BINARY_DIR}/vkc_ios_environment")
+      elseif(_vkc_case STREQUAL "reroot")
         set(_vkc_dir "${CMAKE_CURRENT_BINARY_DIR}/vkc_ios_consumer")
-        set(_vkc_version 1.4.3)
+        set(_vkc_release 1.4.3)
+        set(_vkc_env "MoltenVK_ROOT=${_vkc_dir}/moltenvk-1.4.1")
       elseif(_vkc_case STREQUAL "old_moltenvk")
-        set(_vkc_version 1.4.1)
+        set(_vkc_release 1.4.1)
+      elseif(_vkc_case STREQUAL "no_version")
+        set(_vkc_release none)
       elseif(_vkc_case STREQUAL "no_glm")
         set(_vkc_args "-DVKC_GLM_INCLUDE_DIR=${_vkc_dir}/no_glm")
       endif()
-      set(_vkc_root "${_vkc_dir}/moltenvk-${_vkc_version}")
-      if(_vkc_case STREQUAL "environment")
+      set(_vkc_root "${_vkc_dir}/moltenvk-${_vkc_release}")
+      if(_vkc_case STREQUAL "consumer")
+        # Against the directory the test runs in, this one.
+        set(_vkc_args "-DMoltenVK_ROOT=${_vkc_name}/moltenvk-${_vkc_release}")
+      elseif(_vkc_case STREQUAL "environment")
         set(_vkc_env "MoltenVK_ROOT=${_vkc_root}")
-      elseif(NOT _vkc_case STREQUAL "no_moltenvk")
+      elseif(NOT _vkc_case MATCHES "^(rerun|no_moltenvk)$")
         list(APPEND _vkc_args "-DMoltenVK_ROOT=${_vkc_root}")
       endif()
       add_test(
@@ -554,10 +573,15 @@ if(VKC_WITH_VULKAN)
           _vkc_pass
           "MoltenVK 1.4.1 at ${_vkc_root} is older than 1.4.2, the oldest an iOS build takes."
         )
+      elseif(_vkc_case STREQUAL "no_version")
+        _vkc_message_regex(
+          _vkc_pass
+          "No MoltenVK version in ${_vkc_root}/include/MoltenVK/mvk_private_api.h."
+        )
       elseif(_vkc_case STREQUAL "no_moltenvk")
         _vkc_message_regex(
           _vkc_pass
-          "An iOS build links MoltenVK's iOS release statically, a prerequisite installed once. Point -DMoltenVK_ROOT, or the MoltenVK_ROOT environment variable, at the MoltenVK/ directory of MoltenVK-ios.tar 1.4.2 or newer"
+          "An iOS build links MoltenVK's iOS release statically, a prerequisite installed once. Point -DMoltenVK_ROOT, or the MoltenVK_ROOT environment variable, at the MoltenVK/ directory of MoltenVK-ios.tar 1.4.2 or newer (https://github.com/KhronosGroup/MoltenVK/releases). MoltenVK_ROOT is not set."
         )
       elseif(_vkc_case STREQUAL "no_glm")
         _vkc_message_regex(
@@ -566,11 +590,13 @@ if(VKC_WITH_VULKAN)
         )
         set(_vkc_pass "the core is added.+${_vkc_pass}")
       else()
+        # The stub release 1.4.<n>'s headers say Vulkan 1.4.35<n>.
+        string(REPLACE "1.4." "1.4.35" _vkc_headers "${_vkc_release}")
         _vkc_message_regex(
-          _vkc_found "MoltenVK ${_vkc_version} (iOS, static): ${_vkc_root}")
+          _vkc_found "MoltenVK ${_vkc_release} (iOS, static): ${_vkc_root}")
         _vkc_message_regex(
           _vkc_vulkan
-          "Vulkan 1.4.357, ${_vkc_root}/static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a"
+          "Vulkan ${_vkc_headers}, ${_vkc_root}/static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a"
         )
         set(_vkc_pass
             "${_vkc_found}.+${_vkc_vulkan}.+core_vulkan links [^\n]*${_vkc_frameworks}.+${_vkc_glm}"
@@ -579,12 +605,16 @@ if(VKC_WITH_VULKAN)
                                                      "CMake Error")
       endif()
       set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
-                                                   "${_vkc_pass}")
+                                                   "${_vkc_pass}" TIMEOUT 300)
     endforeach()
-    set_tests_properties(vkc_ios_consumer PROPERTIES FIXTURES_SETUP
-                                                     vkc_ios_consumer)
+    foreach(_vkc_setup consumer environment)
+      set_tests_properties(vkc_ios_${_vkc_setup}
+                           PROPERTIES FIXTURES_SETUP vkc_ios_${_vkc_setup})
+    endforeach()
     set_tests_properties(vkc_ios_reroot PROPERTIES FIXTURES_REQUIRED
                                                    vkc_ios_consumer)
+    set_tests_properties(vkc_ios_rerun PROPERTIES FIXTURES_REQUIRED
+                                                  vkc_ios_environment)
   endif()
 endif()
 
