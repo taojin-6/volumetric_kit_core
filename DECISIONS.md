@@ -143,10 +143,11 @@ V1's choices, from comparing the two cores on 2026-10-03:
 - **`UniqueHandle` binds its deleter by reference** (`auto& Destroy`). The
   same `UniqueHandle<VkFence, vkDestroyFence>` names the link-time loader's
   function today, and the global variable volk loads the pointer into
-  later, so the planned switch to volk for iOS and Android stays inside
-  `vulkan.hpp`. A runtime deleter would add storage to every handle, and
-  traits keyed on the handle type cannot tell `VkFence` from `VkSemaphore` on
-  32-bit targets, where both are `uint64_t`.
+  later, so the planned switch to volk for Android stays inside `vulkan.hpp`
+  (iOS links MoltenVK statically and needs no loader: the 2026-10-19 entry).
+  A runtime deleter would add storage to every handle, and traits keyed on
+  the handle type cannot tell `VkFence` from `VkSemaphore` on 32-bit targets,
+  where both are `uint64_t`.
 - **Vulkan from the system** (`find_package(Vulkan)`, `Vulkan::Vulkan`
   PUBLIC), as recon and ios use it, and gfx too once it builds on this tier
   ("Vulkan headers come from the system", below).
@@ -940,9 +941,11 @@ decision, landing with its CI leg.
 ### Vulkan headers come from the system
 
 The vulkan tier compiles against the headers `find_package(Vulkan)` finds --
-the system's, or a Vulkan SDK's -- and the core vendors none. This settles
-the question gfx's migration raised (2026-10-04): gfx pinned Vulkan-Headers
-1.4.357, and both in one build would have mixed two header versions.
+the system's, a Vulkan SDK's, or on iOS those of the MoltenVK release
+`MoltenVK_ROOT` names (the 2026-10-19 entry) -- and the core vendors none.
+This settles the question gfx's migration raised (2026-10-04): gfx pinned
+Vulkan-Headers 1.4.357, and both in one build would have mixed two header
+versions.
 
 - **The application decides the headers, not a library.** VMA, Dear ImGui's
   Vulkan backend and volk build against what their consumer provides. A pin
@@ -1150,3 +1153,56 @@ which exists only while that user is logged in at the console.
   or unlocked login keychain. The Mac legs need neither: on daemons, calib's
   rig leg ran its 408 tests, GPU tests on MoltenVK included, with none
   skipped.
+
+## 2026-10-19 — iOS links MoltenVK statically, set up by the core
+
+An iOS build takes MoltenVK's iOS release, a static library, as its Vulkan,
+with no loader: iOS has no system loader, and the ios app already links
+MoltenVK this way on a device. `cmake/vkc_ios.cmake` sets the build up. The
+root CMakeLists includes it in the vulkan tier's block when
+`CMAKE_SYSTEM_NAME` is iOS, so in an application that declares the core first
+("Consumers pin, and an application declares the core first") it runs before
+recon's and gfx's finds of Vulkan and glm.
+
+- **One home for the family's iOS setup.** Each app carried it in a toolchain
+  file and its framework lists; the ios repository already holds two copies.
+  The core cannot ship a toolchain file instead: CMake reads one at the first
+  `project()`, before FetchContent has fetched the core. So an application
+  configures with CMake's own iOS support and nothing else
+  ([README.md](README.md#prerequisites)). Rejected: each application's preset
+  passing `Vulkan_LIBRARY` and `Vulkan_INCLUDE_DIR`, which copies the
+  release's layout, the framework list and glm into every application, with
+  no floor.
+- **One knob, `MoltenVK_ROOT`**: the release's `MoltenVK/` directory, a
+  prerequisite installed once outside every repository, read from `-D` or
+  else the environment, as recon reads `OrbbecSDK_ROOT`, and else taken from
+  the last configure, since Xcode re-runs CMake without the shell's
+  environment. The module derives `Vulkan_LIBRARY` and `Vulkan_INCLUDE_DIR`
+  from it, FORCEd so that a new root takes effect, and `core_vulkan` links
+  PUBLIC the system frameworks the library needs, so an app names only its
+  own. It refuses a release older than 1.4.2, which fixes 1x1 drawables after
+  a swapchain rebuild; the floor rises in step with Homebrew's molten-vk,
+  which backs the macOS legs.
+- **glm from the host's headers, header-only.** recon and gfx find
+  `glm::glm`, but an iOS build searches packages in the SDK only, and
+  Homebrew's `glm::glm` is a macOS dylib, which an iOS link refuses. The
+  module answers `find_package(glm)` itself, with an INTERFACE `glm::glm` on a
+  directory of the build that holds only a link to the `glm/` found. Not
+  Homebrew's shared `include/`, whose macOS Vulkan headers must not reach an
+  iOS compile beside MoltenVK's; and not the keg the link resolves to, which
+  `brew upgrade` deletes without an Xcode build noticing. A missing glm fails
+  the `find_package` that needs it, so a build without glm configures.
+  Rejected: fetching glm, a download and a second pin beside gfx's fallback.
+- **No validation on the device.** The release has no validation layer, and
+  there is no loader to insert one. The macOS legs stand in: they run every
+  device test under validation on Homebrew's MoltenVK, kept at the iOS
+  release's version.
+- **No installed package on iOS.** Its `find_dependency(Vulkan)` knows nothing
+  of `MoltenVK_ROOT`, and no iOS application installs the core.
+- **Tested at configure** on macOS, against stubs of the release and of
+  Homebrew's glm (`tests/ios_consumer/`): the root, the Vulkan entries, the
+  floor, the frameworks, glm and the messages are all decided there. Core has
+  no self-hosted runner, and a hosted one has no MoltenVK; the real compile
+  and link are the siblings' iOS steps on the self-hosted Mac, whose runners
+  get `MoltenVK_ROOT` from setup
+  ([tools/runners/README.md](tools/runners/README.md#macs)).

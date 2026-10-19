@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.21)
 # application declares the core first".
 project(
   volumetric_kit_core
-  VERSION 0.11.0
+  VERSION 0.12.0
   DESCRIPTION
     "Shared foundation for the volumetric_kit family: error handling and the Vulkan core"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_core"
@@ -34,10 +34,10 @@ option(VKC_WARNINGS_AS_ERRORS "Treat first-party compiler warnings as errors"
 # own, and the sibling's installed package needs the core installed beside it. A
 # consumer that installs nothing never runs these rules.
 option(VKC_INSTALL "Generate install/export rules" ON)
-# The vulkan tier needs a Vulkan SDK (headers and loader; MoltenVK on Apple). ON
-# by default only at the top level: a sibling that uses it (recon, gfx) sets it
-# ON before fetching the core, and one that does not (calib's headless solver)
-# then needs no Vulkan installed to build.
+# The vulkan tier needs a Vulkan SDK (headers and loader; MoltenVK on macOS, its
+# static library on iOS). ON by default only at the top level: a sibling that
+# uses it (recon, gfx) sets it ON before fetching the core, and one that does
+# not (calib's headless solver) then needs no Vulkan installed to build.
 option(VKC_WITH_VULKAN "Build the vulkan tier (needs a Vulkan SDK)"
        ${PROJECT_IS_TOP_LEVEL})
 # The Vulkan test support a sibling's tests link (tests/support/; README.md,
@@ -62,6 +62,10 @@ include(vkc_single_instance)
 # project that fetches the core can call them once it is added.
 include(vkc_require_core)
 if(VKC_WITH_VULKAN)
+  # Before anything finds Vulkan: an iOS build links MoltenVK statically.
+  if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    include(vkc_ios)
+  endif()
   include(vkc_shaders)
   # The oldest Vulkan headers the tier supports (DECISIONS.md, "Vulkan headers
   # come from the system"), checked at configure where FindVulkan reports a

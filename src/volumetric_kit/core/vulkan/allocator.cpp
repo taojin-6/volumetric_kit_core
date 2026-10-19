@@ -20,9 +20,9 @@
 //
 // VMA_STATIC_VULKAN_FUNCTIONS resolves entry points against the link-time
 // loader the tier already links (vulkan.hpp, included above through
-// allocator.hpp, so the prototypes are in scope before VMA expands). Adopting
-// volk for iOS and Android would switch this to the dynamic-functions path,
-// here alone.
+// allocator.hpp, so the prototypes are in scope before VMA expands), or
+// MoltenVK's static library on iOS. Adopting volk for Android would switch
+// this to the dynamic-functions path, here alone.
 #define VMA_STATIC_VULKAN_FUNCTIONS 1
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 #define VMA_IMPLEMENTATION

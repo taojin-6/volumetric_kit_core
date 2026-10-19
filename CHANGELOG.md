@@ -7,10 +7,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-19
+
+### Added
+
+- iOS builds link MoltenVK's iOS release statically, set up by the core
+  (`cmake/vkc_ios.cmake`; DECISIONS.md, the 2026-10-19 entry). From
+  `MoltenVK_ROOT` it sets (FORCEd) `Vulkan_LIBRARY` and `Vulkan_INCLUDE_DIR`,
+  refuses a release older than 1.4.2, and links MoltenVK's system frameworks
+  into `core_vulkan`; it answers `find_package(glm)` with the host's glm
+  headers, header-only. The configure line is in README.md, "Prerequisites".
+- `tools/runners/setup-runners.sh` writes the shell's `MoltenVK_ROOT` into
+  each runner's `.env` ([tools/runners/README.md](tools/runners/README.md#macs)).
+
 ### Changed
 
 - `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take
   `player`, like `recon` and `gfx`, on the Linux hosts and the Mac.
+
+### Migration
+
+- An iOS application re-pinned to 0.12.0 declares the core first and
+  configures with CMake's iOS variables and `MoltenVK_ROOT`, with no
+  toolchain file. It drops its toolchain's Vulkan seeds, its list of
+  MoltenVK's frameworks, and any glm declaration or override for iOS. A
+  sibling configured for iOS at its own top level adds the core before it
+  finds Vulkan or glm. Desktop builds are unchanged.
 
 ## [0.11.0] - 2026-10-16
 

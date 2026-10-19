@@ -158,6 +158,9 @@ printf '#!/bin/sh\n' >"$runner_files/runsvc.sh"
 chmod +x "$runner_files/config.sh" "$runner_files/svc.sh" "$runner_files/runsvc.sh"
 
 export PATH="$stubs:$PATH"
+# setup-runners.sh writes the shell's MoltenVK_ROOT into each .env; only the
+# cases below that set it expect it.
+unset MoltenVK_ROOT
 real_home="$HOME"
 user="${USER:-$(id -un)}"
 export USER="$user"
@@ -634,6 +637,45 @@ expect "teardown removes calib's runners and their daemons, and only them" \
 expect "it unloads each daemon before deleting it" \
   "$(calls "^launchctl bootout system/$(basename "$calib_daemon" .plist)\$") $([ -f "$calib_daemon" ] && echo kept || echo deleted)" \
   "1 deleted"
+
+# --- MoltenVK_ROOT ----------------------------------------------------------
+
+# The shell's MoltenVK_ROOT goes into every runner's .env, and a running runner
+# restarts to read it; unset, each .env is kept, a MoltenVK_ROOT line too; and
+# one naming no directory, or a relative one, stops setup, naming it, before
+# anything changes.
+os=Darwin
+export STUB_OS=Darwin
+fresh_home
+p1=ci-runners/volumetric_kit_player/runner-1
+p2=ci-runners/volumetric_kit_player/runner-2
+runner "$p1" player "$(levels 5)\n"
+runner "$p2" player "$(levels 5)\n"
+mkdir -p "$tmp/MoltenVK"
+status=0
+MoltenVK_ROOT="$tmp/MoltenVK" STUB_CORES=10 setup player || status=$?
+expect "MoltenVK_ROOT goes into every runner's .env" \
+  "$status $(env_of "$p1" | tail -n 1) $(env_of "$p2" | tail -n 1)" \
+  "0 MoltenVK_ROOT=$tmp/MoltenVK MoltenVK_ROOT=$tmp/MoltenVK"
+expect "the running runners restart to read it" "$(restarts "$p1") $(restarts "$p2")" "1 1"
+kept="$(env_of "$p1")"
+: >"$CALLS"
+status=0
+STUB_CORES=10 setup player || status=$?
+expect "with MoltenVK_ROOT unset, each .env is kept, and no runner restarts" \
+  "$status $([ "$(env_of "$p1")" = "$kept" ] && echo kept) $(changes)" "0 kept 0"
+: >"$CALLS"
+status=0
+MoltenVK_ROOT="$tmp/no-such-dir" STUB_CORES=10 setup player || status=$?
+expect "a MoltenVK_ROOT naming no directory stops setup, naming it, before any change" \
+  "$status $(grep -c "^error: MoltenVK_ROOT is not a directory: $tmp/no-such-dir\$" "$tmp/out") $([ "$(env_of "$p1")" = "$kept" ] && echo kept) $(calls '^(config|gh|curl|launchctl) ')" \
+  "1 1 kept 0"
+: >"$CALLS"
+status=0
+(cd "$tmp" && MoltenVK_ROOT=MoltenVK STUB_CORES=10 setup player) || status=$?
+expect "a relative MoltenVK_ROOT stops setup, naming it, before any change" \
+  "$status $(grep -c '^error: MoltenVK_ROOT is not an absolute path: MoltenVK$' "$tmp/out") $([ "$(env_of "$p1")" = "$kept" ] && echo kept) $(calls '^(config|gh|curl|launchctl) ')" \
+  "1 1 kept 0"
 
 # --- Teardown ---------------------------------------------------------------
 

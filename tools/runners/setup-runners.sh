@@ -11,7 +11,8 @@
 # Run as the user that owns ~/ci-runners, in a terminal or over SSH; it calls
 # sudo for the services. Safe to re-run: registered runners are kept, so no
 # new token is needed, a stopped one is started, and a running one restarts
-# only when its .env changed.
+# only when its .env changed. A MoltenVK_ROOT the shell sets goes into each
+# runner's .env, for the iOS builds (README.md, "Macs").
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=common.sh
@@ -22,6 +23,14 @@ set -euo pipefail
   exit 2
 }
 select_repo "$1"
+if [ -n "${MoltenVK_ROOT:-}" ]; then
+  # Absolute: the jobs run in the runners' own directories.
+  case "$MoltenVK_ROOT" in
+    /*) ;;
+    *) die "MoltenVK_ROOT is not an absolute path: $MoltenVK_ROOT" ;;
+  esac
+  [ -d "$MoltenVK_ROOT" ] || die "MoltenVK_ROOT is not a directory: $MoltenVK_ROOT"
+fi
 
 case "$(uname -m)" in
   x86_64) PKG_ARCH=x64 ;;
@@ -126,6 +135,7 @@ for dir in "${RUNNER_DIRS[@]}"; do
   ENV_CHANGED=0
   set_env "$dir/.env" CMAKE_BUILD_PARALLEL_LEVEL "$THREADS"
   set_env "$dir/.env" CTEST_PARALLEL_LEVEL "$THREADS"
+  if [ -n "${MoltenVK_ROOT:-}" ]; then set_env "$dir/.env" MoltenVK_ROOT "$MoltenVK_ROOT"; fi
   # The runner reads .env only when it starts, so a running one restarts; a
   # stopped one reads it when the loop below starts it.
   if [ "$ENV_CHANGED" -eq 1 ] && service_running "$dir"; then
