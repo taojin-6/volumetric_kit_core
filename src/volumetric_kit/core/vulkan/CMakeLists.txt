@@ -6,7 +6,8 @@
 # the logical device every sibling creates or adopts -- the foundation the
 # allocator, compute and shared-device pieces build on (DECISIONS.md, "The
 # vulkan tier"). Vulkan comes from the system: the headers and loader of a
-# Vulkan SDK, MoltenVK on Apple.
+# Vulkan SDK, MoltenVK on macOS; on iOS, MoltenVK's static library
+# (cmake/vkc_ios.cmake).
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -116,6 +117,10 @@ target_include_directories(
 # PUBLIC both: the public headers name Status / Result and Vulkan types, and
 # consumers call vk* themselves. The package config re-finds Vulkan.
 target_link_libraries(core_vulkan PUBLIC core_base Vulkan::Vulkan)
+# MoltenVK's static library needs these at an app's link (cmake/vkc_ios.cmake).
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  target_link_libraries(core_vulkan PUBLIC ${VKC_MOLTENVK_FRAMEWORKS})
+endif()
 
 vkc_target_warnings(core_vulkan)
 vkc_propagate_sanitizers(core_vulkan)

@@ -52,8 +52,8 @@ of JSON, Vulkan and the config tier.
 The `base` tier needs only a C++17 compiler -- GCC or Clang; Windows and MSVC
 are not supported ([DECISIONS.md](DECISIONS.md#platforms)) -- and CMake ≥
 3.21. googletest is fetched, pinned, when tests are built. The `vulkan` tier
-also needs a Vulkan SDK's headers and loader (MoltenVK on Apple) -- headers
-1.3.275 or newer
+also needs a Vulkan SDK's headers and loader (MoltenVK on macOS; iOS below)
+-- headers 1.3.275 or newer
 ([DECISIONS.md](DECISIONS.md#vulkan-headers-come-from-the-system)) -- and its
 tests a GLSL compiler (`glslc`, or `glslangValidator`); `spirv-val`
 validates the shaders when found:
@@ -66,6 +66,24 @@ sudo apt-get install libvulkan-dev mesa-vulkan-drivers glslc spirv-tools # Ubunt
 `VKC_WITH_VULKAN` builds it. It defaults ON at the top level and OFF in a
 subproject: a sibling that uses the tier sets it before fetching the core, so
 one that does not (calib's headless solver) needs no Vulkan installed.
+
+On iOS the tier links MoltenVK statically, with no loader, from MoltenVK's
+iOS release (`MoltenVK-ios.tar`, 1.4.2 or newer, from
+<https://github.com/KhronosGroup/MoltenVK/releases>), installed once outside
+every repository, by convention at
+`<workspace>/third_party/MoltenVK_ios_v<version>/MoltenVK`; glm comes from
+the host's headers (`brew install glm`). An application that adds the core
+first configures with CMake's own iOS support, with no toolchain file, and
+names that directory with `-DMoltenVK_ROOT` or the environment:
+
+```sh
+cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+  -DMoltenVK_ROOT=<workspace>/third_party/MoltenVK_ios_v1.4.2/MoltenVK
+```
+
+`cmake/vkc_ios.cmake` does the rest (DECISIONS.md, the 2026-10-19 entry).
+The installed package is not supported on iOS.
 
 ## Build and test
 

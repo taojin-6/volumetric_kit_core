@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.21)
 # application declares the core first".
 project(
   volumetric_kit_core
-  VERSION 0.11.0
+  VERSION 0.12.0
   DESCRIPTION
     "Shared foundation for the volumetric_kit family: error handling and the Vulkan core"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_core"
@@ -62,6 +62,10 @@ include(vkc_single_instance)
 # project that fetches the core can call them once it is added.
 include(vkc_require_core)
 if(VKC_WITH_VULKAN)
+  # Before anything finds Vulkan: an iOS build links MoltenVK statically.
+  if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    include(vkc_ios)
+  endif()
   include(vkc_shaders)
   # The oldest Vulkan headers the tier supports (DECISIONS.md, "Vulkan headers
   # come from the system"), checked at configure where FindVulkan reports a
