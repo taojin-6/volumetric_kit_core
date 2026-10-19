@@ -114,6 +114,16 @@ root-equivalent: fine for a personal machine, not for a shared one.
    which FileVault rules out ([DECISIONS.md](../../DECISIONS.md), the
    2026-10-17 entry). With FileVault on, a cold start still waits for its
    password at the unlock screen.
+5. **MoltenVK's iOS release**, for the legs that build for iOS, installed once
+   as the core's [README.md](../../README.md#prerequisites) says. Setup writes
+   a `MoltenVK_ROOT` the shell sets into each runner's `.env`; unset, it keeps
+   the `.env` as it is, and naming no directory, it stops before any change:
+
+   ```sh
+   export MoltenVK_ROOT=$HOME/ws/volumetric_kit/third_party/MoltenVK_ios_v1.4.2/MoltenVK
+   bash tools/runners/setup-runners.sh player
+   bash tools/runners/setup-runners.sh gfx
+   ```
 
 ## What setup-runners.sh does
 

@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- `tools/runners/setup-runners.sh` writes the shell's `MoltenVK_ROOT` into
+  each runner's `.env` ([tools/runners/README.md](tools/runners/README.md#macs)).
+
 ### Changed
 
 - `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take
