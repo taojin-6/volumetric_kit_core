@@ -763,6 +763,7 @@ Config defaults_impl(Application application) {
     c.source.driver = "orbbec";
     c.fusion.min_depth_m = 0.25F;
     c.fusion.max_depth_m = 5.F;
+    c.fusion.dynamic = true;
     c.operation =
         application == App::FuseOrbbec ? Operation::Fuse : Operation::View;
     c.run.frames = application == App::FuseOrbbec ? 300 : 0;
@@ -780,7 +781,6 @@ Config defaults_impl(Application application) {
   if (application == App::FuseOrbbec) c.output.path = "fuse_orbbec.ply";
   if (application == App::FuseRender) c.output.path = "fuse_render.png";
   if (application == App::FuseViewer) c.render.shading = Shading::Lit;
-  if (is_live_fusion(application)) c.fusion.dynamic = true;
   if (is_gfx(application)) {
     c.window.width = application == App::GfxTriangle ? 800 : 1024;
     c.window.height = application == App::GfxTriangle ? 600 : 720;

@@ -1013,6 +1013,19 @@ TEST(Config, NoOutputOverwritesTheRigFilesARunReads) {
       App::CalibRig, "output.path: must differ from source.sync_config");
 }
 
+TEST(Config, OnlyTheLiveFusingProfilesDefaultToDynamic) {
+  for (const auto app : every_profile()) {
+    const auto parsed = scenario(
+        with_sections(app,
+                      app == App::CalibRig ? R"(,"output":{"path":"s"})" : ""),
+        app);
+    ASSERT_TRUE(parsed) << parsed.status().message();
+    EXPECT_EQ(parsed->fusion.dynamic,
+              app == App::FuseOrbbec || app == App::RigViewer)
+        << static_cast<int>(app);
+  }
+}
+
 TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
   // FuseOrbbec takes RigViewer's key: every 30 sets by default, 0 for never.
   EXPECT_EQ(Fusion{}.free_after, 30);

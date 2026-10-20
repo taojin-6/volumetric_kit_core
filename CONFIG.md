@@ -126,9 +126,8 @@ unknown extension object.
   `max_depth_m`, `max_weight`. Every dataset profile, FuseOrbbec and RigViewer
   accept the boolean `dynamic` (core 0.6.0): Dynamic integration when true,
   Classic when false; FuseOrbbec (core 0.15.0) and RigViewer default to true,
-  the others to false. Other
-  application-specific extraction/dynamic fields are accepted only by their
-  actual consumers.
+  the others to false. Other application-specific extraction/dynamic fields
+  are accepted only by their actual consumers.
   CodecMesh accepts voxel size and, from core 0.7.0, truncation.
 - Codec fields: `coefficient_count`, `quantization_scale`,
   `quantization_table` (`uniform`/`band`/`radial`), `segment_size`,
@@ -192,8 +191,8 @@ unknown extension object.
   pass nor the one before found an observed voxel; 0 never frees. Dynamic
   integration clears the free space a camera sees through, so the blocks a
   surface has left go. Classic integration never clears a voxel, so a run
-  fused Classic throughout (`fusion.dynamic` false) frees only blocks that never
-  held an observed voxel, which the mesher and the codec use nothing from.
+  fused Classic throughout frees only blocks that never held an observed
+  voxel, which the mesher and the codec use nothing from.
   Other profiles reject it.
 - `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
   `source.sync_config` names the rig, of any number of cameras, and `driver`
