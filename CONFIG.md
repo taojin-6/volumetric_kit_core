@@ -184,6 +184,11 @@ unknown extension object.
   `output.path`. It takes every `codec` field but `encode_every` and
   `inspect_only`, with the codec profiles' defaults and checks. A `codec`
   section without either output is refused, since nothing would be coded.
+- `FuseOrbbec` accepts the boolean `fusion.accumulate` (core 0.13.0),
+  default true, which fuses each set into the grid so far. False clears the
+  grid before each set, so that each set is reconstructed on its own: the PLY
+  holds the last set, and a stream one reconstruction per set. Other profiles
+  reject it.
 - `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
   `source.sync_config` names the rig, of any number of cameras, and `driver`
   is `orbbec`; `color_codec`, the colour and depth sizes and `fps` are the

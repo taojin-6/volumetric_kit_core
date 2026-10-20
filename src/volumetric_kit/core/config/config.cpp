@@ -244,6 +244,7 @@ void read_fusion(const Json& json, Config& c, ParseState& state) {
   BOOL(share_vertices);
   BOOL(device_extract);
   BOOL(dynamic);
+  BOOL(accumulate);
   BOOL(depth_within_color);
 #undef NUM
 #undef BOOL
@@ -360,6 +361,7 @@ bool supports(std::string_view field, App app) {
   if (field == "fusion.share_vertices")
     return is_one_of(app, {App::FuseReplica, App::FuseRender, App::FuseViewer});
   if (field == "fusion.dynamic") return is_dataset(app) || is_live_fusion(app);
+  if (field == "fusion.accumulate") return app == App::FuseOrbbec;
   if (field_in(field, {"fusion.depth_within_color", "fusion.hold_ms",
                        "fusion.free_after"}))
     return app == App::RigViewer;

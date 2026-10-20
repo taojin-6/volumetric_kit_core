@@ -101,6 +101,9 @@ struct Fusion {
   bool device_extract = false;
   /// Dynamic integration if true, else Classic; RigViewer resolves true.
   bool dynamic = false;
+  /// FuseOrbbec fuses each set into the grid so far if true, else into a
+  /// cleared grid, so that each set is reconstructed on its own.
+  bool accumulate = true;
   bool depth_within_color = true;
   float occlusion_m = 0.05F;
   int remesh_every = 1;

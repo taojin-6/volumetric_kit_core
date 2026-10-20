@@ -945,6 +945,57 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
   }
 }
 
+TEST(Config, OnlyFuseOrbbecChoosesWhetherItsFusionAccumulates) {
+  EXPECT_TRUE(Fusion{}.accumulate);
+  const auto omitted = scenario(R"({"version":1})", App::FuseOrbbec);
+  ASSERT_TRUE(omitted) << omitted.status().message();
+  EXPECT_TRUE(omitted->fusion.accumulate);
+  for (const char* accumulate : {"true", "false"}) {
+    const auto parsed =
+        scenario(std::string(R"({"version":1,"fusion":{"accumulate":)") +
+                     accumulate + "}}",
+                 App::FuseOrbbec);
+    ASSERT_TRUE(parsed) << parsed.status().message();
+    EXPECT_EQ(parsed->fusion.accumulate,
+              std::string_view(accumulate) == "true");
+  }
+  // Each set reconstructed on its own, and coded.
+  const auto snapshots = scenario(
+      R"({"version":1,"fusion":{"accumulate":false,"dynamic":true},"output":{"stream":"rig.vrst"}})",
+      App::FuseOrbbec);
+  ASSERT_TRUE(snapshots) << snapshots.status().message();
+  EXPECT_FALSE(snapshots->fusion.accumulate);
+  EXPECT_TRUE(snapshots->fusion.dynamic);
+  for (const char* value : {"0", R"("false")", "null"}) {
+    rejected(
+        std::string(R"({"version":1,"fusion":{"accumulate":)") + value + "}}",
+        App::FuseOrbbec, "fusion.accumulate: expected a boolean");
+  }
+  rejected(R"({"version":1,"operation":"stream","fusion":{"accumulate":true}})",
+           App::FuseOrbbec, "fusion: is not used by operation stream");
+
+  // Every other profile refuses it, even at its default.
+  for (const auto app :
+       {App::FuseReplica, App::CodecReplica, App::CodecMesh, App::FuseRender,
+        App::FuseViewer, App::RigViewer, App::Scanner}) {
+    std::string source = R"("source":{"path":"scene"},)";
+    if (app == App::CodecMesh)
+      source = R"("source":{"path":"mesh.ply","height_m":2,"up_axis":"y"},)";
+    if (app == App::RigViewer)
+      source = R"("source":{"sync_config":"rig.json"},)";
+    if (app == App::Scanner) source.clear();
+    rejected(R"({"version":1,)" + source + R"("fusion":{"accumulate":true}})",
+             app, "fusion.accumulate: is not used by this application");
+  }
+  for (const auto app : {App::GfxTriangle, App::GfxImGui, App::GfxModel,
+                         App::GfxImage, App::CalibProjectPoint}) {
+    rejected(R"({"version":1,"fusion":{"accumulate":true}})", app,
+             "fusion: is not used by this application");
+  }
+  rejected(calib_rig("", R"(,"fusion":{"accumulate":true})"), App::CalibRig,
+           "fusion: is not used by this application");
+}
+
 TEST(Config, MeshSourceRequiresOneScaleAndOneNonzeroUpDirection) {
   const auto parsed = scenario(
       R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"-y"}})",
