@@ -150,9 +150,10 @@ unknown extension object.
   `texture`. Gfx examples accept no render section.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
-  core 0.6.0; `screenshot` for GfxModel. An empty string disables each
-  optional output; fusion/export operations require a nonempty `path`. `csv`
-  and `stream` must differ once resolved.
+  core 0.6.0, and for FuseOrbbec in core 0.13.0; `screenshot` for GfxModel.
+  An empty string disables each optional output; fusion/export operations
+  require a nonempty `path`. `csv`, `stream` and `path` must differ once
+  resolved.
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec limits are positive; RigViewer uses zero
   for unlimited; gfx uses -1 for unlimited and permits zero frames. CodecMesh's
@@ -178,6 +179,11 @@ unknown extension object.
   `mjpeg`, since an H.265 frame is not self-contained, and must not exceed
   `run.frames`; a directory requires a positive count. Other profiles reject
   both fields.
+- `FuseOrbbec` codes its fused sets, one frame per set, when `output.stream`
+  or `output.csv` names a file (core 0.13.0); it still writes the PLY at
+  `output.path`. It takes every `codec` field but `encode_every` and
+  `inspect_only`, with the codec profiles' defaults and checks. A `codec`
+  section without either output is refused, since nothing would be coded.
 - `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
   `source.sync_config` names the rig, of any number of cameras, and `driver`
   is `orbbec`; `color_codec`, the colour and depth sizes and `fps` are the
@@ -197,8 +203,9 @@ nonfinite/overflowing values, embedded NUL paths, unsupported fields and
 contradictory settings fail before resource setup. A known section is not
 silently ignored by an application that does not consume it. In particular:
 
-- Stream mode rejects an explicit `fusion` or `output` section, even empty or
-  equal to defaults. This preserves recon's stream-only option exclusions.
+- Stream mode rejects an explicit `fusion`, `codec` or `output` section, even
+  empty or equal to defaults. This preserves recon's stream-only option
+  exclusions.
 - Headless model screenshots reject explicit frame limits or overlay settings.
 - Mesh inspection rejects fusion, SDF (`sdf_mode`, `shell_voxels`,
   `allow_holes`), encoder and `csv`/`stream` output settings it would not

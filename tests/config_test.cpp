@@ -192,6 +192,16 @@ TEST(Config, StreamModePreservesPresenceSensitiveFusionAndOutputConflicts) {
   rejected(
       R"({"version":1,"operation":"stream","output":{"path":"fuse_orbbec.ply"}})",
       App::FuseOrbbec, "output");
+  // Streaming codes nothing, so it refuses the codec section as it does the
+  // outputs it would code to.
+  rejected(R"({"version":1,"operation":"stream","codec":{}})", App::FuseOrbbec,
+           "codec: is not used by operation stream");
+  rejected(
+      R"({"version":1,"operation":"stream","codec":{"intra_period":30},"output":{"stream":"rig.vrst"}})",
+      App::FuseOrbbec, "codec: is not used by operation stream");
+  rejected(
+      R"({"version":1,"operation":"stream","output":{"stream":"rig.vrst"}})",
+      App::FuseOrbbec, "output: is not used by operation stream");
   rejected(R"({"version":1,"operation":"stream"})", App::GfxModel, "operation");
 }
 
@@ -248,8 +258,8 @@ TEST(Config, CodecOutputsAreConfigRelativeAndCodecOnly) {
   rejected(outputs(R"("csv":"a.csv")"), App::FuseReplica, "output.csv");
   rejected(R"({"version":1,"output":{"stream":"a.vrst"}})", App::GfxModel,
            "output.stream");
-  rejected(R"({"version":1,"output":{"stream":"a.vrst"}})", App::FuseOrbbec,
-           "output.stream");
+  rejected(outputs(R"("stream":"a.vrst")"), App::FuseRender,
+           "output.stream: is not used by this application");
   for (const char* key : {"csv", "stream"}) {
     const std::string field = std::string("output.") + key;
     const std::string member = std::string("\"") + key + "\":";
@@ -823,6 +833,115 @@ TEST(Config, UpdateSizeIsAnyCountWhereThereArePFrames) {
             std::string(R"("inspect_only":true,"update_size":)") + size),
         App::CodecMesh,
         "codec.update_size: is not used when codec.inspect_only is enabled");
+  }
+}
+
+TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
+  // Off by default, with the codec applications' codec defaults.
+  const auto plain = scenario(R"({"version":1})", App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(plain) << plain.status().message();
+  EXPECT_TRUE(plain->output.csv.empty());
+  EXPECT_TRUE(plain->output.stream.empty());
+  EXPECT_EQ(plain->output.path, "/scenario/fuse_orbbec.ply");
+  for (const auto app : {App::CodecReplica, App::CodecMesh}) {
+    const auto codec = scenario(codec_scenario(app, ""), app);
+    ASSERT_TRUE(codec) << codec.status().message();
+    EXPECT_EQ(plain->codec.coefficient_count, codec->codec.coefficient_count);
+    EXPECT_EQ(plain->codec.quantization_scale, codec->codec.quantization_scale);
+    EXPECT_EQ(plain->codec.quantization_table, codec->codec.quantization_table);
+    EXPECT_EQ(plain->codec.segment_size, codec->codec.segment_size);
+    EXPECT_EQ(plain->codec.update_size, codec->codec.update_size);
+    EXPECT_EQ(plain->codec.intra_period, codec->codec.intra_period);
+    EXPECT_EQ(plain->codec.sweep, codec->codec.sweep);
+  }
+
+  // Every codec key the codec applications share, and both outputs, which
+  // resolve against the scenario.
+  const auto coded = scenario(
+      R"({"version":1,"source":{"sync_config":"rig.json","calibration":"poses.json"},"codec":{"coefficient_count":32,"quantization_scale":0.05,"quantization_table":"band","segment_size":128,"intra_period":30,"update_size":256,"sweep":true},"output":{"path":"rig.ply","csv":"runs/rig.csv","stream":"runs/../rig.vrst"}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(coded) << coded.status().message();
+  EXPECT_EQ(coded->codec.coefficient_count, 32U);
+  EXPECT_EQ(coded->codec.quantization_scale, 0.05F);
+  EXPECT_EQ(coded->codec.quantization_table, QuantizationTable::Band);
+  EXPECT_EQ(coded->codec.segment_size, 128U);
+  EXPECT_EQ(coded->codec.intra_period, 30U);
+  EXPECT_EQ(coded->codec.update_size, 256U);
+  EXPECT_TRUE(coded->codec.sweep);
+  EXPECT_EQ(coded->output.path, "/scenario/rig.ply");
+  EXPECT_EQ(coded->output.csv, "/scenario/runs/rig.csv");
+  EXPECT_EQ(coded->output.stream, "/scenario/rig.vrst");
+  // Either output alone codes, at the codec's defaults when it has no section.
+  const auto frames =
+      scenario(R"({"version":1,"output":{"stream":"rig.vrst"}})",
+               App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(frames) << frames.status().message();
+  EXPECT_EQ(frames->output.stream, "/scenario/rig.vrst");
+  EXPECT_EQ(frames->output.path, "/scenario/fuse_orbbec.ply");
+  EXPECT_EQ(frames->codec.intra_period, 1U);
+  const auto rows = scenario(
+      R"({"version":1,"codec":{"intra_period":8},"output":{"csv":"rig.csv"}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(rows) << rows.status().message();
+  EXPECT_EQ(rows->output.csv, "/scenario/rig.csv");
+  EXPECT_TRUE(rows->output.stream.empty());
+  EXPECT_EQ(rows->codec.intra_period, 8U);
+
+  // A codec section without either output would code nothing.
+  for (const char* output : {"", R"(,"output":{"path":"rig.ply"})",
+                             R"(,"output":{"csv":"","stream":""})"}) {
+    for (const char* codec : {"{}", R"({"intra_period":30})"}) {
+      rejected(std::string(R"({"version":1,"codec":)") + codec + output + "}",
+               App::FuseOrbbec, "codec: requires output.stream or output.csv");
+    }
+  }
+  // The codec applications' checks hold.
+  const auto refused = [](const std::string& codec, const std::string& reason) {
+    rejected(R"({"version":1,"codec":{)" + codec +
+                 R"(},"output":{"stream":"rig.vrst"}})",
+             App::FuseOrbbec, reason);
+  };
+  refused(R"("intra_period":0)",
+          "codec.intra_period: must be finite and positive");
+  refused(R"("update_size":64)",
+          "codec.update_size: is not used when codec.intra_period is 1");
+  refused(R"("coefficient_count":513)",
+          "codec.coefficient_count: must be in [1, 512]");
+  refused(R"("quantization_scale":1e-40)",
+          "codec.quantization_scale: must be positive and normal");
+  refused(R"("segment_size":0)",
+          "codec.segment_size: must be finite and positive");
+  refused(R"("quantization_table":"steep")",
+          "codec.quantization_table: unknown choice 'steep'");
+  // Every fused set is one coded frame, and each is coded: encode_every stays
+  // CodecReplica's and inspect_only CodecMesh's, even at their defaults.
+  refused(R"("encode_every":1)",
+          "codec.encode_every: is not used by this application");
+  refused(R"("inspect_only":false)",
+          "codec.inspect_only: is not used by this application");
+  rejected(R"({"version":1,"output":{"prefix":"runs/rig"}})", App::FuseOrbbec,
+           "output.prefix: is not used by this application");
+
+  // The PLY, the rows and the frames are three files, once resolved.
+  for (const char* paths :
+       {R"("csv":"out.bin","stream":"out.bin")",
+        R"("csv":"runs/../out.bin","stream":"./out.bin")"}) {
+    rejected(std::string(R"({"version":1,"output":{)") + paths + "}}",
+             App::FuseOrbbec, "output.stream: must differ from output.csv");
+  }
+  for (const char* key : {"stream", "csv"}) {
+    for (const char* paths :
+         {R"("path":"rig.ply",")", R"("path":"/scenario/rig.ply",")"}) {
+      rejected(std::string(R"({"version":1,"output":{)") + paths + key +
+                   R"(":"./rig.ply"}})",
+               App::FuseOrbbec,
+               std::string("output.") + key + ": must differ from output.path");
+    }
+    // The PLY's default name counts too.
+    rejected(std::string(R"({"version":1,"output":{")") + key +
+                 R"(":"fuse_orbbec.ply"}})",
+             App::FuseOrbbec,
+             std::string("output.") + key + ": must differ from output.path");
   }
 }
 

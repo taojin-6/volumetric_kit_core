@@ -154,7 +154,8 @@ struct Output {
   std::string screenshot;
   /// The codec's per-frame rows, as CSV.
   std::string csv;
-  /// The codec's coded frames, in one stream file; never the csv path.
+  /// The codec's coded frames, in one stream file. Once resolved, a nonempty
+  /// `path`, `csv` and `stream` are three different files.
   std::string stream;
 };
 /// @brief Run limits; a negative frame limit means unlimited where supported.
