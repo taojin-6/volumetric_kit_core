@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.14.0 CONFIG)
+vkc_require_core(0.15.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -84,7 +84,7 @@ does not override the requested operation or source discriminator.
 | `FuseReplica` | `fuse` | `dataset`, `replica`; path required | voxel 0.02 m, frames 2^30, mesh every 50, output `fuse_room0.ply` |
 | `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
-| `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; fusion output `fuse_orbbec.ply`; nothing coded |
+| `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
 | `RigViewer` | `view` | `live`, `orbbec`; sync config required | voxel 0.01 m, dynamic fusion, 1280x720, overlay, unlit shading, unlimited frames/sets |
@@ -125,7 +125,8 @@ unknown extension object.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
   `max_depth_m`, `max_weight`. Every dataset profile, FuseOrbbec and RigViewer
   accept the boolean `dynamic` (core 0.6.0): Dynamic integration when true,
-  Classic when false; only RigViewer defaults to true. Other
+  Classic when false; FuseOrbbec (core 0.15.0) and RigViewer default to true,
+  the others to false. Other
   application-specific extraction/dynamic fields are accepted only by their
   actual consumers.
   CodecMesh accepts voxel size and, from core 0.7.0, truncation.
@@ -191,7 +192,7 @@ unknown extension object.
   pass nor the one before found an observed voxel; 0 never frees. Dynamic
   integration clears the free space a camera sees through, so the blocks a
   surface has left go. Classic integration never clears a voxel, so a run
-  fused Classic throughout (FuseOrbbec's default) frees only blocks that never
+  fused Classic throughout (`fusion.dynamic` false) frees only blocks that never
   held an observed voxel, which the mesher and the codec use nothing from.
   Other profiles reject it.
 - `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required

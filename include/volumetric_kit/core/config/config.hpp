@@ -99,7 +99,8 @@ struct Fusion {
   int fuse_every = 1;
   bool share_vertices = false;
   bool device_extract = false;
-  /// Dynamic integration if true, else Classic; RigViewer resolves true.
+  /// Dynamic integration if true, else Classic; FuseOrbbec and RigViewer
+  /// resolve true.
   bool dynamic = false;
   bool depth_within_color = true;
   float occlusion_m = 0.05F;

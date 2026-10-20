@@ -780,7 +780,7 @@ Config defaults_impl(Application application) {
   if (application == App::FuseOrbbec) c.output.path = "fuse_orbbec.ply";
   if (application == App::FuseRender) c.output.path = "fuse_render.png";
   if (application == App::FuseViewer) c.render.shading = Shading::Lit;
-  if (application == App::RigViewer) c.fusion.dynamic = true;
+  if (is_live_fusion(application)) c.fusion.dynamic = true;
   if (is_gfx(application)) {
     c.window.width = application == App::GfxTriangle ? 800 : 1024;
     c.window.height = application == App::GfxTriangle ? 600 : 720;
