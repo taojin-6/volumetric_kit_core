@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -1008,45 +1009,68 @@ TEST(Config, NoOutputOverwritesTheRigFilesARunReads) {
       App::CalibRig, "output.path: must differ from source.sync_config");
 }
 
-TEST(Config, OnlyFuseOrbbecChoosesWhetherItsFusionAccumulates) {
-  EXPECT_TRUE(Fusion{}.accumulate);
-  const auto omitted = scenario(R"({"version":1})", App::FuseOrbbec);
-  ASSERT_TRUE(omitted) << omitted.status().message();
-  EXPECT_TRUE(omitted->fusion.accumulate);
-  for (const char* accumulate : {"true", "false"}) {
-    const auto parsed =
-        scenario(std::string(R"({"version":1,"fusion":{"accumulate":)") +
-                     accumulate + "}}",
-                 App::FuseOrbbec);
-    ASSERT_TRUE(parsed) << parsed.status().message();
-    EXPECT_EQ(parsed->fusion.accumulate,
-              std::string_view(accumulate) == "true");
+TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
+  // FuseOrbbec takes RigViewer's key: every 30 sets by default, 0 for never.
+  EXPECT_EQ(Fusion{}.free_after, 30);
+  for (const auto app : {App::FuseOrbbec, App::RigViewer}) {
+    const auto omitted = scenario(with_sections(app, ""), app);
+    ASSERT_TRUE(omitted) << omitted.status().message();
+    EXPECT_EQ(omitted->fusion.free_after, 30);
+    for (const int free_after : {0, 1, 30, 1000}) {
+      const auto parsed =
+          scenario(with_sections(app, R"(,"fusion":{"free_after":)" +
+                                          std::to_string(free_after) + "}"),
+                   app);
+      ASSERT_TRUE(parsed) << parsed.status().message();
+      EXPECT_EQ(parsed->fusion.free_after, free_after);
+    }
+    for (const auto& [value, reason] :
+         {std::pair{"-1", "must be finite and nonnegative"},
+          std::pair{"1.5", "expected an integer"},
+          std::pair{"2147483648", "integer is out of range"}}) {
+      rejected(with_sections(app, std::string(R"(,"fusion":{"free_after":)") +
+                                      value + "}"),
+               app, std::string("fusion.free_after: ") + reason);
+    }
   }
-  // Each set reconstructed on its own, and coded.
-  const auto snapshots = scenario(
-      R"({"version":1,"fusion":{"accumulate":false,"dynamic":true},"output":{"stream":"rig.vrst"}})",
+  // A rig stream fused as rig_viewer fuses it.
+  const auto dynamic = scenario(
+      R"({"version":1,"fusion":{"dynamic":true,"free_after":10},"output":{"stream":"rig.vrst"}})",
       App::FuseOrbbec);
-  ASSERT_TRUE(snapshots) << snapshots.status().message();
-  EXPECT_FALSE(snapshots->fusion.accumulate);
-  EXPECT_TRUE(snapshots->fusion.dynamic);
-  for (const char* value : {"0", R"("false")", "null"}) {
-    rejected(
-        std::string(R"({"version":1,"fusion":{"accumulate":)") + value + "}}",
-        App::FuseOrbbec, "fusion.accumulate: expected a boolean");
-  }
-  rejected(R"({"version":1,"operation":"stream","fusion":{"accumulate":true}})",
+  ASSERT_TRUE(dynamic) << dynamic.status().message();
+  EXPECT_TRUE(dynamic->fusion.dynamic);
+  EXPECT_EQ(dynamic->fusion.free_after, 10);
+  rejected(R"({"version":1,"operation":"stream","fusion":{"free_after":30}})",
            App::FuseOrbbec, "fusion: is not used by operation stream");
+  // RigViewer's other fusion keys stay its own.
+  rejected(R"({"version":1,"fusion":{"hold_ms":2000}})", App::FuseOrbbec,
+           "fusion.hold_ms: is not used by this application");
+  rejected(R"({"version":1,"fusion":{"depth_within_color":true}})",
+           App::FuseOrbbec,
+           "fusion.depth_within_color: is not used by this application");
 
   // Every other profile refuses it, even at its default; those that do not
   // fuse refuse the fusion section.
   for (const auto app : every_profile()) {
-    if (app == App::FuseOrbbec) continue;
+    if (app == App::FuseOrbbec || app == App::RigViewer) continue;
     const bool fuses = app != App::GfxTriangle && app != App::GfxImGui &&
                        app != App::GfxModel && app != App::GfxImage &&
                        app != App::CalibProjectPoint && app != App::CalibRig;
-    rejected(with_sections(app, R"(,"fusion":{"accumulate":true})"), app,
-             (fuses ? "fusion.accumulate" : "fusion") +
+    rejected(with_sections(app, R"(,"fusion":{"free_after":30})"), app,
+             (fuses ? "fusion.free_after" : "fusion") +
                  std::string(": is not used by this application"));
+  }
+}
+
+TEST(Config, FusionAccumulateIsAnUnknownField) {
+  // 0.13.0's per-set clear is gone: every profile refuses the key, whatever
+  // its value, before it asks whether the profile fuses.
+  for (const auto app : every_profile()) {
+    for (const char* value : {"true", "false"}) {
+      rejected(with_sections(app, std::string(R"(,"fusion":{"accumulate":)") +
+                                      value + "}"),
+               app, "fusion.accumulate: unknown field");
+    }
   }
 }
 
