@@ -11,23 +11,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
-- `Application::FuseOrbbec` codes its fused sets, one frame per set, when
-  `output.stream` or `output.csv` names a file (CONFIG.md). It takes every
-  `codec` field but `encode_every` and `inspect_only`, with the codec
-  profiles' defaults and checks. Refused: a `codec` section without either
-  output, `output.prefix`, a `stream` or `csv` that resolves to `output.path`
-  (the PLY), and any `codec` section in operation `stream`, as `fusion` and
-  `output` already are.
+- `Application::FuseOrbbec` takes the `codec` section, `output.csv` and
+  `output.stream` in operation `fuse`, so that fuse_orbbec can code each
+  fused set as one frame (CONFIG.md). Its codec fields are those the codec
+  profiles share, with their defaults and checks. Refused: a `codec` section
+  without `csv` or `stream`, and a `csv` or `stream` that resolves to
+  `output.path`, the PLY.
 - `config::Fusion::accumulate` (`fusion.accumulate`, default true) for
   FuseOrbbec: false clears the grid before each set, so that each set is
   reconstructed on its own. Other profiles refuse it.
 
 ### Migration
 
-- Existing scenarios load unchanged, and FuseOrbbec still accumulates and
-  codes nothing unless asked. fuse_orbbec requires core 0.13.0 to read these
-  keys: it clears its grid before each set when `fusion.accumulate` is false,
-  and codes each set to the outputs named.
+- A FuseOrbbec consumer (recon: fuse_orbbec) requires core 0.13.0 and
+  honours `fusion.accumulate`, the `codec` section and both outputs, or
+  refuses them. Existing scenarios load unchanged.
 
 ## [0.12.0] - 2026-10-19
 

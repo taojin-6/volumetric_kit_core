@@ -84,7 +84,7 @@ does not override the requested operation or source discriminator.
 | `FuseReplica` | `fuse` | `dataset`, `replica`; path required | voxel 0.02 m, frames 2^30, mesh every 50, output `fuse_room0.ply` |
 | `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
-| `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; fusion output `fuse_orbbec.ply` |
+| `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; fusion output `fuse_orbbec.ply`; sets accumulate, nothing coded |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
 | `RigViewer` | `view` | `live`, `orbbec`; sync config required | voxel 0.01 m, dynamic fusion, 1280x720, overlay, unlit shading, unlimited frames/sets |
@@ -150,10 +150,9 @@ unknown extension object.
   `texture`. Gfx examples accept no render section.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
-  core 0.6.0, and for FuseOrbbec in core 0.13.0; `screenshot` for GfxModel.
-  An empty string disables each optional output; fusion/export operations
-  require a nonempty `path`. `csv`, `stream` and `path` must differ once
-  resolved.
+  core 0.6.0; `screenshot` for GfxModel. An empty string disables each
+  optional output; fusion/export operations require a nonempty `path`.
+  `path`, `csv` and `stream` must differ once resolved.
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec limits are positive; RigViewer uses zero
   for unlimited; gfx uses -1 for unlimited and permits zero frames. CodecMesh's
@@ -181,9 +180,9 @@ unknown extension object.
   both fields.
 - `FuseOrbbec` codes its fused sets, one frame per set, when `output.stream`
   or `output.csv` names a file (core 0.13.0); it still writes the PLY at
-  `output.path`. It takes every `codec` field but `encode_every` and
-  `inspect_only`, with the codec profiles' defaults and checks. A `codec`
-  section without either output is refused, since nothing would be coded.
+  `output.path`. It takes the codec fields the codec profiles share, with
+  their defaults and checks. A `codec` section without either output is
+  refused, since nothing would be coded.
 - `FuseOrbbec` accepts the boolean `fusion.accumulate` (core 0.13.0),
   default true, which fuses each set into the grid so far. False clears the
   grid before each set, so that each set is reconstructed on its own: the PLY
