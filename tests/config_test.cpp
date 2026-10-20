@@ -987,6 +987,27 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
   }
 }
 
+TEST(Config, NoOutputOverwritesTheRigFilesARunReads) {
+  // Each of FuseOrbbec's outputs against its sync file and calibration, in two
+  // spellings of one path.
+  for (const char* output : {"path", "csv", "stream"}) {
+    for (const char* source : {"sync_config", "calibration"}) {
+      for (const char* spelling : {"./rig.json", "/scenario/rig.json"}) {
+        rejected(std::string(R"({"version":1,"source":{")") + source +
+                     R"(":"rig.json"},"output":{")" + output + R"(":")" +
+                     spelling + R"("}})",
+                 App::FuseOrbbec,
+                 std::string("output.") + output +
+                     ": must differ from source." + source);
+      }
+    }
+  }
+  // CalibRig's session root is not its sync file.
+  rejected(
+      R"({"version":1,"source":{"sync_config":"rig.json"},"output":{"path":"./rig.json"}})",
+      App::CalibRig, "output.path: must differ from source.sync_config");
+}
+
 TEST(Config, OnlyFuseOrbbecChoosesWhetherItsFusionAccumulates) {
   EXPECT_TRUE(Fusion{}.accumulate);
   const auto omitted = scenario(R"({"version":1})", App::FuseOrbbec);

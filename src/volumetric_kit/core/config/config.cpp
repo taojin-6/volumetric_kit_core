@@ -493,6 +493,18 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     fail("output.stream", "must differ from output.path");
   if (!c.output.path.empty() && c.output.csv == c.output.path)
     fail("output.csv", "must differ from output.path");
+  // A run never overwrites the rig files it reads.
+  for (const auto& [output, output_name] :
+       {std::pair{&c.output.path, "output.path"},
+        std::pair{&c.output.csv, "output.csv"},
+        std::pair{&c.output.stream, "output.stream"}}) {
+    for (const auto& [source, source_name] :
+         {std::pair{&c.source.sync_config, "source.sync_config"},
+          std::pair{&c.source.calibration, "source.calibration"}}) {
+      if (!output->empty() && *output == *source)
+        fail(output_name, std::string("must differ from ") + source_name);
+    }
+  }
   if (is_dataset(app) && c.source.format != "replica")
     fail("source.format", "only replica is supported");
   if (is_orbbec(app)) {

@@ -152,7 +152,8 @@ unknown extension object.
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
   core 0.6.0; `screenshot` for GfxModel. An empty string disables each
   optional output; fusion/export operations require a nonempty `path`.
-  `path`, `csv` and `stream` must differ once resolved.
+  `path`, `csv` and `stream` must differ once resolved, and none may be
+  `source.sync_config` or `source.calibration` (core 0.13.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec limits are positive; RigViewer uses zero
   for unlimited; gfx uses -1 for unlimited and permits zero frames. CodecMesh's

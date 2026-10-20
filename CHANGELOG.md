@@ -21,11 +21,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   FuseOrbbec: false clears the grid before each set, so that each set is
   reconstructed on its own. Other profiles refuse it.
 
+### Changed
+
+- An `output.path`, `csv` or `stream` that resolves to `source.sync_config`
+  or `source.calibration` is refused, so that a run cannot overwrite the rig
+  files it reads.
+
 ### Migration
 
 - A FuseOrbbec consumer (recon: fuse_orbbec) requires core 0.13.0 and
   honours `fusion.accumulate`, the `codec` section and both outputs, or
-  refuses them. Existing scenarios load unchanged.
+  refuses them. Existing scenarios load unchanged, unless an output names a
+  rig file.
 
 ## [0.12.0] - 2026-10-19
 
