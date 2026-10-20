@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-20
+
+### Added
+
+- `Application::FuseOrbbec` takes RigViewer's `fusion.free_after`,
+  nonnegative with default 30 (CONFIG.md), so that fuse_orbbec can fuse a rig
+  with Dynamic integration as rig_viewer does, freeing the blocks a surface
+  has left.
+
+### Removed
+
+- `config::Fusion::accumulate` (`fusion.accumulate`), added in 0.13.0: every
+  set fuses into the grid so far. A scenario that still sets it, to any
+  value, now fails to load: `fusion.accumulate: unknown field`.
+
+### Migration
+
+- A FuseOrbbec consumer (recon: fuse_orbbec) requires core 0.14.0 and
+  honours `fusion.free_after`, or refuses it. A consumer that honours it
+  frees stale blocks every 30 sets by default.
+- Delete `fusion.accumulate` from every scenario, and code that reads
+  `config::Fusion::accumulate`. Other scenarios load unchanged.
+
 ## [0.13.0] - 2026-10-20
 
 ### Added
