@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.11.0 CONFIG)
+vkc_require_core(0.13.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -84,7 +84,7 @@ does not override the requested operation or source discriminator.
 | `FuseReplica` | `fuse` | `dataset`, `replica`; path required | voxel 0.02 m, frames 2^30, mesh every 50, output `fuse_room0.ply` |
 | `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
-| `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; fusion output `fuse_orbbec.ply` |
+| `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; fusion output `fuse_orbbec.ply`; sets accumulate, nothing coded |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
 | `RigViewer` | `view` | `live`, `orbbec`; sync config required | voxel 0.01 m, dynamic fusion, 1280x720, overlay, unlit shading, unlimited frames/sets |
@@ -151,8 +151,9 @@ unknown extension object.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
   core 0.6.0; `screenshot` for GfxModel. An empty string disables each
-  optional output; fusion/export operations require a nonempty `path`. `csv`
-  and `stream` must differ once resolved.
+  optional output; fusion/export operations require a nonempty `path`.
+  `path`, `csv` and `stream` must differ once resolved, and none may be
+  `source.sync_config` or `source.calibration` (core 0.13.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec limits are positive; RigViewer uses zero
   for unlimited; gfx uses -1 for unlimited and permits zero frames. CodecMesh's
@@ -178,6 +179,16 @@ unknown extension object.
   `mjpeg`, since an H.265 frame is not self-contained, and must not exceed
   `run.frames`; a directory requires a positive count. Other profiles reject
   both fields.
+- `FuseOrbbec` codes its fused sets, one frame per set, when `output.stream`
+  or `output.csv` names a file (core 0.13.0); it still writes the PLY at
+  `output.path`. It takes the codec fields the codec profiles share, with
+  their defaults and checks. A `codec` section without either output is
+  refused, since nothing would be coded.
+- `FuseOrbbec` accepts the boolean `fusion.accumulate` (core 0.13.0),
+  default true, which fuses each set into the grid so far. False clears the
+  grid before each set, so that each set is reconstructed on its own: the PLY
+  holds the last set, and a stream one reconstruction per set. Other profiles
+  reject it.
 - `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
   `source.sync_config` names the rig, of any number of cameras, and `driver`
   is `orbbec`; `color_codec`, the colour and depth sizes and `fps` are the
@@ -197,8 +208,9 @@ nonfinite/overflowing values, embedded NUL paths, unsupported fields and
 contradictory settings fail before resource setup. A known section is not
 silently ignored by an application that does not consume it. In particular:
 
-- Stream mode rejects an explicit `fusion` or `output` section, even empty or
-  equal to defaults. This preserves recon's stream-only option exclusions.
+- Stream mode rejects an explicit `fusion`, `codec` or `output` section, even
+  empty or equal to defaults. This preserves recon's stream-only option
+  exclusions.
 - Headless model screenshots reject explicit frame limits or overlay settings.
 - Mesh inspection rejects fusion, SDF (`sdf_mode`, `shell_voxels`,
   `allow_holes`), encoder and `csv`/`stream` output settings it would not

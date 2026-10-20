@@ -7,6 +7,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-20
+
+### Added
+
+- `Application::FuseOrbbec` takes the `codec` section, `output.csv` and
+  `output.stream` in operation `fuse`, so that fuse_orbbec can code each
+  fused set as one frame (CONFIG.md). Its codec fields are those the codec
+  profiles share, with their defaults and checks. Refused: a `codec` section
+  without `csv` or `stream`, and a `csv` or `stream` that resolves to
+  `output.path`, the PLY.
+- `config::Fusion::accumulate` (`fusion.accumulate`, default true) for
+  FuseOrbbec: false clears the grid before each set, so that each set is
+  reconstructed on its own. Other profiles refuse it.
+
+### Changed
+
+- An `output.path`, `csv` or `stream` that resolves to `source.sync_config`
+  or `source.calibration` is refused, so that a run cannot overwrite the rig
+  files it reads.
+
+### Migration
+
+- A FuseOrbbec consumer (recon: fuse_orbbec) requires core 0.13.0 and
+  honours `fusion.accumulate`, the `codec` section and both outputs, or
+  refuses them. Existing scenarios load unchanged, unless an output names a
+  rig file.
+
 ## [0.12.0] - 2026-10-19
 
 ### Added

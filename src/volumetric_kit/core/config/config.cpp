@@ -58,6 +58,9 @@ bool is_dataset(App app) {
 bool is_codec(App app) {
   return is_one_of(app, {App::CodecReplica, App::CodecMesh});
 }
+// The profiles that code frames: the codec applications, and FuseOrbbec, which
+// can code each fused set.
+bool takes_codec(App app) { return is_codec(app) || app == App::FuseOrbbec; }
 // The Orbbec profiles that can fuse. Not every live profile: CalibRig and
 // Scanner are live too.
 bool is_live_fusion(App app) {
@@ -241,6 +244,7 @@ void read_fusion(const Json& json, Config& c, ParseState& state) {
   BOOL(share_vertices);
   BOOL(device_extract);
   BOOL(dynamic);
+  BOOL(accumulate);
   BOOL(depth_within_color);
 #undef NUM
 #undef BOOL
@@ -357,6 +361,7 @@ bool supports(std::string_view field, App app) {
   if (field == "fusion.share_vertices")
     return is_one_of(app, {App::FuseReplica, App::FuseRender, App::FuseViewer});
   if (field == "fusion.dynamic") return is_dataset(app) || is_live_fusion(app);
+  if (field == "fusion.accumulate") return app == App::FuseOrbbec;
   if (field_in(field, {"fusion.depth_within_color", "fusion.hold_ms",
                        "fusion.free_after"}))
     return app == App::RigViewer;
@@ -367,7 +372,7 @@ bool supports(std::string_view field, App app) {
   if (field == "codec" || field.rfind("codec.", 0) == 0) {
     if (field == "codec.inspect_only") return app == App::CodecMesh;
     if (field == "codec.encode_every") return app == App::CodecReplica;
-    return is_codec(app);
+    return takes_codec(app);
   }
   if (field == "window" || field_in(field, {"window.width", "window.height"}))
     return is_gfx(app) || is_one_of(app, {App::FuseRender, App::FuseViewer,
@@ -399,8 +404,8 @@ bool supports(std::string_view field, App app) {
   if (field == "output.path")
     return is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender,
                            App::CalibRig});
-  if (field_in(field, {"output.prefix", "output.csv", "output.stream"}))
-    return is_codec(app);
+  if (field == "output.prefix") return is_codec(app);
+  if (field_in(field, {"output.csv", "output.stream"})) return takes_codec(app);
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
@@ -457,10 +462,14 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     fail("operation", "is not supported by this application");
   if (c.source.kind != expected.source.kind)
     fail("source.kind", "is not supported by this application");
-  if (c.operation == Operation::Stream &&
-      (has(state, "fusion") || has(state, "output")))
-    fail(has(state, "fusion") ? "fusion" : "output",
-         "is not used by operation stream");
+  if (c.operation == Operation::Stream) {
+    for (const char* section : {"fusion", "codec", "output"})
+      if (has(state, section)) fail(section, "is not used by operation stream");
+  }
+  // FuseOrbbec codes only when it writes the codec's rows or frames.
+  if (app == App::FuseOrbbec && has(state, "codec") && c.output.csv.empty() &&
+      c.output.stream.empty())
+    fail("codec", "requires output.stream or output.csv");
   path_check(c.source.serial, "source.serial");
   path_check(c.source.path, "source.path",
              is_dataset(app) || app == App::CodecMesh);
@@ -477,8 +486,25 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   path_check(c.output.csv, "output.csv");
   path_check(c.output.stream, "output.stream");
   // Compared after resolution, so two spellings of one path are refused too.
+  // FuseOrbbec's PLY is a third file.
   if (!c.output.stream.empty() && c.output.stream == c.output.csv)
     fail("output.stream", "must differ from output.csv");
+  if (!c.output.path.empty() && c.output.stream == c.output.path)
+    fail("output.stream", "must differ from output.path");
+  if (!c.output.path.empty() && c.output.csv == c.output.path)
+    fail("output.csv", "must differ from output.path");
+  // A run never overwrites the rig files it reads.
+  for (const auto& [output, output_name] :
+       {std::pair{&c.output.path, "output.path"},
+        std::pair{&c.output.csv, "output.csv"},
+        std::pair{&c.output.stream, "output.stream"}}) {
+    for (const auto& [source, source_name] :
+         {std::pair{&c.source.sync_config, "source.sync_config"},
+          std::pair{&c.source.calibration, "source.calibration"}}) {
+      if (!output->empty() && *output == *source)
+        fail(output_name, std::string("must differ from ") + source_name);
+    }
+  }
   if (is_dataset(app) && c.source.format != "replica")
     fail("source.format", "only replica is supported");
   if (is_orbbec(app)) {
@@ -574,7 +600,7 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     nonnegative(c.fusion.occlusion_m, "fusion.occlusion_m");
   else
     positive(c.fusion.occlusion_m, "fusion.occlusion_m");
-  if (is_codec(app)) {
+  if (takes_codec(app)) {
     if (c.codec.coefficient_count < 1 || c.codec.coefficient_count > 512)
       fail("codec.coefficient_count", "must be in [1, 512]");
     if (!std::isnormal(c.codec.quantization_scale) ||

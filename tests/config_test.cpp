@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
@@ -192,6 +193,16 @@ TEST(Config, StreamModePreservesPresenceSensitiveFusionAndOutputConflicts) {
   rejected(
       R"({"version":1,"operation":"stream","output":{"path":"fuse_orbbec.ply"}})",
       App::FuseOrbbec, "output");
+  // Streaming codes nothing, so it refuses the codec section as it does the
+  // outputs it would code to.
+  rejected(R"({"version":1,"operation":"stream","codec":{}})", App::FuseOrbbec,
+           "codec: is not used by operation stream");
+  rejected(
+      R"({"version":1,"operation":"stream","codec":{"intra_period":30},"output":{"stream":"rig.vrst"}})",
+      App::FuseOrbbec, "codec: is not used by operation stream");
+  rejected(
+      R"({"version":1,"operation":"stream","output":{"stream":"rig.vrst"}})",
+      App::FuseOrbbec, "output: is not used by operation stream");
   rejected(R"({"version":1,"operation":"stream"})", App::GfxModel, "operation");
 }
 
@@ -221,7 +232,7 @@ TEST(Config, DynamicFusionIsAcceptedByEveryFusingProfile) {
            App::FuseOrbbec, "fusion: is not used by operation stream");
 }
 
-TEST(Config, CodecOutputsAreConfigRelativeAndCodecOnly) {
+TEST(Config, CodecOutputsAreConfigRelativeAndOnlyWhereCoded) {
   // A dataset scenario with these output fields.
   const auto outputs = [](const std::string& fields) {
     return R"({"version":1,"source":{"path":"scene"},"output":{)" + fields +
@@ -248,8 +259,8 @@ TEST(Config, CodecOutputsAreConfigRelativeAndCodecOnly) {
   rejected(outputs(R"("csv":"a.csv")"), App::FuseReplica, "output.csv");
   rejected(R"({"version":1,"output":{"stream":"a.vrst"}})", App::GfxModel,
            "output.stream");
-  rejected(R"({"version":1,"output":{"stream":"a.vrst"}})", App::FuseOrbbec,
-           "output.stream");
+  rejected(outputs(R"("stream":"a.vrst")"), App::FuseRender,
+           "output.stream: is not used by this application");
   for (const char* key : {"csv", "stream"}) {
     const std::string field = std::string("output.") + key;
     const std::string member = std::string("\"") + key + "\":";
@@ -823,6 +834,219 @@ TEST(Config, UpdateSizeIsAnyCountWhereThereArePFrames) {
             std::string(R"("inspect_only":true,"update_size":)") + size),
         App::CodecMesh,
         "codec.update_size: is not used when codec.inspect_only is enabled");
+  }
+}
+
+// Every profile, so that one added later is held to each rule too.
+std::vector<App> every_profile() {
+  std::vector<App> apps;
+  for (int app = 0; app <= static_cast<int>(App::CalibRig); ++app)
+    apps.push_back(static_cast<App>(app));
+  return apps;
+}
+// A scenario for `app` with the source it requires, if any, and these
+// sections; each addition leads with a comma. CalibRig's required output.path
+// is left out: a refusal names an unsupported field first.
+std::string with_sections(App app, const std::string& sections) {
+  std::string source;
+  if (app == App::FuseReplica || app == App::CodecReplica ||
+      app == App::FuseRender || app == App::FuseViewer)
+    source = R"(,"source":{"path":"scene"})";
+  if (app == App::CodecMesh)
+    source = R"(,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
+  if (app == App::RigViewer || app == App::CalibRig)
+    source = R"(,"source":{"sync_config":"rig.json"})";
+  return R"({"version":1)" + source + sections + "}";
+}
+
+TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
+  // Off by default, with the codec applications' codec defaults.
+  const auto plain = scenario(R"({"version":1})", App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(plain) << plain.status().message();
+  EXPECT_TRUE(plain->output.csv.empty());
+  EXPECT_TRUE(plain->output.stream.empty());
+  EXPECT_EQ(plain->output.path, "/scenario/fuse_orbbec.ply");
+  for (const auto app : {App::CodecReplica, App::CodecMesh}) {
+    const auto codec = scenario(codec_scenario(app, ""), app);
+    ASSERT_TRUE(codec) << codec.status().message();
+    EXPECT_EQ(plain->codec.coefficient_count, codec->codec.coefficient_count);
+    EXPECT_EQ(plain->codec.quantization_scale, codec->codec.quantization_scale);
+    EXPECT_EQ(plain->codec.quantization_table, codec->codec.quantization_table);
+    EXPECT_EQ(plain->codec.segment_size, codec->codec.segment_size);
+    EXPECT_EQ(plain->codec.update_size, codec->codec.update_size);
+    EXPECT_EQ(plain->codec.intra_period, codec->codec.intra_period);
+    EXPECT_EQ(plain->codec.sweep, codec->codec.sweep);
+  }
+
+  // Every codec key the codec applications share, and both outputs, which
+  // resolve against the scenario.
+  const auto coded = scenario(
+      R"({"version":1,"source":{"sync_config":"rig.json","calibration":"poses.json"},"codec":{"coefficient_count":32,"quantization_scale":0.05,"quantization_table":"band","segment_size":128,"intra_period":30,"update_size":256,"sweep":true},"output":{"path":"rig.ply","csv":"runs/rig.csv","stream":"runs/../rig.vrst"}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(coded) << coded.status().message();
+  EXPECT_EQ(coded->codec.coefficient_count, 32U);
+  EXPECT_EQ(coded->codec.quantization_scale, 0.05F);
+  EXPECT_EQ(coded->codec.quantization_table, QuantizationTable::Band);
+  EXPECT_EQ(coded->codec.segment_size, 128U);
+  EXPECT_EQ(coded->codec.intra_period, 30U);
+  EXPECT_EQ(coded->codec.update_size, 256U);
+  EXPECT_TRUE(coded->codec.sweep);
+  EXPECT_EQ(coded->output.path, "/scenario/rig.ply");
+  EXPECT_EQ(coded->output.csv, "/scenario/runs/rig.csv");
+  EXPECT_EQ(coded->output.stream, "/scenario/rig.vrst");
+  // Either output alone codes, at the codec's defaults when it has no section.
+  const auto frames =
+      scenario(R"({"version":1,"output":{"stream":"rig.vrst"}})",
+               App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(frames) << frames.status().message();
+  EXPECT_EQ(frames->output.stream, "/scenario/rig.vrst");
+  EXPECT_EQ(frames->output.path, "/scenario/fuse_orbbec.ply");
+  EXPECT_EQ(frames->codec.intra_period, 1U);
+  const auto rows = scenario(
+      R"({"version":1,"codec":{"intra_period":8},"output":{"csv":"rig.csv"}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(rows) << rows.status().message();
+  EXPECT_EQ(rows->output.csv, "/scenario/rig.csv");
+  EXPECT_TRUE(rows->output.stream.empty());
+  EXPECT_EQ(rows->codec.intra_period, 8U);
+
+  // A codec section without either output would code nothing.
+  for (const char* output : {"", R"(,"output":{"path":"rig.ply"})",
+                             R"(,"output":{"csv":"","stream":""})"}) {
+    for (const char* codec : {"{}", R"({"intra_period":30})"}) {
+      rejected(std::string(R"({"version":1,"codec":)") + codec + output + "}",
+               App::FuseOrbbec, "codec: requires output.stream or output.csv");
+    }
+  }
+  // The codec applications' checks hold.
+  const auto refused = [](const std::string& codec, const std::string& reason) {
+    rejected(R"({"version":1,"codec":{)" + codec +
+                 R"(},"output":{"stream":"rig.vrst"}})",
+             App::FuseOrbbec, reason);
+  };
+  refused(R"("intra_period":0)",
+          "codec.intra_period: must be finite and positive");
+  refused(R"("update_size":64)",
+          "codec.update_size: is not used when codec.intra_period is 1");
+  refused(R"("coefficient_count":513)",
+          "codec.coefficient_count: must be in [1, 512]");
+  refused(R"("quantization_scale":1e-40)",
+          "codec.quantization_scale: must be positive and normal");
+  refused(R"("segment_size":0)",
+          "codec.segment_size: must be finite and positive");
+  refused(R"("quantization_table":"steep")",
+          "codec.quantization_table: unknown choice 'steep'");
+  // Every fused set is one coded frame, and each is coded: encode_every stays
+  // CodecReplica's and inspect_only CodecMesh's, even at their defaults.
+  refused(R"("encode_every":1)",
+          "codec.encode_every: is not used by this application");
+  refused(R"("inspect_only":false)",
+          "codec.inspect_only: is not used by this application");
+  rejected(R"({"version":1,"output":{"prefix":"runs/rig"}})", App::FuseOrbbec,
+           "output.prefix: is not used by this application");
+
+  // The PLY, the rows and the frames are three files, once resolved.
+  for (const char* paths :
+       {R"("csv":"out.bin","stream":"out.bin")",
+        R"("csv":"runs/../out.bin","stream":"./out.bin")"}) {
+    rejected(std::string(R"({"version":1,"output":{)") + paths + "}}",
+             App::FuseOrbbec, "output.stream: must differ from output.csv");
+  }
+  for (const char* key : {"stream", "csv"}) {
+    for (const char* paths :
+         {R"("path":"rig.ply",")", R"("path":"/scenario/rig.ply",")"}) {
+      rejected(std::string(R"({"version":1,"output":{)") + paths + key +
+                   R"(":"./rig.ply"}})",
+               App::FuseOrbbec,
+               std::string("output.") + key + ": must differ from output.path");
+    }
+    // The PLY's default name counts too.
+    rejected(std::string(R"({"version":1,"output":{")") + key +
+                 R"(":"fuse_orbbec.ply"}})",
+             App::FuseOrbbec,
+             std::string("output.") + key + ": must differ from output.path");
+  }
+
+  // Only the codec profiles and FuseOrbbec code: every other profile refuses
+  // the codec section, even empty, and both of its outputs.
+  for (const auto app : every_profile()) {
+    if (app == App::CodecReplica || app == App::CodecMesh ||
+        app == App::FuseOrbbec)
+      continue;
+    rejected(with_sections(app, R"(,"codec":{})"), app,
+             "codec: is not used by this application");
+    const bool writes = app == App::FuseReplica || app == App::FuseRender ||
+                        app == App::GfxModel || app == App::CalibRig;
+    for (const char* key : {"csv", "stream"}) {
+      rejected(with_sections(
+                   app, std::string(R"(,"output":{")") + key + R"(":"out"})"),
+               app,
+               (writes ? std::string("output.") + key : std::string("output")) +
+                   ": is not used by this application");
+    }
+  }
+}
+
+TEST(Config, NoOutputOverwritesTheRigFilesARunReads) {
+  // Each of FuseOrbbec's outputs against its sync file and calibration, in two
+  // spellings of one path.
+  for (const char* output : {"path", "csv", "stream"}) {
+    for (const char* source : {"sync_config", "calibration"}) {
+      for (const char* spelling : {"./rig.json", "/scenario/rig.json"}) {
+        rejected(std::string(R"({"version":1,"source":{")") + source +
+                     R"(":"rig.json"},"output":{")" + output + R"(":")" +
+                     spelling + R"("}})",
+                 App::FuseOrbbec,
+                 std::string("output.") + output +
+                     ": must differ from source." + source);
+      }
+    }
+  }
+  // CalibRig's session root is not its sync file.
+  rejected(
+      R"({"version":1,"source":{"sync_config":"rig.json"},"output":{"path":"./rig.json"}})",
+      App::CalibRig, "output.path: must differ from source.sync_config");
+}
+
+TEST(Config, OnlyFuseOrbbecChoosesWhetherItsFusionAccumulates) {
+  EXPECT_TRUE(Fusion{}.accumulate);
+  const auto omitted = scenario(R"({"version":1})", App::FuseOrbbec);
+  ASSERT_TRUE(omitted) << omitted.status().message();
+  EXPECT_TRUE(omitted->fusion.accumulate);
+  for (const char* accumulate : {"true", "false"}) {
+    const auto parsed =
+        scenario(std::string(R"({"version":1,"fusion":{"accumulate":)") +
+                     accumulate + "}}",
+                 App::FuseOrbbec);
+    ASSERT_TRUE(parsed) << parsed.status().message();
+    EXPECT_EQ(parsed->fusion.accumulate,
+              std::string_view(accumulate) == "true");
+  }
+  // Each set reconstructed on its own, and coded.
+  const auto snapshots = scenario(
+      R"({"version":1,"fusion":{"accumulate":false,"dynamic":true},"output":{"stream":"rig.vrst"}})",
+      App::FuseOrbbec);
+  ASSERT_TRUE(snapshots) << snapshots.status().message();
+  EXPECT_FALSE(snapshots->fusion.accumulate);
+  EXPECT_TRUE(snapshots->fusion.dynamic);
+  for (const char* value : {"0", R"("false")", "null"}) {
+    rejected(
+        std::string(R"({"version":1,"fusion":{"accumulate":)") + value + "}}",
+        App::FuseOrbbec, "fusion.accumulate: expected a boolean");
+  }
+  rejected(R"({"version":1,"operation":"stream","fusion":{"accumulate":true}})",
+           App::FuseOrbbec, "fusion: is not used by operation stream");
+
+  // Every other profile refuses it, even at its default; those that do not
+  // fuse refuse the fusion section.
+  for (const auto app : every_profile()) {
+    if (app == App::FuseOrbbec) continue;
+    const bool fuses = app != App::GfxTriangle && app != App::GfxImGui &&
+                       app != App::GfxModel && app != App::GfxImage &&
+                       app != App::CalibProjectPoint && app != App::CalibRig;
+    rejected(with_sections(app, R"(,"fusion":{"accumulate":true})"), app,
+             (fuses ? "fusion.accumulate" : "fusion") +
+                 std::string(": is not used by this application"));
   }
 }
 

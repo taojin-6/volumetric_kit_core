@@ -78,6 +78,15 @@ vkc::Status run() {
     return vkc::Status::invalid_argument(
         "codec P-frame settings were not read");
   VKC_ASSIGN(
+      const auto sets,
+      vkc::config::parse(
+          R"({"version":1,"operation":"fuse","source":{"kind":"live"},"fusion":{"accumulate":false},"codec":{"intra_period":30},"output":{"stream":"rig.vrst"}})",
+          vkc::config::Application::FuseOrbbec, "/scenario"));
+  if (sets.fusion.accumulate || sets.codec.intra_period != 30 ||
+      sets.output.stream != "/scenario/rig.vrst" ||
+      sets.output.path != "/scenario/fuse_orbbec.ply")
+    return vkc::Status::invalid_argument("fuse_orbbec coding was not read");
+  VKC_ASSIGN(
       const auto rig,
       vkc::config::parse(
           R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json"},"output":{"path":"sessions"}})",
