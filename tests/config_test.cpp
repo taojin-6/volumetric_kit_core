@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
@@ -231,7 +232,7 @@ TEST(Config, DynamicFusionIsAcceptedByEveryFusingProfile) {
            App::FuseOrbbec, "fusion: is not used by operation stream");
 }
 
-TEST(Config, CodecOutputsAreConfigRelativeAndCodecOnly) {
+TEST(Config, CodecOutputsAreConfigRelativeAndOnlyWhereCoded) {
   // A dataset scenario with these output fields.
   const auto outputs = [](const std::string& fields) {
     return R"({"version":1,"source":{"path":"scene"},"output":{)" + fields +
@@ -836,6 +837,28 @@ TEST(Config, UpdateSizeIsAnyCountWhereThereArePFrames) {
   }
 }
 
+// Every profile, so that one added later is held to each rule too.
+std::vector<App> every_profile() {
+  std::vector<App> apps;
+  for (int app = 0; app <= static_cast<int>(App::CalibRig); ++app)
+    apps.push_back(static_cast<App>(app));
+  return apps;
+}
+// A scenario for `app` with the source it requires, if any, and these
+// sections; each addition leads with a comma. CalibRig's required output.path
+// is left out: a refusal names an unsupported field first.
+std::string with_sections(App app, const std::string& sections) {
+  std::string source;
+  if (app == App::FuseReplica || app == App::CodecReplica ||
+      app == App::FuseRender || app == App::FuseViewer)
+    source = R"(,"source":{"path":"scene"})";
+  if (app == App::CodecMesh)
+    source = R"(,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
+  if (app == App::RigViewer || app == App::CalibRig)
+    source = R"(,"source":{"sync_config":"rig.json"})";
+  return R"({"version":1)" + source + sections + "}";
+}
+
 TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
   // Off by default, with the codec applications' codec defaults.
   const auto plain = scenario(R"({"version":1})", App::FuseOrbbec, "/scenario");
@@ -943,6 +966,25 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
              App::FuseOrbbec,
              std::string("output.") + key + ": must differ from output.path");
   }
+
+  // Only the codec profiles and FuseOrbbec code: every other profile refuses
+  // the codec section, even empty, and both of its outputs.
+  for (const auto app : every_profile()) {
+    if (app == App::CodecReplica || app == App::CodecMesh ||
+        app == App::FuseOrbbec)
+      continue;
+    rejected(with_sections(app, R"(,"codec":{})"), app,
+             "codec: is not used by this application");
+    const bool writes = app == App::FuseReplica || app == App::FuseRender ||
+                        app == App::GfxModel || app == App::CalibRig;
+    for (const char* key : {"csv", "stream"}) {
+      rejected(with_sections(
+                   app, std::string(R"(,"output":{")") + key + R"(":"out"})"),
+               app,
+               (writes ? std::string("output.") + key : std::string("output")) +
+                   ": is not used by this application");
+    }
+  }
 }
 
 TEST(Config, OnlyFuseOrbbecChoosesWhetherItsFusionAccumulates) {
@@ -974,26 +1016,17 @@ TEST(Config, OnlyFuseOrbbecChoosesWhetherItsFusionAccumulates) {
   rejected(R"({"version":1,"operation":"stream","fusion":{"accumulate":true}})",
            App::FuseOrbbec, "fusion: is not used by operation stream");
 
-  // Every other profile refuses it, even at its default.
-  for (const auto app :
-       {App::FuseReplica, App::CodecReplica, App::CodecMesh, App::FuseRender,
-        App::FuseViewer, App::RigViewer, App::Scanner}) {
-    std::string source = R"("source":{"path":"scene"},)";
-    if (app == App::CodecMesh)
-      source = R"("source":{"path":"mesh.ply","height_m":2,"up_axis":"y"},)";
-    if (app == App::RigViewer)
-      source = R"("source":{"sync_config":"rig.json"},)";
-    if (app == App::Scanner) source.clear();
-    rejected(R"({"version":1,)" + source + R"("fusion":{"accumulate":true}})",
-             app, "fusion.accumulate: is not used by this application");
+  // Every other profile refuses it, even at its default; those that do not
+  // fuse refuse the fusion section.
+  for (const auto app : every_profile()) {
+    if (app == App::FuseOrbbec) continue;
+    const bool fuses = app != App::GfxTriangle && app != App::GfxImGui &&
+                       app != App::GfxModel && app != App::GfxImage &&
+                       app != App::CalibProjectPoint && app != App::CalibRig;
+    rejected(with_sections(app, R"(,"fusion":{"accumulate":true})"), app,
+             (fuses ? "fusion.accumulate" : "fusion") +
+                 std::string(": is not used by this application"));
   }
-  for (const auto app : {App::GfxTriangle, App::GfxImGui, App::GfxModel,
-                         App::GfxImage, App::CalibProjectPoint}) {
-    rejected(R"({"version":1,"fusion":{"accumulate":true}})", app,
-             "fusion: is not used by this application");
-  }
-  rejected(calib_rig("", R"(,"fusion":{"accumulate":true})"), App::CalibRig,
-           "fusion: is not used by this application");
 }
 
 TEST(Config, MeshSourceRequiresOneScaleAndOneNonzeroUpDirection) {
