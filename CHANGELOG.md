@@ -26,9 +26,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 - A FuseOrbbec consumer (recon: fuse_orbbec) requires core 0.14.0 and
   honours `fusion.free_after`, or refuses it. A consumer that honours it
-  frees stale blocks every 30 sets by default.
+  frees stale blocks every 30 sets by default; 0 frees none, as before.
 - Delete `fusion.accumulate` from every scenario, and code that reads
-  `config::Fusion::accumulate`. Other scenarios load unchanged.
+  `config::Fusion::accumulate`. A rig scenario that set it false, to follow a
+  changing scene, sets `fusion.dynamic` true instead, as rig_viewer fuses.
+  Other scenarios load unchanged.
 
 ## [0.13.0] - 2026-10-20
 

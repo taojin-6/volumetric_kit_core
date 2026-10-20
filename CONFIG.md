@@ -187,12 +187,13 @@ unknown extension object.
 - `FuseOrbbec` (core 0.14.0) and `RigViewer` accept `fusion.free_after`, a
   nonnegative integer, default 30. Every that many fused sets, the consumer
   runs recon's `VoxelBlockGrid::free_stale_blocks`, which frees each grid
-  block that, for more than that many sets, no allocation has asked for and
-  no such pass has found holding an observed voxel; 0 never frees. Dynamic
+  block that none of those sets asked to allocate and in which neither this
+  pass nor the one before found an observed voxel; 0 never frees. Dynamic
   integration clears the free space a camera sees through, so the blocks a
-  surface has left go. Classic integration never clears a voxel, so a Classic
-  pass frees only blocks that have never held an observed voxel, which the
-  mesher and the codec use nothing from. Other profiles reject it.
+  surface has left go. Classic integration never clears a voxel, so a run
+  fused Classic throughout (FuseOrbbec's default) frees only blocks that never
+  held an observed voxel, which the mesher and the codec use nothing from.
+  Other profiles reject it.
 - `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
   `source.sync_config` names the rig, of any number of cameras, and `driver`
   is `orbbec`; `color_codec`, the colour and depth sizes and `fps` are the
