@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.15.0 CONFIG)
+vkc_require_core(0.16.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -150,16 +150,18 @@ unknown extension object.
   `texture`. Gfx examples accept no render section.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
-  core 0.6.0; `screenshot` for GfxModel. An empty string disables each
-  optional output; fusion/export operations require a nonempty `path`.
+  core 0.6.0; `screenshot` for GfxModel; `serve` for FuseOrbbec. An empty
+  string disables each optional output; fusion/export operations require a
+  nonempty `path`.
   `path`, `csv` and `stream` must differ once resolved, and none may be
   `source.sync_config` or `source.calibration` (core 0.13.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
-  for CodecMesh. Dataset/FuseOrbbec limits are positive; RigViewer uses zero
-  for unlimited; gfx uses -1 for unlimited and permits zero frames. CodecMesh's
-  `frames` is instead an exact count, at least 1, of numbered meshes from
-  number `first`, which is nonnegative; the last number, `first + frames - 1`,
-  must not exceed INT32_MAX. Scanner has no run limits.
+  for CodecMesh. Dataset/FuseOrbbec limits are positive, and FuseOrbbec's
+  counts camera frames, each set adding one per camera it holds; RigViewer
+  uses zero for unlimited; gfx uses -1 for unlimited and permits zero frames.
+  CodecMesh's `frames` is instead an exact count, at least 1, of numbered
+  meshes from number `first`, which is nonnegative; the last number,
+  `first + frames - 1`, must not exceed INT32_MAX. Scanner has no run limits.
 - Calibration projection fields: `image_width`, `image_height`,
   `intrinsics` (fx,fy,cx,cy), `distortion` (k1,k2,p1,p2,k3), `point` (x,y,z).
   Focal lengths/dimensions and the point's z must be positive, all values
@@ -180,10 +182,13 @@ unknown extension object.
   `run.frames`; a directory requires a positive count. Other profiles reject
   both fields.
 - `FuseOrbbec` codes its fused sets, one frame per set, when `output.stream`
-  or `output.csv` names a file (core 0.13.0); it still writes the PLY at
-  `output.path`. It takes the codec fields the codec profiles share, with
-  their defaults and checks. A `codec` section without either output is
-  refused, since nothing would be coded.
+  or `output.csv` names a file (core 0.13.0) or `output.serve` a port (core
+  0.16.0); it still writes the PLY at `output.path`. A nonzero `serve` serves
+  the coded frames live on that port, on every interface (recon's
+  `networking::StreamServer`); 0, the default, serves nothing. It takes the
+  codec fields the codec profiles share, with their defaults and checks. A
+  `codec` section without any of the three outputs is refused, since nothing
+  would be coded.
 - `FuseOrbbec` (core 0.14.0) and `RigViewer` accept `fusion.free_after`, a
   nonnegative integer, default 30. Every that many fused sets, the consumer
   runs recon's `VoxelBlockGrid::free_stale_blocks`, which frees each grid

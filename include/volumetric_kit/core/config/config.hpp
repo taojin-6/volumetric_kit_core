@@ -144,8 +144,9 @@ struct Render {
   bool show_sources = false;
   bool texture_stats = false;
 };
-/// @brief Output paths. An empty string disables each optional output;
-/// fusion/export applications and CalibRig require a nonempty path.
+/// @brief Output paths, and FuseOrbbec's serving port. An empty string
+/// disables each optional output; fusion/export applications and CalibRig
+/// require a nonempty path.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Output {
   /// A fusion or export program's file; for CalibRig, the directory each
@@ -158,10 +159,14 @@ struct Output {
   /// The codec's coded frames, in one stream file. Once resolved, a nonempty
   /// `path`, `csv` and `stream` are three different files.
   std::string stream;
+  /// FuseOrbbec's live serving port (recon's networking::StreamServer, on
+  /// every interface); 0, the default, serves nothing.
+  std::uint16_t serve = 0;
 };
 /// @brief Run limits; a negative frame limit means unlimited where supported.
 /// For CodecMesh, `frames` is instead an exact count of numbered meshes from
 /// number `first`, where a dataset's is a limit that stops at its last frame.
+/// FuseOrbbec's counts camera frames, each set adding one per camera it holds.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Run {
   int frames = -1;
