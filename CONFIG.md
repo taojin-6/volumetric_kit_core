@@ -150,9 +150,9 @@ unknown extension object.
   `texture`. Gfx examples accept no render section.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
-  core 0.6.0; `screenshot` for GfxModel; `serve` for FuseOrbbec (core
-  0.16.0). An empty string disables each optional output; fusion/export
-  operations require a nonempty `path`.
+  core 0.6.0; `screenshot` for GfxModel; `serve` for FuseOrbbec. An empty
+  string disables each optional output; fusion/export operations require a
+  nonempty `path`.
   `path`, `csv` and `stream` must differ once resolved, and none may be
   `source.sync_config` or `source.calibration` (core 0.13.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
