@@ -80,7 +80,7 @@ vkc::Status run() {
   VKC_ASSIGN(
       const auto sets,
       vkc::config::parse(
-          R"({"version":1,"operation":"fuse","source":{"kind":"live"},"fusion":{"dynamic":true,"free_after":10},"codec":{"intra_period":30},"output":{"stream":"rig.vrst"}})",
+          R"({"version":1,"operation":"fuse","source":{"kind":"live"},"fusion":{"free_after":10},"codec":{"intra_period":30},"output":{"stream":"rig.vrst"}})",
           vkc::config::Application::FuseOrbbec, "/scenario"));
   if (!sets.fusion.dynamic || sets.fusion.free_after != 10 ||
       sets.codec.intra_period != 30 ||

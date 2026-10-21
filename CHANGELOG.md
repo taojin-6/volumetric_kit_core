@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-20
+
+### Changed
+
+- `Application::FuseOrbbec` resolves `fusion.dynamic` true, as `RigViewer`
+  does; `config::Fusion::dynamic` and every other profile stay false.
+
+### Migration
+
+- A FuseOrbbec scenario that wants Classic integration, such as a static
+  scan, sets `fusion.dynamic` false; a consumer that reads the resolved
+  setting (recon: fuse_orbbec) otherwise fuses Dynamic.
+
 ## [0.14.0] - 2026-10-20
 
 ### Added

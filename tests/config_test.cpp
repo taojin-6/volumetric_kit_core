@@ -121,7 +121,7 @@ TEST(Config, ApplicationDefaultsPreserveExistingBehavior) {
   EXPECT_EQ(live->run.frames, 300);
   EXPECT_EQ(live->fusion.min_depth_m, 0.25F);
   EXPECT_EQ(live->fusion.max_depth_m, 5.F);
-  EXPECT_FALSE(live->fusion.dynamic);
+  EXPECT_TRUE(live->fusion.dynamic);
   const auto rig =
       scenario(R"({"version":1,"source":{"sync_config":"sync.json"}})",
                App::RigViewer, "/scenario");
@@ -222,6 +222,10 @@ TEST(Config, DynamicFusionIsAcceptedByEveryFusingProfile) {
       App::RigViewer);
   ASSERT_TRUE(rig) << rig.status().message();
   EXPECT_FALSE(rig->fusion.dynamic);
+  const auto classic =
+      scenario(R"({"version":1,"fusion":{"dynamic":false}})", App::FuseOrbbec);
+  ASSERT_TRUE(classic) << classic.status().message();
+  EXPECT_FALSE(classic->fusion.dynamic);
   rejected(
       R"({"version":1,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"},"fusion":{"dynamic":true}})",
       App::CodecMesh, "fusion.dynamic");
@@ -1007,6 +1011,19 @@ TEST(Config, NoOutputOverwritesTheRigFilesARunReads) {
   rejected(
       R"({"version":1,"source":{"sync_config":"rig.json"},"output":{"path":"./rig.json"}})",
       App::CalibRig, "output.path: must differ from source.sync_config");
+}
+
+TEST(Config, OnlyTheLiveFusingProfilesDefaultToDynamic) {
+  for (const auto app : every_profile()) {
+    const auto parsed = scenario(
+        with_sections(app,
+                      app == App::CalibRig ? R"(,"output":{"path":"s"})" : ""),
+        app);
+    ASSERT_TRUE(parsed) << parsed.status().message();
+    EXPECT_EQ(parsed->fusion.dynamic,
+              app == App::FuseOrbbec || app == App::RigViewer)
+        << static_cast<int>(app);
+  }
 }
 
 TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
