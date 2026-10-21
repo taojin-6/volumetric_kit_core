@@ -7,6 +7,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-21
+
+### Added
+
+- `config::Output::serve` (`output.serve`, a port, default 0) for
+  `Application::FuseOrbbec`, so that fuse_orbbec can serve its coded frames
+  live on that port, on every interface (CONFIG.md); 0 serves nothing. A
+  port turns coding on, as `csv` or `stream` does, so a `codec` section with
+  only `output.serve` loads. Other profiles refuse it.
+
+### Migration
+
+- A FuseOrbbec consumer (recon: fuse_orbbec) requires core 0.16.0 and
+  honours `output.serve`, or refuses a nonzero one. Existing scenarios load
+  unchanged.
+
 ## [0.15.0] - 2026-10-20
 
 ### Changed

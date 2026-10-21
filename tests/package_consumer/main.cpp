@@ -80,11 +80,12 @@ vkc::Status run() {
   VKC_ASSIGN(
       const auto sets,
       vkc::config::parse(
-          R"({"version":1,"operation":"fuse","source":{"kind":"live"},"fusion":{"free_after":10},"codec":{"intra_period":30},"output":{"stream":"rig.vrst"}})",
+          R"({"version":1,"operation":"fuse","source":{"kind":"live"},"fusion":{"free_after":10},"codec":{"intra_period":30},"output":{"stream":"rig.vrst","serve":47801}})",
           vkc::config::Application::FuseOrbbec, "/scenario"));
   if (!sets.fusion.dynamic || sets.fusion.free_after != 10 ||
       sets.codec.intra_period != 30 ||
       sets.output.stream != "/scenario/rig.vrst" ||
+      sets.output.serve != 47801 ||
       sets.output.path != "/scenario/fuse_orbbec.ply")
     return vkc::Status::invalid_argument("fuse_orbbec coding was not read");
   VKC_ASSIGN(
