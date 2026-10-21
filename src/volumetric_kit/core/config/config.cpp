@@ -404,6 +404,7 @@ bool supports(std::string_view field, App app) {
                            App::CalibRig});
   if (field == "output.prefix") return is_codec(app);
   if (field_in(field, {"output.csv", "output.stream"})) return takes_codec(app);
+  if (field == "output.serve") return app == App::FuseOrbbec;
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
@@ -464,10 +465,11 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     for (const char* section : {"fusion", "codec", "output"})
       if (has(state, section)) fail(section, "is not used by operation stream");
   }
-  // FuseOrbbec codes only when it writes the codec's rows or frames.
+  // FuseOrbbec codes only when it writes the codec's rows or frames, or serves
+  // the frames.
   if (app == App::FuseOrbbec && has(state, "codec") && c.output.csv.empty() &&
-      c.output.stream.empty())
-    fail("codec", "requires output.stream or output.csv");
+      c.output.stream.empty() && c.output.serve == 0)
+    fail("codec", "requires output.stream, output.csv or output.serve");
   path_check(c.source.serial, "source.serial");
   path_check(c.source.path, "source.path",
              is_dataset(app) || app == App::CodecMesh);
@@ -652,7 +654,8 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     // An H.265 frame is not self-contained, so only MJPEG can be written out.
     if (c.source.color_codec != ColorCodec::Mjpeg)
       fail("diagnostics.dump_sets", "requires source.color_codec mjpeg");
-    // FuseOrbbec's run takes run.frames sets, so a larger count is never met.
+    // FuseOrbbec's run.frames counts camera frames, at least one per set, so
+    // a larger count of sets is never met.
     if (c.diagnostics.dump_sets > c.run.frames)
       fail("diagnostics.dump_sets", "must not exceed run.frames");
   } else if (!c.diagnostics.dump_directory.empty()) {
@@ -873,6 +876,7 @@ Result<Config> parse(std::string_view text, Application application,
       q.string("screenshot", c.output.screenshot, true);
       q.string("csv", c.output.csv, true);
       q.string("stream", c.output.stream, true);
+      q.number("serve", c.output.serve);
       q.finish();
     }
     if (const auto* v = r.take("diagnostics")) {

@@ -915,12 +915,14 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
   EXPECT_TRUE(rows->output.stream.empty());
   EXPECT_EQ(rows->codec.intra_period, 8U);
 
-  // A codec section without either output would code nothing.
-  for (const char* output : {"", R"(,"output":{"path":"rig.ply"})",
-                             R"(,"output":{"csv":"","stream":""})"}) {
+  // A codec section without an output would code nothing.
+  for (const char* output :
+       {"", R"(,"output":{"path":"rig.ply"})",
+        R"(,"output":{"csv":"","stream":""})", R"(,"output":{"serve":0})"}) {
     for (const char* codec : {"{}", R"({"intra_period":30})"}) {
       rejected(std::string(R"({"version":1,"codec":)") + codec + output + "}",
-               App::FuseOrbbec, "codec: requires output.stream or output.csv");
+               App::FuseOrbbec,
+               "codec: requires output.stream, output.csv or output.serve");
     }
   }
   // The codec applications' checks hold.
@@ -988,6 +990,70 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
                app,
                (writes ? std::string("output.") + key : std::string("output")) +
                    ": is not used by this application");
+    }
+  }
+}
+
+TEST(Config, OnlyFuseOrbbecServesItsCodedFramesLive) {
+  // A port, 0 serving nothing by default.
+  EXPECT_EQ(Output{}.serve, 0U);
+  const auto plain = scenario(R"({"version":1})", App::FuseOrbbec);
+  ASSERT_TRUE(plain) << plain.status().message();
+  EXPECT_EQ(plain->output.serve, 0U);
+  for (const unsigned port : {0U, 1U, 47801U, 65535U}) {
+    const auto parsed = scenario(
+        R"({"version":1,"output":{"serve":)" + std::to_string(port) + "}}",
+        App::FuseOrbbec);
+    ASSERT_TRUE(parsed) << parsed.status().message();
+    EXPECT_EQ(parsed->output.serve, port);
+  }
+  for (const char* port : {"-1", "65536"}) {
+    rejected(std::string(R"({"version":1,"output":{"serve":)") + port + "}}",
+             App::FuseOrbbec, "output.serve: integer is out of range");
+  }
+  for (const char* port : {"1.5", "47801.0", R"("47801")", "true", "null"}) {
+    rejected(std::string(R"({"version":1,"output":{"serve":)") + port + "}}",
+             App::FuseOrbbec, "output.serve: expected an integer");
+  }
+
+  // A port alone codes, as a file does, so it carries a codec section; the
+  // live scenario serves beside its stream.
+  const auto served = scenario(
+      R"({"version":1,"codec":{"intra_period":30},"output":{"serve":47801}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(served) << served.status().message();
+  EXPECT_EQ(served->output.serve, 47801U);
+  EXPECT_EQ(served->codec.intra_period, 30U);
+  EXPECT_TRUE(served->output.csv.empty());
+  EXPECT_TRUE(served->output.stream.empty());
+  EXPECT_EQ(served->output.path, "/scenario/fuse_orbbec.ply");
+  const auto recorded = scenario(
+      R"({"version":1,"codec":{"intra_period":30},"output":{"path":"rig_end.ply","stream":"rig.vrst","serve":47801}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(recorded) << recorded.status().message();
+  EXPECT_EQ(recorded->output.serve, 47801U);
+  EXPECT_EQ(recorded->output.stream, "/scenario/rig.vrst");
+  // Streaming refuses the output section, a port too.
+  for (const char* port : {"0", "47801"}) {
+    rejected(
+        std::string(R"({"version":1,"operation":"stream","output":{"serve":)") +
+            port + "}}",
+        App::FuseOrbbec, "output: is not used by operation stream");
+  }
+
+  // Every other profile refuses it, even at its default; those without
+  // outputs refuse the output section.
+  for (const auto app : every_profile()) {
+    if (app == App::FuseOrbbec) continue;
+    const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
+                         app == App::CodecMesh || app == App::FuseRender ||
+                         app == App::GfxModel || app == App::CalibRig;
+    for (const char* port : {"0", "47801"}) {
+      rejected(with_sections(
+                   app, std::string(R"(,"output":{"serve":)") + port + "}"),
+               app,
+               (outputs ? "output.serve" : "output") +
+                   std::string(": is not used by this application"));
     }
   }
 }
