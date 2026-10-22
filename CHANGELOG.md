@@ -7,6 +7,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-21
+
+### Added
+
+- `config::Application::Player`, `config::SourceKind::Stream` (`stream`) and
+  `config::Source::host` and `port`: volumetric_kit_player's view of a
+  stream file or of a live sender (CONFIG.md). Its `view` scenario requires
+  a `stream` source with exactly one of `path` and `host`, and takes `port`
+  beside `host`, `window` `width`, `height` and `validation`, and
+  `run.frames`. It refuses every other field and section. Other profiles
+  refuse a `stream` source, `host` and `port`.
+
+### Migration
+
+- volumetric_kit_player requires core 0.17.0 and loads its scenario with
+  `Application::Player`. A `switch` that names every `Application` or
+  `SourceKind` gains a case for the new value; existing scenarios load
+  unchanged.
+
 ## [0.16.0] - 2026-10-21
 
 ### Added
