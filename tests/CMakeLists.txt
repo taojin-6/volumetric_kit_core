@@ -27,11 +27,11 @@ function(_vkc_discover_device_tests target)
     add_test(NAME "${_name}" COMMAND ${target})
     # Do not match the GoogleTest skip banner: one capability skip must not hide
     # another case's failure, or a failure in the shared-device teardown. CI
-    # requires a device; individual skips remain visible in gtest's output.
+    # requires a device, and lists individual skips in each leg's job summary.
     set_tests_properties(
       "${_name}"
       PROPERTIES
-        TIMEOUT 600 ENVIRONMENT
+        TIMEOUT 120 ENVIRONMENT
         "GTEST_TOTAL_SHARDS=${VKC_TEST_SHARDS};GTEST_SHARD_INDEX=${_index}")
   endforeach()
 endfunction()
