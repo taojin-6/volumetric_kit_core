@@ -15,12 +15,11 @@ leak:swrast
 leak:util_queue
 leak:libLLVM
 
-# Vulkan loader trampolines and driver discovery.
-leak:libvulkan.so
+# The Vulkan loader's own allocations (driver and layer discovery), by its
+# `loader_` functions. Neither the loader's module nor the validation layer's
+# is named: they are on the stack of every Vulkan call and of the core's debug
+# messenger callback, so either would hide a first-party leak made there.
 leak:loader_
-
-# The Khronos validation layer's internal state.
-leak:libVkLayer_khronos_validation
 
 # Globals that stay resident from dlopen'ing the driver and layers.
 leak:__libc_dlopen

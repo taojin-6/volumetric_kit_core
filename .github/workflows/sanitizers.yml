@@ -15,8 +15,8 @@ jobs:
     timeout-minutes: 20
     env:
       # Absolute path: ctest changes directory per test, so a relative one
-      # would silently fail to load. The suppressions cover only the driver,
-      # loader and layer (tools/lsan.supp).
+      # would silently fail to load. The suppressions cover only the driver
+      # and the loader's own functions (tools/lsan.supp).
       LSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/lsan.supp:print_suppressions=0
       ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
       # A validation error fails the test, under synchronization validation
