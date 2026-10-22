@@ -75,10 +75,16 @@ jobs:
       - name: Build
         run: cmake --build build --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
+      # The level, as for the build: hosted runners set none. The tests
+      # labelled cmake run on ubuntu-26.04 alone (tests/CMakeLists.txt).
       - name: Test
         env:
           DYLD_LIBRARY_PATH: ${{ env.VKC_LAYER_LIBRARY_PATH }}
-        run: ctest --test-dir build --output-on-failure
+          LABELS: ${{ inputs.os != 'ubuntu-26.04' && '-LE cmake' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # LABELS is zero or two arguments
+          ctest --test-dir build --output-on-failure \
+            --parallel "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}" $LABELS
 
       - name: Base-only build has no JSON or GPU dependency
         run: |

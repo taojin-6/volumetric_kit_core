@@ -46,6 +46,11 @@ function(_vkc_message_regex out text)
       PARENT_SCOPE)
 endfunction()
 
+# A test that runs CMake or the compiler rather than a test binary carries the
+# label cmake, or ios for the iOS configures. What the cmake ones check is CMake
+# logic no OS changes, and a fresh configure costs seconds on macOS, so CI runs
+# them on one Linux leg, and the ios ones on macOS.
+
 # base: Status / Result / VKC_TRY / VKC_ASSIGN, VKC_CHECK, the log sink,
 # exception_status, file I/O, UniqueFd and the version API. Pure CPU, so these
 # run on every machine. The timeout turns a deadlock in the log sink's locking
@@ -209,6 +214,8 @@ if(VKC_WITH_VULKAN)
         "-I${PROJECT_SOURCE_DIR}/include" "-I${Vulkan_INCLUDE_DIR}"
         "-DVKC_TEST_HEADER_VERSION=${_vkc_version}"
         "${CMAKE_CURRENT_SOURCE_DIR}/vulkan_header_floor.cpp")
+    set_tests_properties(vkc_vulkan_header_floor_${_vkc_version}
+                         PROPERTIES LABELS cmake)
   endforeach()
   set_tests_properties(
     vkc_vulkan_header_floor_${_vkc_below}
@@ -448,8 +455,8 @@ if(VKC_WITH_VULKAN)
       "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" -DVKC_WITH_VULKAN=ON
       -DVKC_CONSUMER_GTEST=OFF
       "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}")
-  set_tests_properties(vkc_testing_policy_needs_no_googletest PROPERTIES TIMEOUT
-                                                                         300)
+  set_tests_properties(vkc_testing_policy_needs_no_googletest
+                       PROPERTIES TIMEOUT 300 LABELS cmake)
 
   # vkc_embed_shaders refuses a symbol another call already emits
   # (cmake/vkc_shaders.cmake): two libraries embedding fill.comp under
@@ -467,6 +474,7 @@ if(VKC_WITH_VULKAN)
         "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
         "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
         "-DVKC_SECOND_PREFIX=${_vkc_prefix}")
+    set_tests_properties(${_vkc_name} PROPERTIES LABELS cmake)
     if(_vkc_prefix STREQUAL "a_")
       set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
                                                    "${_vkc_clash}")
@@ -494,8 +502,9 @@ if(VKC_WITH_VULKAN)
         -DVKC_WITH_VULKAN=${_vkc_vulkan}
         "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}"
         "-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=${_vkc_gtest_source}")
-    set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_SETUP
-                                                 vkc_vulkan_flip_${_vkc_next})
+    set_tests_properties(
+      ${_vkc_name} PROPERTIES FIXTURES_SETUP vkc_vulkan_flip_${_vkc_next}
+                              LABELS cmake)
     if(_vkc_step GREATER 0)
       set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
                                                    vkc_vulkan_flip_${_vkc_step})
@@ -603,8 +612,9 @@ if(VKC_WITH_VULKAN)
         set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
                                                      "CMake Error")
       endif()
-      set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
-                                                   "${_vkc_pass}" TIMEOUT 300)
+      set_tests_properties(
+        ${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION "${_vkc_pass}" TIMEOUT
+                                300 LABELS ios)
     endforeach()
     foreach(_vkc_setup consumer environment)
       set_tests_properties(vkc_ios_${_vkc_setup}
@@ -631,6 +641,7 @@ foreach(_vkc_shared OFF ON)
       "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
       "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
       "-DBUILD_SHARED_LIBS=${_vkc_shared}")
+  set_tests_properties(${_vkc_name} PROPERTIES LABELS cmake)
   if(_vkc_shared)
     set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
                                                  "core_base is a static")
@@ -689,7 +700,7 @@ foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan config)
                                                  "CMake Error")
   endif()
   set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
-                                               "${_vkc_pass}")
+                                               "${_vkc_pass}" LABELS cmake)
 endforeach()
 
 # The same functions misused, or called before the core is added, must say so.
@@ -698,7 +709,8 @@ function(_vkc_call_test name call message)
            COMMAND "${CMAKE_COMMAND}" "-DVKC_CALL=${call}" -P
                    "${CMAKE_CURRENT_SOURCE_DIR}/require_core_call.cmake")
   _vkc_message_regex(_regex "${message}")
-  set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${_regex}")
+  set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${_regex}"
+                                          LABELS cmake)
 endfunction()
 _vkc_call_test(
   vkc_require_core_usage

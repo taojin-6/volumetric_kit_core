@@ -58,6 +58,9 @@ cmake --build "$core_root/build" --parallel
 ctest --test-dir "$core_root/build" --output-on-failure
 ```
 
+`ctest -LE 'cmake|ios'` leaves out the tests that only configure or compile
+(`tests/CMakeLists.txt` says which).
+
 ### GPU tests
 
 The vulkan tier's device tests skip without a device. Run them as CI does,
