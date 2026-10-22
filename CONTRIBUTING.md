@@ -78,8 +78,9 @@ as unsupported external-memory handles, remain distinct from tests that
 executed successfully.
 
 CI configures `-DVKC_TEST_SHARDS=4`: each ordinary device-test binary runs in
-four processes, reusing its shared Vulkan fixtures within each shard. Policy
-and environment probes still run separately. Shards fail on their exit code,
+four processes, reusing its shared Vulkan fixtures within each shard, and a
+binary that needs no device runs in one. Policy and environment probes still
+run separately. Shards fail on their exit code,
 including shared-device teardown errors; a capability skip does not mask a
 failure in another case. GoogleTest reports individual skips in the output.
 Leave the default `VKC_TEST_SHARDS=0` for one CTest entry per case and

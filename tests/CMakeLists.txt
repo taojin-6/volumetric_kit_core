@@ -36,6 +36,20 @@ function(_vkc_discover_device_tests target)
   endforeach()
 endfunction()
 
+# A binary that needs no device: one entry per test by default, and one for the
+# whole binary when sharding, which saves a process per test.
+function(_vkc_discover_cpu_tests target timeout)
+  if(VKC_TEST_SHARDS EQUAL 0)
+    gtest_discover_tests(
+      ${target}
+      PROPERTIES
+      TIMEOUT ${timeout})
+  else()
+    add_test(NAME ${target} COMMAND ${target})
+    set_tests_properties(${target} PROPERTIES TIMEOUT ${timeout})
+  endif()
+endfunction()
+
 # Sets <out> to a regex matching <text> in a configure's output, however CMake
 # wraps the message's lines.
 function(_vkc_message_regex out text)
@@ -69,10 +83,7 @@ foreach(
   target_link_libraries(vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_base
                                                       GTest::gtest_main)
   vkc_target_warnings(vkc_${_vkc_test}_test)
-  gtest_discover_tests(
-    vkc_${_vkc_test}_test
-    PROPERTIES
-    TIMEOUT 60)
+  _vkc_discover_cpu_tests(vkc_${_vkc_test}_test 60)
 endforeach()
 
 # vulkan: the VkResult helpers, the format helpers (vulkan_format, and
@@ -120,11 +131,14 @@ if(VKC_WITH_VULKAN)
     vkc_target_warnings(vkc_${_vkc_test}_test)
     if(_vkc_test IN_LIST _vkc_device_tests)
       _vkc_discover_device_tests(vkc_${_vkc_test}_test)
-    else()
+    elseif(_vkc_test MATCHES "^testing_")
+      # The fixtures' own tests, one process per test in either mode.
       gtest_discover_tests(
         vkc_${_vkc_test}_test
         PROPERTIES
         TIMEOUT 120)
+    else()
+      _vkc_discover_cpu_tests(vkc_${_vkc_test}_test 120)
     endif()
   endforeach()
 
@@ -735,8 +749,5 @@ if(VKC_WITH_CONFIG)
   target_link_libraries(vkc_config_test PRIVATE volumetric_kit::core_config
                                                 GTest::gtest_main)
   vkc_target_warnings(vkc_config_test)
-  gtest_discover_tests(
-    vkc_config_test
-    PROPERTIES
-    TIMEOUT 60)
+  _vkc_discover_cpu_tests(vkc_config_test 60)
 endif()
