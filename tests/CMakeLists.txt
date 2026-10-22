@@ -487,7 +487,8 @@ if(VKC_WITH_VULKAN)
   # Flipping VKC_WITH_VULKAN in a build directory reconfigures, either way:
   # whether the test support is built follows the tier and the tests, not a
   # default cached by the first configure. Configure only, in order, with the
-  # dependencies this build fetched.
+  # dependencies this build fetched and no config tier, so nothing is
+  # downloaded.
   FetchContent_GetProperties(googletest SOURCE_DIR _vkc_gtest_source)
   set(_vkc_step 0)
   foreach(_vkc_vulkan ON OFF ON)
@@ -499,7 +500,7 @@ if(VKC_WITH_VULKAN)
         "${CMAKE_COMMAND}" -S "${PROJECT_SOURCE_DIR}" -B
         "${CMAKE_CURRENT_BINARY_DIR}/vulkan_flip" -G "${CMAKE_GENERATOR}"
         "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-        -DVKC_WITH_VULKAN=${_vkc_vulkan}
+        -DVKC_WITH_VULKAN=${_vkc_vulkan} -DVKC_WITH_CONFIG=OFF
         "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}"
         "-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=${_vkc_gtest_source}")
     set_tests_properties(
