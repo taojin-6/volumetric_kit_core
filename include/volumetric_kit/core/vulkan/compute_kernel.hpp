@@ -124,8 +124,9 @@ class VKC_VULKAN_API KernelSetBuilder {
   ~KernelSetBuilder() = default;
 
   /// @brief Register a kernel: build @p out's layout (@p bindings storage
-  ///        buffers at 0 .. bindings - 1) and its pipeline now; @ref build
-  ///        allocates its set.
+  ///        buffers at 0 .. bindings - 1) and its pipeline now, through the
+  ///        device's @ref Device::pipeline_cache; @ref build allocates its
+  ///        set.
   ///
   /// Everything is built before @p out is touched: on success @p out is
   /// replaced whole -- a kernel built before loses its old layout, pipeline

@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
-## [0.18.0] - 2026-10-22
+## [0.19.0] - 2026-10-22
 
 ### Added
 
@@ -31,6 +31,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   rules and package config with its next pin bump: CMake can no longer
   generate their export, and `vkc_require_core(... PACKAGE ...)` fails as a
   usage error. `set(VKC_INSTALL ...)` is ignored.
+
+## [0.18.0] - 2026-10-22
+
+### Added
+
+- `Device::pipeline_cache()`: every device, created or adopted, makes one
+  `VkPipelineCache` and destroys it with itself, in memory only.
+  `KernelSetBuilder` builds every kernel through it, so a kernel that several
+  objects build on one device is compiled once; `ComputePipelineDesc::cache`
+  (default none) passes a cache to `ComputePipeline::create`.
+
+### Migration
+
+- Nothing to change beyond the pin; a pipeline made another way may pass
+  `device.pipeline_cache()` to `vkCreate*Pipelines`.
 
 ## [0.17.0] - 2026-10-21
 
