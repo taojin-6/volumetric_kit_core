@@ -88,12 +88,14 @@ foreach(
 endforeach()
 
 # core_test_main (support/test_main.cpp), the main every test here links: on
-# Linux a death test's child dumps no core.
-add_executable(vkc_testing_main_test testing_main_test.cpp)
-target_link_libraries(vkc_testing_main_test
-                      PRIVATE volumetric_kit::core_test_main)
-vkc_target_warnings(vkc_testing_main_test)
-_vkc_discover_cpu_tests(vkc_testing_main_test 60)
+# Linux a death test's child dumps no core. Elsewhere it changes nothing.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(vkc_testing_main_test testing_main_test.cpp)
+  target_link_libraries(vkc_testing_main_test
+                        PRIVATE volumetric_kit::core_test_main)
+  vkc_target_warnings(vkc_testing_main_test)
+  _vkc_discover_cpu_tests(vkc_testing_main_test 60)
+endif()
 
 # vulkan: the VkResult helpers, the format helpers (vulkan_format, and
 # vulkan_format_reference against Vulkan-Utility-Libraries, skipped where its
