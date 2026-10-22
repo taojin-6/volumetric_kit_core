@@ -93,10 +93,7 @@ add_executable(vkc_testing_main_test testing_main_test.cpp)
 target_link_libraries(vkc_testing_main_test
                       PRIVATE volumetric_kit::core_test_main)
 vkc_target_warnings(vkc_testing_main_test)
-gtest_discover_tests(
-  vkc_testing_main_test
-  PROPERTIES
-  TIMEOUT 60)
+_vkc_discover_cpu_tests(vkc_testing_main_test 60)
 
 # vulkan: the VkResult helpers, the format helpers (vulkan_format, and
 # vulkan_format_reference against Vulkan-Utility-Libraries, skipped where its
