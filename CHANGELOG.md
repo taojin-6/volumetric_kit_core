@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-22
+
 ### Removed
 
 - The install rules and the package config: `find_package(volumetric_kit_core)`,
