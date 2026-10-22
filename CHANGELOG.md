@@ -9,6 +9,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [0.18.0] - 2026-10-22
 
+### Added
+
+- `volumetric_kit::core_test_main` (test support): GoogleTest's main, for a
+  suite to link in place of `GTest::gtest_main`. On Linux a death test's child
+  dumps no core, so a host that pipes dumps to a crash reporter (apport) no
+  longer holds each death test about a second (README.md, "Use it in your
+  project").
+
 ### Removed
 
 - The install rules and the package config: `find_package(volumetric_kit_core)`,

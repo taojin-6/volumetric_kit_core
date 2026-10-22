@@ -80,11 +80,23 @@ foreach(
   base_file_io
   base_unique_fd)
   add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
-  target_link_libraries(vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_base
-                                                      GTest::gtest_main)
+  target_link_libraries(
+    vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_base
+                                  volumetric_kit::core_test_main)
   vkc_target_warnings(vkc_${_vkc_test}_test)
   _vkc_discover_cpu_tests(vkc_${_vkc_test}_test 60)
 endforeach()
+
+# core_test_main (support/test_main.cpp), the main every test here links: on
+# Linux a death test's child dumps no core.
+add_executable(vkc_testing_main_test testing_main_test.cpp)
+target_link_libraries(vkc_testing_main_test
+                      PRIVATE volumetric_kit::core_test_main)
+vkc_target_warnings(vkc_testing_main_test)
+gtest_discover_tests(
+  vkc_testing_main_test
+  PROPERTIES
+  TIMEOUT 60)
 
 # vulkan: the VkResult helpers, the format helpers (vulkan_format, and
 # vulkan_format_reference against Vulkan-Utility-Libraries, skipped where its
@@ -127,7 +139,7 @@ if(VKC_WITH_VULKAN)
     add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
     target_link_libraries(
       vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_test_support
-                                    GTest::gtest_main)
+                                    volumetric_kit::core_test_main)
     vkc_target_warnings(vkc_${_vkc_test}_test)
     if(_vkc_test IN_LIST _vkc_device_tests)
       _vkc_discover_device_tests(vkc_${_vkc_test}_test)
@@ -250,7 +262,7 @@ if(VKC_WITH_VULKAN)
                  testing_vulkan_fixture_probe.cpp)
   target_link_libraries(
     vkc_testing_vulkan_fixture_probe PRIVATE volumetric_kit::core_test_support
-                                             GTest::gtest_main)
+                                             volumetric_kit::core_test_main)
   vkc_target_warnings(vkc_testing_vulkan_fixture_probe)
 
   set(_vkc_probe "$<TARGET_FILE:vkc_testing_vulkan_fixture_probe>")
@@ -747,7 +759,7 @@ _vkc_call_test(vkc_core_version_before_core "vkc_core_version(_v)"
 if(VKC_WITH_CONFIG)
   add_executable(vkc_config_test config_test.cpp)
   target_link_libraries(vkc_config_test PRIVATE volumetric_kit::core_config
-                                                GTest::gtest_main)
+                                                volumetric_kit::core_test_main)
   vkc_target_warnings(vkc_config_test)
   _vkc_discover_cpu_tests(vkc_config_test 60)
 endif()

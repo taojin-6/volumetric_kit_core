@@ -188,6 +188,10 @@ support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
   tests in a process share the instances and devices; a two-family device
   brings an instance of its own
   (`volumetric_kit/core/testing/vulkan_fixture.hpp`).
+- A GoogleTest suite links `volumetric_kit::core_test_main` in place of
+  `GTest::gtest_main`, so that on Linux a death test's child dumps no core: a
+  host that pipes core dumps to a crash reporter (Ubuntu's apport) otherwise
+  holds each death test about a second.
 - A test that is a `main()` of its own links
   `volumetric_kit::core_test_policy`, which needs no googletest, and returns
   `test::kSkipExitCode` (77) to skip: register that as its `SKIP_RETURN_CODE`
