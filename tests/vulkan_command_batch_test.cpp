@@ -11,6 +11,7 @@
 // indirect dispatch, rewritten sets, the refusals, the moves, several
 // threads at once, and submits that do not wait, ordered by timeline values.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -29,6 +30,7 @@
 #include "batch_visibility_frag.spv.hpp"
 #include "batch_visibility_vert.spv.hpp"
 #include "command_batch_barriers.hpp"
+#include "support.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/testing/write_image.hpp"
@@ -1731,9 +1733,18 @@ TEST_F(PendingComputeTest, MovesCarryTheWorkAndWaitForWhatTheyDrop) {
 }
 
 // Destroying work held for a value no one has set yet waits for it -- what
-// the work uses is never freed under it -- and, once it has waited a second,
-// warns which value it waits for.
+// the work uses is never freed under it -- and, once it has waited a second
+// (20 ms here), warns which value it waits for. The value is set only once
+// the warning is out, so the destructor must still be waiting.
 TEST_F(PendingTest, WarnsOfAValueADestroyedHandleStillWaitsFor) {
+  constexpr const char* kNamed = "Device::PendingSubmit";
+  const auto warned = [this] {
+    const std::vector<std::string> logged = warnings();
+    return std::any_of(logged.begin(), logged.end(), [](const auto& warning) {
+      return warning.find(kNamed) != std::string::npos;
+    });
+  };
+  std::uint64_t stall = 0;
   std::thread releaser;
   {
     CommandBatch batch(device(), allocator());
@@ -1741,16 +1752,23 @@ TEST_F(PendingTest, WarnsOfAValueADestroyedHandleStillWaitsFor) {
         batch.submit_async({{&timeline_, 1}}, {{&timeline_, 2}});
     ASSERT_TRUE(made.ok()) << made.status().message();
     const PendingBatch pending = *std::move(made);
-    releaser = std::thread([this] {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    stall = detail::set_pending_stall_ns(20'000'000);
+    // A warning that never comes fails the test below rather than hanging it.
+    releaser = std::thread([this, &warned] {
+      const auto give_up = std::chrono::steady_clock::now() +
+                           std::chrono::nanoseconds(kLongWaitNs);
+      while (!warned() && std::chrono::steady_clock::now() < give_up) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
       EXPECT_TRUE(timeline_.signal(1).ok());
     });
   }
   releaser.join();
+  detail::set_pending_stall_ns(stall);
   EXPECT_EQ(counter(), 2u);  // it ran before the destructor returned
   int named = 0;
   for (const std::string& warning : warnings()) {
-    if (warning.find("Device::PendingSubmit") == std::string::npos) continue;
+    if (warning.find(kNamed) == std::string::npos) continue;
     ++named;
     EXPECT_NE(warning.find("timeline value 1 (the counter is at 0)"),
               std::string::npos)

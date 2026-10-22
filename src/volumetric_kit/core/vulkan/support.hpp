@@ -7,7 +7,7 @@
 // check_device_support (selection, create), Device::adopt and
 // Device::check_enabled share, and the device selection and creation
 // Device::create and SharedDevice share, so the two ways of making a device
-// cannot drift. Not installed.
+// cannot drift; and a test seam of Device's. Not installed.
 
 #include <cstdint>
 #include <functional>
@@ -17,6 +17,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
+#include "volumetric_kit/core/vulkan/export.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -106,5 +107,10 @@ Result<PhysicalDeviceInfo> select_physical_device(
     const Instance& instance, const DeviceRequirements& reqs,
     VkSurfaceKHR surface,
     const std::function<Status(const PhysicalDeviceInfo&)>& accept);
+
+// The tests' seam: sets how long a destroyed Device::PendingSubmit waits
+// before it warns (a second), and returns the previous value to restore.
+// Exported for the tests alone, which reach this header.
+VKC_VULKAN_API std::uint64_t set_pending_stall_ns(std::uint64_t ns) noexcept;
 
 }  // namespace volumetric_kit::core::detail
