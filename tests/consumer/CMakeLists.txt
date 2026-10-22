@@ -68,9 +68,9 @@ if(TARGET volumetric_kit::core_vulkan)
 endif()
 
 # GPU tests on the core's test support: a main() of its own on the policy alone,
-# and a GoogleTest one on the fixtures, linking the googletest the consumer
-# provides -- fetched after the core, as the fixtures' link to GTest::gtest
-# resolves when the build is generated.
+# and a GoogleTest one on the fixtures and the core's test main, linking the
+# googletest the consumer provides -- fetched after the core, as their link to
+# GTest::gtest resolves when the build is generated.
 if(TARGET volumetric_kit::core_test_policy)
   add_executable(vkc_consumer_policy_test policy_test.cpp)
   target_link_libraries(vkc_consumer_policy_test
@@ -89,5 +89,5 @@ if(VKC_CONSUMER_GTEST AND TARGET volumetric_kit::core_test_support)
   add_executable(vkc_consumer_gpu_test gpu_test.cpp)
   target_link_libraries(
     vkc_consumer_gpu_test PRIVATE volumetric_kit::core_test_support
-                                  GTest::gtest_main)
+                                  volumetric_kit::core_test_main)
 endif()
