@@ -97,6 +97,15 @@ vkc::Status run() {
       rig.source.color_codec != vkc::config::ColorCodec::Mjpeg ||
       rig.source.color_width != 3840 || rig.output.path != "/scenario/sessions")
     return vkc::Status::invalid_argument("calib_rig settings were not read");
+  VKC_ASSIGN(
+      const auto live,
+      vkc::config::parse(
+          R"({"version":1,"operation":"view","source":{"kind":"stream","host":"lab","port":5000},"run":{"frames":3}})",
+          vkc::config::Application::Player, "/scenario"));
+  if (live.source.kind != vkc::config::SourceKind::Stream ||
+      live.source.host != "lab" || live.source.port != 5000 ||
+      !live.source.path.empty() || live.run.frames != 3)
+    return vkc::Status::invalid_argument("player settings were not read");
 #endif
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");

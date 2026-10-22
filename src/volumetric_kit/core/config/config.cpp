@@ -184,13 +184,16 @@ void read_source(const Json& json, Config& c, ParseState& state) {
             {"dataset", SourceKind::Dataset},
             {"live", SourceKind::Live},
             {"mesh", SourceKind::Mesh},
-            {"model", SourceKind::Model}});
+            {"model", SourceKind::Model},
+            {"stream", SourceKind::Stream}});
 #define STR(member) r.string(#member, c.source.member)
 #define NUM(member) r.number(#member, c.source.member)
 #define BOOL(member) r.boolean(#member, c.source.member)
   STR(format);
   STR(driver);
   STR(path);
+  STR(host);
+  NUM(port);
   STR(camera_parameters);
   STR(serial);
   STR(sync_config);
@@ -322,7 +325,10 @@ bool supports(std::string_view field, App app) {
   if (field_in(field, {"version", "operation", "source", "source.kind"}))
     return true;
   if (field == "source.path")
-    return is_dataset(app) || is_one_of(app, {App::CodecMesh, App::GfxModel});
+    return is_dataset(app) ||
+           is_one_of(app, {App::CodecMesh, App::GfxModel, App::Player});
+  if (field_in(field, {"source.host", "source.port"}))
+    return app == App::Player;
   if (field_in(field,
                {"source.format", "source.camera_parameters", "source.preload"}))
     return is_dataset(app);
@@ -342,8 +348,8 @@ bool supports(std::string_view field, App app) {
                        "source.shell_voxels", "source.allow_holes"}))
     return app == App::CodecMesh;
   if (field == "fusion" || field == "fusion.voxel_size_m")
-    return !is_gfx(app) &&
-           !is_one_of(app, {App::CalibProjectPoint, App::CalibRig});
+    return !is_gfx(app) && !is_one_of(app, {App::CalibProjectPoint,
+                                            App::CalibRig, App::Player});
   if (field == "fusion.truncation_m")
     return is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::RigViewer,
                                               App::Scanner, App::CodecMesh});
@@ -373,11 +379,12 @@ bool supports(std::string_view field, App app) {
     return takes_codec(app);
   }
   if (field == "window" || field_in(field, {"window.width", "window.height"}))
-    return is_gfx(app) || is_one_of(app, {App::FuseRender, App::FuseViewer,
-                                          App::RigViewer, App::CalibRig});
-  if (field == "window.validation")
     return is_gfx(app) ||
-           is_one_of(app, {App::FuseViewer, App::RigViewer, App::CalibRig});
+           is_one_of(app, {App::FuseRender, App::FuseViewer, App::RigViewer,
+                           App::CalibRig, App::Player});
+  if (field == "window.validation")
+    return is_gfx(app) || is_one_of(app, {App::FuseViewer, App::RigViewer,
+                                          App::CalibRig, App::Player});
   if (field == "window.overlay")
     return is_one_of(
         app, {App::GfxImGui, App::GfxModel, App::FuseViewer, App::RigViewer});
@@ -408,7 +415,7 @@ bool supports(std::string_view field, App app) {
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
-           app == App::CodecMesh;
+           is_one_of(app, {App::CodecMesh, App::Player});
   if (field == "run.sets") return app == App::RigViewer;
   if (field == "run.first") return app == App::CodecMesh;
   if (field == "calibration") return app == App::CalibProjectPoint;
@@ -567,6 +574,18 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     if (has(state, "source.allow_holes") && c.source.sdf_mode == SdfMode::Shell)
       fail("source.allow_holes", "is not used by source.sdf_mode shell");
   }
+  if (app == App::Player) {
+    // A stream file, or a live sender's stream.
+    const bool path = has(state, "source.path");
+    const bool host = has(state, "source.host");
+    if (path && host) fail("source", "path and host are mutually exclusive");
+    if (!path && !host) fail("source", "path or host is required");
+    // The port is a field of its own, and the client speaks IPv4 alone.
+    if (c.source.host.find(':') != std::string::npos)
+      fail("source.host", "must not contain ':'; the port is source.port");
+    if (has(state, "source.port") && !host)
+      fail("source.port", "requires source.host");
+  }
   positive(c.fusion.voxel_size_m, "fusion.voxel_size_m");
   if (c.fusion.voxel_size_m > std::numeric_limits<float>::max() / 8.F)
     fail("fusion.voxel_size_m", "eight times the voxel size must be finite");
@@ -644,6 +663,9 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     fail("run.frames", "must be nonnegative");
   if (is_gfx(app) && c.run.frames < -1)
     fail("run.frames", "must be -1 or nonnegative");
+  // The player plays until its window closes unless it is given a count.
+  if (app == App::Player && has(state, "run.frames") && c.run.frames < 1)
+    fail("run.frames", "must be positive");
   nonnegative(c.run.sets, "run.sets");
   nonnegative(c.diagnostics.dump_sets, "diagnostics.dump_sets");
   path_check(c.diagnostics.dump_directory, "diagnostics.dump_directory");
@@ -749,7 +771,7 @@ void resolve(Config& c, App app, std::string_view directory,
 
 namespace {
 Config defaults_impl(Application application) {
-  if (static_cast<int>(application) < 0 || application > App::CalibRig)
+  if (static_cast<int>(application) < 0 || application > App::Player)
     fail("application", "unknown application");
   Config c;
   if (is_dataset(application)) {
@@ -814,6 +836,10 @@ Config defaults_impl(Application application) {
     c.source.depth_height = 576;
     c.source.fps = 25;
   }
+  if (application == App::Player) {
+    c.operation = Operation::View;
+    c.source.kind = SourceKind::Stream;
+  }
   return c;
 }
 
@@ -854,7 +880,7 @@ Result<Config> parse(std::string_view text, Application application,
               {"calibrate", Operation::Calibrate}});
     if (!json.contains("source") &&
         (is_dataset(application) || is_orbbec(application) ||
-         application == App::CodecMesh || application == App::Scanner))
+         is_one_of(application, {App::CodecMesh, App::Scanner, App::Player})))
       fail("source", "is required");
     if (const auto* v = r.take("source")) read_source(*v, c, state);
     if (const auto* v = r.take("fusion")) read_fusion(*v, c, state);
