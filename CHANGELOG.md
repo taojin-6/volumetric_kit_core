@@ -19,9 +19,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Migration
 
-- Nothing to change beyond the pin: on core 0.18.0, kernels built with
-  `KernelSetBuilder` use their device's cache. A pipeline made another way
-  may pass `device.pipeline_cache()` to `vkCreate*Pipelines`.
+- Nothing to change beyond the pin; a pipeline made another way may pass
+  `device.pipeline_cache()` to `vkCreate*Pipelines`.
 
 ## [0.17.0] - 2026-10-21
 
