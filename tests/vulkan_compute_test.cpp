@@ -7,6 +7,7 @@
 // pipeline argument checks use a valid device so its refusal cannot mask the
 // argument under test. Device tests run as vulkan_fixture.hpp describes.
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -296,6 +297,70 @@ TEST_F(ComputeTest, BuildsKernelsThatShareAPool) {
   ComputeKernel* self = &fill;
   fill = std::move(*self);
   EXPECT_TRUE(fill.valid());
+}
+
+// The bytes `device`'s pipeline cache holds: a header, then what the driver
+// keeps.
+std::size_t cache_bytes(const Device& device) {
+  std::size_t bytes = 0;
+  EXPECT_EQ(vkGetPipelineCacheData(device.handle(), device.pipeline_cache(),
+                                   &bytes, nullptr),
+            VK_SUCCESS);
+  return bytes;
+}
+
+// So a kernel every object of a type builds is compiled once per device.
+TEST_F(ComputeTest, BuildsKernelsThroughTheDevicesPipelineCache) {
+  // A device of the test's own, so its cache starts empty.
+  const Result<Device> made =
+      Device::create(instance(), physical(), requirements());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const Device& device = *made;
+  ASSERT_NE(device.pipeline_cache(), VK_NULL_HANDLE);
+  const std::size_t empty = cache_bytes(device);
+
+  const VkPushConstantRange push = range(sizeof(AddPush));
+  ComputeKernel first;
+  ComputeKernel again;
+  KernelSetBuilder builder(device);
+  ASSERT_TRUE(builder
+                  .add(first, "test_add", vkc_test_add_comp_spv,
+                       vkc_test_add_comp_spv_size, 1, &push)
+                  .ok());
+  const std::size_t one = cache_bytes(device);
+  ASSERT_TRUE(builder
+                  .add(again, "test_add", vkc_test_add_comp_spv,
+                       vkc_test_add_comp_spv_size, 1, &push)
+                  .ok());
+  EXPECT_EQ(cache_bytes(device), one);  // served from the cache
+
+  if (one == empty) {
+    // Vulkan lets a driver keep nothing in a cache (lavapipe keeps nothing):
+    // build straight through it to tell that from a builder that bypassed it.
+    Result<ShaderModule> shader = ShaderModule::create(
+        device.handle(),
+        // NOLINTNEXTLINE(*-reinterpret-cast)
+        reinterpret_cast<const std::uint32_t*>(vkc_test_add_comp_spv),
+        vkc_test_add_comp_spv_size);
+    ASSERT_TRUE(shader.ok()) << shader.status().message();
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+    VkComputePipelineCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info.stage.module = shader->handle();
+    info.stage.pName = "main";
+    info.layout = first.pipeline.layout();
+    VkPipeline direct = VK_NULL_HANDLE;
+    ASSERT_EQ(vkCreateComputePipelines(device.handle(), device.pipeline_cache(),
+                                       1, &info, nullptr, &direct),
+              VK_SUCCESS);
+    vkDestroyPipeline(device.handle(), direct, nullptr);
+    if (cache_bytes(device) == empty) {
+      GTEST_SKIP() << "the driver keeps nothing in a pipeline cache";
+    }
+  }
+  EXPECT_GT(one, empty);
 }
 
 TEST_F(ComputeTest, NamesTheKernelThatFailsToBuild) {

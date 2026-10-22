@@ -61,7 +61,7 @@ Result<ComputePipeline> ComputePipeline::create(
   pipeline_info.stage = stage;
   pipeline_info.layout = layout;
   VkPipeline pipeline = VK_NULL_HANDLE;
-  VKC_VK_TRY(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info,
+  VKC_VK_TRY(vkCreateComputePipelines(device, desc.cache, 1, &pipeline_info,
                                       nullptr, &pipeline));
 
   ComputePipeline result;

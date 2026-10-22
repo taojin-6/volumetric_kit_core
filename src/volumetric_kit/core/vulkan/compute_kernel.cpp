@@ -82,6 +82,7 @@ Status KernelSetBuilder::add(ComputeKernel& out, const char* name,
   desc.set_layout_count = 1;
   desc.push_ranges = push;
   desc.push_range_count = push != nullptr ? 1U : 0U;
+  desc.cache = device_->pipeline_cache();
   VKC_TRY(assign_named(kernel.pipeline,
                        ComputePipeline::create(device_->handle(), desc), name));
 

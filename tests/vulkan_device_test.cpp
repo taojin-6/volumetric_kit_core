@@ -189,6 +189,7 @@ TEST_F(DeviceTest, CreatesAnOwnedDeviceWithAComputeQueue) {
   EXPECT_EQ(device.caps().api_version(), physical().api_version());
   EXPECT_FALSE(device.has_present());
   EXPECT_NE(device.submit_mutex(), nullptr);
+  EXPECT_NE(device.pipeline_cache(), VK_NULL_HANDLE);
 }
 
 TEST_F(DeviceTest, RefusesAMissingRequiredExtension) {
@@ -523,6 +524,7 @@ TEST_F(DeviceTest, MovesLeaveTheSourceEmpty) {
   ASSERT_TRUE(made.ok()) << made.status().message();
   Device first = *std::move(made);
   VkDevice handle = first.handle();
+  VkPipelineCache cache = first.pipeline_cache();
   ASSERT_TRUE(first.submit_single_time(record_barrier).ok());
 
   Device second = std::move(first);
@@ -530,8 +532,10 @@ TEST_F(DeviceTest, MovesLeaveTheSourceEmpty) {
   // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(first.handle(), VK_NULL_HANDLE);
   EXPECT_EQ(first.queue(), VK_NULL_HANDLE);
+  EXPECT_EQ(first.pipeline_cache(), VK_NULL_HANDLE);
   // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(second.handle(), handle);
+  EXPECT_EQ(second.pipeline_cache(), cache);
   EXPECT_TRUE(second.submit_single_time(record_barrier).ok());
 
   Result<Device> other = Device::create(instance(), physical(), {});
@@ -637,6 +641,9 @@ TEST_F(DeviceTest, AdoptsADeviceWithoutOwningIt) {
     EXPECT_EQ(borrowed->handle(), raw.device);
     EXPECT_EQ(borrowed->queue(), raw.queue);
     EXPECT_EQ(borrowed->submit_mutex(), &shared);
+    // Its own, destroyed with it: one left behind is reported as the
+    // embedder destroys the VkDevice.
+    EXPECT_NE(borrowed->pipeline_cache(), VK_NULL_HANDLE);
     EXPECT_TRUE(borrowed->submit_single_time(record_barrier).ok());
   }
   // The borrowed device is gone; the VkDevice is still the embedder's.
