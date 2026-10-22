@@ -84,13 +84,13 @@ Leave the default `VKC_TEST_SHARDS=0` for one CTest entry per case and
 
 ## Changing a public API
 
-Four repositories build on this one. A change to an installed header or to the
-CMake package needs:
+Four repositories build on this one. A change to a public header or to the
+CMake a consumer sees needs:
 
 - a CHANGELOG entry that says how a consumer migrates, and the version bump
   that releases it (DECISIONS.md, "Consumers pin, and an application declares
   the core first");
-- the package-consumer check CI runs (`tests/package_consumer/`);
+- the consumer check CI runs (`tests/consumer/`);
 - the consumers' migration as tasks in their own repositories, each bumping its
   pin.
 

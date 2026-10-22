@@ -61,15 +61,19 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-      # A consumer that builds the core as a subproject with VKC_SANITIZE: its
-      # own targets must get the flags too, or linking the sanitized static
-      # core fails (cmake/vkc_sanitizers.cmake).
+      # The one check of the core as a sibling builds it (tests/consumer/), as a
+      # subproject with every tier, the test support and GPU tests, here because
+      # it also checks VKC_SANITIZE: the consumer's own targets must get the
+      # flags too, or linking the sanitized static core fails
+      # (cmake/vkc_sanitizers.cmake).
       - name: Consume via add_subdirectory, sanitized
         run: |
-          cmake -S tests/package_consumer -B build-consumer-sanitized \
+          cmake -S tests/consumer -B build-consumer \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD" \
-            -DVKC_WITH_VULKAN=ON -DVKC_SANITIZE="address;undefined"
-          cmake --build build-consumer-sanitized
-          ./build-consumer-sanitized/vkc_package_consumer
+            -DVKC_SOURCE_DIR="$PWD" -DVKC_WITH_VULKAN=ON -DVKC_WITH_CONFIG=ON \
+            -DVKC_SANITIZE="address;undefined"
+          cmake --build build-consumer --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
+          ./build-consumer/vkc_consumer
+          ./build-consumer/vkc_consumer_gpu_test
+          ./build-consumer/vkc_consumer_policy_test

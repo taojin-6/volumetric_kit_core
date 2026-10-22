@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Removed
+
+- The install rules and the package config: `find_package(volumetric_kit_core)`,
+  `VKC_INSTALL` and `vkc_require_core`'s `PACKAGE` mode. The family consumes
+  the core by commit only (DECISIONS.md, "Consumers pin, and an application
+  declares the core first").
+
+### Migration
+
+- Add the core with FetchContent (or `add_subdirectory`) at a pinned commit.
+  A sibling that installs targets linking the core PUBLIC drops its install
+  rules and package config with its next pin bump: CMake can no longer
+  generate their export, and `vkc_require_core(... PACKAGE ...)` fails as a
+  usage error. `set(VKC_INSTALL ...)` is ignored.
+
 ## [0.17.0] - 2026-10-21
 
 ### Added

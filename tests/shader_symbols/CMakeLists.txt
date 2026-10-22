@@ -8,8 +8,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(vkc_shader_symbols LANGUAGES CXX)
 
-# The shader functions as the installed package config gives them, with the GLSL
-# compiler FindVulkan reports.
+# The shader functions alone, with the GLSL compiler FindVulkan reports.
 find_package(Vulkan)
 include("${VKC_SOURCE_DIR}/cmake/vkc_shaders.cmake")
 

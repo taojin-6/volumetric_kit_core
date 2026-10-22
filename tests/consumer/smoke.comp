@@ -1,0 +1,8 @@
+#version 450
+
+// The consumer's shader: proves vkc_embed_shaders reaches a project that adds
+// the core. Never dispatched.
+
+layout(local_size_x = 1) in;
+
+void main() {}

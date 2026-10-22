@@ -1,9 +1,8 @@
 name: build
 
 # One build leg, Release and static as the siblings build the core: configure,
-# build and test, then install and consume the package the two ways the
-# sibling repos do (find_package against the install, add_subdirectory against
-# the checkout). Invoked by ci.yml, which owns the triggers and the matrix.
+# build and test, then build the base tier alone. Invoked by ci.yml, which owns
+# the triggers and the matrix.
 on:
   workflow_call:
     inputs:
@@ -81,48 +80,9 @@ jobs:
           DYLD_LIBRARY_PATH: ${{ env.VKC_LAYER_LIBRARY_PATH }}
         run: ctest --test-dir build --output-on-failure
 
-      - name: Install
-        run: cmake --install build --prefix "$PWD/stage"
-
-      - name: Consume via find_package
-        run: |
-          cmake -S tests/package_consumer -B build-consumer-package \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DVKC_CONSUME=find_package -DCMAKE_PREFIX_PATH="$PWD/stage"
-          cmake --build build-consumer-package
-          ./build-consumer-package/vkc_package_consumer
-
-      - name: Consume via add_subdirectory
-        run: |
-          cmake -S tests/package_consumer -B build-consumer-subdir \
-            -DCMAKE_BUILD_TYPE=Release -DVKC_WITH_VULKAN=ON -DVKC_WITH_CONFIG=ON \
-            -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD"
-          cmake --build build-consumer-subdir
-          ./build-consumer-subdir/vkc_package_consumer
-          # A sibling's GPU tests on the core's test support.
-          DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
-            ./build-consumer-subdir/vkc_package_consumer_gpu_test
-          DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
-            ./build-consumer-subdir/vkc_package_consumer_policy_test
-          # Like a sibling's install: its exported library plus the core.
-          cmake --install build-consumer-subdir --prefix "$PWD/stage-consumer"
-
       - name: Base-only build has no JSON or GPU dependency
         run: |
           cmake -S . -B build-base -DCMAKE_BUILD_TYPE=Release \
             -DVKC_WITH_VULKAN=OFF -DVKC_WITH_CONFIG=OFF -DVKC_BUILD_TESTS=OFF
           cmake --build build-base --parallel 2
-          cmake --install build-base --prefix "$PWD/stage-base"
           test ! -d build-base/_deps/nlohmann_json-src
-          test ! -d stage-base/include/volumetric_kit/core/config
-          cmake -S tests/package_consumer -B consumer-base-package \
-            -DCMAKE_BUILD_TYPE=Release -DVKC_CONSUME=find_package \
-            -DCMAKE_PREFIX_PATH="$PWD/stage-base" -DVKC_CONSUMER_GTEST=OFF
-          cmake --build consumer-base-package --parallel 2
-          ./consumer-base-package/vkc_package_consumer
-          cmake -S tests/package_consumer -B consumer-base-source \
-            -DCMAKE_BUILD_TYPE=Release -DVKC_CONSUME=subdirectory \
-            -DVKC_SOURCE_DIR="$PWD" -DVKC_WITH_VULKAN=OFF -DVKC_WITH_CONFIG=OFF \
-            -DVKC_CONSUMER_GTEST=OFF
-          cmake --build consumer-base-source --parallel 2
-          ./consumer-base-source/vkc_package_consumer

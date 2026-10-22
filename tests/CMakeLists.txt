@@ -435,17 +435,16 @@ if(VKC_WITH_VULKAN)
   endforeach()
 
   # A sibling without googletest, whose tests are main()s of their own, asks for
-  # the test support and links core_test_policy alone: the package consumer,
-  # configured that way, generates. Configure only, with the VMA this build
-  # fetched.
+  # the test support and links core_test_policy alone: the consumer, configured
+  # that way, generates. Configure only, with the VMA this build fetched.
   include(FetchContent)
   FetchContent_GetProperties(VulkanMemoryAllocator SOURCE_DIR _vkc_vma_source)
   add_test(
     NAME vkc_testing_policy_needs_no_googletest
     COMMAND
-      "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/package_consumer" -B
-      "${CMAKE_CURRENT_BINARY_DIR}/policy_consumer" -G "${CMAKE_GENERATOR}"
-      "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}" -DVKC_CONSUME=subdirectory
+      "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/consumer" -B
+      "${CMAKE_CURRENT_BINARY_DIR}/vkc_testing_policy_needs_no_googletest" -G
+      "${CMAKE_GENERATOR}" "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
       "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" -DVKC_WITH_VULKAN=ON
       -DVKC_CONSUMER_GTEST=OFF
       "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}")
@@ -642,245 +641,55 @@ foreach(_vkc_shared OFF ON)
 endforeach()
 
 # vkc_require_core and vkc_core_version (cmake/vkc_require_core.cmake), as a
-# sibling calls them: the package consumer, on the core as a subproject (its
-# base tier alone) and, with install rules, as an installed package (this build,
-# installed to a stage). Requiring this version must configure and read it back;
-# requiring the next minor, or the vulkan tier from a core without it, must fail
+# sibling calls them: the consumer, on the core as a subproject (its base tier
+# alone). Requiring this version must configure and read it back; requiring the
+# next minor, or the vulkan or config tier from a core without it, must fail
 # naming what was found and the fix. Configure only.
 math(EXPR _vkc_next_minor "${PROJECT_VERSION_MINOR} + 1")
 set(_vkc_too_new "${PROJECT_VERSION_MAJOR}.${_vkc_next_minor}.0")
-set(_vkc_stage "${CMAKE_CURRENT_BINARY_DIR}/require_core_stage")
-set(_vkc_consumes subdirectory)
-if(VKC_INSTALL)
-  list(APPEND _vkc_consumes find_package)
-  add_test(NAME vkc_require_core_install
-           COMMAND "${CMAKE_COMMAND}" --install "${PROJECT_BINARY_DIR}"
-                   --config "$<CONFIG>" --prefix "${_vkc_stage}")
-  set_tests_properties(vkc_require_core_install
-                       PROPERTIES FIXTURES_SETUP vkc_require_core_stage)
-endif()
 _vkc_message_regex(
   _vkc_read
   "volumetric_kit_core ${PROJECT_VERSION} (MAJOR.MINOR ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})"
 )
-foreach(_vkc_consume IN LISTS _vkc_consumes)
-  if(_vkc_consume STREQUAL "subdirectory")
-    set(_vkc_core "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
-                  -DVKC_WITH_VULKAN=OFF)
-    set(_vkc_has_vulkan OFF)
-    set(_vkc_has_config OFF)
-    set(_vkc_origin "the core at")
-    set(_vkc_fix "pin v${_vkc_too_new} or newer")
-    set(_vkc_tier_fix "set VKC_WITH_VULKAN ON before")
+foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan config)
+  set(_vkc_name vkc_require_core_${_vkc_require})
+  string(TOUPPER "${_vkc_require}" _vkc_tier)
+  if(_vkc_require MATCHES "^(vulkan|config)$")
+    set(_vkc_args -DVKC_CONSUMER_REQUIRE=${PROJECT_VERSION}
+                  -DVKC_CONSUMER_REQUIRE_${_vkc_tier}=ON)
   else()
-    set(_vkc_core "-DCMAKE_PREFIX_PATH=${_vkc_stage}")
-    set(_vkc_has_vulkan ${VKC_WITH_VULKAN})
-    set(_vkc_has_config ${VKC_WITH_CONFIG})
-    set(_vkc_origin "the core installed at")
-    set(_vkc_fix "install volumetric_kit_core ${_vkc_too_new} or newer")
-    set(_vkc_tier_fix "install one built with VKC_WITH_VULKAN ON")
+    set(_vkc_args -DVKC_CONSUMER_REQUIRE=${_vkc_require})
   endif()
-  foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan config)
-    set(_vkc_name vkc_require_core_${_vkc_consume}_${_vkc_require})
-    if(_vkc_require STREQUAL "vulkan")
-      set(_vkc_args -DVKC_CONSUMER_REQUIRE=${PROJECT_VERSION}
-                    -DVKC_CONSUMER_REQUIRE_VULKAN=ON)
-    elseif(_vkc_require STREQUAL "config")
-      set(_vkc_args -DVKC_CONSUMER_REQUIRE=${PROJECT_VERSION}
-                    -DVKC_CONSUMER_REQUIRE_CONFIG=ON)
-    else()
-      set(_vkc_args -DVKC_CONSUMER_REQUIRE=${_vkc_require})
-    endif()
-    add_test(
-      NAME ${_vkc_name}
-      COMMAND
-        "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/package_consumer" -B
-        "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
-        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-        -DVKC_CONSUME=${_vkc_consume} ${_vkc_core} ${_vkc_args})
-    if(_vkc_require STREQUAL _vkc_too_new)
-      _vkc_message_regex(
-        _vkc_head
-        "needs volumetric_kit_core ${_vkc_too_new} or newer, but ${_vkc_origin}"
-      )
-      _vkc_message_regex(_vkc_tail "is ${PROJECT_VERSION}: ${_vkc_fix}")
-      set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
-    elseif(_vkc_require STREQUAL "vulkan" AND NOT _vkc_has_vulkan)
-      _vkc_message_regex(
-        _vkc_head
-        "needs volumetric_kit_core's vulkan tier, which ${_vkc_origin}")
-      _vkc_message_regex(_vkc_tail "was built without: ${_vkc_tier_fix}")
-      set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
-    elseif(_vkc_require STREQUAL "config" AND NOT _vkc_has_config)
-      _vkc_message_regex(_vkc_pass "needs volumetric_kit_core's config tier")
-    else()
-      # The version read back, and a configure that finished.
-      set(_vkc_pass "${_vkc_read}.+Generating done")
-      set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
-                                                   "CMake Error")
-    endif()
-    set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
-                                                 "${_vkc_pass}")
-    if(_vkc_consume STREQUAL "find_package")
-      set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
-                                                   vkc_require_core_stage)
-    endif()
-  endforeach()
-endforeach()
-
-# The same check in a sibling's package config (require_core_package/), with
-# PACKAGE, against the stage: a core too old, or one without the vulkan tier,
-# leaves the sibling not found, the message naming it, and the config read no
-# further; the consumer's configure finishes unless it found the sibling
-# REQUIRED. After the consumer adds the core itself (VKC_SIBLING_CORE_FIRST),
-# the sibling is found and the consumer's own vkc_require_core passes. A core
-# added from source gets this build's tiers, so the stage's targets file finds
-# them all defined, and this build's fetched VMA and nlohmann_json, so it
-# downloads nothing. A refusal then names it: the stage's copy of
-# vkc_require_core.cmake leaves its commands in place.
-_vkc_message_regex(_vkc_past "read past vkc_require_core")
-if(VKC_INSTALL)
-  set(_vkc_source_core
-      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
-      -DVKC_WITH_VULKAN=${VKC_WITH_VULKAN} -DVKC_WITH_CONFIG=${VKC_WITH_CONFIG})
-  if(VKC_WITH_VULKAN)
-    list(APPEND _vkc_source_core
-         "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}")
-  endif()
-  if(VKC_WITH_CONFIG)
-    FetchContent_GetProperties(nlohmann_json SOURCE_DIR _vkc_json_source)
-    list(APPEND _vkc_source_core
-         "-DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=${_vkc_json_source}")
-  endif()
-  foreach(
-    _vkc_require
-    ${PROJECT_VERSION}
-    ${_vkc_too_new}
-    vulkan
-    required
-    after_find_package
-    after_subdirectory
-    refused_after_subdirectory)
-    set(_vkc_name vkc_require_core_package_${_vkc_require})
-    set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_require})
-    if(_vkc_require STREQUAL "vulkan")
-      set(_vkc_args -DVKC_SIBLING_REQUIRE=${PROJECT_VERSION}
-                    -DVKC_SIBLING_REQUIRE_VULKAN=ON)
-    elseif(_vkc_require STREQUAL "required")
-      set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_too_new}
-                    -DVKC_SIBLING_REQUIRED=ON)
-    elseif(_vkc_require STREQUAL "after_find_package")
-      set(_vkc_args -DVKC_SIBLING_REQUIRE=${PROJECT_VERSION}
-                    -DVKC_SIBLING_CORE_FIRST=find_package)
-    elseif(_vkc_require STREQUAL "after_subdirectory")
-      set(_vkc_args -DVKC_SIBLING_REQUIRE=${PROJECT_VERSION}
-                    -DVKC_SIBLING_CORE_FIRST=subdirectory ${_vkc_source_core})
-    elseif(_vkc_require STREQUAL "refused_after_subdirectory")
-      set(_vkc_args -DVKC_SIBLING_REQUIRE=${_vkc_too_new}
-                    -DVKC_SIBLING_CORE_FIRST=subdirectory ${_vkc_source_core})
-    endif()
-    add_test(
-      NAME ${_vkc_name}
-      COMMAND
-        "${CMAKE_COMMAND}" -S
-        "${CMAKE_CURRENT_SOURCE_DIR}/require_core_package" -B
-        "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
-        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-        "-DCMAKE_PREFIX_PATH=${_vkc_stage}" ${_vkc_args})
-    set_tests_properties(${_vkc_name} PROPERTIES FIXTURES_REQUIRED
-                                                 vkc_require_core_stage)
-    if(_vkc_require STREQUAL "refused_after_subdirectory")
-      _vkc_message_regex(
-        _vkc_pass
-        "vkc_sibling not found: vkc_sibling needs volumetric_kit_core ${_vkc_too_new} or newer, but the core at ${PROJECT_SOURCE_DIR} is ${PROJECT_VERSION}"
-      )
-      set(_vkc_fail "${_vkc_past}|required the core itself")
-    elseif(_vkc_require MATCHES "^after_")
-      set(_vkc_pass
-          "${_vkc_past}.+vkc_sibling found.+required the core itself.+Generating done"
-      )
-      set(_vkc_fail "CMake Error")
-    elseif(_vkc_require STREQUAL PROJECT_VERSION
-           OR (_vkc_require STREQUAL "vulkan" AND VKC_WITH_VULKAN))
-      set(_vkc_pass "${_vkc_past}.+vkc_sibling found.+Generating done")
-      set(_vkc_fail "CMake Error")
-    else()
-      if(_vkc_require STREQUAL "vulkan")
-        _vkc_message_regex(
-          _vkc_head
-          "vkc_sibling needs volumetric_kit_core's vulkan tier, which the core installed at"
-        )
-        _vkc_message_regex(
-          _vkc_tail
-          "was built without: install one built with VKC_WITH_VULKAN ON")
-      else()
-        _vkc_message_regex(
-          _vkc_head
-          "vkc_sibling needs volumetric_kit_core ${_vkc_too_new} or newer, but the core installed at"
-        )
-        _vkc_message_regex(
-          _vkc_tail
-          "is ${PROJECT_VERSION}: install volumetric_kit_core ${_vkc_too_new} or newer"
-        )
-      endif()
-      # The fix ends at the prefix: the package config found this core, not
-      # FetchContent.
-      _vkc_message_regex(
-        _vkc_end
-        "and point CMAKE_PREFIX_PATH or volumetric_kit_core_DIR at it.")
-      set(_vkc_pass "${_vkc_head}.+${_vkc_tail}[ \n]+${_vkc_end}")
-      set(_vkc_fail "${_vkc_past}")
-      if(_vkc_require STREQUAL "required")
-        _vkc_message_regex(_vkc_reason "Reason given by package:")
-        set(_vkc_pass "${_vkc_reason}.+${_vkc_pass}")
-      else()
-        set(_vkc_pass "vkc_sibling not found: ${_vkc_pass}.+Generating done")
-        string(APPEND _vkc_fail "|CMake Error")
-      endif()
-    endif()
-    set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
-                                                 "${_vkc_pass}")
-    set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
-                                                 "${_vkc_fail}")
-  endforeach()
-endif()
-
-# The core added from source, then an installed copy older than 0.6.1 read by
-# the sibling's config (require_core_package/pre_0_6_1/), which defines the
-# commands again: requiring this version, the sibling is found and the
-# consumer's own call passes; requiring the next minor, the sibling is left not
-# found, its config read no further, and the consumer's own call fails.
-foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new})
-  set(_vkc_name vkc_require_core_package_pre_0_6_1_${_vkc_require})
   add_test(
     NAME ${_vkc_name}
     COMMAND
-      "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/require_core_package"
-      -B "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+      "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/consumer" -B
+      "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
       "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-      "-DCMAKE_PREFIX_PATH=${CMAKE_CURRENT_SOURCE_DIR}/require_core_package/pre_0_6_1"
-      -DVKC_SIBLING_REQUIRE=${_vkc_require}
-      -DVKC_SIBLING_CORE_FIRST=subdirectory
-      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}")
-  if(_vkc_require STREQUAL PROJECT_VERSION)
-    set(_vkc_pass
-        "${_vkc_past}.+vkc_sibling found.+required the core itself.+Generating done"
-    )
-    set(_vkc_fail "CMake Error")
-  else()
+      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" -DVKC_WITH_VULKAN=OFF
+      ${_vkc_args})
+  if(_vkc_require STREQUAL _vkc_too_new)
     _vkc_message_regex(
       _vkc_head
-      "vkc_sibling not found: vkc_sibling needs volumetric_kit_core ${_vkc_too_new} or newer"
-    )
-    _vkc_message_regex(
-      _vkc_tail
-      "vkc_sibling_consumer needs volumetric_kit_core ${_vkc_too_new} or newer")
+      "needs volumetric_kit_core ${_vkc_too_new} or newer, but the core at")
+    _vkc_message_regex(_vkc_tail
+                       "is ${PROJECT_VERSION}: pin v${_vkc_too_new} or newer")
     set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
-    set(_vkc_fail "${_vkc_past}|required the core itself")
+  elseif(_vkc_require MATCHES "^(vulkan|config)$")
+    _vkc_message_regex(
+      _vkc_head
+      "needs volumetric_kit_core's ${_vkc_require} tier, which the core at")
+    _vkc_message_regex(_vkc_tail
+                       "was built without: set VKC_WITH_${_vkc_tier} ON before")
+    set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
+  else()
+    # The version read back, and a configure that finished.
+    set(_vkc_pass "${_vkc_read}.+Generating done")
+    set_tests_properties(${_vkc_name} PROPERTIES FAIL_REGULAR_EXPRESSION
+                                                 "CMake Error")
   endif()
-  set_tests_properties(
-    ${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION "${_vkc_pass}"
-                            FAIL_REGULAR_EXPRESSION "${_vkc_fail}")
+  set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                               "${_vkc_pass}")
 endforeach()
 
 # The same functions misused, or called before the core is added, must say so.
@@ -894,32 +703,19 @@ endfunction()
 _vkc_call_test(
   vkc_require_core_usage
   "vkc_require_core(0.1.0 VULKAN TOOLS)"
-  "vkc_require_core(0.1.0 VULKAN TOOLS): use vkc_require_core(<min-version> [VULKAN] [PACKAGE <package>])"
+  "vkc_require_core(0.1.0 VULKAN TOOLS): use vkc_require_core(<min-version> [VULKAN] [CONFIG])"
 )
 _vkc_call_test(
-  vkc_require_core_no_version
-  "vkc_require_core()"
-  "vkc_require_core(): use vkc_require_core(<min-version> [VULKAN] [PACKAGE <package>])"
-)
-_vkc_call_test(
-  vkc_require_core_package_usage
-  "vkc_require_core(0.1.0 PACKAGE)"
-  "vkc_require_core(0.1.0 PACKAGE): use vkc_require_core(<min-version> [VULKAN] [PACKAGE <package>])"
-)
-_vkc_call_test(
-  vkc_require_core_package_outside_config
-  "vkc_require_core(0.1.0 PACKAGE vkc_sibling)"
-  "vkc_require_core(0.1.0 PACKAGE vkc_sibling): PACKAGE vkc_sibling is for vkc_sibling's package config"
-)
+  vkc_require_core_no_version "vkc_require_core()"
+  "vkc_require_core(): use vkc_require_core(<min-version> [VULKAN] [CONFIG])")
 _vkc_call_test(
   vkc_core_version_usage "vkc_core_version(_v MAJOR)"
   "vkc_core_version(_v MAJOR): use vkc_core_version(<out> [MAJOR_MINOR])")
 _vkc_call_test(vkc_core_version_before_core "vkc_core_version(_v)"
                "vkc_core_version(_v): no volumetric_kit::core_base here")
 
-# Beyond these configure tests, CI builds and runs package_consumer/ against an
-# installed copy (find_package) and against the source tree (add_subdirectory),
-# the two ways the sibling repos consume this one.
+# Beyond these configure tests, CI builds and runs consumer/ on the core as a
+# subproject, as the sibling repos consume this one.
 
 if(VKC_WITH_CONFIG)
   add_executable(vkc_config_test config_test.cpp)

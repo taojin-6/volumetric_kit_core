@@ -85,8 +85,8 @@ cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
 ```
 
 `cmake/vkc_ios.cmake` does the rest (DECISIONS.md, the 2026-10-19 entry).
-The installed package is not supported on iOS. On macOS, the tier's tests
-also need full Xcode with its iOS platform, since some configure for iOS.
+On macOS, the tier's tests also need full Xcode with its iOS platform, since
+some configure for iOS.
 
 ## Build and test
 
@@ -98,10 +98,9 @@ ctest --test-dir "$core_root/build" --output-on-failure
 ```
 
 `VKC_BUILD_TESTS` and `VKC_WARNINGS_AS_ERRORS` default ON only when this is
-the top-level project; `VKC_INSTALL` defaults ON everywhere (see below).
-`VKC_SANITIZE` is a semicolon list, empty by default, e.g.
-`-DVKC_SANITIZE="address;undefined"`; in a subproject build it also reaches
-the consumer's targets that link the core.
+the top-level project. `VKC_SANITIZE` is a semicolon list, empty by default,
+e.g. `-DVKC_SANITIZE="address;undefined"`; in a subproject build it also
+reaches the consumer's targets that link the core.
 
 The vulkan tier's device tests run on the best device present and skip when
 there is none. Three environment variables tighten them, and CI sets all
@@ -132,7 +131,9 @@ in the process.
 ## Use it in your project
 
 Pin a release tag or a commit SHA -- never `main` -- so every consumer builds
-the same core, and require the oldest version your project builds with:
+the same core, and require the oldest version your project builds with. The
+core installs nothing: a project builds it from the commit it pins
+(DECISIONS.md, "Consumers pin, and an application declares the core first").
 
 ```cmake
 include(FetchContent)
@@ -146,35 +147,25 @@ vkc_require_core(0.1.0)
 target_link_libraries(your_target PRIVATE volumetric_kit::core_base)
 ```
 
-or, against an installed copy, `find_package(volumetric_kit_core CONFIG)`
-followed by the same `vkc_require_core`. It fails the configure, naming the
-version found, the version required and how to move the pin, when the core is
-older -- an installed one, or one an application declared first (below). A
-core older than 0.1.0 has no `vkc_require_core`, so the call stops as an
-unknown command: move the first-declared pin, or the installed core, to 0.1.0
-or newer. For the vulkan tier, set `VKC_WITH_VULKAN` ON before
-`FetchContent_MakeAvailable`, require it with `vkc_require_core(0.1.0 VULKAN)`
-and link `volumetric_kit::core_vulkan`. Either way, `vkc_embed_shaders` then
-compiles a target's GLSL and embeds the SPIR-V as headers
-(`cmake/vkc_shaders.cmake` documents its options):
+`vkc_require_core` fails the configure, naming the version found, the version
+required and how to move the pin, when the core is older, as one an
+application declared first (below) may be. A core older than 0.1.0 has no
+`vkc_require_core`, so the call stops as an unknown command: move the
+first-declared pin to 0.1.0 or newer. For the vulkan tier, set
+`VKC_WITH_VULKAN` ON before `FetchContent_MakeAvailable`, require it with
+`vkc_require_core(0.1.0 VULKAN)` and link `volumetric_kit::core_vulkan`.
+`vkc_embed_shaders` then compiles a target's GLSL and embeds the SPIR-V as
+headers (`cmake/vkc_shaders.cmake` documents its options):
 
 ```cmake
 vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp)
 # your sources: #include "integrate_comp.spv.hpp" -> your_integrate_comp_spv[]
 ```
 
-A consumer that installs and exports its own targets installs the core beside
-them (the core's install rules stay on in a subproject), and its package config
-must `find_dependency(volumetric_kit_core <MAJOR.MINOR>)`, the version
-`vkc_core_version(<var> MAJOR_MINOR)` reads, then
-`vkc_require_core(<version> [VULKAN] PACKAGE <its package>)`. With `PACKAGE`,
-a core too old or without the tier leaves that package not found, as a failed
-`find_dependency` does: the message names the package and the config stops,
-so an optional `find_package` of it, or FetchContent looking for an installed
-copy before it builds one, carries on without it. One that links the core into
-a shared library or framework builds the core shared too
-(`BUILD_SHARED_LIBS=ON`): the log handler is process-global, and each binary
-linking a static core gets its own (DECISIONS.md, "One instance per process").
+A consumer that links the core into a shared library or framework builds the
+core shared too (`BUILD_SHARED_LIBS=ON`): the log handler is process-global,
+and each binary linking a static core gets its own (DECISIONS.md, "One
+instance per process").
 
 Libraries submitting directly use `check_timeline_points` before submission
 and `note_timeline_signals` after success (`vulkan/sync.hpp`). For timeline
@@ -187,7 +178,7 @@ waits and other queue dependencies remain the submitter's responsibility.
 
 A sibling's Vulkan tests apply the variables above through the core's test
 support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
-`FetchContent_MakeAvailable`; an installed core has none.
+`FetchContent_MakeAvailable`.
 
 - A GoogleTest suite provides googletest (`GTest::gtest`), links
   `volumetric_kit::core_test_support`, and derives from `test::VulkanTest`

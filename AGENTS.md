@@ -42,7 +42,7 @@ not among them, in [DECISIONS.md](DECISIONS.md#tiers).
   C++ bindings own `namespace vk`).
 - Headers: `include/volumetric_kit/core/<tier>/…`, e.g.
   `#include "volumetric_kit/core/base/result.hpp"`
-- CMake: `find_package(volumetric_kit_core)`; targets
+- CMake: `FetchContent_MakeAvailable(volumetric_kit_core)`; targets
   `volumetric_kit::core_base`, `…_vulkan`; umbrella `volumetric_kit::core`;
   functions `vkc_*` (`vkc_require_core`, `vkc_embed_shaders`).
 - Test support: `volumetric_kit::core_test_policy` and `…_test_support` in
@@ -131,9 +131,9 @@ bash "$core_root/tools/runners/tests/test_homebrew_key.sh"
   them; a suppression is a targeted `NOLINT(check)` with its reason. Set the
   build type explicitly and report it with measurements.
 - For code changes, build affected targets and run relevant tests, with
-  regression coverage for changed behavior. A change to an installed header or
-  to the CMake package also needs the package-consumer check CI runs
-  (`tests/package_consumer/`, both `find_package` and `add_subdirectory`).
+  regression coverage for changed behavior. A change to a public header or to
+  the CMake a consumer sees also needs the consumer check CI runs
+  (`tests/consumer/`, the core as a subproject).
 - The vulkan tier's device tests skip without a device. Run them with
   `VKC_REQUIRE_VULKAN_DEVICE=1` so a skip fails, and `VKC_TEST_VALIDATION=1`
   and `VKC_TEST_SYNC_VALIDATION=1` so a validation error fails

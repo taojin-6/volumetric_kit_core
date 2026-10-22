@@ -153,10 +153,9 @@ V1's choices, from comparing the two cores on 2026-10-03:
   ("Vulkan headers come from the system", below).
 - **`VKC_WITH_VULKAN` is opt-in for a subproject.** ON at the top level, OFF
   when fetched: recon and gfx set it, and calib, which fetches the core for
-  its error types, then needs no Vulkan installed. An installed core ships the
-  tier's headers only with its library, and re-finds Vulkan only then. CI
-  builds the tier on every leg, as calib will take it too; until then,
-  calib's own CI is the build without Vulkan installed.
+  its error types, then needs no Vulkan installed. CI builds the tier on
+  every leg, as calib will take it too; until then, calib's own CI is the
+  build without Vulkan installed.
 - **CI without GPUs, but not without devices.** The hosted Linux legs run the
   device tests on lavapipe with `VKC_REQUIRE_VULKAN_DEVICE=1`, so a missing
   device fails instead of skipping; the sanitizer job adds the validation
@@ -279,10 +278,9 @@ V3's choices, from the same comparison (gfx has no compute):
   `--scalar-block-layout`) cover the differences. `SYMBOL_PREFIX` is
   required: the arrays are inline variables, which the linker merges by name,
   so two libraries' `fill.comp` would otherwise share one shader. The
-  functions are defined when the core is added, and installed beside the
-  package config, which includes them. Each rule belongs to one target --
-  `vkc_embed_shaders` compiles and embeds under one -- as a rule two targets
-  reach races under Make and is refused by Xcode. Headers and symbols are
+  functions are defined when the core is added. Each rule belongs to one
+  target -- `vkc_embed_shaders` compiles and embeds under one -- as a rule
+  two targets reach races under Make and is refused by Xcode. Headers and symbols are
   named for the file name made a C identifier, and two names that make one
   are refused. An INTERFACE library shares one compile among the targets
   that link it. A shader that fails `spirv-val` fails every build until
@@ -769,9 +767,7 @@ without it; and a `"vulkan"` error fails the running test.
   them; one it leaks is reported as the shared device is destroyed, failing
   the run rather than the test. Requirements carrying a `feature_chain`
   cannot be compared, so a fixture asking for one fails rather than share.
-- **From source only.** Neither target is installed or exported, so an
-  installed core carries no googletest. Static, so the shared objects are the
-  test binary's own.
+- **Static**, so the shared objects are the test binary's own.
 - **The layer's settings through its environment variables**, which it reads
   as an instance is created: set while a fixture's instance is made, and for
   the whole run under `VKC_TEST_SYNC_VALIDATION`, so an instance a test makes
@@ -822,41 +818,39 @@ them. A public API change here lands with a CHANGELOG entry that says how to
 migrate.
 
 - **The version moves with the API.** `project(VERSION)` is the core's one
-  version: the generated `version.hpp`, the package version file, the soname
-  and `vkc_require_core` / `vkc_core_version` all take it. Before 1.0, a PR
+  version: the generated `version.hpp`, the soname and `vkc_require_core` /
+  `vkc_core_version` all take it. Before 1.0, a PR
   that changes the public API or ABI bumps the minor version (`0.1.0` →
   `0.2.0`), and one that changes only behaviour a sibling relies on bumps the
   patch. The PR moves the CHANGELOG's `[Unreleased]` entries under the new
   version, and its merge commit is tagged `v<version>`. A version then names
   one API, whether a sibling pins the tag or the SHA.
 - **Each sibling requires the oldest core it builds with**, and the tiers it
-  uses, by calling `vkc_require_core(<version> [VULKAN])` after
-  `FetchContent_MakeAvailable` or `find_package`. Its pin yields to an
-  application's, and FetchContent may find an installed core instead, so the
+  uses, by calling `vkc_require_core(<version> [VULKAN] [CONFIG])` after
+  `FetchContent_MakeAvailable`. Its pin yields to an application's, so the
   check reads the version the linked `core_base` carries rather than trusting
   the request. A core too old for the sibling fails the configure instead of
   the compile deep in the sibling's sources -- or of nothing, when what
   changed is behaviour ([README.md](README.md#use-it-in-your-project) says
   what the failure names, and what a core older than 0.1.0 does). It checks
   a minimum only: before 1.0 a newer minor may break the API, which the
-  sibling's next re-pin meets. A sibling's package config makes the same call
-  with `PACKAGE <package>`, so the refusal says the package is not found, as a
-  failed `find_dependency` does, and does not end a configure that can do
-  without it.
+  sibling's next re-pin meets.
+- **Consumed by commit, never installed** (2026-10-22). The core has no
+  install rules or package config, and a sibling that links it PUBLIC
+  installs nothing either: every application fetches the family by commit,
+  no consumer ever installed a family package, and one install prefix could
+  not hold siblings pinned to different minors. Third-party SDKs stay
+  prerequisites installed once.
 
-Tests and `-Werror` default ON only at the top level, but install rules
-(`VKC_INSTALL`) default ON everywhere: a sibling that installs and exports its
-own targets links the core PUBLIC, so CMake refuses to generate its export
-unless the core's targets are in an export set too, and its installed package
-needs the core installed beside it. The shared library's soname carries
-`MAJOR.MINOR` until 1.0, matching the package's same-minor compatibility.
+Tests and `-Werror` default ON only at the top level. The shared library's
+soname carries `MAJOR.MINOR` until 1.0, as a newer minor may break the ABI.
 
 ### Public, with hosted CI first
 
 The repository is public because `recon`, `gfx` and `ios` are public and will
 fetch it at configure time. The base tier is pure C++17 with no
 dependencies, so GitHub-hosted Linux and macOS runners cover it, including
-sanitizers and both ways of consuming the package. Every build leg is the
+sanitizers and a sibling's subproject build. Every build leg is the
 same build on a different OS: Release and static, as every sibling builds
 the core. None builds it shared, so nothing checks that the shared library
 exports what consumers call, and none builds with `-fno-exceptions`, which no
@@ -960,9 +954,9 @@ versions.
   `VK_KHR_portability_enumeration`, without which the loader hides MoltenVK's
   devices. On Android the headers are the NDK's sysroot's, so the floor is
   NDK r27, whose are 1.3.275; no CI builds Android. `vulkan.hpp` refuses older
-  headers as it compiles. At configure, the build and the installed package's
-  `find_dependency` refuse them where FindVulkan reports a version (CMake 3.23
-  and newer), from one `VKC_VULKAN_MIN_VERSION`; a test checks the two agree.
+  headers as it compiles. At configure, the build refuses them where
+  FindVulkan reports a version (CMake 3.23 and newer), from
+  `VKC_VULKAN_MIN_VERSION`; a test checks the two floors agree.
   The core's CI builds on Ubuntu 26.04's headers and on macOS on Homebrew's
   current ones, and its Ubuntu 24.04 leg, like recon's and gfx's, on the
   floor itself. A newer symbol is used behind its extension's macro, as
@@ -1021,7 +1015,7 @@ CLI registration API is released: desktop programs accept only `--config`
 and `--help`; iOS loads its bundled scenario. Existing defaults and recon's
 stream-only exclusions are preserved. Siblings pin 0.3.0, enable
 `VKC_WITH_CONFIG` before the first core declaration, and require its `CONFIG`
-tier. Base-only installs fetch and export no JSON dependency or config headers.
+tier. A base-only build fetches no JSON dependency.
 
 **Amended 2026-10-12 (core 0.5.0): the codec owns its validity rules.** Core
 resolved each quantization table to 512 weights and checked every kept
@@ -1197,8 +1191,6 @@ recon's and gfx's finds of Vulkan and glm.
   there is no loader to insert one. The macOS legs stand in: they run every
   device test under validation on Homebrew's MoltenVK, kept at the iOS
   release's version.
-- **No installed package on iOS.** Its `find_dependency(Vulkan)` knows nothing
-  of `MoltenVK_ROOT`, and no iOS application installs the core.
 - **Tested at configure** on macOS, against stubs of the release and of
   Homebrew's glm (`tests/ios_consumer/`): the root, the Vulkan entries, the
   floor, the frameworks, glm and the messages are all decided there. Core has
