@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.21)
 # application declares the core first".
 project(
   volumetric_kit_core
-  VERSION 0.18.0
+  VERSION 0.19.0
   DESCRIPTION
     "Shared foundation for the volumetric_kit family: error handling and the Vulkan core"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_core"
@@ -28,12 +28,6 @@ option(VKC_WITH_CONFIG "Build CPU-only scenario configuration"
 option(VKC_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
 option(VKC_WARNINGS_AS_ERRORS "Treat first-party compiler warnings as errors"
        ${PROJECT_IS_TOP_LEVEL})
-# Install rules default ON everywhere. A sibling that installs and exports its
-# own targets links the core PUBLIC, so its export references the core's
-# targets: CMake refuses to generate unless they are in an export set of their
-# own, and the sibling's installed package needs the core installed beside it. A
-# consumer that installs nothing never runs these rules.
-option(VKC_INSTALL "Generate install/export rules" ON)
 # The vulkan tier needs a Vulkan SDK (headers and loader; MoltenVK on macOS, its
 # static library on iOS). ON by default only at the top level: a sibling that
 # uses it (recon, gfx) sets it ON before fetching the core, and one that does
@@ -69,9 +63,9 @@ if(VKC_WITH_VULKAN)
   include(vkc_shaders)
   # The oldest Vulkan headers the tier supports (DECISIONS.md, "Vulkan headers
   # come from the system"), checked at configure where FindVulkan reports a
-  # version: by the build (src/volumetric_kit/core/vulkan/) and by the installed
-  # package's find_dependency. vulkan.hpp checks the same as it compiles; keep
-  # the two in step (tests/vulkan_header_floor.cpp checks they agree).
+  # version (src/volumetric_kit/core/vulkan/). vulkan.hpp checks the same as it
+  # compiles; keep the two in step (tests/vulkan_header_floor.cpp checks they
+  # agree).
   set(VKC_VULKAN_MIN_VERSION 1.3.275)
 endif()
 
@@ -82,7 +76,7 @@ add_subdirectory(src)
 if(VKC_BUILD_TEST_SUPPORT AND NOT VKC_WITH_VULKAN)
   message(FATAL_ERROR "VKC_BUILD_TEST_SUPPORT needs VKC_WITH_VULKAN")
 endif()
-if(VKC_WITH_VULKAN AND (VKC_BUILD_TEST_SUPPORT OR VKC_BUILD_TESTS))
+if(VKC_BUILD_TEST_SUPPORT OR VKC_BUILD_TESTS)
   add_subdirectory(tests/support)
 endif()
 

@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Tao Jin
 
 // Links volumetric_kit::core and uses each piece of the base tier once -- and
-// of the vulkan tier, when the core has it -- so a broken install, export or
-// include path fails here rather than in a sibling. Nothing here needs a GPU.
+// of the vulkan tier, when the core has it -- so a broken link or include path
+// fails here rather than in a sibling. Nothing here needs a GPU.
 
 #include <cstdio>
 #include <string>
@@ -155,8 +155,7 @@ int main() {
   vkc::log_message(vkc::LogLevel::Info, "consumer", "consumed");
   const vkc::Status status = run();
   if (!status || logged != 1) {
-    std::fprintf(stderr, "package consumer failed: %s\n",
-                 status.message().c_str());
+    std::fprintf(stderr, "consumer failed: %s\n", status.message().c_str());
     return 1;
   }
   std::printf("volumetric_kit_core %s consumed\n", vkc::version_string());

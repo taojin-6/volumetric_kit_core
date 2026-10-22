@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The consumer's installed library: a function returning the core's Result, so
+// The consumer's library: a function returning the core's Result, so
 // the core is part of its public interface, as in every sibling.
 
 #include "volumetric_kit/core/base/result.hpp"

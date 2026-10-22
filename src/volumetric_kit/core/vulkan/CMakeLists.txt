@@ -9,7 +9,6 @@
 # Vulkan SDK, MoltenVK on macOS; on iOS, MoltenVK's static library
 # (cmake/vkc_ios.cmake).
 include(GenerateExportHeader)
-include(GNUInstallDirs)
 
 find_package(Vulkan)
 if(NOT Vulkan_FOUND)
@@ -108,14 +107,11 @@ endif()
 
 target_compile_features(core_vulkan PUBLIC cxx_std_17)
 
-target_include_directories(
-  core_vulkan
-  PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-         "$<BUILD_INTERFACE:${_vkc_generated_inc}>"
-         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+target_include_directories(core_vulkan PUBLIC "${PROJECT_SOURCE_DIR}/include"
+                                              "${_vkc_generated_inc}")
 
 # PUBLIC both: the public headers name Status / Result and Vulkan types, and
-# consumers call vk* themselves. The package config re-finds Vulkan.
+# consumers call vk* themselves.
 target_link_libraries(core_vulkan PUBLIC core_base Vulkan::Vulkan)
 # MoltenVK's static library needs these at an app's link (cmake/vkc_ios.cmake).
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -124,21 +120,3 @@ endif()
 
 vkc_target_warnings(core_vulkan)
 vkc_propagate_sanitizers(core_vulkan)
-
-if(VKC_INSTALL)
-  install(
-    TARGETS core_vulkan
-    EXPORT volumetric_kit_coreTargets
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  install(
-    DIRECTORY "${_vkc_generated_inc}/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-  # The shader functions, which the package config includes.
-  install(FILES "${PROJECT_SOURCE_DIR}/cmake/vkc_shaders.cmake"
-                "${PROJECT_SOURCE_DIR}/cmake/vkc_embed_spirv.cmake"
-          DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/volumetric_kit_core")
-endif()

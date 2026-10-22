@@ -4,6 +4,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -921,14 +922,24 @@ Device::PendingSubmit& Device::PendingSubmit::operator=(
   return *this;
 }
 
+namespace {
+
+// How long finish() waits before it warns: long enough that work merely
+// queued behind other work rarely warns.
+std::atomic<std::uint64_t> pending_stall_ns{1'000'000'000};
+
+}  // namespace
+
+std::uint64_t detail::set_pending_stall_ns(std::uint64_t ns) noexcept {
+  return pending_stall_ns.exchange(ns);
+}
+
 // Only a message allocates, so only memory exhaustion can throw, and a
 // destructor has no caller to report it to: terminating is the answer.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 void Device::PendingSubmit::finish() noexcept {
   if (!running_) return;
-  // Long enough that work merely queued behind other work rarely warns.
-  constexpr std::uint64_t kStallNs = 1'000'000'000;
-  Status waited = wait(kStallNs);
+  Status waited = wait(pending_stall_ns.load());
   if (is_timeout(waited)) {
     for (const TimelinePoint& point : waits_) {
       const Result<std::uint64_t> reached = point.semaphore->value();

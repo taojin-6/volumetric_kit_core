@@ -5,8 +5,7 @@
 # family's one copy of what recon (vr_shaders / vr_embed), gfx (vg_shaders /
 # vg_embed) and ios (through recon's) carried. Defined by the core's own
 # CMakeLists when the vulkan tier is built, so a project that fetches the core
-# can call them; installed beside the package config, which includes this file,
-# so a find_package() consumer can too.
+# can call them.
 #
 # vkc_compile_shaders(<target> [OUTPUT_DIR <dir>] [TARGET_ENV <env>]
 # [INCLUDE_DIRS <dir>...] [SPIRV_VAL_ARGS <arg>...] SHADERS <file>...)

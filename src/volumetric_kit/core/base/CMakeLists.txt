@@ -7,7 +7,6 @@
 # dependencies, so every other tier, and every sibling repo, can build on it --
 # including a headless or device-less consumer.
 include(GenerateExportHeader)
-include(GNUInstallDirs)
 
 set(_vkc_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 
@@ -42,22 +41,18 @@ configure_file(
 
 # OUTPUT_NAME: the file lands in a shared lib directory, where a bare
 # `libcore_base` would say nothing about whose it is. SOVERSION: before 1.0 a
-# minor release may break the ABI (the package version file accepts only the
-# same minor), so the soname carries MAJOR.MINOR and two releases installed to
-# one prefix are told apart by the loader rather than by a crash.
+# minor release may break the ABI, so the soname carries MAJOR.MINOR and two
+# releases are told apart by the loader rather than by a crash.
 #
-# VKC_CORE_VERSION: the version vkc_require_core and vkc_core_version read,
-# exported so an installed core_base carries it too.
+# VKC_CORE_VERSION: the version vkc_require_core and vkc_core_version read.
 #
-# TODO: from 1.0, SOVERSION ${PROJECT_VERSION_MAJOR} alone, and so the soname
-# check in tests/package_consumer/.
+# TODO: from 1.0, SOVERSION ${PROJECT_VERSION_MAJOR} alone.
 set_target_properties(
   core_base
   PROPERTIES OUTPUT_NAME volumetric_kit_core_base
              VERSION ${PROJECT_VERSION}
              SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
              VKC_CORE_VERSION ${PROJECT_VERSION}
-             EXPORT_PROPERTIES VKC_CORE_VERSION
              CXX_VISIBILITY_PRESET hidden
              VISIBILITY_INLINES_HIDDEN ON
              POSITION_INDEPENDENT_CODE ON)
@@ -70,25 +65,8 @@ endif()
 
 target_compile_features(core_base PUBLIC cxx_std_17)
 
-target_include_directories(
-  core_base
-  PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-         "$<BUILD_INTERFACE:${_vkc_generated_inc}>"
-         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+target_include_directories(core_base PUBLIC "${PROJECT_SOURCE_DIR}/include"
+                                            "${_vkc_generated_inc}")
 
 vkc_target_warnings(core_base)
 vkc_propagate_sanitizers(core_base)
-
-if(VKC_INSTALL)
-  install(
-    TARGETS core_base
-    EXPORT volumetric_kit_coreTargets
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  install(
-    DIRECTORY "${_vkc_generated_inc}/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-endif()

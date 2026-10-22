@@ -391,20 +391,24 @@ TEST_F(SharedDeviceCreateTest, BothLibrariesSubmitWhileItDrains) {
 
   constexpr int kRounds = 40;
   std::atomic<int> failures{0};
-  std::atomic<bool> done{false};
   const auto submit_rounds = [&](const Device& device) {
     for (int r = 0; r < kRounds; ++r) {
       if (!device.submit_single_time([](VkCommandBuffer) {}).ok()) ++failures;
     }
   };
+  // As many drains as rounds, yielding between them: a drainer that relocks
+  // the queue's mutex back to back, until the submitters finish, starves
+  // them of it.
   std::thread drainer([&] {
-    while (!done.load()) shared->wait_idle();
+    for (int r = 0; r < kRounds; ++r) {
+      shared->wait_idle();
+      std::this_thread::yield();
+    }
   });
   std::thread compute([&] { submit_rounds(fusion); });
   std::thread graphics([&] { submit_rounds(renderer); });
   compute.join();
   graphics.join();
-  done = true;
   drainer.join();
   EXPECT_EQ(failures.load(), 0);
   shared->wait_idle();

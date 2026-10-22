@@ -15,8 +15,8 @@ jobs:
     timeout-minutes: 20
     env:
       # Absolute path: ctest changes directory per test, so a relative one
-      # would silently fail to load. The suppressions cover only the driver,
-      # loader and layer (tools/lsan.supp).
+      # would silently fail to load. The suppressions cover only the driver
+      # and the loader's own functions (tools/lsan.supp).
       LSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/lsan.supp:print_suppressions=0
       ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
       # A validation error fails the test, under synchronization validation
@@ -58,18 +58,27 @@ jobs:
       - name: Build
         run: cmake --build build --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
+      # The tests labelled cmake, which run no sanitized code, run on a build
+      # leg (tests/CMakeLists.txt).
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build --output-on-failure -LE cmake \
+            --parallel "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
-      # A consumer that builds the core as a subproject with VKC_SANITIZE: its
-      # own targets must get the flags too, or linking the sanitized static
-      # core fails (cmake/vkc_sanitizers.cmake).
+      # The one check of the core as a sibling builds it (tests/consumer/), as a
+      # subproject with every tier, which it requires as gfx and recon do, the
+      # test support and GPU tests, here because it also checks VKC_SANITIZE:
+      # the consumer's own targets must get the flags too, or linking the
+      # sanitized static core fails (cmake/vkc_sanitizers.cmake).
       - name: Consume via add_subdirectory, sanitized
         run: |
-          cmake -S tests/package_consumer -B build-consumer-sanitized \
+          cmake -S tests/consumer -B build-consumer \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DVKC_CONSUME=subdirectory -DVKC_SOURCE_DIR="$PWD" \
-            -DVKC_WITH_VULKAN=ON -DVKC_SANITIZE="address;undefined"
-          cmake --build build-consumer-sanitized
-          ./build-consumer-sanitized/vkc_package_consumer
+            -DVKC_SOURCE_DIR="$PWD" -DVKC_WITH_VULKAN=ON -DVKC_WITH_CONFIG=ON \
+            -DVKC_CONSUMER_REQUIRE_VULKAN=ON -DVKC_CONSUMER_REQUIRE_CONFIG=ON \
+            -DVKC_SANITIZE="address;undefined"
+          cmake --build build-consumer --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
+          ./build-consumer/vkc_consumer
+          ./build-consumer/vkc_consumer_gpu_test
+          ./build-consumer/vkc_consumer_policy_test

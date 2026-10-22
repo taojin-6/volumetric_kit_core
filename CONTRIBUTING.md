@@ -58,6 +58,9 @@ cmake --build "$core_root/build" --parallel
 ctest --test-dir "$core_root/build" --output-on-failure
 ```
 
+`ctest -LE 'cmake|ios'` leaves out the tests that only configure or compile
+(`tests/CMakeLists.txt` says which).
+
 ### GPU tests
 
 The vulkan tier's device tests skip without a device. Run them as CI does,
@@ -75,22 +78,24 @@ as unsupported external-memory handles, remain distinct from tests that
 executed successfully.
 
 CI configures `-DVKC_TEST_SHARDS=4`: each ordinary device-test binary runs in
-four processes, reusing its shared Vulkan fixtures within each shard. Policy
-and environment probes still run separately. Shards fail on their exit code,
-including shared-device teardown errors; a capability skip does not mask a
-failure in another case. GoogleTest reports individual skips in the output.
-Leave the default `VKC_TEST_SHARDS=0` for one CTest entry per case and
-`ctest -R <case>`, or run a binary with `--gtest_filter=<case>` in either mode.
+four processes, reusing its shared Vulkan fixtures within each shard, and a
+binary that needs no device runs in one. Policy and environment probes still
+run separately. Shards fail on their exit code, including shared-device
+teardown errors; a capability skip does not mask a failure in another case.
+GoogleTest reports individual skips in the output, and each build leg lists
+them in its job summary. Leave the default `VKC_TEST_SHARDS=0` for one CTest
+entry per case and `ctest -R <case>`, or run a binary with
+`--gtest_filter=<case>` in either mode.
 
 ## Changing a public API
 
-Four repositories build on this one. A change to an installed header or to the
-CMake package needs:
+Four repositories build on this one. A change to a public header or to the
+CMake a consumer sees needs:
 
 - a CHANGELOG entry that says how a consumer migrates, and the version bump
   that releases it (DECISIONS.md, "Consumers pin, and an application declares
   the core first");
-- the package-consumer check CI runs (`tests/package_consumer/`);
+- the consumer check CI runs (`tests/consumer/`);
 - the consumers' migration as tasks in their own repositories, each bumping its
   pin.
 

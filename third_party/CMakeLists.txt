@@ -12,7 +12,7 @@ include(FetchContent)
 # several of them resolves one copy -- and the libraries sharing a VkDevice
 # allocate through one VMA version. It defines GPUOpen::VulkanMemoryAllocator,
 # whose include directory core_vulkan reads as a PRIVATE SYSTEM include, never
-# part of its installed interface: VMA stays behind the allocator's pimpl.
+# part of its public interface: VMA stays behind the allocator's pimpl.
 if(VKC_WITH_VULKAN)
   FetchContent_Declare(
     VulkanMemoryAllocator

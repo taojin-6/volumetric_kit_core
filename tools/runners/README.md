@@ -85,6 +85,15 @@ Until a `vk-linux-gpu` runner is online, the Linux legs stay pending and
 `ci / required` waits for them. Membership in the `docker` group is
 root-equivalent: fine for a personal machine, not for a shared one.
 
+A container job's `HOME`, `/github/home`, has no `.cache`, and without it the
+NVIDIA driver's shader disk cache is silently off, so every process compiles
+its pipelines afresh. So each NVIDIA container job sets
+`__GL_SHADER_DISK_CACHE_PATH` to a directory that exists and persists,
+`/__w/_tool/nvidia-glcache` (the runner's tool cache, mounted into every
+container job and kept between jobs), with
+`__GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1`, and creates it before the tests: the
+driver ignores a path that does not exist.
+
 ## Macs
 
 1. **Full Xcode**, not only the Command Line Tools: a leg that generates with

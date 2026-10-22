@@ -33,8 +33,7 @@ endif()
 # own targets would compile and link without the flags -- and a test executable
 # linking a sanitized static core_base then fails with undefined __asan_*
 # symbols. So the bottom tier, which everything links, also carries the flags in
-# its build-tree usage requirements; the installed package never does. A
-# top-level build has them globally already.
+# its usage requirements. A top-level build has them globally already.
 function(vkc_propagate_sanitizers target)
   if(VKC_SANITIZE AND NOT PROJECT_IS_TOP_LEVEL)
     target_compile_options(
