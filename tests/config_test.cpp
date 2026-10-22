@@ -47,6 +47,7 @@ Result<Config> scenario(std::string_view text, App app,
       kind = "live";
     if (app == App::CodecMesh) kind = "mesh";
     if (app == App::GfxModel) kind = "model";
+    if (app == App::Player) kind = "stream";
     const auto source = document.find("\"source\":{");
     if (source != std::string::npos &&
         document.find("\"kind\"") == std::string::npos)
@@ -845,7 +846,7 @@ TEST(Config, UpdateSizeIsAnyCountWhereThereArePFrames) {
 // Every profile, so that one added later is held to each rule too.
 std::vector<App> every_profile() {
   std::vector<App> apps;
-  for (int app = 0; app <= static_cast<int>(App::CalibRig); ++app)
+  for (int app = 0; app <= static_cast<int>(App::Player); ++app)
     apps.push_back(static_cast<App>(app));
   return apps;
 }
@@ -861,6 +862,7 @@ std::string with_sections(App app, const std::string& sections) {
     source = R"(,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
   if (app == App::RigViewer || app == App::CalibRig)
     source = R"(,"source":{"sync_config":"rig.json"})";
+  if (app == App::Player) source = R"(,"source":{"path":"rig.vrst"})";
   return R"({"version":1)" + source + sections + "}";
 }
 
@@ -1058,6 +1060,186 @@ TEST(Config, OnlyFuseOrbbecServesItsCodedFramesLive) {
   }
 }
 
+TEST(Config, PlayerPlaysAStreamFileOrALiveSender) {
+  // A stream file, against the scenario's directory, in a 1280x720 window
+  // without validation, until the window closes.
+  const auto file =
+      scenario(R"({"version":1,"source":{"path":"../streams/./rafa2.vrst"}})",
+               App::Player, "/scenario/config");
+  ASSERT_TRUE(file) << file.status().message();
+  EXPECT_EQ(file->operation, Operation::View);
+  EXPECT_EQ(file->source.kind, SourceKind::Stream);
+  EXPECT_EQ(file->source.path, "/scenario/streams/rafa2.vrst");
+  EXPECT_TRUE(file->source.host.empty());
+  EXPECT_EQ(file->source.port, 0U);
+  EXPECT_EQ(file->window.width, 1280);
+  EXPECT_EQ(file->window.height, 720);
+  EXPECT_FALSE(file->window.validation);
+  EXPECT_EQ(file->run.frames, -1);
+  const auto absolute =
+      scenario(R"({"version":1,"source":{"path":"/data/rig.vrst"}})",
+               App::Player, "/scenario");
+  ASSERT_TRUE(absolute) << absolute.status().message();
+  EXPECT_EQ(absolute->source.path, "/data/rig.vrst");
+
+  // A live sender, on the sender's default port, 0, unless one is named.
+  EXPECT_TRUE(Source{}.host.empty());
+  EXPECT_EQ(Source{}.port, 0U);
+  for (const char* host : {"192.168.21.217", "lab"}) {
+    const auto live = scenario(
+        std::string(R"({"version":1,"source":{"host":")") + host + R"("}})",
+        App::Player, "/scenario");
+    ASSERT_TRUE(live) << live.status().message();
+    EXPECT_EQ(live->source.host, host);
+    EXPECT_EQ(live->source.port, 0U);
+    EXPECT_TRUE(live->source.path.empty());
+  }
+  for (const unsigned port : {0U, 1U, 5000U, 65535U}) {
+    const auto live =
+        scenario(R"({"version":1,"source":{"host":"lab","port":)" +
+                     std::to_string(port) + "}}",
+                 App::Player);
+    ASSERT_TRUE(live) << live.status().message();
+    EXPECT_EQ(live->source.host, "lab");
+    EXPECT_EQ(live->source.port, port);
+  }
+
+  // The window, and the CI smoke run's count of presents, as stated.
+  const auto stated = scenario(
+      R"({"version":1,"operation":"view","source":{"kind":"stream","host":"127.0.0.1","port":5000},"window":{"width":1600,"height":900,"validation":true},"run":{"frames":3}})",
+      App::Player);
+  ASSERT_TRUE(stated) << stated.status().message();
+  EXPECT_EQ(stated->source.host, "127.0.0.1");
+  EXPECT_EQ(stated->source.port, 5000U);
+  EXPECT_EQ(stated->window.width, 1600);
+  EXPECT_EQ(stated->window.height, 900);
+  EXPECT_TRUE(stated->window.validation);
+  EXPECT_EQ(stated->run.frames, 3);
+}
+
+TEST(Config, PlayerNeedsOneStreamAndRefusesWhatItDoesNotUse) {
+  const auto refused = [](const std::string& text, const std::string& reason) {
+    rejected(text, App::Player, reason);
+  };
+  // A Player scenario whose source has these fields.
+  const auto source = [](const std::string& fields) {
+    return R"({"version":1,"source":{"kind":"stream",)" + fields + "}}";
+  };
+
+  // Exactly one stream: a file or a sender.
+  refused(R"({"version":1})", "source: is required");
+  refused(R"({"version":1,"source":{"kind":"stream"}})",
+          "source: path or host is required");
+  for (const char* both : {R"("path":"rig.vrst","host":"lab")",
+                           R"("host":"lab","path":"rig.vrst")",
+                           R"("path":"rig.vrst","host":"lab","port":5000)"}) {
+    refused(source(both), "source: path and host are mutually exclusive");
+  }
+  for (const char* key : {"path", "host"}) {
+    const std::string field = std::string("source.") + key;
+    const std::string member = std::string("\"") + key + "\":";
+    refused(source(member + R"("")"), field + ": must not be empty");
+    refused(source(member + R"("a\u0000b")"), field + ": embedded NUL");
+    refused(source(member + "1"), field + ": expected a string");
+  }
+  // The port is a sender's, in a field of its own; the client speaks IPv4.
+  for (const char* port : {"0", "5000"}) {
+    refused(source(std::string(R"("path":"rig.vrst","port":)") + port),
+            "source.port: requires source.host");
+  }
+  refused(source(R"("port":5000)"), "source: path or host is required");
+  for (const char* host : {"lab:5000", "lab:", "::1", "[::1]:5000"}) {
+    refused(source(std::string(R"("host":")") + host + "\""),
+            "source.host: must not contain ':'; the port is source.port");
+  }
+  for (const char* port : {"-1", "65536"}) {
+    refused(source(std::string(R"("host":"lab","port":)") + port),
+            "source.port: integer is out of range");
+  }
+  for (const char* port : {"1.0", "1.5", R"("5000")", "true", "null"}) {
+    refused(source(std::string(R"("host":"lab","port":)") + port),
+            "source.port: expected an integer");
+  }
+
+  // A stream source, and it views it.
+  for (const char* kind : {"none", "dataset", "live", "mesh", "model"}) {
+    refused(std::string(R"({"version":1,"source":{"kind":")") + kind +
+                R"(","path":"rig.vrst"}})",
+            "source.kind: is not supported by this application");
+  }
+  for (const char* operation :
+       {"fuse", "stream", "codec", "project", "calibrate"}) {
+    refused(std::string(R"({"version":1,"operation":")") + operation +
+                R"(","source":{"path":"rig.vrst"}})",
+            "operation: is not supported by this application");
+  }
+  // Source fields of the other profiles.
+  for (const char* field :
+       {R"("format":"replica")", R"("camera_parameters":"cam.json")",
+        R"("preload":false)", R"("driver":"orbbec")",
+        R"("serial":"CL2A141000N")", R"("sync_config":"rig.json")",
+        R"("calibration":"poses.json")", R"("apply_sync":false)",
+        R"("host_clock":false)", R"("color_codec":"mjpeg")",
+        R"("color_width":1280)", R"("fps":30)", R"("height_m":1.7)",
+        R"("metres_per_unit":1)", R"("up_axis":"y")", R"("up_vector":[0,1,0])",
+        R"("sdf_mode":"signed")", R"("shell_voxels":1.5)",
+        R"("allow_holes":false)"}) {
+    const std::string_view text(field);
+    const std::string key(text.substr(1, text.find('"', 1) - 1));
+    refused(source(std::string(R"("path":"rig.vrst",)") + field),
+            "source." + key + ": is not used by this application");
+  }
+  // Sections it has no use for, even empty.
+  for (const char* section :
+       {"fusion", "codec", "render", "output", "calibration", "diagnostics"}) {
+    refused(std::string(R"({"version":1,"source":{"path":"rig.vrst"},")") +
+                section + R"(":{}})",
+            std::string(section) + ": is not used by this application");
+  }
+  // Its panel is its own.
+  for (const char* overlay : {"true", "false"}) {
+    refused(
+        std::string(
+            R"({"version":1,"source":{"path":"rig.vrst"},"window":{"overlay":)") +
+            overlay + "}}",
+        "window.overlay: is not used by this application");
+  }
+  refused(
+      R"({"version":1,"source":{"path":"rig.vrst"},"window":{"width":0,"height":720}})",
+      "window.width: must be finite and positive");
+  refused(
+      R"({"version":1,"source":{"path":"rig.vrst"},"window":{"height":-1}})",
+      "window.height: must be finite and positive");
+  // A count of presents, when given, is positive.
+  for (const char* frames : {"0", "-1"}) {
+    refused(
+        std::string(
+            R"({"version":1,"source":{"path":"rig.vrst"},"run":{"frames":)") +
+            frames + "}}",
+        "run.frames: must be positive");
+  }
+  for (const char* key : {"sets", "first"}) {
+    refused(
+        std::string(R"({"version":1,"source":{"path":"rig.vrst"},"run":{")") +
+            key + R"(":0}})",
+        std::string("run.") + key + ": is not used by this application");
+  }
+
+  // Every other profile refuses a stream source, and its host and port.
+  for (const auto app : every_profile()) {
+    if (app == App::Player) continue;
+    rejected(R"({"version":1,"source":{"kind":"stream"}})", app,
+             "source.kind: is not supported by this application");
+    for (const char* field :
+         {R"("host":"lab")", R"("port":0)", R"("port":5000)"}) {
+      const std::string_view text(field);
+      const std::string key(text.substr(1, text.find('"', 1) - 1));
+      rejected(std::string(R"({"version":1,"source":{)") + field + "}}", app,
+               "source." + key + ": is not used by this application");
+    }
+  }
+}
+
 TEST(Config, NoOutputOverwritesTheRigFilesARunReads) {
   // Each of FuseOrbbec's outputs against its sync file and calibration, in two
   // spellings of one path.
@@ -1138,7 +1320,8 @@ TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
     if (app == App::FuseOrbbec || app == App::RigViewer) continue;
     const bool fuses = app != App::GfxTriangle && app != App::GfxImGui &&
                        app != App::GfxModel && app != App::GfxImage &&
-                       app != App::CalibProjectPoint && app != App::CalibRig;
+                       app != App::CalibProjectPoint && app != App::CalibRig &&
+                       app != App::Player;
     rejected(with_sections(app, R"(,"fusion":{"free_after":30})"), app,
              (fuses ? "fusion.free_after" : "fusion") +
                  std::string(": is not used by this application"));

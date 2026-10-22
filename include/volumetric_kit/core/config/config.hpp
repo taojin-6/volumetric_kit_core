@@ -31,13 +31,14 @@ enum class Application {
   GfxImage,
   Scanner,
   CalibProjectPoint,
-  CalibRig
+  CalibRig,
+  Player
 };
 /// @brief The work requested by a scenario.
 enum class Operation { Fuse, Stream, Codec, View, Project, Calibrate };
 /// @brief The source discriminator; branch-specific fields are checked
 /// centrally.
-enum class SourceKind { None, Dataset, Live, Mesh, Model };
+enum class SourceKind { None, Dataset, Live, Mesh, Model, Stream };
 /// @brief Camera colour encoding.
 enum class ColorCodec { Hevc, Mjpeg };
 /// @brief Mesh signed-distance interpretation.
@@ -82,6 +83,11 @@ struct Source {
   float shell_voxels = 1.5F;
   /// Signed mode admits a mesh whose only defect is boundary edges.
   bool allow_holes = false;
+  /// Player: a live sender's host name or IPv4 address; empty plays `path`.
+  std::string host;
+  /// Player: the sender's port; 0, the default, is the sender's default
+  /// (recon's networking::kDefaultPort).
+  std::uint16_t port = 0;
 };
 /// @brief Fusion and mesh extraction settings.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode

@@ -28,8 +28,9 @@ No general option registration API is published.
 ## Required envelope and source
 
 `version` is the integer `1`; `operation` is required. A source object is
-required for dataset, live and mesh consumers. Whenever `source` is present,
-its `kind` is required. Different files describe different scenarios:
+required for dataset, live, mesh and stream consumers. Whenever `source` is
+present, its `kind` is required. Different files describe different
+scenarios:
 
 ```json
 {
@@ -94,6 +95,7 @@ does not override the requested operation or source discriminator.
 | `Scanner` | `fuse` | `live`, `arkit` | voxel 0.01 m, truncation 0.03 m, 1024 initial / 32768 maximum buckets, texture and timings enabled |
 | `CalibProjectPoint` | `project` | omitted | 1280x720, intrinsics [1000,1000,640,360], Brown distortion [-0.28,0.10,0.001,-0.0005,0], point [0.1,-0.2,2] |
 | `CalibRig` | `calibrate` | `live`, `orbbec`; sync config and `output.path` required | MJPEG colour 3840x2160, depth 640x576, 25 fps, 1280x720 window |
+| `Player` | `view` | `stream`; one of `path` and `host` required | 1280x720, unlimited frames |
 
 The `Config` structs in
 [`config.hpp`](include/volumetric_kit/core/config/config.hpp) describe the
@@ -122,6 +124,11 @@ unknown extension object.
   the user wrote carries the pattern. Core checks only that `shell_voxels` is
   finite and positive; its bound against the voxel size and truncation is the
   consumer's mesh conversion's.
+- Stream fields (core 0.17.0): exactly one of `path`, a stream file such as
+  `output.stream` writes, and `host`, a live sender's name or IPv4 address.
+  `port` goes with `host` only, an integer from 0 to 65535; 0, the default,
+  is the sender's default (recon's `networking::kDefaultPort`). A `host`
+  containing `:` is refused, as the port is its own field.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
   `max_depth_m`, `max_weight`. Every dataset profile, FuseOrbbec and RigViewer
   accept the boolean `dynamic` (core 0.6.0): Dynamic integration when true,
@@ -143,7 +150,9 @@ unknown extension object.
   size's range at runtime.
 - Window fields: positive integer `width`/`height`, `validation`, and
   `overlay` only where UI is supported. Model dimensions are at most 16384.
-  Scanner accepts no window section. No window/device handles are serialized.
+  Player refuses `overlay`, since its controls and stats panel are always
+  drawn. Scanner accepts no window section. No window/device handles are
+  serialized.
 - Render fields: `yaw_degrees`, `pitch_degrees`, `follow` for FuseRender;
   `shading` (`unlit`/`lit`, plus `normals` for RigViewer), `texture` for recon
   viewers; `show_sources`/`texture_stats` for RigViewer. Scanner accepts only
@@ -158,10 +167,12 @@ unknown extension object.
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec limits are positive, and FuseOrbbec's
   counts camera frames, each set adding one per camera it holds; RigViewer
-  uses zero for unlimited; gfx uses -1 for unlimited and permits zero frames.
-  CodecMesh's `frames` is instead an exact count, at least 1, of numbered
-  meshes from number `first`, which is nonnegative; the last number,
-  `first + frames - 1`, must not exceed INT32_MAX. Scanner has no run limits.
+  uses zero for unlimited; gfx uses -1 for unlimited and permits zero frames;
+  Player plays until its window closes unless `frames` gives a positive
+  count of presents of a stream frame. CodecMesh's `frames` is instead an
+  exact count, at least 1, of numbered meshes from number `first`, which is
+  nonnegative; the last number, `first + frames - 1`, must not exceed
+  INT32_MAX. Scanner has no run limits.
 - Calibration projection fields: `image_width`, `image_height`,
   `intrinsics` (fx,fy,cx,cy), `distortion` (k1,k2,p1,p2,k3), `point` (x,y,z).
   Focal lengths/dimensions and the point's z must be positive, all values
