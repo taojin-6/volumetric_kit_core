@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #ifdef __linux__
+#include <linux/prctl.h>
 #include <sys/prctl.h>
 
 #include <cstdlib>

@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #ifdef __linux__
+#include <linux/prctl.h>
 #include <pthread.h>
 #include <sys/prctl.h>
 #endif
