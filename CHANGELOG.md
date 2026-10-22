@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- `Device::pipeline_cache()`: every device, created or adopted, makes one
+  `VkPipelineCache` and destroys it with itself, in memory only.
+  `KernelSetBuilder` builds every kernel through it, so a kernel that several
+  objects build on one device is compiled once; `ComputePipelineDesc::cache`
+  (default none) passes a cache to `ComputePipeline::create`.
+
+### Migration
+
+- Nothing to change: kernels built with `KernelSetBuilder` use their device's
+  cache. A pipeline made another way may pass `device.pipeline_cache()` to
+  `vkCreate*Pipelines`.
+
 ## [0.17.0] - 2026-10-21
 
 ### Added

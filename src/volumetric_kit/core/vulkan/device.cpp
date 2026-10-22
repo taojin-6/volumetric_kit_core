@@ -54,6 +54,15 @@ class ScopeGuard {
   bool active_ = true;
 };
 
+// The device's pipeline cache, empty: what create and adopt both make.
+Result<VkPipelineCache> create_pipeline_cache(VkDevice device) {
+  VkPipelineCacheCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+  VkPipelineCache cache = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreatePipelineCache(device, &info, nullptr, &cache));
+  return cache;
+}
+
 // The VkDeviceCreateInfo feature chain create_device builds: the
 // requirements' core features, timeline semaphores, scalar block layout and
 // dynamic rendering, then the caller's chain. Built in place -- its nodes point
@@ -314,6 +323,9 @@ Result<Device> Device::create(VkInstance instance,
   }
   device.caps_ = caps;
   device.enabled_extensions_ = std::move(extensions);
+  // After the handle is held, so a failure here destroys the device.
+  VKC_ASSIGN(device.state_.pipeline_cache,
+             create_pipeline_cache(device.state_.device));
   device.resolve_entry_points(instance_debug_utils_enabled);
   return device;
 }
@@ -393,6 +405,8 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
   device.caps_ = std::move(caps);
   device.enabled_extensions_ = std::move(declared);
   VKC_TRY(device.check_record(reqs, required).with_context("Device::adopt"));
+  VKC_ASSIGN(device.state_.pipeline_cache,
+             create_pipeline_cache(device.state_.device));
   device.resolve_entry_points(adopted.enabled_debug_utils);
   return device;
 }
@@ -542,6 +556,12 @@ void Device::destroy() noexcept {
   }
   made_.clear();
   free_commands_.clear();
+  // Made by this object even on an adopted device, which outlives it. No
+  // pipeline refers to its cache once built, so it goes even beside work
+  // still running.
+  if (state_.pipeline_cache != VK_NULL_HANDLE) {
+    vkDestroyPipelineCache(state_.device, state_.pipeline_cache, nullptr);
+  }
   if (state_.device != VK_NULL_HANDLE && state_.owns_device) {
     if (unfinished) {
       // Destroying it would destroy a device that may still run that work,

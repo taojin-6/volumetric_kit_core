@@ -52,6 +52,9 @@ struct ComputePipelineDesc {
   std::uint32_t push_range_count = 0;
   /// The shader's entry point; non-null.
   const char* entry_point = "main";
+  /// The pipeline cache to build through, the device's
+  /// (@ref Device::pipeline_cache); `VK_NULL_HANDLE` for none.
+  VkPipelineCache cache = VK_NULL_HANDLE;
 };
 
 /// @brief Owns a compute `VkPipeline` and its `VkPipelineLayout`.

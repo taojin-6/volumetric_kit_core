@@ -145,7 +145,7 @@ struct AdoptedDevice {
 };
 
 /// @brief Owns, or borrows, a `VkDevice`, its queue and optional present
-///        queue, and the command pools it submits from.
+///        queue, the command pools it submits from, and a pipeline cache.
 ///
 /// The one device type of the family: recon, gfx and calib each run on one,
 /// created or adopted. A device made by @ref create owns its `VkDevice`; one
@@ -228,7 +228,8 @@ class VKC_VULKAN_API Device {
   ///
   /// Every requirement must be both supported by the physical device and
   /// declared enabled in @p adopted. The returned device never destroys the
-  /// `VkDevice`; it makes and destroys only its own command pools.
+  /// `VkDevice`; it makes and destroys only its own command pools and
+  /// pipeline cache.
   /// @param adopted  The handles, the queues assigned to this library, and
   ///                 what the creator enabled.
   /// @param reqs     What this library needs.
@@ -257,6 +258,16 @@ class VKC_VULKAN_API Device {
   /// @return The physical device's capabilities, captured at create or adopt;
   ///         `caps().api_version()` is the version the device may use.
   const PhysicalDeviceInfo& caps() const noexcept { return caps_; }
+  /// @return The device's pipeline cache, made with it and destroyed with
+  ///         it, in memory only: @ref KernelSetBuilder builds through it, so
+  ///         a shader is compiled once per device however many objects build
+  ///         its kernel. Pass it as a pipeline's cache on this device;
+  ///         `VK_NULL_HANDLE` when moved-from.
+  // TODO: persist it (vkGetPipelineCacheData) when an iOS or Android launch
+  // budget asks for it.
+  VkPipelineCache pipeline_cache() const noexcept {
+    return state_.pipeline_cache;
+  }
 
   /// @return The queue this library submits to.
   VkQueue queue() const noexcept { return state_.queue; }
@@ -554,6 +565,8 @@ class VKC_VULKAN_API Device {
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     bool owns_device = true;
+    // This object's own, created or adopted.
+    VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
     std::uint32_t queue_family = 0;
     VkQueueFlags queue_flags = 0;
