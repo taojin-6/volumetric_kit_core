@@ -280,12 +280,11 @@ V3's choices, from the same comparison (gfx has no compute):
   so two libraries' `fill.comp` would otherwise share one shader. The
   functions are defined when the core is added. Each rule belongs to one
   target -- `vkc_embed_shaders` compiles and embeds under one -- as a rule
-  two targets reach races under Make and is refused by Xcode. Headers and symbols are
-  named for the file name made a C identifier, and two names that make one
-  are refused. An INTERFACE library shares one compile among the targets
-  that link it. A shader that fails `spirv-val` fails every build until
-  fixed: Make deletes a failed command's output, and Ninja and Xcode rerun
-  it.
+  two targets reach races under Make and is refused by Xcode. Headers and
+  symbols are named for the file name made a C identifier, and two names that
+  make one are refused. An INTERFACE library shares one compile among the
+  targets that link it. A shader that fails `spirv-val` fails every build until
+  fixed: Make deletes a failed command's output, and Ninja and Xcode rerun it.
 
 V4's choices, timing first (external memory's are with the placement rules,
 in "Where memory lives"):
@@ -819,12 +818,12 @@ migrate.
 
 - **The version moves with the API.** `project(VERSION)` is the core's one
   version: the generated `version.hpp`, the soname and `vkc_require_core` /
-  `vkc_core_version` all take it. Before 1.0, a PR
-  that changes the public API or ABI bumps the minor version (`0.1.0` →
-  `0.2.0`), and one that changes only behaviour a sibling relies on bumps the
-  patch. The PR moves the CHANGELOG's `[Unreleased]` entries under the new
-  version, and its merge commit is tagged `v<version>`. A version then names
-  one API, whether a sibling pins the tag or the SHA.
+  `vkc_core_version` all take it. Before 1.0, a PR that changes the public API
+  or ABI bumps the minor version (`0.1.0` → `0.2.0`), and one that changes only
+  behaviour a sibling relies on bumps the patch. The PR moves the CHANGELOG's
+  `[Unreleased]` entries under the new version, and its merge commit is tagged
+  `v<version>`. A version then names one API, whether a sibling pins the tag or
+  the SHA.
 - **Each sibling requires the oldest core it builds with**, and the tiers it
   uses, by calling `vkc_require_core(<version> [VULKAN] [CONFIG])` after
   `FetchContent_MakeAvailable`. Its pin yields to an application's, so the
