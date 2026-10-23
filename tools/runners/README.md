@@ -11,13 +11,16 @@ host side, for all four.
 
 | File | Does |
 | --- | --- |
-| `setup-runners.sh <recon\|gfx\|calib\|player>` | registers a repository's runners on this host |
-| `teardown-runners.sh <recon\|gfx\|calib\|player>` | stops, deregisters and deletes them |
+| `setup-runners.sh <recon\|gfx\|calib\|player\|owner/repo>` | registers a repository's runners on this host |
+| `teardown-runners.sh <recon\|gfx\|calib\|player\|owner/repo>` | stops, deregisters and deletes them |
 | `common.sh` | what the two scripts share |
 | `homebrew-key.sh <formula>...` | prints a cache key of their installed Homebrew versions ([Upgrading Homebrew](#upgrading-homebrew)) |
 
 Runners on a personal account belong to one repository, so a host serving
-several carries a set for each.
+several carries a set for each. Any other repository is named in full, as
+`owner/repo`: `setup-runners.sh example-owner/example-repo` gives it runners
+with the family's labels and services, in `~/ci-runners/example-repo`. Give
+it the owner-only Actions policy (below) before it has runners.
 
 ## Who can trigger CI
 
@@ -141,8 +144,9 @@ driver ignores a path that does not exist.
   runners share a host. Hosts set up before that layout have them in
   `~/actions-runner-*`; both scripts act on those whose `.runner` names the
   repository, and leave the rest.
-- A new runner is named `<host>-<repo>-<i>`, after the lowest number no
-  runner of the repository on the host holds. `recon`'s pre-layout runners,
+- A new runner is named `<host>-<short name>-<i>`, or `<host>-<repo>-<i>` for
+  a repository named in full, after the lowest number no runner of the
+  repository on the host holds. `recon`'s pre-layout runners,
   `~/actions-runner-recon-<i>`, carry such names, so their numbers are taken
   too: registering takes over any runner of the same name, which is how it
   reclaims one whose directory was lost. A runner already registered keeps

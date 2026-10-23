@@ -173,19 +173,19 @@ fresh_home() {
   : >"$CALLS"
 }
 
-# runner DIR REPO [ENV]: a runner directory registered to REPO, its service
-# installed and running, as setup-runners.sh leaves one -- for Linux and for
-# macOS alike, so it serves either; with REPO empty, one that never finished
-# registering. ENV is its .env (none if absent).
+# runner DIR REPO [ENV]: a runner directory registered to REPO, a short name
+# or owner/repo, its service installed and running, as setup-runners.sh leaves
+# one -- for Linux and for macOS alike, so it serves either; with REPO empty,
+# one that never finished registering. ENV is its .env (none if absent).
 runner() {
-  local d="$HOME/$1" label
+  local d="$HOME/$1" repo="$2" label
+  case "$repo" in */*) ;; ?*) repo="taojin-6/volumetric_kit_$repo" ;; esac
   mkdir -p "$d/bin"
   cp "$runner_files/config.sh" "$d/"
   cp "$runner_files/runsvc.sh" "$d/bin/"
-  if [ -n "$2" ]; then
-    label="actions.runner.taojin-6-volumetric_kit_$2.$(basename "$1")"
-    printf '{\n  "gitHubUrl": "https://github.com/taojin-6/volumetric_kit_%s"\n}\n' \
-      "$2" >"$d/.runner"
+  if [ -n "$repo" ]; then
+    label="actions.runner.$(echo "$repo" | tr / -).$(basename "$1")"
+    printf '{\n  "gitHubUrl": "https://github.com/%s"\n}\n' "$repo" >"$d/.runner"
     { echo '#!/bin/sh'; echo "SVC_NAME=\"$label\""; tail -n +2 "$runner_files/svc.sh"; } >"$d/svc.sh"
     chmod +x "$d/svc.sh"
     echo unit >"$d/.service"
@@ -295,8 +295,23 @@ expect "teardown-runners.sh needs a repository" "$status" 2
 status=0
 teardown core || status=$?
 expect "teardown-runners.sh rejects 'core', naming the repositories it takes" \
-  "$status $(grep -c "unknown repository 'core': expected recon, gfx, calib or player" "$tmp/out" || true)" \
+  "$status $(grep -c "unknown repository 'core': expected recon, gfx, calib, player or owner/repo" "$tmp/out" || true)" \
   "2 1"
+# Any other repository is named in full, in GitHub's characters, and its name
+# is not dots alone, which would put its runners outside ~/ci-runners: there
+# teardown would take these directories for leftovers and delete them. Neither
+# script touches anything for a repository it refuses.
+mkdir -p "$HOME/runner-1" "$HOME/ci-runners/runner-1"
+for repo in owner/ /repo owner/repo/extra owner/. owner/.. ../repo own.er/repo 'owner/re po' 'owner/re$po'; do
+  status=0
+  setup "$repo" || status=$?
+  expect "setup-runners.sh rejects '$repo'" "$status $(calls '^(config|svc|gh|curl|launchctl) ')" "2 0"
+  status=0
+  teardown "$repo" || status=$?
+  expect "teardown-runners.sh rejects '$repo' and deletes nothing" \
+    "$status $(calls '^(config|svc|gh|curl|launchctl) ') $([ -d "$HOME/runner-1" ] && [ -d "$HOME/ci-runners/runner-1" ] && echo kept)" \
+    "2 0 kept"
+done
 # No repository has runners on a system but Linux and macOS; the refusal
 # names those.
 status=0
@@ -676,6 +691,68 @@ status=0
 expect "a relative MoltenVK_ROOT stops setup, naming it, before any change" \
   "$status $(grep -c '^error: MoltenVK_ROOT is not an absolute path: MoltenVK$' "$tmp/out") $([ "$(env_of "$p1")" = "$kept" ] && echo kept) $(calls '^(config|gh|curl|launchctl) ')" \
   "1 1 kept 0"
+
+# --- Any other repository, as owner/repo -------------------------------------
+
+# A repository named in full gets runners as the family's do, in
+# ~/ci-runners/<repo> and named after the repository, beside the family's
+# runners and another owner's repository of the same name, whose runners share
+# the directory; setup and teardown leave both alone.
+for os in Linux Darwin; do
+  export STUB_OS="$os"
+  if [ "$os" = Linux ]; then n=6 label=vk-linux-gpu; else n=2 label=mac; fi
+  fresh_home
+  for i in $(seq 1 "$n"); do runner "ci-runners/volumetric_kit_recon/runner-$i" recon "$(levels 2)\n"; done
+  other=ci-runners/example-repo/runner-1
+  runner "$other" other-owner/example-repo "$(levels 2)\n"
+  # The other owner's service calls, reading its state included.
+  if [ "$os" = Linux ]; then other_calls="^svc $other "; else other_calls='^launchctl .*other-owner-example-repo\.'; fi
+  cache_tarball
+  status=0
+  setup example-owner/example-repo || status=$?
+  expect "a repository named in full registers ($os)" "$status" 0
+  [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+  registered=0 services=0 up=0
+  for i in $(seq 2 $((n + 1))); do # runner-1 is the other owner's
+    d="ci-runners/example-repo/runner-$i"
+    grep -qF "config $d --unattended --url https://github.com/example-owner/example-repo --token REGTOKEN --labels $label --name $host-example-repo-$i " "$CALLS" &&
+      registered=$((registered + 1))
+    [ "$(installed "$d")" = no ] || services=$((services + 1))
+    [ "$(running "$d")" = no ] || up=$((up + 1))
+  done
+  expect "it registers $n in ~/ci-runners/example-repo, named after the repository and labelled $label, and installs and runs their services ($os)" \
+    "$registered $(calls '^config ') $(calls '^gh api -X POST repos/example-owner/example-repo/actions/runners/registration-token ') $services $up" \
+    "$n $n 1 $n $n"
+  [ "$os" = Linux ] ||
+    expect "their daemons carry the owner and repository in their labels (Darwin)" \
+      "$(label_of ci-runners/example-repo/runner-2)" \
+      "actions.runner.example-owner-example-repo.$host-example-repo-2"
+  expect "each gets the cores split across the repository's own runners ($os)" \
+    "$(env_of ci-runners/example-repo/runner-2) $(env_of "ci-runners/example-repo/runner-$((n + 1))")" \
+    "$(levels "$(share "$n")") $(levels "$(share "$n")")"
+  expect "the family's runners and the other owner's keep their levels, are not restarted, and run ($os)" \
+    "$(env_of ci-runners/volumetric_kit_recon/runner-1) $(env_of "$other") $(touched recon) $(calls "$other_calls") $(running "$other")" \
+    "$(levels 2) $(levels 2) 0 0 yes"
+  : >"$CALLS"
+  status=0
+  setup example-owner/example-repo || status=$?
+  expect "a re-run asks gh for nothing, registers nothing and changes no service ($os)" \
+    "$status $(calls '^(config|gh|curl) ') $(changes)" "0 0 0"
+
+  : >"$CALLS"
+  status=0
+  teardown example-owner/example-repo || status=$?
+  remaining=""
+  for dir in "$HOME"/ci-runners/*/runner-*; do
+    [ -d "$dir" ] && remaining="$remaining ${dir#"$HOME"/ci-runners/}"
+  done
+  expect "teardown deregisters and deletes the repository's runners, and only them ($os)" \
+    "$status $(calls '^config ci-runners/example-repo/.* remove --token RMTOKEN$') $(calls '^gh api -X POST repos/example-owner/example-repo/actions/runners/remove-token ')$remaining" \
+    "0 $n 1 example-repo/runner-1$(for i in $(seq 1 "$n"); do printf ' volumetric_kit_recon/runner-%s' "$i"; done)"
+  expect "it leaves the other owner's runner and the family's running ($os)" \
+    "$(calls "$other_calls") $(touched recon) $(running "$other") $(running ci-runners/volumetric_kit_recon/runner-1)" \
+    "0 0 yes yes"
+done
 
 # --- Teardown ---------------------------------------------------------------
 
