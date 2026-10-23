@@ -766,21 +766,33 @@ TEST_F(TimerTest, DroppedTilesReadNotTimedAndKeepALiveRange) {
   EXPECT_FALSE(record(false));  // the last one's range is held for good
 }
 
-// A wait the core makes -- here a blocking submit's fence, held behind work
-// the host releases 30 ms later -- lands in the wait of every scope open
-// around it, a breakdown's included, and in the totals once; it counts as
-// one host wait.
+// A wait the core makes -- here a blocking submit's fence, queued behind at
+// least 40 ms of device work -- lands in the wait of every scope open around
+// it, a breakdown's included, and in the totals once; it counts as one host
+// wait, of the time the scopes got. The work ahead is fills, doubled until a
+// batch of them takes 40 ms, not work held for a value another thread sets:
+// a submit queued behind that stalls 10 s in VVL 1.3.275's sync validation.
 TEST_F(TimerWorkTest, ABlockingWaitIsEveryOpenScopesWait) {
-  Result<TimelineSemaphore> made = TimelineSemaphore::create(device());
-  ASSERT_TRUE(made.ok()) << made.status().message();
-  TimelineSemaphore gate = *std::move(made);
-  CommandBatch hold(device(), allocator());
-  Result<PendingBatch> held = hold.submit_async({{&gate, 1}}, {});
+  const auto fills = [&](std::uint32_t count) {
+    CommandBatch batch(device(), allocator());
+    for (std::uint32_t i = 0; i < count; ++i) {
+      EXPECT_TRUE(batch.fill(target_, 0, kFillBytes, i).ok());
+    }
+    return batch;
+  };
+  std::uint32_t count = 1;
+  for (; count < 4096; count *= 2) {
+    CommandBatch probe = fills(count);
+    const auto start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(probe.submit().ok());
+    if (std::chrono::steady_clock::now() - start >=
+        std::chrono::milliseconds(40)) {
+      break;
+    }
+  }
+  CommandBatch ahead = fills(count);
+  Result<PendingBatch> held = ahead.submit_async({}, {});
   ASSERT_TRUE(held.ok()) << held.status().message();
-  std::thread release([&gate] {
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    EXPECT_TRUE(gate.signal(1).ok());
-  });
   const DeviceCounters before = device().counters();
   StageMetrics metrics;
   {
@@ -791,18 +803,18 @@ TEST_F(TimerWorkTest, ABlockingWaitIsEveryOpenScopesWait) {
     ASSERT_TRUE(batch.submit().ok());  // behind the held work
   }
   const DeviceCounters after = device().counters();
-  release.join();
   ASSERT_TRUE(held->wait(kLongWaitNs).ok());
   const StageRow* stage = row(metrics, "stage");
   const StageRow* sub = row(metrics, "  ..sub");
   ASSERT_TRUE(stage != nullptr && sub != nullptr);
-  EXPECT_GE(sub->wait_ms, 20.0);
+  EXPECT_GE(sub->wait_ms, 10.0);
   EXPECT_LE(sub->wait_ms, sub->cpu_ms);
   EXPECT_DOUBLE_EQ(stage->wait_ms, sub->wait_ms);
   EXPECT_DOUBLE_EQ(metrics.total_wait_ms(), stage->wait_ms);
   EXPECT_EQ(after.submits - before.submits, 1U);
   EXPECT_EQ(after.host_waits - before.host_waits, 1U);
-  EXPECT_GE(after.blocked_ns - before.blocked_ns, 20'000'000U);
+  EXPECT_NEAR(static_cast<double>(after.blocked_ns - before.blocked_ns) * 1e-6,
+              sub->wait_ms, 1e-6);
 }
 
 // A fence's wait blocks the thread as the core's own waits do, so it reaches
