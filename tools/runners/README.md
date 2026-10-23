@@ -80,8 +80,9 @@ EOF
    ```
 
 3. As the login user (not root):
-   `bash tools/runners/setup-runners.sh recon`, and again with `gfx` and
-   `player`. Each registers 6 runners labelled `vk-linux-gpu` -- a run has at
+   `bash tools/runners/setup-runners.sh recon`, and again with `gfx`,
+   `player` and `taojin-6/volumetric_kit_core`. Each registers 6 runners
+   labelled `vk-linux-gpu` -- a run has at
    most 2 Linux jobs, so 6 fit three runs on one host while the other is
    offline -- each a systemd service started at boot; it calls `sudo` for the
    services. Log `gh` out afterwards, as on a Mac (below).
@@ -115,7 +116,8 @@ driver ignores a path that does not exist.
    ([Upgrading Homebrew](#upgrading-homebrew)).
 3. As the user the jobs run as, in Terminal or over SSH, with conda or any
    other environment deactivated: `bash tools/runners/setup-runners.sh recon`,
-   and again with `gfx`, `calib` and `player`. Each registers 2 runners
+   and again with `gfx`, `calib`, `player` and
+   `taojin-6/volumetric_kit_core`. Each registers 2 runners
    labelled `mac` (Debug and Release in parallel), each a system LaunchDaemon
    that runs as that user; it calls `sudo` for them. A runner keeps the
    `PATH` it was registered with, in its `.path`, and CMake searches that

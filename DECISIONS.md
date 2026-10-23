@@ -163,7 +163,8 @@ V1's choices, from comparing the two cores on 2026-10-03:
   the same run. Under it, a test fails if validation is off or does not reach
   the log sink, and the run fails on errors the layer reports as the shared
   devices and instances are destroyed ("One Vulkan test fixture for the
-  family", below).
+  family", below). The 2026-10-23 decision moves the build legs to physical
+  GPUs; the hosted sanitizer job keeps this lavapipe coverage.
 
 V2's choices, from the same comparison:
 
