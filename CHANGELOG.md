@@ -7,6 +7,59 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-22
+
+### Added
+
+- Busy, blocked and device time per row: `StageRow::wait_ms`, the part of
+  `cpu_ms` spent blocked, and `StageRow::device` (`DeviceTime`: `None`,
+  `Measured`, `NotTimed`, `Unavailable`), after the first four fields. Every
+  blocking wait in the core reports to the scopes open on its thread
+  (`note_blocked`); `WaitScope` times a wait as a row of its own;
+  `StageMetrics` gains `add_wait`, `add_device`, `merge_device` and
+  `total_wait_ms`.
+- Tiled device time: a timed batch writes a timestamp before its first
+  command, at each change of tag and after its last, and `GpuTiles` does the
+  same for a command buffer the caller submits itself. `CommandBatch::time`
+  times a batch in a given timer; `GpuTimer::set_max_depth` folds deeper
+  scopes into their ancestor.
+- `CommandBatch::submit_async` is timed: `PendingBatch::device_rows` and
+  `PendingBatch::device_span` (`DeviceSpan`) after the wait.
+- `Device::counters` (`DeviceCounters`: submits, host waits, blocked time,
+  staging buffers) and `Device::calibrate` (`ClockPair`); a device enables
+  `VK_KHR_calibrated_timestamps`, else `VK_EXT_calibrated_timestamps`, where
+  offered.
+
+### Changed
+
+- A tile counts to its tag's scope and to every scope open around it when
+  the command was recorded, so a stage's device time holds its fills,
+  copies, barriers and breakdowns, and `total_gpu_ms` skips breakdown rows.
+- A timer's queries go per batch, so it times any number of pending batches.
+  A batch that finds no free range reads `NotTimed`; one the device may still
+  run keeps its range, and the timer times on.
+- `GpuSpanTag::scope` is the scope's serial on its thread
+  (`StageScope::serial`).
+
+### Removed
+
+- `GpuTimer`'s per-span API: `begin`, `end`, `cmd_reset_ahead`, `settle`,
+  `resolve`, `discard`, `abandon`, `report_into`, `reset`, `count` and
+  `kNoSpan`.
+
+### Migration
+
+- Code reading `has_gpu` builds and behaves as before; read `device` to tell
+  n/t from n/a, and show busy time as `cpu_ms - wait_ms`. A row built
+  positionally keeps its meaning; set `device` beside `has_gpu`.
+- Drop any subtraction of breakdown rows from `total_gpu_ms`, and expect a
+  stage's device time to include its nested scopes'.
+- Fold an async batch's rows in after its wait:
+  `metrics.merge_device(pending.device_rows())`.
+- A timer used by hand moves to `GpuTiles`: `begin(timer, cmd, tiles)`,
+  `mark(cmd, name)` at each tile, `end(cmd)`, `resolve()` once the work has
+  completed, then `rows()` and `span()`.
+
 ## [0.19.0] - 2026-10-22
 
 ### Added
