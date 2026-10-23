@@ -4,23 +4,25 @@
 #pragma once
 
 /// @file gpu_timer.hpp
-/// @brief Timestamp spans around GPU work -- what the device spent, apart
-///        from the wall clock around a blocking submit -- and the scope that
-///        publishes a stage's host and device time together.
+/// @brief Device time, tiled: timestamps at the boundaries between a command
+///        buffer's stages, so a stage's time is everything the device did
+///        for it -- its dispatches, fills, copies and barriers -- and the
+///        stages of one command buffer add up to its span.
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
-#include "volumetric_kit/core/vulkan/query_pool.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 
+class CommandBatch;
 class Device;
 class GpuTimer;
 
@@ -61,61 +63,102 @@ constexpr double ticks_to_ms(std::uint64_t ticks,
          1e-6;
 }
 
-/// @brief What a recorded command keeps of a @ref GpuStageScope until its
-///        submit opens the span: the timer, the label, and the scope by id.
+/// @brief What a recorded command keeps of a @ref GpuStageScope: the timer,
+///        the label, and the scope by its serial on its thread
+///        (@ref StageScope::serial).
 ///
 /// A value, so a scope that closes before the submit leaves nothing to
-/// dangle: the timer refuses a span for a scope no longer open, and the
-/// command runs untimed. The timer itself must still be there.
+/// dangle.
 ///
 /// @code
 /// const GpuSpanTag tag = stage.tag();  // when the command is recorded
-/// // ... later, recording the command buffer:
-/// const std::uint32_t span = tag.timer->begin(cmd, tag);
+/// if (tag.timer == nullptr) { /* untimed: null metrics */ }
 /// @endcode
 struct GpuSpanTag {
-  /// The timer the span records into; null is untimed.
+  /// The timer a batch with no timer of its own times in; null is untimed.
   GpuTimer* timer = nullptr;
   /// The label, on @ref StageRow::name's terms.
   const char* name = nullptr;
-  /// The scope that publishes the span, or 0 for a span
-  /// @ref GpuTimer::report_into publishes.
+  /// The scope's serial, or 0 for none.
   std::uint64_t scope = 0;
 };
 
-/// @brief Records timestamp spans into command buffers and resolves them to
-///        milliseconds once their submits have completed.
+/// @brief A command buffer's device span, from its first timestamp to its
+///        last.
 ///
-/// Wall clock around a blocking submit folds recording, submission, the fence
-/// stall and the device's work into one number, so "the kernel is slow" cannot
-/// be told from "we are waiting"; this separates them. Every dispatch through
-/// a @ref CommandBatch is fence-blocked, so its spans are readable the moment
-/// the submit returns: no per-frame ring, no lag. A render loop that runs
-/// frames ahead keeps its own ring (gfx's profiler) on a @ref QueryPool.
+/// Raw ticks always: two spans on one queue compare in them directly -- the
+/// device's idle time between two batches -- with no calibration. On the
+/// host's clock too where the device offers calibrated timestamps
+/// (@ref Device::calibrate), so a span lines up with host stamps: the queue
+/// latency from a submit call to the first tile.
+///
+/// @code
+/// if (const std::optional<DeviceSpan> span = pending.device_span()) {
+///   if (span->host_clock) queue_ns = span->begin_ns - submit_call_ns;
+/// }
+/// @endcode
+struct DeviceSpan {
+  /// The first timestamp, in the queue's ticks (`timestampValidBits` wide).
+  std::uint64_t begin_ticks = 0;
+  /// The last timestamp, in the same ticks.
+  std::uint64_t end_ticks = 0;
+  /// The first timestamp on `std::chrono::steady_clock`, in nanoseconds
+  /// since its epoch; meaningful when @ref host_clock.
+  std::int64_t begin_ns = 0;
+  /// The last timestamp, likewise.
+  std::int64_t end_ns = 0;
+  /// How far @ref begin_ns and @ref end_ns may be off, in nanoseconds: the
+  /// calibration's uncertainty.
+  std::uint64_t deviation_ns = 0;
+  /// Whether @ref begin_ns and @ref end_ns hold host times.
+  bool host_clock = false;
+};
+
+namespace detail {
+
+/// @brief The tile a tagged command counts to: the scope it was tagged
+///        with, and every scope open around that one on the recording thread
+///        when it was recorded, outermost first. A command's time counts to
+///        each of them, as its host time does. @ref CommandBatch keeps one
+///        per scope it records under.
+struct TileKey {
+  /// The scopes' rows, outermost first; the tag's own last.
+  std::vector<const char*> names;
+  /// Their serials (@ref StageScope::serial), in the same order; 0 where a
+  /// scope was not open on the recording thread.
+  std::vector<std::uint64_t> serials;
+};
+
+/// @brief The key a command recorded now under @p tag counts to: @p tag's
+///        scope and the scopes open around it on this thread, or the tag's
+///        name alone when its scope is not open here.
+/// @param tag  A command's tag, its timer not null.
+/// @return The key.
+VKC_VULKAN_API TileKey tile_key(const GpuSpanTag& tag);
+
+}  // namespace detail
+
+/// @brief The query pool device time is measured on, shared by every batch
+///        it times: each takes a range of it from recording until its results
+///        are read.
+///
+/// A batch holds its range while it is pending, so a timer times any number
+/// of batches in flight, each read after its own work. Two timestamps are
+/// written per tile boundary at most -- one each, plus one at each end -- so
+/// a batch of `n` tiles needs `n + 1` queries.
 ///
 /// **Unavailable is not an error.** A queue family may have no timestamps
 /// (`timestampValidBits` 0, as some implementations and some compute-only
-/// families report), and a pool may fail to allocate. @ref create
-/// still succeeds and @ref available is false: @ref begin returns
-/// @ref kNoSpan, and nothing publishes a device row, so a caller writes the
-/// same code either way. A diagnostic must not be able to fail the work it
-/// measures; @ref create refuses only a caller's mistake.
-///
-/// **A span is read only after its own submit.** @ref settle resolves the
-/// spans one submit carried and no others, so a submit nested inside another's
-/// recording never reads the outer span, whose command buffer has not run.
-///
-/// **Spans belong to the scope that opened them.** A @ref GpuStageScope
-/// publishes its own spans when it closes, so two scopes open on one timer --
-/// a stage, and a helper with metrics of its own -- each publish theirs. Spans
-/// accumulate across submits until the last open scope closes, which ends the
-/// window: `max_spans` is a bound per outermost scope, a frame's stage. A
-/// timer used by hand, without scopes, is published by @ref report_into,
-/// which ends the window too; use a timer one way or the other.
+/// families report), and a pool may fail to allocate. @ref create still
+/// succeeds and @ref available is false: what it would time reads
+/// @ref DeviceTime::Unavailable, so a caller writes the same code either
+/// way. A diagnostic must not be able to fail the work it measures;
+/// @ref create refuses only a caller's mistake. A batch that finds no free
+/// range runs untimed, its rows @ref DeviceTime::NotTimed.
 ///
 /// @warning The device passed to @ref create must outlive the timer.
-/// @warning Not synchronized: one timer records into one command buffer at a
-///          time, on one thread.
+/// @warning Not synchronized: one thread records with it at a time. A
+///          pending batch's wait, on any thread, returns its range safely.
 ///
 /// @code
 /// VKC_ASSIGN(GpuTimer timer, GpuTimer::create(device));  // once
@@ -123,34 +166,30 @@ struct GpuSpanTag {
 ///   StageMetrics metrics;
 ///   {
 ///     GpuStageScope stage(&metrics, timer, "integrate");
-///     CommandBatch batch(device, allocator);  // submits once
+///     CommandBatch batch(device, allocator);
 ///     VKC_TRY(batch.dispatch(kernel, &push, sizeof(push), groups, max,
 ///                            &stage));
 ///     VKC_TRY(batch.submit());
-///   }  // host and device rows land in metrics
+///   }  // host, wait and device halves land in metrics
 /// }
 /// @endcode
 class VKC_VULKAN_API GpuTimer {
  public:
-  /// What @ref begin returns when no span was started: timing unavailable,
-  /// the window full, or the span's scope closed.
-  static constexpr std::uint32_t kNoSpan = 0xFFFFFFFFU;
-
   /// The ceiling on @ref create's `max_spans`: 4096 queries, two a span.
   /// An implementation layered on Metal backs a timestamp pool with a counter
   /// sample buffer of at most 32 KiB -- 4096 timestamps -- and silently
-  /// emulates timing for a larger one. Far above a window's real need (recon
-  /// records a span a dispatch), and it also keeps the doubled count from
-  /// wrapping.
+  /// emulates timing for a larger one.
   static constexpr std::uint32_t kMaxSpans = 2048U;
 
   /// @brief Construct an empty timer; @ref valid is false.
   GpuTimer() noexcept = default;
 
   /// @brief Create a timer for @p device's queue family.
-  /// @param device     Supplies the family's timestamp bits and period; it
-  ///                   must outlive the timer.
-  /// @param max_spans  The most spans in one window, in [1, @ref kMaxSpans].
+  /// @param device     Supplies the family's timestamp bits and period, and
+  ///                   its calibrated clocks; it must outlive the timer.
+  /// @param max_spans  The pool's size, in pairs of queries: `2 * max_spans`
+  ///                   timestamps, shared by the batches pending at once; in
+  ///                   [1, @ref kMaxSpans].
   /// @return The timer -- with @ref available false, and the reason logged,
   ///         where the family has no timestamps or the pool will not
   ///         allocate; or @ref Status::Code::InvalidArgument for an empty
@@ -158,203 +197,210 @@ class VKC_VULKAN_API GpuTimer {
   static Result<GpuTimer> create(const Device& device,
                                  std::uint32_t max_spans = 32);
 
-  ~GpuTimer() = default;
+  ~GpuTimer();
   GpuTimer(GpuTimer&& other) noexcept;
   GpuTimer& operator=(GpuTimer&& other) noexcept;
   GpuTimer(const GpuTimer&) = delete;
   GpuTimer& operator=(const GpuTimer&) = delete;
 
-  /// @return Whether the timer can time; when false, every call below is a
-  ///         well-defined no-op.
-  bool available() const noexcept {
-    return valid_bits_ != 0 && pool_ != nullptr && pool_->valid();
-  }
+  /// @return Whether the timer can time; when false, what it would time
+  ///         reads @ref DeviceTime::Unavailable.
+  bool available() const noexcept;
   /// @return Whether this owns a timer (false when moved-from). A timer on a
   ///         device without timestamps is still valid, just not available.
   bool valid() const noexcept { return device_ != VK_NULL_HANDLE; }
 
-  /// @brief Open a span by hand, for @ref report_into to publish: reset its
-  ///        two queries and write its start into @p cmd.
-  /// @param cmd   A recording command buffer, outside a render pass.
-  /// @param name  The span's label, on @ref StageRow::name's terms; not null
-  ///              (`VKC_CHECK`).
-  /// @return The span's id, or @ref kNoSpan when unavailable or the window is
-  ///         full (logged once a window).
-  std::uint32_t begin(VkCommandBuffer cmd, const char* name) {
-    return begin(cmd, GpuSpanTag{this, name, 0});
-  }
-
-  /// @brief Open @p tag's span: reset its two queries, unless @p reset is
-  ///        false, and write its start into @p cmd.
-  /// @param cmd    A recording command buffer, outside a render pass.
-  /// @param tag    The span's label, not null (`VKC_CHECK`), and its scope;
-  ///               its timer is this one.
-  /// @param reset  False only where @ref cmd_reset_ahead has reset the span's
-  ///               queries earlier in @p cmd.
-  /// @return The span's id, or @ref kNoSpan when unavailable, the window is
-  ///         full, or @p tag's scope has closed (each logged once a window).
-  ///         A scope that loses a span to a full window publishes no device
-  ///         time: a partial sum would read as the whole stage's.
-  std::uint32_t begin(VkCommandBuffer cmd, const GpuSpanTag& tag,
-                      bool reset = true);
-
-  /// @brief Reset, in one command, the queries of the next @p spans spans,
-  ///        which a recorder then opens into @p cmd with @ref begin's
-  ///        `reset` false: a batch of timed commands records one reset, not
-  ///        one between every two commands.
-  /// @param cmd    A recording command buffer, outside a render pass.
-  /// @param spans  How many spans will follow; clamped to the window's room.
-  void cmd_reset_ahead(VkCommandBuffer cmd, std::uint32_t spans) const noexcept;
-
-  /// @brief Close a span: write its end into @p cmd.
-  /// @param cmd   The command buffer @ref begin recorded into.
-  /// @param span  What @ref begin returned; @ref kNoSpan does nothing.
-  void end(VkCommandBuffer cmd, std::uint32_t span);
-
-  /// @brief Settle spans [@p first, @p first + @p count) once the submit
-  ///        that carried them has returned.
+  /// @brief Tile only scopes nested at most @p depth deep, counted from the
+  ///        outermost scope open on the recording thread: a command tagged
+  ///        deeper counts to its ancestor at that depth, and the deeper
+  ///        scopes read @ref DeviceTime::NotTimed.
   ///
-  /// Resolves them if the submit succeeded, logging a failed read rather
-  /// than returning it, as the work itself succeeded; drops them
-  /// (@ref discard) if the work never reached the device; and retires the
-  /// timer (@ref abandon) if the device may still run it. What
-  /// @ref CommandBatch::submit and the timed @ref Device::submit_single_time
-  /// do; a caller timing its own submits does the same.
-  /// @param first      The first span the submit carried.
-  /// @param count      How many it carried; 0 settles none, but still retires
-  ///                   the timer for work in flight.
-  /// @param submitted  What the submit returned.
-  /// @param in_flight  Whether the device may still run the work, as
-  ///                   @ref Device::submit_single_time reports it.
-  void settle(std::uint32_t first, std::uint32_t count, const Status& submitted,
-              bool in_flight);
+  /// 1 gives stage totals with the fewest timestamps -- on a device where a
+  /// timestamp may cost an encoder boundary, the least perturbation. Read by
+  /// a batch when it submits.
+  /// @param depth  The depth; 0, the default, tiles every scope.
+  void set_max_depth(std::uint32_t depth) noexcept { max_depth_ = depth; }
+  /// @return The depth @ref set_max_depth set; 0 for every scope.
+  std::uint32_t max_depth() const noexcept { return max_depth_; }
 
-  /// @brief Read back spans [@p first, @p first + @p count) -- those one
-  ///        completed submit carried -- and convert them to milliseconds.
+  /// @brief Grow the pool to at least @p max_spans pairs of queries, for a
+  ///        caller that times more at once.
   ///
-  /// Only those: a span another command buffer carries may not have run, and
-  /// a reused query would still hold the previous window's value. Never
-  /// blocks: a span whose queries are not written stays unresolved, and is
-  /// published as unmeasured.
-  /// @pre The submit carrying the spans has completed (its fence signalled).
-  /// @param first  The first span.
-  /// @param count  How many.
-  /// @return OK; @ref Status::Code::InvalidArgument for a range past the
-  ///         window; or a backend @ref Status if the read failed.
-  Status resolve(std::uint32_t first, std::uint32_t count = 1);
-
-  /// @brief Drop spans [@p first, @p first + @p count), whose command buffer
-  ///        will not run, so their slots go back to the window.
-  ///
-  /// Only the window's newest spans, unresolved: a span is its queries'
-  /// position, so dropping an earlier run would renumber every span after
-  /// it. A run that is not the newest -- an outer submit's, around a nested
-  /// one -- stays, unresolved: nothing reads it, and nothing publishes it.
-  /// @param first  The first span.
-  /// @param count  How many.
-  void discard(std::uint32_t first, std::uint32_t count = 1) noexcept;
-
-  /// @brief Stop timing for good: a submit carrying this timer's queries may
-  ///        still run on the device.
-  ///
-  /// Its queries cannot be reused while it may still write them
-  /// (VUID-vkCmdResetQueryPool-None-02841), and nothing says when it drains,
-  /// so the pool retires with it: @ref available is false from here on.
-  /// Spans already resolved are still published.
-  void abandon() noexcept;
-
-  /// @brief Publish each resolved span to @p out as a device row, and end the
-  ///        window: for a timer used by hand.
-  ///
-  /// An unresolved span is skipped, not reported as 0: a missing row means
-  /// "not measured", 0.00 "measured, and fast".
-  /// @param out  The metrics the rows land in.
-  void report_into(StageMetrics& out);
-
-  /// @brief Discard the window's spans without publishing them.
-  void reset() noexcept { end_window(); }
-
-  /// @return How many spans the window holds.
-  std::size_t count() const noexcept { return spans_.size(); }
-
-  /// @brief Raise the per-window bound to at least @p max_spans, for a caller
-  ///        whose window grows with its input.
-  ///
-  /// Does nothing within a window or on an unavailable timer. A larger pool
-  /// that will not allocate is logged, and the timer keeps timing at its
-  /// bound. A @p max_spans past @ref kMaxSpans is clamped, logged: a stage
-  /// that then fills the window reports no device time rather than part.
+  /// A pending batch keeps the pool it took its range from, so this is safe
+  /// at any time. Does nothing on an unavailable timer or for a size it
+  /// already has. A larger pool that will not allocate is logged, and the
+  /// timer keeps its own. A @p max_spans past @ref kMaxSpans is clamped,
+  /// logged.
   /// @param device     The device the timer was made for.
-  /// @param max_spans  The bound wanted.
+  /// @param max_spans  The size wanted.
   /// @return OK; or @ref Status::Code::InvalidArgument for a device other
   ///         than the timer's.
   Status reserve(const Device& device, std::uint32_t max_spans);
 
-  /// @return The query pool, shared, or null: a submit carrying this timer's
-  ///         spans keeps it with the rest of its `keep_alive`, so the device
-  ///         holds it past a failed wait, and a timer destroyed after
-  ///         @ref abandon frees no queries the work may still write.
-  std::shared_ptr<void> keep_alive() const noexcept { return pool_; }
+  /// @return The query pool, shared, or null: a submit timed on this timer
+  ///         keeps it with the rest of its `keep_alive`, so the device holds
+  ///         it past a failed wait, and a timer destroyed meanwhile frees no
+  ///         queries the work may still write.
+  std::shared_ptr<void> keep_alive() const noexcept;
 
  private:
-  friend class GpuStageScope;
-
-  struct Span {
-    const char* name = nullptr;  // on StageRow::name's terms
-    std::uint64_t scope = 0;     // the scope that publishes it; 0 by hand
-    double ms = 0.0;
-    bool resolved = false;
-  };
-  struct OpenScope {
-    std::uint64_t id = 0;
-    bool truncated = false;  // the window refused it a span
-  };
-
-  // A GpuStageScope's half. open_scope returns the scope's id; close_scope
-  // publishes the spans opened under it into `out` -- none if the window
-  // refused it one -- and ends the window when no scope is left open.
-  std::uint64_t open_scope();
-  void close_scope(std::uint64_t id, StageMetrics& out);
-  OpenScope* find_scope(std::uint64_t id) noexcept;
-
-  void clear_state() noexcept;
-  // Ends the window, and re-arms the once-a-window warnings for the next.
-  void end_window() noexcept;
+  friend class GpuTiles;
+  struct Queries;  // the pool, its ranges and its clock, shared with batches
 
   VkDevice device_ = VK_NULL_HANDLE;
-  // Shared with the submits carrying its spans (keep_alive()).
-  std::shared_ptr<QueryPool> pool_;
-  std::uint32_t max_spans_ = 0;
-  std::uint32_t valid_bits_ = 0;
-  float period_ns_ = 0.0F;
-  bool warned_full_ = false;
-  bool warned_closed_ = false;
-  std::vector<Span> spans_;
-  std::vector<OpenScope> scopes_;  // innermost last
-  std::uint64_t next_scope_ = 1;
-  // Reserved at create, so recording and resolving a span allocate nothing.
-  std::vector<std::uint64_t> readback_;
+  std::shared_ptr<Queries> queries_;
+  std::uint32_t max_depth_ = 0;
 };
 
-/// @brief One stage's window: times its host span, hands its device timer to
-///        the work it records, and publishes both halves when it closes.
+/// @brief One command buffer's tiles: a range of a @ref GpuTimer's queries,
+///        held from recording until the work's timestamps are read.
 ///
-/// One object, because a stage that opens a host scope, threads its timer
-/// into a dispatch and publishes as a statement afterwards skips the publish
-/// on every early return -- and its spans stay in the timer, to be published
-/// under the next call's label. A destructor cannot be skipped. It is also
-/// what a dispatch takes, so a timer cannot reach one without its label.
+/// A timestamp (`BOTTOM_OF_PIPE`) is written before the first command, at
+/// each change of tile, and after the last command, so everything between
+/// two marks -- dispatches, fills, copies, barriers, gaps -- counts to the
+/// tile they bound, and the tiles add up to the span. The first named tile
+/// covers what was recorded before it. A mark is written once earlier work
+/// on the queue completes, so the tiles of successive command buffers on a
+/// queue never overlap; a device may latch it later than the boundary, and
+/// one layered on Metal may snap it to an encoder boundary.
 ///
-/// It publishes the spans opened under it and no others, so a helper's scope
-/// with metrics of its own, open inside a stage's on one timer, takes none of
-/// the stage's spans. A command recorded under it and submitted after it
-/// closes runs untimed.
+/// What @ref CommandBatch times with. By hand, for a command buffer the
+/// caller submits itself -- a renderer's frame -- outside a render pass:
+///
+/// @code
+/// GpuTiles tiles = GpuTiles::begin(timer, cmd, 2);  // reset + first mark
+/// tiles.mark(cmd, "shadow pass");                   // names the open tile
+/// record_shadow_pass(cmd);
+/// tiles.mark(cmd, "main pass");                     // a mark: a new tile
+/// record_main_pass(cmd);
+/// tiles.end(cmd);                                   // the last mark
+/// // ... submit cmd; once its fence has signalled:
+/// tiles.resolve();
+/// metrics.merge_device(tiles.rows());
+/// @endcode
+///
+/// @warning Move-only. Destroying one, or moving over it, returns its range:
+///          its command buffer must have completed or never run by then --
+///          @ref drop one the device may still run.
+class VKC_VULKAN_API GpuTiles {
+ public:
+  /// @brief Construct untimed tiles: no range, no rows.
+  GpuTiles() noexcept = default;
+  ~GpuTiles();
+  GpuTiles(GpuTiles&& other) noexcept;
+  GpuTiles& operator=(GpuTiles&& other) noexcept;
+  GpuTiles(const GpuTiles&) = delete;
+  GpuTiles& operator=(const GpuTiles&) = delete;
+
+  /// @brief Take a range for up to @p tiles tiles from @p timer, and record
+  ///        its reset and the first mark into @p cmd.
+  /// @param timer  The timer whose queries the marks go to.
+  /// @param cmd    A recording command buffer, outside a render pass.
+  /// @param tiles  The most tiles; not 0.
+  /// @return The tiles; untimed when @p timer is unavailable, or has no free
+  ///         range, whose rows read @ref DeviceTime::Unavailable or
+  ///         @ref DeviceTime::NotTimed.
+  static GpuTiles begin(GpuTimer& timer, VkCommandBuffer cmd,
+                        std::uint32_t tiles);
+
+  /// @brief Start a tile named @p name: write a mark into @p cmd, unless no
+  ///        tile is named yet -- the first name names the open tile -- or
+  ///        @p name is the open tile's.
+  ///
+  /// A tile past the room @ref begin took is not marked: every tile then
+  /// reads @ref DeviceTime::NotTimed, and the span stays.
+  /// @param cmd   The command buffer @ref begin recorded into.
+  /// @param name  The tile's row, on @ref StageRow::name's terms; not null
+  ///              (`VKC_CHECK`).
+  void mark(VkCommandBuffer cmd, const char* name);
+
+  /// @brief Write the last mark into @p cmd, after everything it records.
+  /// @param cmd  The command buffer @ref begin recorded into.
+  void end(VkCommandBuffer cmd);
+
+  /// @brief Read the marks and return the range, once the command buffer has
+  ///        completed. Never waits: a mark not yet readable leaves the tiles
+  ///        it bounds @ref DeviceTime::NotTimed.
+  /// @pre The command buffer has completed (its fence or timeline value has
+  ///      been reached).
+  void resolve();
+
+  /// @brief Give up on the timestamps: the command buffer failed. Every tile
+  ///        reads @ref DeviceTime::NotTimed; the range goes back, unless the
+  ///        device may still run the work, when it is never reused.
+  /// @param may_still_run  Whether the device may still run it: after a
+  ///                       failed wait, or a submit that lost the device.
+  void drop(bool may_still_run) noexcept;
+
+  /// @return The tiles' rows by name, once resolved or dropped: each tile's,
+  ///         added up, with only a device half; empty before, or for tiles
+  ///         that named none.
+  const std::vector<StageRow>& rows() const noexcept { return rows_.rows(); }
+
+  /// @return The span from the first mark to the last, once resolved, where
+  ///         both were readable; empty otherwise.
+  std::optional<DeviceSpan> span() const noexcept { return span_; }
+
+  /// @return Whether a range was taken, so marks are written.
+  bool timed() const noexcept { return capacity_ != 0; }
+
+ private:
+  friend class CommandBatch;
+  friend class Device;
+
+  static constexpr std::uint32_t kNoKey = 0xFFFFFFFFU;
+
+  // CommandBatch's and Device's form: keys made at record time, marked by
+  // index, each tiled at the timer's max depth; publish() credits the
+  // scopes still open on this thread.
+  static GpuTiles open(GpuTimer& timer, VkCommandBuffer cmd,
+                       std::uint32_t tiles, std::vector<detail::TileKey> keys);
+  void mark_key(VkCommandBuffer cmd, std::uint32_t key);
+  void publish() const noexcept;
+  // Whether keys a and b are one tile: equal up to the depth.
+  bool same_tile(std::uint32_t a, std::uint32_t b) const noexcept;
+  // Calls fn(name, serial, state, ms) for each scope each tile counts to,
+  // and for each deeper scope, NotTimed.
+  template <class Fn>
+  void for_each_credit(const Fn& fn) const;
+  // Fills tile_ms_, tile_state_ and rows_; `marks` is null when nothing was
+  // read.
+  void settle(const std::uint64_t* marks);
+  void release() noexcept;
+
+  std::shared_ptr<GpuTimer::Queries> queries_;
+  std::uint32_t first_ = 0;     // the range's first query
+  std::uint32_t capacity_ = 0;  // its queries; 0 untimed
+  std::uint32_t written_ = 0;   // marks written
+  std::uint32_t depth_ = 0;     // the timer's max depth; 0 every scope
+  DeviceTime untimed_ = DeviceTime::None;  // why untimed, for the rows
+  bool overflowed_ = false;                // a tile past the room
+  bool leaked_ = false;                    // the range is never reused
+  std::vector<detail::TileKey> keys_;
+  std::vector<std::uint32_t> tiles_;  // each tile's key, kNoKey unnamed
+  // Each tile's time and state once settled, for publish().
+  std::vector<double> tile_ms_;
+  std::vector<DeviceTime> tile_state_;
+  StageMetrics rows_;
+  std::optional<DeviceSpan> span_;
+};
+
+/// @brief One stage's scope: times its host span, tags the commands recorded
+///        under it, and publishes its host, wait and device time when it
+///        closes.
+///
+/// A @ref StageScope whose commands are tagged: a command given it counts to
+/// it and to every scope open around it when recorded (@ref GpuTiles). Its
+/// device time lands at its close when a blocking submit has run the work
+/// by then; a pending batch hands it back by name instead
+/// (`PendingBatch::device_rows`), as nothing points at the caller's metrics
+/// while the batch is pending.
 ///
 /// Null metrics make it inert end to end: @ref timer is null, the work takes
 /// the untimed path, and nothing is published.
 ///
 /// @warning The metrics, the timer and the @p name literal must outlive the
-///          scope; scopes on one timer nest.
+///          scope, which opens and closes on one thread.
 ///
 /// @code
 /// Status Integrator::integrate(const Frame& frame, StageMetrics* metrics) {
@@ -367,27 +413,18 @@ class VKC_VULKAN_API GpuTimer {
 /// @endcode
 class GpuStageScope {
  public:
-  /// @brief Open @p name's window on @p metrics, with device spans in
+  /// @brief Open @p name's scope on @p metrics, its commands timed in
   ///        @p timer; inert when @p metrics is null.
-  /// @param metrics  The set both halves land in, or null.
-  /// @param timer    The timer device spans record into.
+  /// @param metrics  The set every half lands in, or null.
+  /// @param timer    The timer a batch with none of its own times in.
   /// @param name     The label; string-literal lifetime, not null.
   GpuStageScope(StageMetrics* metrics, GpuTimer& timer, const char* name)
-      : metrics_(metrics), timer_(&timer), host_(metrics, name) {
-    if (metrics_ == nullptr) return;
-    // Seeded first, so the row precedes any breakdown row the stage adds.
-    metrics_->seed(name);
-    scope_ = timer_->open_scope();
+      : timer_(metrics != nullptr ? &timer : nullptr), host_(metrics, name) {
+    // Seeded now, so the row precedes any breakdown row the stage adds.
+    if (metrics != nullptr) metrics->seed(name);
   }
 
-  /// @brief Publish the device spans, then close the host row: this body runs
-  ///        before @ref host_, the last member, is destroyed.
-  // As StageScope's destructor: a row's allocation failing terminates.
-  // NOLINTNEXTLINE(bugprone-exception-escape)
-  ~GpuStageScope() {
-    if (metrics_ != nullptr) timer_->close_scope(scope_, *metrics_);
-  }
-
+  ~GpuStageScope() = default;
   GpuStageScope(const GpuStageScope&) = delete;
   GpuStageScope& operator=(const GpuStageScope&) = delete;
   GpuStageScope(GpuStageScope&&) = delete;
@@ -395,22 +432,18 @@ class GpuStageScope {
 
   /// @return The timer to record into, or null when inert -- the untimed
   ///         path.
-  GpuTimer* timer() const noexcept {
-    return metrics_ != nullptr ? timer_ : nullptr;
-  }
-  /// @return The label device spans publish under.
+  GpuTimer* timer() const noexcept { return timer_; }
+  /// @return The label device time publishes under.
   const char* name() const noexcept { return host_.name(); }
-  /// @return What a command recorded now keeps until its submit opens the
-  ///         span; its timer is null when inert.
+  /// @return What a command recorded now keeps; its timer is null when
+  ///         inert.
   GpuSpanTag tag() const noexcept {
-    if (metrics_ == nullptr) return {};
-    return GpuSpanTag{timer_, host_.name(), scope_};
+    if (timer_ == nullptr) return {};
+    return GpuSpanTag{timer_, host_.name(), host_.serial()};
   }
 
  private:
-  StageMetrics* metrics_;
   GpuTimer* timer_;
-  std::uint64_t scope_ = 0;
   StageScope host_;
 };
 

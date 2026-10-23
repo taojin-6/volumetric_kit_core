@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
@@ -20,7 +21,8 @@ namespace volumetric_kit::core {
 class Device;
 
 namespace detail {
-struct TimelineSubmits;  // the submits' record of the values they set
+struct TimelineSubmits;     // the submits' record of the values they set
+struct DeviceCounterState;  // a Device's counters (device.hpp)
 }  // namespace detail
 
 /// @brief A `VkFence`: the host waits on it for submitted work to finish.
@@ -54,7 +56,9 @@ class VKC_VULKAN_API Fence {
   /// @return Whether this owns a fence.
   bool valid() const noexcept { return handle_.valid(); }
 
-  /// @brief Wait until the fence is signaled, or the timeout passes.
+  /// @brief Wait until the fence is signaled, or the timeout passes,
+  ///        reporting the time it blocks to the scopes open on this thread
+  ///        (@ref note_blocked).
   /// @param timeout_ns  The longest wait, in nanoseconds.
   /// @return OK once signaled; @ref Status::Code::InvalidArgument for an
   ///         empty fence; a backend @ref Status carrying `VK_TIMEOUT`
@@ -173,6 +177,10 @@ class VKC_VULKAN_API TimelineSemaphore {
   ///         backend @ref Status.
   Status signal(std::uint64_t value);
   /// @brief Wait until the counter reaches @p value, or the timeout passes.
+  ///
+  /// A wait that blocks reports its time to the scopes open on this thread
+  /// (@ref note_blocked) and to its device's @ref DeviceCounters; one that
+  /// finds the value reached does not.
   /// @param value       The value to wait for.
   /// @param timeout_ns  The longest wait, in nanoseconds.
   /// @return OK once reached; @ref Status::Code::InvalidArgument for an
@@ -189,6 +197,9 @@ class VKC_VULKAN_API TimelineSemaphore {
   // a queue's signals run in submission order. Raised through a const
   // semaphore, which a TimelinePoint borrows.
   mutable std::atomic<std::uint64_t> submitted_{0};
+  // The device's counters, which a blocking wait adds to; shared, so a
+  // device moved meanwhile still gets them.
+  std::shared_ptr<detail::DeviceCounterState> counters_;
 };
 
 /// @brief A value of a @ref TimelineSemaphore: one a submission waits for
