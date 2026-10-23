@@ -343,38 +343,33 @@ TEST_F(TimerWorkTest, UntaggedCommandsJoinTheOpenTile) {
   EXPECT_TRUE(reference->device_span().has_value());
 
   // A fill before the first tag joins its tile, and one after it the open
-  // tile: "first" holds both fills, "second" its upload alone, and the two
-  // add up to the span.
+  // tile: one tag makes one tile however many untagged commands surround
+  // it. So the batch fits a timer with room for one tile -- a second would
+  // read NotTimed -- and that tile is the whole span.
+  Result<GpuTimer> made_timer = GpuTimer::create(device(), 1);
+  ASSERT_TRUE(made_timer.ok());
+  GpuTimer one_tile = *std::move(made_timer);
   StageMetrics recording;
   CommandBatch batch(device(), allocator());
   ASSERT_TRUE(batch.fill(target_, 0, kFillBytes, 2U).ok());
   {
-    GpuStageScope first(&recording, timer_, "first");
-    ASSERT_TRUE(tagged(batch, &first).ok());
+    GpuStageScope only(&recording, one_tile, "only");
+    ASSERT_TRUE(tagged(batch, &only).ok());
   }
   ASSERT_TRUE(batch.fill(target_, 0, kFillBytes, 3U).ok());
-  {
-    GpuStageScope second(&recording, timer_, "second");
-    ASSERT_TRUE(tagged(batch, &second).ok());
-  }
   Result<PendingBatch> made = batch.submit_async({}, {});
   ASSERT_TRUE(made.ok()) << made.status().message();
   ASSERT_TRUE(made->wait(kLongWaitNs).ok());
-  const StageRow* first = row(made->device_rows(), "first");
-  const StageRow* second = row(made->device_rows(), "second");
-  ASSERT_TRUE(first != nullptr && second != nullptr);
-  EXPECT_EQ(first->device, DeviceTime::Measured);
-  EXPECT_EQ(second->device, DeviceTime::Measured);
+  ASSERT_EQ(made->device_rows().size(), 1U);
+  const StageRow& only = made->device_rows()[0];
+  EXPECT_EQ(only.device, DeviceTime::Measured);
   ASSERT_TRUE(made->device_span().has_value());
   const DeviceSpan span = made->device_span().value_or(DeviceSpan{});
-  const double span_ms =
-      ticks_to_ms(timestamp_delta(span.begin_ticks, span.end_ticks,
-                                  device().timestamp_valid_bits()),
-                  physical().limits().timestampPeriod);
-  EXPECT_NEAR(first->gpu_ms + second->gpu_ms, span_ms, 1e-6);
-  if (timestamps_advance()) {
-    EXPECT_GT(first->gpu_ms, second->gpu_ms);  // two 64 MiB fills vs 64 B
-  }
+  EXPECT_NEAR(only.gpu_ms,
+              ticks_to_ms(timestamp_delta(span.begin_ticks, span.end_ticks,
+                                          device().timestamp_valid_bits()),
+                          physical().limits().timestampPeriod),
+              1e-6);
 }
 
 // An async batch is timed: its rows come back by name at the wait, not
