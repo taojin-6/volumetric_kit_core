@@ -16,6 +16,7 @@
 #include <deque>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <ratio>
@@ -783,6 +784,105 @@ TEST_F(TimerTest, DroppedTilesReadNotTimedAndKeepALiveRange) {
   EXPECT_TRUE(record(false));
   EXPECT_TRUE(record(true));    // returned: timed again
   EXPECT_FALSE(record(false));  // the last one's range is held for good
+}
+
+// A dropped manual submit has no keep_alive supplied by CommandBatch. The
+// device must hold its old pool even after reserve replaces it, the tiles
+// and timer die, and the Device itself moves. The guard keeps the old code
+// from actually destroying queries under a pending submit while its missing
+// owner is asserted; it is released only after that submit completes.
+using TimerLifetimeTest = test::VulkanTest;
+
+TEST_F(TimerLifetimeTest,
+       DroppedManualTilesRetainTheirPoolUntilDeviceTeardown) {
+  std::weak_ptr<void> old_pool;
+  {
+    Result<Device> made_device = Device::create(instance(), physical(), {});
+    ASSERT_TRUE(made_device.ok());
+    Result<GpuTimer> made_timer = GpuTimer::create(*made_device, 1);
+    ASSERT_TRUE(made_timer.ok());
+    GpuTimer timer = *std::move(made_timer);
+    if (!timer.available()) GTEST_SKIP() << "the queue has no timestamps";
+    old_pool = timer.keep_alive();
+    Device moved_device = *std::move(made_device);
+    Result<TimelineSemaphore> gate = TimelineSemaphore::create(moved_device);
+    ASSERT_TRUE(gate.ok());
+    GpuTiles tiles;
+    Result<Device::PendingSubmit> pending = moved_device.submit_pending(
+        [&](VkCommandBuffer cmd) {
+          tiles = GpuTiles::begin(timer, cmd, 1);
+          tiles.mark(cmd, "pending");
+          tiles.end(cmd);
+        },
+        {{&*gate, 1}}, {});
+    ASSERT_TRUE(pending.ok());
+    EXPECT_FALSE(pending->ready());
+    EXPECT_TRUE(timer.reserve(moved_device, 2).ok());
+    std::shared_ptr<void> guard = old_pool.lock();
+    tiles.drop(true);
+    EXPECT_EQ(tiles.rows().size(), 1U);
+    if (!tiles.rows().empty()) {
+      EXPECT_EQ(tiles.rows()[0].device, DeviceTime::NotTimed);
+    }
+    tiles = GpuTiles{};
+    timer = GpuTimer{};
+    EXPECT_GT(old_pool.use_count(), 1) << "only the test guard kept the pool";
+    EXPECT_FALSE(pending->ready());
+    EXPECT_TRUE(gate->signal(1).ok());
+    EXPECT_TRUE(pending->wait(kLongWaitNs).ok());
+    guard.reset();
+    EXPECT_FALSE(old_pool.expired());
+  }
+  EXPECT_TRUE(old_pool.expired());
+}
+
+// An adopted Device may not know the manual submit's fence: the owner
+// submitted it. Its teardown still drains its assigned queue, under the
+// shared queue mutex, and releases the retained pool before returning.
+TEST_F(TimerTest, AdoptedDeviceRetiresDroppedManualTilesAfterMoving) {
+  AdoptedDevice handoff;
+  handoff.instance = instance().handle();
+  handoff.instance_api_version = instance().api_version();
+  handoff.physical_device = physical().handle();
+  handoff.device = device().handle();
+  handoff.queue_family = device().queue_family();
+  handoff.queue = device().queue();
+  handoff.submit_mutex = device().submit_mutex();
+  handoff.enabled_features.timeline_semaphore = true;
+  handoff.enabled_debug_utils = instance().debug_utils_enabled();
+  Result<Device> borrowed = Device::adopt(handoff, {});
+  ASSERT_TRUE(borrowed.ok()) << borrowed.status().message();
+  Result<GpuTimer> made_timer = GpuTimer::create(*borrowed, 1);
+  ASSERT_TRUE(made_timer.ok());
+  GpuTimer timer = *std::move(made_timer);
+  if (!timer.available()) GTEST_SKIP() << "the queue has no timestamps";
+  std::weak_ptr<void> old_pool = timer.keep_alive();
+  std::optional<Device> moved_device(*std::move(borrowed));
+  Result<TimelineSemaphore> gate = TimelineSemaphore::create(device());
+  ASSERT_TRUE(gate.ok());
+  GpuTiles tiles;
+  Result<Device::PendingSubmit> pending = device().submit_pending(
+      [&](VkCommandBuffer cmd) {
+        tiles = GpuTiles::begin(timer, cmd, 1);
+        tiles.mark(cmd, "pending");
+        tiles.end(cmd);
+      },
+      {{&*gate, 1}}, {});
+  ASSERT_TRUE(pending.ok());
+  EXPECT_TRUE(timer.reserve(*moved_device, 2).ok());
+  std::shared_ptr<void> guard = old_pool.lock();
+  tiles.drop(true);
+  tiles = GpuTiles{};
+  timer = GpuTimer{};
+  EXPECT_GT(old_pool.use_count(), 1) << "only the test guard kept the pool";
+  EXPECT_FALSE(pending->ready());
+  std::thread release([&] { EXPECT_TRUE(gate->signal(1).ok()); });
+  moved_device.reset();
+  release.join();
+  EXPECT_TRUE(pending->ready());
+  EXPECT_TRUE(pending->wait(kLongWaitNs).ok());
+  guard.reset();
+  EXPECT_TRUE(old_pool.expired());
 }
 
 // A wait the core makes -- here a blocking submit's fence, queued behind at

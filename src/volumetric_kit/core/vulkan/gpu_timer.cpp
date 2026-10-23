@@ -63,6 +63,9 @@ struct GpuTimer::Queries {
   std::uint32_t valid_bits = 0;
   float period_ns = 0.0F;
   detail::Calibrator calibrator;
+  std::shared_ptr<detail::DeviceRetainedResources> retained;
+  std::unique_ptr<detail::RetainedResource> retirement =
+      std::make_unique<detail::RetainedResource>();
 
   std::mutex mutex;
   std::vector<Range> held;  // by first
@@ -190,6 +193,7 @@ Result<GpuTimer> GpuTimer::create(const Device& device,
   queries.valid_bits = device.timestamp_valid_bits();
   queries.period_ns = device.caps().limits().timestampPeriod;
   queries.calibrator = detail::DeviceAccess::calibrator(device);
+  queries.retained = detail::DeviceAccess::retained(device);
   if (queries.valid_bits == 0 || queries.period_ns <= 0.0F) {
     queries.valid_bits = 0;
     return timer;  // valid, not available
@@ -245,6 +249,7 @@ Status GpuTimer::reserve(const Device& device, std::uint32_t max_spans) {
   grown->valid_bits = queries_->valid_bits;
   grown->period_ns = queries_->period_ns;
   grown->calibrator = queries_->calibrator;
+  grown->retained = queries_->retained;
   grown->pool = *std::move(pool);
   queries_ = std::move(grown);
   return {};
@@ -518,6 +523,18 @@ void GpuTiles::drop(bool may_still_run) {
   // Work the device may still run may still write every query in the range,
   // which no later batch may then reset (VUID-vkCmdResetQueryPool-None-02841).
   leaked_ = may_still_run;
+  if (may_still_run && queries_ != nullptr) {
+    const std::scoped_lock lock(queries_->retained->mutex);
+    if (queries_->retirement != nullptr) {
+      // Keeping the range prevents reuse, but not destruction after reserve
+      // replaced the pool or the timer died. Hand the last owner to Device;
+      // it can prove completion even though these tiles know no fence.
+      auto retirement = std::move(queries_->retirement);
+      retirement->resource = queries_;
+      retirement->next = std::move(queries_->retained->head);
+      queries_->retained->head = std::move(retirement);
+    }
+  }
   if (untimed_ == DeviceTime::None) untimed_ = DeviceTime::NotTimed;
   settle(nullptr);
   release();

@@ -339,6 +339,7 @@ Result<Device> Device::create(VkInstance instance,
   device.caps_ = caps;
   device.enabled_extensions_ = std::move(extensions);
   device.counters_ = std::make_shared<detail::DeviceCounterState>();
+  device.retained_ = std::make_shared<detail::DeviceRetainedResources>();
   // After the handle is held, so a failure here destroys the device.
   VKC_ASSIGN(device.state_.pipeline_cache,
              create_pipeline_cache(device.state_.device));
@@ -421,6 +422,7 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
   device.caps_ = std::move(caps);
   device.enabled_extensions_ = std::move(declared);
   device.counters_ = std::make_shared<detail::DeviceCounterState>();
+  device.retained_ = std::make_shared<detail::DeviceRetainedResources>();
   VKC_TRY(device.check_record(reqs, required).with_context("Device::adopt"));
   VKC_ASSIGN(device.state_.pipeline_cache,
              create_pipeline_cache(device.state_.device));
@@ -571,6 +573,7 @@ Device::Device(Device&& other) noexcept
       caps_(std::exchange(other.caps_, PhysicalDeviceInfo{})),
       enabled_extensions_(std::exchange(other.enabled_extensions_, {})),
       counters_(std::move(other.counters_)),
+      retained_(std::move(other.retained_)),
       made_(std::exchange(other.made_, {})),
       free_commands_(std::exchange(other.free_commands_, {})) {}
 
@@ -581,6 +584,7 @@ Device& Device::operator=(Device&& other) noexcept {
     caps_ = std::exchange(other.caps_, PhysicalDeviceInfo{});
     enabled_extensions_ = std::exchange(other.enabled_extensions_, {});
     counters_ = std::move(other.counters_);
+    retained_ = std::move(other.retained_);
     made_ = std::exchange(other.made_, {});
     free_commands_ = std::exchange(other.free_commands_, {});
   }
@@ -591,6 +595,29 @@ Device::~Device() { destroy(); }
 
 void Device::destroy() noexcept {
   bool unfinished = false;
+  if (retained_ != nullptr && retained_->head != nullptr) {
+    // Manually submitted timing has no fence here. Its dropped pool must
+    // outlive the assigned queue's work, even on an adopted device. Respect
+    // the embedder's shared queue mutex just as wait_idle does.
+    VkResult waited = VK_SUCCESS;
+    {
+      const std::scoped_lock lock(*submit_mutex());
+      waited = vkQueueWaitIdle(state_.queue);
+    }
+    if (waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST) {
+      unfinished = true;
+      // As for the failed fence waits below, preserve resources when their
+      // completion is unknown. The list was allocated before work began.
+      static_cast<void>(retained_->head.release());
+    } else {
+      // Unlink before destruction: releasing a pool can drop its last
+      // reference to this shared state. Avoid recursive list destruction.
+      while (retained_->head != nullptr) {
+        auto retired = std::move(retained_->head);
+        retained_->head = std::move(retired->next);
+      }
+    }
+  }
   for (Command& command : made_) {
     // One whose work may still run -- a PendingSubmit's, or one left to the
     // device after a failed wait -- is waited for first, and leaked if the
@@ -641,6 +668,7 @@ void Device::destroy() noexcept {
   caps_ = PhysicalDeviceInfo{};
   enabled_extensions_.clear();
   counters_.reset();
+  retained_.reset();
 }
 
 bool Device::extension_enabled(const char* name) const {

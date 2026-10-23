@@ -361,7 +361,14 @@ in "Where memory lives"):
   the work. A range the device may still write is never reused, a pending
   batch destroyed after a failed wait included, and the timer keeps timing
   on the rest; its pool rides the submit's `keep_alive`, so the device holds
-  it past a failed wait, as it holds a batch's staging. At most 4096 queries a
+  it past a failed wait, as it holds a batch's staging. Manually recorded
+  tiles dropped while their work may still run also hand the pool to the
+  device, without waiting or allocating: losing the timer's last pool owner
+  after growth must not destroy queries still in use. With no submission
+  fence known, these pools stay until Device destruction waits for its queue
+  idle under the shared queue mutex, including on an adopted device. Manual
+  tiles submit on the timer's device queue; an indeterminate wait leaks them as
+  it does other unfinished work. At most 4096 queries a
   pool: MoltenVK backs one with a 32 KiB Metal counter sample buffer and
   emulates timing past it, so `reserve` clamps there.
 - **Calibrated clocks where offered.** A device enables

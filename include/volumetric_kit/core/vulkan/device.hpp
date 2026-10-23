@@ -30,8 +30,9 @@ class Instance;
 class PendingBatch;
 
 namespace detail {
-struct DeviceAccess;        // the vulkan tier's own reach into a Device
-struct DeviceCounterState;  // the counters, shared with its semaphores
+struct DeviceAccess;             // the vulkan tier's own reach into a Device
+struct DeviceCounterState;       // the counters, shared with its semaphores
+struct DeviceRetainedResources;  // resources of work with no known fence
 }  // namespace detail
 
 /// @brief What a @ref Device has done since it was created: the counts a
@@ -743,6 +744,9 @@ class VKC_VULKAN_API Device {
   std::vector<std::string> enabled_extensions_;
   // Shared with the device's timeline semaphores, which count their waits.
   std::shared_ptr<detail::DeviceCounterState> counters_;
+  // Shared with timers, so dropping their manually submitted work is safe
+  // even after this Device moves. Drained before its VkDevice is destroyed.
+  std::shared_ptr<detail::DeviceRetainedResources> retained_;
   // Not moved: a moved-to device uses its own (see submit_mutex()).
   mutable std::mutex queue_mutex_;
   mutable std::mutex present_queue_mutex_;

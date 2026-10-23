@@ -300,6 +300,7 @@ class VKC_VULKAN_API GpuTiles {
   /// @param timer  The timer whose queries the marks go to.
   /// @param cmd    A recording command buffer, outside a render pass.
   /// @param tiles  The most tiles; 0 counts as 1.
+  /// @pre Submit @p cmd on the queue of the device that created @p timer.
   /// @return The tiles; untimed when @p timer is unavailable, or has no free
   ///         range, whose rows read @ref DeviceTime::Unavailable or
   ///         @ref DeviceTime::NotTimed.
@@ -332,7 +333,10 @@ class VKC_VULKAN_API GpuTiles {
 
   /// @brief Give up on the timestamps: the command buffer failed. Every tile
   ///        reads @ref DeviceTime::NotTimed; the range goes back, unless the
-  ///        device may still run the work, when it is never reused.
+  ///        device may still run the work, when it is never reused. In that
+  ///        case the device retains the pool until its destruction, which
+  ///        waits for its queue to go idle before freeing it. Dropping never
+  ///        waits.
   /// @param may_still_run  Whether the device may still run it: after a
   ///                       failed wait, or a submit that lost the device.
   void drop(bool may_still_run);

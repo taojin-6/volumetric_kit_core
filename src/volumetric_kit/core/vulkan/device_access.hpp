@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 #include "volumetric_kit/core/base/result.hpp"
@@ -27,6 +28,19 @@ struct DeviceCounterState {
   std::atomic<std::uint64_t> host_waits{0};
   std::atomic<std::uint64_t> blocked_ns{0};
   std::atomic<std::uint64_t> staging_buffers{0};
+};
+
+// Preallocated by a resource whose failed work may have no fence known to
+// Device. Linking it here never allocates; Device retires the list only once
+// its assigned queue is idle (including for an adopted device).
+struct RetainedResource {
+  std::shared_ptr<void> resource;
+  std::unique_ptr<RetainedResource> next;
+};
+
+struct DeviceRetainedResources {
+  std::mutex mutex;
+  std::unique_ptr<RetainedResource> head;
 };
 
 // A device's calibrated-timestamps entry point and time domains, copied out
@@ -56,6 +70,10 @@ VKC_VULKAN_API ClockPair pair_clocks(std::uint64_t device_ticks,
 
 // The tier's reach into a Device's privates, in one place.
 struct DeviceAccess {
+  static std::shared_ptr<DeviceRetainedResources> retained(
+      const Device& device) {
+    return device.retained_;
+  }
   static std::shared_ptr<DeviceCounterState> counters(const Device& device) {
     return device.counters_;
   }

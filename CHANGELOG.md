@@ -38,7 +38,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - A timer's queries go per batch, so it times any number of pending batches.
   A batch that finds no free range, or fails before the device or on it,
   reads `NotTimed`; one the device may still run keeps its range, and the
-  timer times on.
+  timer times on. `GpuTiles::drop(true)` also retains the pool across timer
+  growth or destruction until device teardown drains its assigned queue.
 - `GpuSpanTag::scope` is the scope's serial (`StageScope::serial`), unique
   in the process.
 - A `StageScope` or `WaitScope` opens and closes on one thread: closing one
@@ -69,7 +70,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - A timer used by hand moves to `GpuTiles`: `begin(timer, cmd, tiles)`,
   `mark(cmd, name)` at each tile, `end(cmd)`, `resolve()` once the command
   buffer's fence has signalled (a timeline value is not enough through
-  MoltenVK), then `rows()` and `span()`.
+  MoltenVK), then `rows()` and `span()`. Submit these command buffers on the
+  queue of the device that created the timer.
 
 ## [0.19.0] - 2026-10-22
 
