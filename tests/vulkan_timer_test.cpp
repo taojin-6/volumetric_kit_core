@@ -804,7 +804,7 @@ TEST_F(TimerLifetimeTest,
     GpuTimer timer = *std::move(made_timer);
     if (!timer.available()) GTEST_SKIP() << "the queue has no timestamps";
     old_pool = timer.keep_alive();
-    Device moved_device = *std::move(made_device);
+    const Device moved_device = *std::move(made_device);
     Result<TimelineSemaphore> gate = TimelineSemaphore::create(moved_device);
     ASSERT_TRUE(gate.ok());
     GpuTiles tiles;
@@ -856,7 +856,7 @@ TEST_F(TimerTest, AdoptedDeviceRetiresDroppedManualTilesAfterMoving) {
   ASSERT_TRUE(made_timer.ok());
   GpuTimer timer = *std::move(made_timer);
   if (!timer.available()) GTEST_SKIP() << "the queue has no timestamps";
-  std::weak_ptr<void> old_pool = timer.keep_alive();
+  const std::weak_ptr<void> old_pool = timer.keep_alive();
   std::optional<Device> moved_device(*std::move(borrowed));
   Result<TimelineSemaphore> gate = TimelineSemaphore::create(device());
   ASSERT_TRUE(gate.ok());

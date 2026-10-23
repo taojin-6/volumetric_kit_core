@@ -608,6 +608,7 @@ void Device::destroy() noexcept {
       unfinished = true;
       // As for the failed fence waits below, preserve resources when their
       // completion is unknown. The list was allocated before work began.
+      // NOLINTNEXTLINE(bugprone-unused-return-value) -- intentionally leak it.
       static_cast<void>(retained_->head.release());
     } else {
       // Unlink before destruction: releasing a pool can drop its last
