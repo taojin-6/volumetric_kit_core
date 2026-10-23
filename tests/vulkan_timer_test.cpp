@@ -780,15 +780,18 @@ TEST_F(TimerWorkTest, ABlockingWaitIsEveryOpenScopesWait) {
     }
     return batch;
   };
+  // The faster of two runs at each count: the first can pay one-time costs
+  // (the buffer's first touch) that would size the work too small.
   std::uint32_t count = 1;
   for (; count < 4096; count *= 2) {
-    CommandBatch probe = fills(count);
-    const auto start = std::chrono::steady_clock::now();
-    ASSERT_TRUE(probe.submit().ok());
-    if (std::chrono::steady_clock::now() - start >=
-        std::chrono::milliseconds(40)) {
-      break;
+    auto fastest = std::chrono::steady_clock::duration::max();
+    for (int run = 0; run < 2; ++run) {
+      CommandBatch probe = fills(count);
+      const auto start = std::chrono::steady_clock::now();
+      ASSERT_TRUE(probe.submit().ok());
+      fastest = std::min(fastest, std::chrono::steady_clock::now() - start);
     }
+    if (fastest >= std::chrono::milliseconds(40)) break;
   }
   CommandBatch ahead = fills(count);
   Result<PendingBatch> held = ahead.submit_async({}, {});
