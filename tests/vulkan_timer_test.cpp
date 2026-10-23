@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <ratio>
@@ -88,7 +89,8 @@ TEST(TimestampMath, WrapsAndConverts) {
 
 // A host stamp inside the call is steady_clock's own, kept with the driver's
 // deviation, edges included; one outside it (another clock), or none, puts
-// the device's reading at the call's middle, off by half the call at most.
+// the device's reading at the call's middle, adding the driver's uncertainty
+// to half the call.
 TEST(ClockPairs, KeepAHostStampOnlyInsideTheCall) {
   const ClockPair read = detail::pair_clocks(7, 1'040, 3, 1'000, 1'100);
   EXPECT_EQ(read.device_ticks, 7U);
@@ -103,7 +105,24 @@ TEST(ClockPairs, KeepAHostStampOnlyInsideTheCall) {
     const ClockPair bracketed = detail::pair_clocks(7, stamp, 3, 1'000, 1'100);
     EXPECT_EQ(bracketed.device_ticks, 7U);
     EXPECT_EQ(bracketed.host_ns, 1'050);
-    EXPECT_EQ(bracketed.deviation_ns, 50U);
+    EXPECT_EQ(bracketed.deviation_ns, 53U);
+  }
+}
+
+TEST(ClockPairs, BracketIncludesDriverUncertaintyWithoutOverflow) {
+  for (const std::optional<std::uint64_t> stamp :
+       {std::optional<std::uint64_t>(999), std::optional<std::uint64_t>(1'101),
+        std::optional<std::uint64_t>()}) {
+    const ClockPair pair = detail::pair_clocks(7, stamp, 1'000, 1'000, 1'100);
+    EXPECT_EQ(pair.host_ns, 1'050);
+    EXPECT_EQ(pair.deviation_ns, 1'050U);
+    const ClockPair odd =
+        detail::pair_clocks(7, std::nullopt, 1'000, 1'000, 1'101);
+    EXPECT_EQ(odd.deviation_ns, 1'051U);
+    constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+    const ClockPair saturated =
+        detail::pair_clocks(7, std::nullopt, kMax - 10, 1'000, 1'100);
+    EXPECT_EQ(saturated.deviation_ns, kMax);
   }
 }
 

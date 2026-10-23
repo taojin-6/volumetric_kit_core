@@ -579,7 +579,8 @@ class VKC_VULKAN_API Device {
   /// Through `vkGetCalibratedTimestamps*` with the device's own time domain
   /// and the host domain `std::chrono::steady_clock` reads, where the driver
   /// offers it (`CLOCK_MONOTONIC` on Linux); otherwise the device's reading
-  /// alone, bracketed by two host readings, which the deviation then covers.
+  /// alone, bracketed by two host readings. The deviation then covers half
+  /// the bracket plus the driver's own uncertainty.
   /// @return The pair; @ref Status::Code::Unsupported where the device did
   ///         not enable a calibrated-timestamps extension (or, adopted, did
   ///         not declare one) or does not offer its own time domain; or a

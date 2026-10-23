@@ -110,6 +110,9 @@ struct GpuTimer::Queries {
     const std::scoped_lock lock(mutex);
     const auto now = std::chrono::steady_clock::now();
     if (!clock.has_value() || now - clock_read >= kCalibrationLife) {
+      // An expired pair cannot put new spans on the host clock if this read
+      // fails, even after the once-only warning has already been emitted.
+      clock.reset();
       Result<ClockPair> read = detail::calibrate(calibrator);
       if (read.ok()) {
         clock = *read;

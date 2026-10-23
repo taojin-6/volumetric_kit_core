@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -1231,10 +1232,13 @@ ClockPair pair_clocks(std::uint64_t device_ticks,
       return pair;
     }
   }
-  // Another clock, or none: the device's reading lies inside the call.
+  // Another clock, or none: the device's reading lies inside the call. Its
+  // own uncertainty (including clock quantization) still applies when the
+  // host reading is replaced by the bracket's midpoint.
   const auto half = static_cast<std::uint64_t>(after_ns - before_ns + 1) / 2;
   pair.host_ns = before_ns + static_cast<std::int64_t>(half);
-  pair.deviation_ns = half;
+  constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+  pair.deviation_ns = deviation_ns > kMax - half ? kMax : deviation_ns + half;
   return pair;
 }
 

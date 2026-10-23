@@ -45,7 +45,8 @@ Result<ClockPair> calibrate(const Calibrator& calibrator);
 // domain beside them, if any; the driver's deviation; and steady_clock just
 // before and after the call. A stamp inside [before, after] is steady_clock's
 // own, and keeps the driver's deviation; otherwise the device's reading lies
-// somewhere in the call, placed at its middle, off by half the call at most.
+// somewhere in the call, placed at its middle. The fallback bound adds half
+// the call to the driver's uncertainty, saturating on overflow.
 // Exported for the tests alone, which reach this header.
 VKC_VULKAN_API ClockPair pair_clocks(std::uint64_t device_ticks,
                                      std::optional<std::uint64_t> host_stamp,

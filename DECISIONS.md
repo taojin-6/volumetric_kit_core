@@ -368,9 +368,10 @@ in "Where memory lives"):
   `VK_KHR_calibrated_timestamps`, else the EXT, where offered.
   `Device::calibrate` reads the queue's counter with the host domain
   `steady_clock` reads (`CLOCK_MONOTONIC` on Linux) and, where the driver
-  has no such domain, brackets the device's reading by two host ones, which
-  the deviation then covers. A timer reads the clocks at most once a second
-  to put a span on the host clock; gaps between batches on one queue need
+  has no such domain, brackets the device's reading by two host ones. Its
+  deviation adds half the bracket to the driver's uncertainty. A timer uses
+  a clock pair for at most one second; a failed refresh leaves spans in ticks
+  until a later read succeeds. Gaps between batches on one queue need
   no calibration, being raw ticks of one counter.
 - **Counts per device.** `DeviceCounters` -- submits, blocking waits that
   found the work unfinished and their time, staging buffers -- are atomic

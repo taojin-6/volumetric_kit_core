@@ -183,6 +183,19 @@ if(VKC_WITH_VULKAN)
       "$<TARGET_PROPERTY:GPUOpen::VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>"
   )
   get_target_property(_vkc_vulkan_type core_vulkan TYPE)
+  if(_vkc_vulkan_type STREQUAL "STATIC_LIBRARY")
+    # The executable interposes the loader lookup to inject calibration errors.
+    # A shared core binds directly to the loader on macOS (two-level namespace),
+    # so this injection runs only against a static core. Pairing and real-device
+    # calibration remain covered by vulkan_timer in both configurations.
+    add_executable(vkc_vulkan_calibration_test vulkan_calibration_test.cpp)
+    target_link_libraries(
+      vkc_vulkan_calibration_test
+      PRIVATE volumetric_kit::core_test_support volumetric_kit::core_test_main
+              ${CMAKE_DL_LIBS})
+    vkc_target_warnings(vkc_vulkan_calibration_test)
+    _vkc_discover_device_tests(vkc_vulkan_calibration_test)
+  endif()
   if(_vkc_vulkan_type STREQUAL "SHARED_LIBRARY")
     target_compile_definitions(vkc_vulkan_allocation_budget_test
                                PRIVATE VKC_TEST_PRIVATE_VMA)
