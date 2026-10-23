@@ -4,9 +4,9 @@
 # --- core_base: the bottom tier ----------------------------------------------
 # Exception-free Status/Result error handling, the VKC_CHECK contract check, the
 # pluggable log sink, stage metrics and each thread's stack of open scopes,
-# whole-file I/O and the version API. Pure C++17 with no
-# dependencies, so every other tier, and every sibling repo, can build on it --
-# including a headless or device-less consumer.
+# whole-file I/O and the version API. Pure C++17 with no dependencies, so every
+# other tier, and every sibling repo, can build on it -- including a headless or
+# device-less consumer.
 include(GenerateExportHeader)
 
 set(_vkc_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")

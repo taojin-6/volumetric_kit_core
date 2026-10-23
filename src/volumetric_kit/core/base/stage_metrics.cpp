@@ -3,16 +3,21 @@
 
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 
+#include <atomic>
 #include <cstdint>
+
+#include "volumetric_kit/core/base/check.hpp"
 
 namespace volumetric_kit::core {
 namespace {
 
-// Each thread's open scopes, innermost first through `outer`, and the next
-// serial. Defined here, not inline in the header: one stack per thread for
-// the whole process, whichever library opens a scope or waits.
+// Each thread's open scopes, innermost first through `outer`. Defined here,
+// not inline in the header: one stack per thread for the whole process,
+// whichever library opens a scope or waits.
 thread_local detail::ScopeFrame* innermost = nullptr;
-thread_local std::uint64_t next_serial = 1;
+// The next serial, for the whole process: a tag recorded or submitted on a
+// thread other than its scope's then matches none of that thread's scopes.
+std::atomic<std::uint64_t> next_serial{1};
 
 }  // namespace
 
@@ -20,20 +25,21 @@ namespace detail {
 
 void push_scope(ScopeFrame* frame) noexcept {
   frame->outer = innermost;
-  frame->serial = next_serial++;
+  frame->serial = next_serial.fetch_add(1, std::memory_order_relaxed);
   innermost = frame;
 }
 
 void pop_scope(ScopeFrame* frame) noexcept {
   // Scopes are RAII and close innermost first, so this is the top; a frame
   // closed out of order is unlinked where it is.
-  for (ScopeFrame** at = &innermost; *at != nullptr; at = &(*at)->outer) {
-    if (*at == frame) {
-      *at = frame->outer;
-      frame->outer = nullptr;
-      return;
-    }
-  }
+  ScopeFrame** at = &innermost;
+  while (*at != nullptr && *at != frame) at = &(*at)->outer;
+  // Not on this thread's stack: it opened on another, whose stack would keep
+  // it once freed.
+  VKC_CHECK(*at == frame,
+            "a scope closed on a thread other than the one it opened on");
+  *at = frame->outer;
+  frame->outer = nullptr;
 }
 
 ScopeFrame* innermost_scope() noexcept { return innermost; }

@@ -207,12 +207,15 @@ TEST(ScopeStack, NullMetricsRecordNothing) {
 // A wait scope is all wait; a core wait inside it is part of its span, so it
 // reaches the scopes around it once, when the wait scope closes.
 TEST(ScopeStack, AWaitScopeCountsItsSpanOnce) {
+  // An hour, reported inside: counted again, it would dwarf any span a
+  // loaded machine stretches the 2 ms sleep to.
+  constexpr std::int64_t kInsideNs = 3'600'000'000'000;
   StageMetrics m;
   {
     const StageScope frame(m, "frame");
     {
       const WaitScope wait(&m, "wait: GPU behind");
-      note_blocked(50'000'000);  // inside: not counted again
+      note_blocked(kInsideNs);  // inside: not counted again
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
   }
@@ -221,7 +224,7 @@ TEST(ScopeStack, AWaitScopeCountsItsSpanOnce) {
   const StageRow& wait = row(m, "wait: GPU behind");
   EXPECT_DOUBLE_EQ(wait.cpu_ms, wait.wait_ms);
   EXPECT_GE(wait.wait_ms, 2.0);
-  EXPECT_LT(wait.wait_ms, 50.0);
+  EXPECT_LT(frame.wait_ms, static_cast<double>(kInsideNs) * 1e-6);
   EXPECT_DOUBLE_EQ(frame.wait_ms, wait.wait_ms);
   EXPECT_GE(frame.cpu_ms, frame.wait_ms);
   EXPECT_EQ(wait.device, DeviceTime::None);
@@ -250,6 +253,25 @@ TEST(ScopeStack, SerialsAreUniqueAndOutOfOrderClosesUnlink) {
   EXPECT_EQ(detail::innermost_scope(), nullptr);
   EXPECT_EQ(row(m, "outer").wait_ms, 0.0);  // it had closed
   EXPECT_DOUBLE_EQ(row(m, "inner").wait_ms, 1.0);
+}
+
+// Serials are unique across threads too, so a tag carried to another thread
+// matches none of its scopes: two fresh threads' first scopes differ.
+TEST(ScopeStack, SerialsAreUniqueAcrossThreads) {
+  StageMetrics a;
+  StageMetrics b;
+  std::uint64_t first = 0;
+  std::uint64_t second = 0;
+  std::thread([&] {
+    const StageScope scope(a, "a");
+    first = scope.serial();
+  }).join();
+  std::thread([&] {
+    const StageScope scope(b, "b");
+    second = scope.serial();
+  }).join();
+  EXPECT_NE(first, 0U);
+  EXPECT_NE(first, second);
 }
 
 // The stack is per thread: a wait on another thread reaches none of this
@@ -350,6 +372,18 @@ TEST(StageMetricsDeathTest, ANullNameIsAProgrammerError) {
         const WaitScope scope(&m, nullptr);
       },
       "the name is null");
+}
+
+// A scope opens and closes on one thread: closed on another, it would stay
+// on its opener's stack once freed.
+TEST(StageMetricsDeathTest, AScopeClosedOnAnotherThreadIsAProgrammerError) {
+  EXPECT_DEATH(
+      {
+        StageMetrics m;
+        auto scope = std::make_unique<StageScope>(m, "opened here");
+        std::thread([&scope] { scope.reset(); }).join();
+      },
+      "a thread other than the one it opened on");
 }
 
 TEST(StageMetrics, ClearKeepsItUsable) {

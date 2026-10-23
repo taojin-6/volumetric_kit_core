@@ -112,9 +112,9 @@ struct ScopeFrame {
   ScopeFrame* outer = nullptr;
   /// The scope's row; string-literal lifetime.
   const char* name = nullptr;
-  /// Set by @ref push_scope: unique among the frames ever pushed on this
-  /// thread, so a recorded command names its scope without a pointer that a
-  /// later scope could reuse.
+  /// Set by @ref push_scope: unique among the frames ever pushed in the
+  /// process, so a recorded command names its scope without a pointer that a
+  /// later scope could reuse, and names no scope of another thread.
   std::uint64_t serial = 0;
   /// Blocked time reported inside the scope, in nanoseconds.
   std::int64_t blocked_ns = 0;
@@ -134,7 +134,8 @@ struct ScopeFrame {
 VKC_BASE_API void push_scope(ScopeFrame* frame) noexcept;
 
 /// @brief Take @p frame off this thread's stack. A frame that is not on it
-///        is left alone.
+///        opened on another thread, whose stack would keep it once freed: a
+///        programmer error (`VKC_CHECK`).
 /// @param frame  A frame @ref push_scope pushed on this thread.
 VKC_BASE_API void pop_scope(ScopeFrame* frame) noexcept;
 
@@ -407,7 +408,7 @@ class StageMetrics {
 /// wait (@ref note_blocked) or a device span reaches it.
 ///
 /// @warning The metrics and the @p name literal must outlive the scope, and
-///          the scope opens and closes on one thread.
+///          the scope opens and closes on one thread (`VKC_CHECK`).
 ///
 /// @code
 /// Status Integrator::integrate(const Frame& frame, StageMetrics* metrics) {
@@ -467,7 +468,7 @@ class StageMetrics::Scope {
   /// @return The row this times into.
   const char* name() const noexcept { return frame_.name; }
 
-  /// @return This scope's serial on its thread's stack, which a recorded
+  /// @return This scope's serial, unique in the process, which a recorded
   ///         command keeps to find it again; 0 when inert.
   std::uint64_t serial() const noexcept { return frame_.serial; }
 
@@ -492,7 +493,7 @@ using StageScope = StageMetrics::Scope;
 /// (@ref note_blocked).
 ///
 /// @warning The metrics and the @p name literal must outlive the scope, and
-///          the scope opens and closes on one thread.
+///          the scope opens and closes on one thread (`VKC_CHECK`).
 ///
 /// @code
 /// if (!pending.ready()) {
