@@ -698,6 +698,9 @@ class VKC_VULKAN_API Device {
   // `instance` is asked for), from enabled_extensions_.
   void resolve_entry_points(VkInstance instance,
                             bool instance_debug_utils) noexcept;
+  // Its calibrated-clocks half: the entry point, where the device's own time
+  // domain is offered, and the host domain read beside it.
+  void resolve_calibration(VkInstance instance) noexcept;
   std::mutex* present_mutex() const noexcept;
   // `record`: the submit records, so the command needs its buffer.
   Result<Command> take_command(bool record) const;

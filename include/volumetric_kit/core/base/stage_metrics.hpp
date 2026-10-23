@@ -19,6 +19,7 @@
 /// reaches every row a command was recorded under. The stack holds only
 /// scopes with metrics: nothing measured, nothing on it.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -258,7 +259,7 @@ class StageMetrics {
     if (device == DeviceTime::None) return;
     StageRow& row = find_or_add(name);
     if (device == DeviceTime::Measured) row.gpu_ms += milliseconds;
-    if (device > row.device) row.device = device;
+    row.device = std::max(row.device, device);
     row.has_gpu = row.device == DeviceTime::Measured;
   }
 

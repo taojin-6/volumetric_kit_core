@@ -8,11 +8,13 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "command_batch_barriers.hpp"
+#include "device_access.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -138,6 +140,9 @@ CommandBatch::CommandBatch(CommandBatch&& other) noexcept
       ops_(std::exchange(other.ops_, {})),
       staging_(std::exchange(other.staging_, {})),
       zeros_(std::exchange(other.zeros_, VK_NULL_HANDLE)),
+      keys_(std::exchange(other.keys_, {})),
+      tag_timer_(std::exchange(other.tag_timer_, nullptr)),
+      timer_(std::exchange(other.timer_, nullptr)),
       status_(std::exchange(other.status_, Status{})),
       submitted_(std::exchange(other.submitted_, false)) {}
 
@@ -148,6 +153,9 @@ CommandBatch& CommandBatch::operator=(CommandBatch&& other) noexcept {
     ops_ = std::exchange(other.ops_, {});
     staging_ = std::exchange(other.staging_, {});
     zeros_ = std::exchange(other.zeros_, VK_NULL_HANDLE);
+    keys_ = std::exchange(other.keys_, {});
+    tag_timer_ = std::exchange(other.tag_timer_, nullptr);
+    timer_ = std::exchange(other.timer_, nullptr);
     status_ = std::exchange(other.status_, Status{});
     submitted_ = std::exchange(other.submitted_, false);
   }
@@ -183,11 +191,45 @@ Result<const Buffer*> CommandBatch::stage(VkDeviceSize bytes, bool upload) {
   // Write-combined for an upload; cached for a readback, which the host reads.
   desc.host_access = upload ? HostAccess::SequentialWrite : HostAccess::Random;
   VKC_ASSIGN(Buffer buffer, allocator_->create_buffer(desc));
+  detail::DeviceAccess::count_staging(*device_);
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            debug_object_handle(buffer.handle()),
                            upload ? "batch.upload" : "batch.readback");
   staging_.push_back(std::move(buffer));
   return &staging_.back();
+}
+
+std::uint32_t CommandBatch::tag(GpuStageScope* stage) {
+  const GpuSpanTag tag = stage != nullptr ? stage->tag() : GpuSpanTag{};
+  if (tag.timer == nullptr) return GpuTiles::kNoKey;
+  if (tag_timer_ == nullptr) tag_timer_ = tag.timer;
+  // One key a scope: its chain of scopes is the same at every command. A
+  // scope not open on this thread keys by its name alone (serial 0).
+  for (std::size_t k = 0; k < keys_.size(); ++k) {
+    const detail::TileKey& key = keys_[k];
+    const std::uint64_t serial = key.serials.back();
+    if ((serial != 0 && serial == tag.scope) ||
+        (serial == 0 && key.names.size() == 1 &&
+         std::strcmp(key.names[0], tag.name) == 0)) {
+      return static_cast<std::uint32_t>(k);
+    }
+  }
+  keys_.push_back(detail::tile_key(tag));
+  return static_cast<std::uint32_t>(keys_.size() - 1);
+}
+
+std::uint32_t CommandBatch::tile_bound(std::uint32_t depth) const noexcept {
+  std::uint32_t tiles = 1;
+  std::uint32_t open = GpuTiles::kNoKey;
+  for (const Op& op : ops_) {
+    if (op.tile == GpuTiles::kNoKey) continue;
+    if (open != GpuTiles::kNoKey &&
+        !GpuTiles::same_tile(keys_, depth, open, op.tile)) {
+      ++tiles;
+    }
+    open = op.tile;
+  }
+  return tiles;
 }
 
 Status CommandBatch::upload(const Buffer& dst, VkDeviceSize offset,
@@ -214,7 +256,7 @@ Status CommandBatch::upload(const Buffer& dst, VkDeviceSize offset,
   op.bytes = bytes;
   const auto* from = static_cast<const unsigned char*>(src);
   op.data.assign(from, from + bytes);
-  if (stage != nullptr) op.timing = stage->tag();
+  op.tile = tag(stage);
   ops_.push_back(std::move(op));
   return {};
 }
@@ -240,7 +282,7 @@ Result<void*> CommandBatch::reserve_upload(const Buffer& dst,
   op.dst_offset = offset;
   op.bytes = bytes;
   op.staged = true;
-  if (stage != nullptr) op.timing = stage->tag();
+  op.tile = tag(stage);
   ops_.push_back(std::move(op));
   return (*staged)->mapped();
 }
@@ -329,7 +371,7 @@ Status CommandBatch::copy(const Buffer& src, VkDeviceSize src_offset,
   op.dst = dst.handle();
   op.dst_offset = dst_offset;
   op.bytes = bytes;
-  if (stage != nullptr) op.timing = stage->tag();
+  op.tile = tag(stage);
   ops_.push_back(std::move(op));
   return {};
 }
@@ -390,7 +432,7 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
   op.dst = dst.handle();
   op.dst_offset = dst_offset;
   op.bytes = bytes;
-  if (stage != nullptr) op.timing = stage->tag();
+  op.tile = tag(stage);
   ops_.push_back(std::move(op));
   return {};
 }
@@ -501,7 +543,7 @@ Status CommandBatch::dispatch(const ComputeKernel& kernel,
   }
   Op op = dispatch_op(Kind::Dispatch, kernel, set, push, push_size);
   op.value = groups;
-  if (stage != nullptr) op.timing = stage->tag();
+  op.tile = tag(stage);
   ops_.push_back(std::move(op));
   return {};
 }
@@ -529,7 +571,7 @@ Status CommandBatch::dispatch_indirect(const ComputeKernel& kernel,
       dispatch_op(Kind::DispatchIndirect, kernel, kernel.set, push, push_size);
   op.src = args.handle();
   op.src_offset = offset;
-  if (stage != nullptr) op.timing = stage->tag();
+  op.tile = tag(stage);
   ops_.push_back(std::move(op));
   return {};
 }
@@ -619,39 +661,29 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
   return false;
 }
 
-void CommandBatch::record(VkCommandBuffer cmd,
-                          std::vector<TimerRun>& runs) const {
+void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
   const detail::BatchScope writes =
       detail::batch_writes(device_->queue_flags());
   const detail::BatchScope commands =
       detail::batch_commands(device_->queue_flags());
 
-  // Each timer's queries reset once, ahead of every span it opens here, not
-  // once between every two commands.
-  for (TimerRun& run : runs) {
-    run.first = static_cast<std::uint32_t>(run.timer->count());
-    run.timer->cmd_reset_ahead(cmd, run.ahead);
-  }
   std::size_t first = 0;  // the first command since the last barrier
   for (std::size_t i = 0; i < ops_.size(); ++i) {
     const Op& op = ops_[i];
     if (op.kind == Kind::Release) continue;  // after everything, below
+    // A new tile starts before the barrier its command needs, which is part
+    // of that command's cost.
+    if (tiles != nullptr && op.tile != GpuTiles::kNoKey) {
+      tiles->mark_key(cmd, op.tile);
+    }
     // Each command sees every write before it -- the ordering one submit per
     // dispatch would give for free.
     if (i > 0 && needs_barrier(first, i)) {
       detail::batch_barrier(cmd, writes, commands);
       first = i;
     }
-    // Only a dispatch is named, so the others open no region. The region
-    // sits outside the span: a label may cost an encoder boundary (MoltenVK's
-    // push/popDebugGroup), which a span must not measure.
+    // Only a dispatch is named, so the others open no region.
     device_->begin_debug_label(cmd, op.name);
-    const auto run = std::find_if(
-        runs.begin(), runs.end(),
-        [&op](const TimerRun& r) { return r.timer == op.timing.timer; });
-    const std::uint32_t span =
-        run != runs.end() ? run->timer->begin(cmd, op.timing, /*reset=*/false)
-                          : GpuTimer::kNoSpan;
     switch (op.kind) {
       case Kind::Update:
         vkCmdUpdateBuffer(cmd, op.dst, op.dst_offset, op.bytes, op.data.data());
@@ -712,10 +744,6 @@ void CommandBatch::record(VkCommandBuffer cmd,
         break;
       }
     }
-    if (span != GpuTimer::kNoSpan) {
-      run->timer->end(cmd, span);
-      ++run->count;
-    }
     device_->end_debug_label(cmd, op.name);
   }
   // The final dependency covers all readers on this queue, including a
@@ -738,6 +766,7 @@ void CommandBatch::record(VkCommandBuffer cmd,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 1,
                          &b, 0, nullptr);
   }
+  if (tiles != nullptr) tiles->end(cmd);
 }
 
 Status CommandBatch::begin_submit() {
@@ -808,32 +837,35 @@ Status CommandBatch::submit() {
   std::vector<PendingBatch::Readback> slices;
   VKC_ASSIGN(const Buffer* readbacks, place_readbacks(&slices));
 
-  // Each timer the commands name, counted now: recording then allocates
-  // nothing, so no exception leaves a span its command buffer never ran.
-  std::vector<TimerRun> runs;
-  for (const Op& op : ops_) {
-    GpuTimer* timer = op.timing.timer;
-    if (timer == nullptr || !timer->available()) continue;
-    auto run =
-        std::find_if(runs.begin(), runs.end(),
-                     [timer](const TimerRun& r) { return r.timer == timer; });
-    if (run == runs.end()) run = runs.insert(runs.end(), TimerRun{timer});
-    ++run->ahead;
-  }
-
   // Shared with the device, which keeps it past a failed wait, with the
   // command buffer it may still run, until it has waited for that. Moving the
   // vector leaves its buffers in place, so `readbacks` still points at one.
+  // The timer's queries go with it.
+  GpuTimer* timer = timing_timer();
   const auto retained = std::make_shared<Retained>();
   retained->staging = std::exchange(staging_, {});
-  for (const TimerRun& run : runs) {
-    retained->queries.push_back(run.timer->keep_alive());
-  }
+  if (timer != nullptr) retained->queries.push_back(timer->keep_alive());
+  // Outside the record, so a record that throws returns the range of a
+  // command buffer that never ran.
+  GpuTiles tiles;
+  const std::uint32_t bound =
+      timer != nullptr ? tile_bound(timer->max_depth()) : 0;
   bool in_flight = false;
   const Status submitted = device_->submit_single_time(
-      [&](VkCommandBuffer cmd) { record(cmd, runs); }, retained, &in_flight);
-  for (const TimerRun& run : runs) {
-    run.timer->settle(run.first, run.count, submitted, in_flight);
+      [&](VkCommandBuffer cmd) {
+        if (timer != nullptr) {
+          tiles = GpuTiles::open(*timer, cmd, bound, std::move(keys_));
+        }
+        record(cmd, timer != nullptr ? &tiles : nullptr);
+      },
+      retained, &in_flight);
+  if (timer != nullptr) {
+    if (submitted.ok()) {
+      tiles.resolve();
+    } else {
+      tiles.drop(in_flight);
+    }
+    tiles.publish();
   }
   VKC_TRY(submitted);
 
@@ -865,25 +897,39 @@ Result<PendingBatch> CommandBatch::submit_async(
     }
   }
 
+  GpuTimer* timer = timing_timer();
   const auto retained = std::make_shared<Retained>();
   retained->staging = std::exchange(staging_, {});
-  // Untimed: no timer run is counted, so record() opens no span.
-  // TODO: time these commands, on queries a later window cannot reset while
-  // the batch is pending.
-  std::vector<TimerRun> untimed;
-  VKC_ASSIGN(Device::PendingSubmit submitted,
-             device_->submit_pending(
-                 [&](VkCommandBuffer cmd) { record(cmd, untimed); }, wait,
-                 signal, retained));
+  if (timer != nullptr) retained->queries.push_back(timer->keep_alive());
+  // The range stays the pending batch's until its wait reads it; a submit
+  // that never reached the device returns it as `pending` goes.
+  const std::uint32_t bound =
+      timer != nullptr ? tile_bound(timer->max_depth()) : 0;
+  Result<Device::PendingSubmit> submitted = device_->submit_pending(
+      [&](VkCommandBuffer cmd) {
+        if (timer != nullptr) {
+          pending.tiles_ = GpuTiles::open(*timer, cmd, bound, std::move(keys_));
+        }
+        record(cmd, timer != nullptr ? &pending.tiles_ : nullptr);
+      },
+      wait, signal, retained);
+  if (!submitted.ok()) {
+    // A submit that lost the device leaves the work to it, which may still
+    // write the range; any other failure ran none of it.
+    pending.tiles_.drop(vk_result(submitted.status()) ==
+                        std::optional<VkResult>(VK_ERROR_DEVICE_LOST));
+    return submitted.status();
+  }
 
-  pending.submit_ = std::move(submitted);
+  pending.submit_ = *std::move(submitted);
   pending.retained_ = retained;
   if (readbacks != nullptr) pending.readback_memory_ = readbacks->mapped();
   return pending;
 }
 
 PendingBatch::PendingBatch(PendingBatch&& other) noexcept
-    : submit_(std::move(other.submit_)),
+    : tiles_(std::move(other.tiles_)),
+      submit_(std::move(other.submit_)),
       retained_(std::exchange(other.retained_, nullptr)),
       readback_memory_(std::exchange(other.readback_memory_, nullptr)),
       readbacks_(std::exchange(other.readbacks_, {})),
@@ -892,8 +938,10 @@ PendingBatch::PendingBatch(PendingBatch&& other) noexcept
 
 PendingBatch& PendingBatch::operator=(PendingBatch&& other) noexcept {
   if (this != &other) {
-    // Waits for this one's own work first, which keeps what it uses.
+    // Waits for this one's own work first, which keeps what it uses; its
+    // range goes back after that.
     submit_ = std::move(other.submit_);
+    tiles_ = std::move(other.tiles_);
     retained_ = std::exchange(other.retained_, nullptr);
     readback_memory_ = std::exchange(other.readback_memory_, nullptr);
     readbacks_ = std::exchange(other.readbacks_, {});
@@ -916,6 +964,12 @@ Status PendingBatch::wait(std::uint64_t timeout_ns) {
   if (!failed_.ok()) return failed_;
   Status waited = submit_.wait(timeout_ns);
   if (is_timeout(waited)) return waited;  // still pending, for a later wait
+  // The tiles first: whatever the sets say, the work has run, or may still.
+  if (waited.ok()) {
+    tiles_.resolve();
+  } else {
+    tiles_.drop(submit_.in_flight());
+  }
   // Complete: a set changed meanwhile may have been bound by the work, so
   // what it wrote is not trusted.
   for (std::size_t i = 0; waited.ok() && i < sets_.size(); ++i) {

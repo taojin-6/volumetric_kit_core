@@ -5,12 +5,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "device_access.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
@@ -52,9 +54,9 @@ Result<Fence> Fence::create(VkDevice device, bool signaled) {
 Status Fence::wait(std::uint64_t timeout_ns) const {
   if (!valid())
     return Status::invalid_argument("Fence::wait on an empty fence");
-  VkFence fence = handle_.get();
-  const VkResult result =
-      vkWaitForFences(handle_.device(), 1, &fence, VK_TRUE, timeout_ns);
+  // A fence knows no Device, so its waits reach the scopes alone.
+  const VkResult result = detail::wait_for_fence(
+      handle_.device(), handle_.get(), timeout_ns, nullptr);
   // VK_TIMEOUT too: reported, for the caller to tell apart with is_timeout().
   if (result != VK_SUCCESS) return vk_error(result, "vkWaitForFences");
   return {};
@@ -104,18 +106,21 @@ Result<TimelineSemaphore> TimelineSemaphore::create(
   TimelineSemaphore semaphore;
   semaphore.handle_ =
       UniqueHandle<VkSemaphore, vkDestroySemaphore>(device.handle(), handle);
+  semaphore.counters_ = detail::DeviceAccess::counters(device);
   return semaphore;
 }
 
 TimelineSemaphore::TimelineSemaphore(TimelineSemaphore&& other) noexcept
     : handle_(std::move(other.handle_)),
-      submitted_(other.submitted_.exchange(0)) {}
+      submitted_(other.submitted_.exchange(0)),
+      counters_(std::move(other.counters_)) {}
 
 TimelineSemaphore& TimelineSemaphore::operator=(
     TimelineSemaphore&& other) noexcept {
   if (this != &other) {
     handle_ = std::move(other.handle_);
     submitted_ = other.submitted_.exchange(0);
+    counters_ = std::move(other.counters_);
   }
   return *this;
 }
@@ -162,7 +167,15 @@ Status TimelineSemaphore::wait(std::uint64_t value,
   info.semaphoreCount = 1;
   info.pSemaphores = &semaphore;
   info.pValues = &value;
+  // A poll, or a value already reached, blocks nothing: neither is a wait.
+  std::uint64_t reached = 0;
+  const bool done = vkGetSemaphoreCounterValue(handle_.device(), semaphore,
+                                               &reached) == VK_SUCCESS &&
+                    reached >= value;
+  const bool waits = timeout_ns != 0 && !done;
+  const auto start = std::chrono::steady_clock::now();
   const VkResult result = vkWaitSemaphores(handle_.device(), &info, timeout_ns);
+  if (waits) detail::report_blocked(detail::elapsed_ns(start), counters_.get());
   if (result != VK_SUCCESS) return vk_error(result, "vkWaitSemaphores");
   return {};
 }

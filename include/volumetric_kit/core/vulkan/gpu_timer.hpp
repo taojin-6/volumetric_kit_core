@@ -296,7 +296,7 @@ class VKC_VULKAN_API GpuTiles {
   ///        its reset and the first mark into @p cmd.
   /// @param timer  The timer whose queries the marks go to.
   /// @param cmd    A recording command buffer, outside a render pass.
-  /// @param tiles  The most tiles; not 0.
+  /// @param tiles  The most tiles; 0 counts as 1.
   /// @return The tiles; untimed when @p timer is unavailable, or has no free
   ///         range, whose rows read @ref DeviceTime::Unavailable or
   ///         @ref DeviceTime::NotTimed.
@@ -330,7 +330,7 @@ class VKC_VULKAN_API GpuTiles {
   ///        device may still run the work, when it is never reused.
   /// @param may_still_run  Whether the device may still run it: after a
   ///                       failed wait, or a submit that lost the device.
-  void drop(bool may_still_run) noexcept;
+  void drop(bool may_still_run);
 
   /// @return The tiles' rows by name, once resolved or dropped: each tile's,
   ///         added up, with only a device half; empty before, or for tiles
@@ -357,8 +357,11 @@ class VKC_VULKAN_API GpuTiles {
                        std::uint32_t tiles, std::vector<detail::TileKey> keys);
   void mark_key(VkCommandBuffer cmd, std::uint32_t key);
   void publish() const noexcept;
-  // Whether keys a and b are one tile: equal up to the depth.
-  bool same_tile(std::uint32_t a, std::uint32_t b) const noexcept;
+  // Whether keys a and b of `keys` are one tile: equal down to `depth`
+  // (0: every scope).
+  static bool same_tile(const std::vector<detail::TileKey>& keys,
+                        std::uint32_t depth, std::uint32_t a,
+                        std::uint32_t b) noexcept;
   // Calls fn(name, serial, state, ms) for each scope each tile counts to,
   // and for each deeper scope, NotTimed.
   template <class Fn>
@@ -375,7 +378,9 @@ class VKC_VULKAN_API GpuTiles {
   std::uint32_t depth_ = 0;     // the timer's max depth; 0 every scope
   DeviceTime untimed_ = DeviceTime::None;  // why untimed, for the rows
   bool overflowed_ = false;                // a tile past the room
+  bool ended_ = false;                     // the last mark is recorded
   bool leaked_ = false;                    // the range is never reused
+  bool settled_ = false;                   // resolved or dropped
   std::vector<detail::TileKey> keys_;
   std::vector<std::uint32_t> tiles_;  // each tile's key, kNoKey unnamed
   // Each tile's time and state once settled, for publish().

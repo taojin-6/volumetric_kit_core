@@ -49,6 +49,7 @@ target_sources(
           format.cpp
           gpu_timer.cpp
           device.cpp
+          device_access.hpp
           device_requirements.cpp
           external_memory.cpp
           image.cpp

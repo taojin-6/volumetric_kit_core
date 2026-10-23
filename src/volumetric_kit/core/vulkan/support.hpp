@@ -64,8 +64,8 @@ Status check_physical_support(const PhysicalDeviceInfo& caps,
 
 // The extensions a device made for `reqs` enables: the required ones, then
 // the portability subset (which the spec requires wherever it is exposed),
-// VK_EXT_memory_budget, and `reqs.optional_extensions`, each where `caps`
-// offers it.
+// VK_EXT_memory_budget, calibrated timestamps (KHR, else EXT), and
+// `reqs.optional_extensions`, each where `caps` offers it.
 std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
                                             const DeviceRequirements& reqs);
 

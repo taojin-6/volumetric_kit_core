@@ -662,19 +662,15 @@ class VKC_VULKAN_API CommandBatch {
   // The tile key a command recorded now under `stage` counts to, made once
   // per scope; GpuTiles::kNoKey when untagged.
   std::uint32_t tag(GpuStageScope* stage);
-  // How the keys tile on `timer`: each key's tile at its max depth, written
-  // to `tile_of`; returns those tiles' keys, the deeper scopes' last.
-  std::vector<detail::TileKey> tiles_at_depth(
-      const GpuTimer& timer, std::vector<std::uint32_t>* tile_of) const;
   // The timer the batch times in, or null.
-  GpuTimer* timing_timer() const noexcept;
-  // Records every command into `cmd`, marking `tiles` where the tile
-  // changes (`tile_of` maps a key to its tile), when it is timed.
-  void record(VkCommandBuffer cmd, GpuTiles& tiles,
-              const std::vector<std::uint32_t>& tile_of) const;
-  // Takes the tiles' range and records the batch: the record callback both
-  // submits run.
-  void record_timed(VkCommandBuffer cmd, GpuTiles* tiles) const;
+  GpuTimer* timing_timer() const noexcept {
+    return timer_ != nullptr ? timer_ : tag_timer_;
+  }
+  // The tiles the commands make at `depth`: one, and one per change of tile.
+  std::uint32_t tile_bound(std::uint32_t depth) const noexcept;
+  // Records every command into `cmd`, marking `tiles`, when not null, at
+  // each tagged command; the recording both submits run.
+  void record(VkCommandBuffer cmd, GpuTiles* tiles) const;
 
   const Device* device_;
   Allocator* allocator_;
