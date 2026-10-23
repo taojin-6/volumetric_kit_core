@@ -16,18 +16,31 @@ die() {
   exit 1
 }
 
-# Sets REPO, SLUG and RUNNER_ROOT for a repository's short name, or exits 2.
+# Sets REPO, SLUG and RUNNER_ROOT for a repository, or exits 2: one of the
+# family's by its short name, or any other in full, as owner/repo, in lower
+# case. SLUG, which names the runners, is the short name or the repository's
+# name.
 select_repo() {
+  # GitHub's characters: an owner's letters, digits, hyphens and underscores,
+  # a repository's dots too. A name of dots alone would put the runners
+  # outside ~/ci-runners.
+  local full='^[A-Za-z0-9_-]+/[A-Za-z0-9._-]+$'
   case "${1:-}" in
-    recon | gfx | calib | player) ;;
+    recon | gfx | calib | player)
+      REPO="taojin-6/volumetric_kit_$1"
+      ;;
     *)
-      echo "unknown repository '${1:-}': expected recon, gfx, calib or player" >&2
-      exit 2
+      if ! [[ ${1:-} =~ $full ]] || [ "${1#*/}" = . ] || [ "${1#*/}" = .. ]; then
+        echo "unknown repository '${1:-}': expected recon, gfx, calib, player or owner/repo" >&2
+        exit 2
+      fi
+      # GitHub ignores case in a name, so every spelling of a repository must
+      # find the same runners: one directory, and the URL their .runner keeps.
+      REPO="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
       ;;
   esac
   # shellcheck disable=SC2034 # setup-runners.sh names runners with it
-  SLUG="$1"
-  REPO="taojin-6/volumetric_kit_$1"
+  SLUG="$(printf '%s' "${1#*/}" | tr '[:upper:]' '[:lower:]')"
   RUNNER_ROOT="$BASE/${REPO#*/}"
 }
 

@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Changed
+
+- `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take any
+  repository in full, as `owner/repo`, as well as the family's short names.
+  Its runners go in `~/ci-runners/<repo>`, named `<host>-<repo>-<i>`, with the
+  same labels and services ([tools/runners/README.md](tools/runners/README.md)).
+
 ## [0.20.0] - 2026-10-22
 
 ### Added
