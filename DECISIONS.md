@@ -1025,16 +1025,6 @@ versions.
 
 ## Open decisions
 
-- **Discrete GPU CI for the vulkan tier.** Hosted Linux uses lavapipe;
-  macOS requires a Vulkan device. Both require validation, with synchronization
-  checks enabled and shader-access checks requested where supported by the
-  layer. No discrete-memory runner is registered
-  here yet. `recon`'s GPU runners
-  (`vk-linux-gpu`, `mac`) are registered per repository, so they must be
-  registered here too. They were to come before the allocator (V2), whose
-  memory placement differs on a discrete GPU; V2 landed without them, so the
-  discrete-GPU path -- `DeviceOnly` in VRAM, staging in system RAM -- is
-  tested only through the memory-type masks, against recorded layouts.
 - **Unified memory.** `recon` deliberately runs the staged path on unified
   memory too, pending measurements of staging cost. The vulkan tier inherits that
   rule until the measurement says otherwise. On unified memory a staged
@@ -1243,8 +1233,31 @@ recon's and gfx's finds of Vulkan and glm.
   release's version.
 - **Tested at configure** on macOS, against stubs of the release and of
   Homebrew's glm (`tests/ios_consumer/`): the root, the Vulkan entries, the
-  floor, the frameworks, glm and the messages are all decided there. Core has
-  no self-hosted runner, and a hosted one has no MoltenVK; the real compile
-  and link are the siblings' iOS steps on the self-hosted Mac, whose runners
-  get `MoltenVK_ROOT` from setup
+  floor, the frameworks, glm and the messages are all decided there. The
+  real compile and link remain the siblings' iOS steps on the self-hosted
+  Mac; moving core's builds there does not change its configure-only iOS
+  coverage. The runners get `MoltenVK_ROOT` from setup
   ([tools/runners/README.md](tools/runners/README.md#macs)).
+
+## 2026-10-23 — The core's build legs use the family's GPUs
+
+Release/static builds run on the self-hosted `vk-linux-gpu` and `mac`
+runners, as the owner requested after the generic runner setup landed.
+Ubuntu 24.04 and 26.04 run in matching containers with `--gpus all` and
+`NVIDIA_DRIVER_CAPABILITIES=all`; the Mac runs natively through MoltenVK.
+Why: the allocator and timer need the physical driver's behavior, including
+separate device and host memory, which hosted lavapipe does not exercise.
+
+- **Validation stays required:** device presence, the Khronos layer,
+  synchronization validation, and shader-access checks where supported.
+  The four test shards, the CMake tests on Ubuntu 26.04, the iOS configure
+  tests on the Mac, and every leg's base-only dependency check stay intact.
+- **A container sets both parallel levels to 4,** because the runner's
+  `.env` does not enter it, and keeps the driver's shader cache under the
+  persistent runner tool cache. The Mac uses the levels setup writes.
+- **The Mac only checks dependencies.** Its Homebrew is shared; installs and
+  upgrades happen by hand while the host is idle, as the runner guide says.
+  Checkout leaves no token in the shared host's repository configuration.
+- **Lint, sanitizers and the required gate stay hosted.** Sanitizers retain
+  lavapipe and validation; moving the build legs adds physical GPU coverage
+  without removing that independent check.

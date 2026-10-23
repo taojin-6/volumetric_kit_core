@@ -20,22 +20,27 @@ jobs:
     name: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      # GitHub-hosted runners, and one build on each: Release, static, as the
-      # siblings build the core (the sanitizer job builds Debug). The vulkan
-      # tier's device tests are required rather than skipped, and validated,
-      # on every leg -- Linux on lavapipe (Mesa's software Vulkan), macOS on
-      # the runner's device through MoltenVK, on Homebrew's current Vulkan.
-      #
-      # TODO: add the GPU legs recon runs -- Ubuntu containers on the
-      # self-hosted `vk-linux-gpu` box and the self-hosted `mac` -- once those
-      # runners are registered for this repository (runners on a personal
-      # account are per repository). Only the owner triggers this
-      # repository's workflows (DECISIONS.md, "Only the owner triggers CI").
+      # Release, static, on the family's physical GPUs: Ubuntu userlands in
+      # containers on vk-linux-gpu, and MoltenVK on the native Mac. The Linux
+      # container needs the graphics driver capabilities, bounded fan-out (a
+      # runner's .env does not enter it), and a persistent shader-cache path.
+      # Only the owner triggers workflows (DECISIONS.md).
       matrix:
-        os: [ubuntu-24.04, ubuntu-26.04, macos-latest]
+        include:
+          - os: ubuntu-24.04
+            runner: vk-linux-gpu
+            container: '{"image":"ubuntu:24.04","options":"--gpus all","env":{"NVIDIA_DRIVER_CAPABILITIES":"all","CMAKE_BUILD_PARALLEL_LEVEL":"4","CTEST_PARALLEL_LEVEL":"4","__GL_SHADER_DISK_CACHE_PATH":"/__w/_tool/nvidia-glcache","__GL_SHADER_DISK_CACHE_SKIP_CLEANUP":"1"}}'
+          - os: ubuntu-26.04
+            runner: vk-linux-gpu
+            container: '{"image":"ubuntu:26.04","options":"--gpus all","env":{"NVIDIA_DRIVER_CAPABILITIES":"all","CMAKE_BUILD_PARALLEL_LEVEL":"4","CTEST_PARALLEL_LEVEL":"4","__GL_SHADER_DISK_CACHE_PATH":"/__w/_tool/nvidia-glcache","__GL_SHADER_DISK_CACHE_SKIP_CLEANUP":"1"}}'
+          - os: macos-26
+            runner: mac
+            container: ''
     uses: ./.github/workflows/_build.yml
     with:
       os: ${{ matrix.os }}
+      runner: ${{ matrix.runner }}
+      container: ${{ matrix.container }}
 
   lint:
     uses: ./.github/workflows/lint.yml

@@ -117,9 +117,11 @@ three:
 Synchronization sessions temporarily override legacy layer enable/disable
 environment variables and restore them on exit.
 
-Linux CI uses a software Vulkan driver; macOS requires an available device.
-Discrete DRAM/VRAM hardware coverage remains planned (DECISIONS.md, "Open
-decisions").
+Release CI runs on the family's physical GPUs: Ubuntu 24.04 and 26.04 in
+containers on the Linux GPU hosts, and MoltenVK on the Mac. The Linux legs
+exercise discrete DRAM/VRAM memory placement. Sanitizers still run on hosted
+Linux with lavapipe; lint and the required gate also stay hosted
+([tools/runners/README.md](tools/runners/README.md)).
 
 `Allocator::memory_stats()` reports each heap's usage against its budget
 (`usage_bytes`, `budget_bytes`) beside this allocator's own share: its

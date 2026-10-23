@@ -1,13 +1,13 @@
 # Self-hosted CI runners
 
-`recon`, `gfx` and `player` run their GPU legs on self-hosted runners: Linux
-GPU hosts (label `vk-linux-gpu`), where each leg runs in an OS-matched
+`core`, `recon`, `gfx` and `player` run their GPU legs on self-hosted runners:
+Linux GPU hosts (label `vk-linux-gpu`), where each leg runs in an OS-matched
 container with the GPU passed through (`--gpus all`), and a Mac (label
 `mac`), where jobs run natively for the Apple toolchain and MoltenVK on its
 GPU. `calib` runs its macOS legs on the Mac too, on its installed Homebrew.
 Every other job stays on GitHub-hosted runners, free for public repositories.
 Each repository's `ci.yml` says which legs go where; this directory is the
-host side, for all four.
+host side, for the family.
 
 | File | Does |
 | --- | --- |
