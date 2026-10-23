@@ -876,9 +876,11 @@ TEST_F(TimerTest, AdoptedDeviceRetiresDroppedManualTilesAfterMoving) {
   timer = GpuTimer{};
   EXPECT_GT(old_pool.use_count(), 1) << "only the test guard kept the pool";
   EXPECT_FALSE(pending->ready());
-  std::thread release([&] { EXPECT_TRUE(gate->signal(1).ok()); });
+  // Publish the host signal before queue-idle: older validation layers can
+  // deadlock their queue-state tracking when these calls overlap. The work
+  // was still pending through drop and growth, and teardown must drain it.
+  EXPECT_TRUE(gate->signal(1).ok());
   moved_device.reset();
-  release.join();
   EXPECT_TRUE(pending->ready());
   EXPECT_TRUE(pending->wait(kLongWaitNs).ok());
   guard.reset();
