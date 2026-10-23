@@ -4,13 +4,20 @@
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
+#include <cstring>
+#include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "device_access.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -23,58 +30,149 @@ namespace volumetric_kit::core {
 namespace {
 
 constexpr const char* kLogSource = "vulkan";
-// Scopes on one timer nest a few deep, so opening one allocates nothing.
-constexpr std::size_t kScopesReserved = 8;
+// How long a reading of the clocks serves: the tick period a driver reports
+// may drift from the counter's, and a second keeps the error small at one
+// read a second.
+constexpr std::chrono::seconds kCalibrationLife{1};
+
+// `to - from` in ticks of a `valid_bits` counter, negative when `to` is the
+// earlier: a span converts against a pair read before or after it.
+std::int64_t signed_ticks(std::uint64_t from, std::uint64_t to,
+                          std::uint32_t valid_bits) noexcept {
+  if (valid_bits == 0) return 0;
+  const std::uint64_t delta = timestamp_delta(from, to, valid_bits);
+  if (valid_bits >= 64) return static_cast<std::int64_t>(delta);
+  const std::uint64_t half = std::uint64_t{1} << (valid_bits - 1);
+  return delta >= half ? static_cast<std::int64_t>(delta) -
+                             static_cast<std::int64_t>(half << 1)
+                       : static_cast<std::int64_t>(delta);
+}
 
 }  // namespace
 
-GpuTimer::GpuTimer(GpuTimer&& other) noexcept
-    : device_(other.device_),
-      pool_(std::move(other.pool_)),
-      max_spans_(other.max_spans_),
-      valid_bits_(other.valid_bits_),
-      period_ns_(other.period_ns_),
-      warned_full_(other.warned_full_),
-      warned_closed_(other.warned_closed_),
-      spans_(std::move(other.spans_)),
-      scopes_(std::move(other.scopes_)),
-      next_scope_(other.next_scope_),
-      readback_(std::move(other.readback_)) {
-  other.clear_state();
+// The pool and what the batches timed on it share: each holds its range
+// from recording until its results are read, which a pending batch's wait
+// does on any thread, so the ranges and the clocks are under one mutex.
+struct GpuTimer::Queries {
+  struct Range {
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
+  };
+
+  QueryPool pool;
+  std::uint32_t valid_bits = 0;
+  float period_ns = 0.0F;
+  detail::Calibrator calibrator;
+  std::shared_ptr<detail::DeviceRetainedResources> retained;
+  std::unique_ptr<detail::RetainedResource> retirement =
+      std::make_unique<detail::RetainedResource>();
+
+  std::mutex mutex;
+  std::vector<Range> held;  // by first
+  bool warned_full = false;
+  bool warned_clock = false;
+  std::optional<ClockPair> clock;
+  std::chrono::steady_clock::time_point clock_read;
+
+  // The first free run of `count` queries, now held; none when no run fits.
+  std::optional<std::uint32_t> acquire(std::uint32_t count) {
+    const std::scoped_lock lock(mutex);
+    const std::uint32_t size = pool.query_count();
+    std::uint32_t at = 0;
+    for (auto it = held.begin();; ++it) {
+      const std::uint32_t limit = it == held.end() ? size : it->first;
+      if (limit >= at && limit - at >= count) {
+        held.insert(it, Range{at, count});
+        return at;
+      }
+      if (it == held.end()) break;
+      at = it->first + it->count;
+    }
+    if (!warned_full) {
+      warned_full = true;
+      log_message(LogLevel::Warning, kLogSource,
+                  "GpuTimer: no free run of " + std::to_string(count) +
+                      " queries; the batch runs untimed (NotTimed). "
+                      "GpuTimer::reserve makes room");
+    }
+    return std::nullopt;
+  }
+
+  void release(std::uint32_t first) noexcept {
+    const std::scoped_lock lock(mutex);
+    const auto it = std::find_if(
+        held.begin(), held.end(),
+        [first](const Range& range) { return range.first == first; });
+    if (it != held.end()) held.erase(it);
+  }
+
+  // A reading of the clocks at most a second old; none where the device has
+  // no calibrated timestamps, or they fail (logged once).
+  std::optional<ClockPair> clock_pair() {
+    if (calibrator.get == nullptr) return std::nullopt;
+    const std::scoped_lock lock(mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (!clock.has_value() || now - clock_read >= kCalibrationLife) {
+      // An expired pair cannot put new spans on the host clock if this read
+      // fails, even after the once-only warning has already been emitted.
+      clock.reset();
+      Result<ClockPair> read = detail::calibrate(calibrator);
+      if (read.ok()) {
+        clock = *read;
+        clock_read = now;
+      } else if (!warned_clock) {
+        warned_clock = true;
+        log_message(LogLevel::Warning, kLogSource,
+                    "GpuTimer: the clocks were not read (" +
+                        read.status().message() +
+                        "); device spans stay in ticks");
+      }
+    }
+    return clock;
+  }
+};
+
+namespace detail {
+
+TileKey tile_key(const GpuSpanTag& tag) {
+  VKC_CHECK(tag.name != nullptr, "GpuTimer: a tag's name is null");
+  TileKey key;
+  const ScopeFrame* frame = innermost_scope();
+  while (frame != nullptr && (tag.scope == 0 || frame->serial != tag.scope)) {
+    frame = frame->outer;
+  }
+  if (frame == nullptr) {
+    key.names.push_back(tag.name);
+    key.serials.push_back(0);
+    return key;
+  }
+  for (; frame != nullptr; frame = frame->outer) {
+    if (frame->wait) continue;  // a wait's row has no device half
+    key.names.push_back(frame->name);
+    key.serials.push_back(frame->serial);
+  }
+  std::reverse(key.names.begin(), key.names.end());
+  std::reverse(key.serials.begin(), key.serials.end());
+  return key;
 }
+
+}  // namespace detail
+
+GpuTimer::~GpuTimer() = default;
+
+GpuTimer::GpuTimer(GpuTimer&& other) noexcept
+    : device_(std::exchange(other.device_, VK_NULL_HANDLE)),
+      queries_(std::move(other.queries_)),
+      max_depth_(std::exchange(other.max_depth_, 0)) {}
 
 GpuTimer& GpuTimer::operator=(GpuTimer&& other) noexcept {
   if (this != &other) {
-    device_ = other.device_;
-    // Drops this timer's pool, unless a submit left to the device holds it.
-    pool_ = std::move(other.pool_);
-    max_spans_ = other.max_spans_;
-    valid_bits_ = other.valid_bits_;
-    period_ns_ = other.period_ns_;
-    warned_full_ = other.warned_full_;
-    warned_closed_ = other.warned_closed_;
-    spans_ = std::move(other.spans_);
-    scopes_ = std::move(other.scopes_);
-    next_scope_ = other.next_scope_;
-    readback_ = std::move(other.readback_);
-    other.clear_state();
+    device_ = std::exchange(other.device_, VK_NULL_HANDLE);
+    // Drops this timer's pool, unless a batch still holds it.
+    queries_ = std::move(other.queries_);
+    max_depth_ = std::exchange(other.max_depth_, 0);
   }
   return *this;
-}
-
-// Every member back to its default, so a moved-from timer is an empty one.
-void GpuTimer::clear_state() noexcept {
-  device_ = VK_NULL_HANDLE;
-  pool_.reset();
-  max_spans_ = 0;
-  valid_bits_ = 0;
-  period_ns_ = 0.0F;
-  warned_full_ = false;
-  warned_closed_ = false;
-  spans_.clear();
-  scopes_.clear();
-  next_scope_ = 1;
-  readback_.clear();
 }
 
 Result<GpuTimer> GpuTimer::create(const Device& device,
@@ -88,13 +186,16 @@ Result<GpuTimer> GpuTimer::create(const Device& device,
   }
   GpuTimer timer;
   timer.device_ = device.handle();
-  timer.max_spans_ = max_spans;
-  timer.scopes_.reserve(kScopesReserved);  // scopes open on any timer
+  timer.queries_ = std::make_shared<Queries>();
+  Queries& queries = *timer.queries_;
   // Per family, not per device: timestampComputeAndGraphics covers only the
   // families that do both, and a library may be handed a compute-only one.
-  timer.valid_bits_ = device.timestamp_valid_bits();
-  timer.period_ns_ = device.caps().limits().timestampPeriod;
-  if (timer.valid_bits_ == 0 || timer.period_ns_ <= 0.0F) {
+  queries.valid_bits = device.timestamp_valid_bits();
+  queries.period_ns = device.caps().limits().timestampPeriod;
+  queries.calibrator = detail::DeviceAccess::calibrator(device);
+  queries.retained = detail::DeviceAccess::retained(device);
+  if (queries.valid_bits == 0 || queries.period_ns <= 0.0F) {
+    queries.valid_bits = 0;
     return timer;  // valid, not available
   }
   Result<QueryPool> pool = QueryPool::create(device.handle(), max_spans * 2);
@@ -105,185 +206,19 @@ Result<GpuTimer> GpuTimer::create(const Device& device,
     log_message(LogLevel::Warning, kLogSource,
                 "GpuTimer::create: " + pool.status().message() +
                     "; device timings are unavailable");
-    timer.valid_bits_ = 0;
+    queries.valid_bits = 0;
     return timer;
   }
-  timer.pool_ = std::make_shared<QueryPool>(*std::move(pool));
-  timer.spans_.reserve(max_spans);
-  timer.readback_.reserve(static_cast<std::size_t>(max_spans) * 4);
+  queries.pool = *std::move(pool);
   return timer;
 }
 
-std::uint32_t GpuTimer::begin(VkCommandBuffer cmd, const GpuSpanTag& tag,
-                              bool reset) {
-  VKC_CHECK(tag.name != nullptr, "GpuTimer::begin: the span's name is null");
-  if (!available() || cmd == VK_NULL_HANDLE) return kNoSpan;
-  OpenScope* scope = nullptr;
-  if (tag.scope != 0) {
-    scope = find_scope(tag.scope);
-    if (scope == nullptr) {
-      // Recorded under a scope that has since closed: nothing is left to
-      // publish the span, which would otherwise hold its slot to the end of
-      // the window.
-      if (!warned_closed_) {
-        warned_closed_ = true;
-        log_message(LogLevel::Warning, kLogSource,
-                    "GpuTimer: a command's GpuStageScope closed before its "
-                    "submit; the command runs untimed");
-      }
-      return kNoSpan;
-    }
-  }
-  if (spans_.size() >= max_spans_) {
-    // A full window refusing silently freezes a GPU column on stale values;
-    // publishing what fit would pass part of a stage off as all of it.
-    if (scope != nullptr) scope->truncated = true;
-    if (!warned_full_) {
-      warned_full_ = true;
-      log_message(LogLevel::Warning, kLogSource,
-                  "GpuTimer: the window is full (max_spans); further spans go "
-                  "untimed, and a stage that loses one reports no device "
-                  "time, until the window ends");
-    }
-    return kNoSpan;
-  }
-  const auto span = static_cast<std::uint32_t>(spans_.size());
-  spans_.push_back(Span{tag.name, tag.scope, 0.0, false});
-  // This span's pair in the command buffer, not the whole pool up front: a
-  // query must not be reset while in flight, and spans recorded into an
-  // earlier command buffer of the window stay readable.
-  if (reset) pool_->cmd_reset(cmd, span * 2, 2);
-  // BOTTOM_OF_PIPE for the start too: TOP_OF_PIPE orders against nothing
-  // before it, so spans in one command buffer would each latch near its front
-  // and nest rather than tile -- and on a shared device latch while another
-  // library's work drains, charging its tail here.
-  pool_->cmd_write_timestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                             span * 2);
-  return span;
+bool GpuTimer::available() const noexcept {
+  return queries_ != nullptr && queries_->valid_bits != 0 &&
+         queries_->pool.valid();
 }
 
-void GpuTimer::cmd_reset_ahead(VkCommandBuffer cmd,
-                               std::uint32_t spans) const noexcept {
-  const auto first = static_cast<std::uint32_t>(spans_.size());
-  if (!available() || first >= max_spans_) return;
-  const std::uint32_t count = std::min(spans, max_spans_ - first);
-  if (count != 0) pool_->cmd_reset(cmd, first * 2, count * 2);
-}
-
-void GpuTimer::end(VkCommandBuffer cmd, std::uint32_t span) {
-  if (!available() || span == kNoSpan || span >= spans_.size()) return;
-  pool_->cmd_write_timestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                             (span * 2) + 1);
-}
-
-void GpuTimer::settle(std::uint32_t first, std::uint32_t count,
-                      const Status& submitted, bool in_flight) {
-  if (!submitted.ok()) {
-    // Work the device may still run may still write every query it reset or
-    // wrote, so none can be reused; work that never reached it wrote none.
-    if (in_flight) {
-      abandon();
-    } else {
-      discard(first, count);
-    }
-    return;
-  }
-  if (count == 0) return;
-  // Logged, not returned: the work succeeded, and failing it over a
-  // diagnostic is what this class exists not to do. The spans stay
-  // unresolved, which publishes as "not measured".
-  const Status resolved = resolve(first, count);
-  if (!resolved.ok()) {
-    log_message(LogLevel::Warning, kLogSource,
-                "GpuTimer: timestamps not resolved (" + resolved.message() +
-                    "); the work itself succeeded");
-  }
-}
-
-Status GpuTimer::resolve(std::uint32_t first, std::uint32_t count) {
-  if (!available() || count == 0) return {};
-  if (first >= spans_.size() || count > spans_.size() - first) {
-    return Status::invalid_argument("GpuTimer::resolve: spans past the window");
-  }
-  readback_.assign(static_cast<std::size_t>(count) * 4, 0);
-  VKC_TRY(pool_->read_results(first * 2, count * 2, readback_.data(),
-                              /*with_availability=*/true));
-  for (std::size_t i = 0; i < count; ++i) {
-    Span& span = spans_[first + i];
-    const std::size_t at = i * 4;
-    // An unwritten end -- a span begun and never ended -- stays unresolved.
-    if (span.resolved || readback_[at + 1] == 0 || readback_[at + 3] == 0) {
-      continue;
-    }
-    span.ms = ticks_to_ms(
-        timestamp_delta(readback_[at], readback_[at + 2], valid_bits_),
-        period_ns_);
-    span.resolved = true;
-  }
-  return {};
-}
-
-void GpuTimer::discard(std::uint32_t first, std::uint32_t count) noexcept {
-  if (count == 0 || first >= spans_.size() || spans_.size() - first != count) {
-    return;
-  }
-  for (std::size_t i = first; i < spans_.size(); ++i) {
-    if (spans_[i].resolved) return;
-  }
-  while (spans_.size() > first) spans_.pop_back();
-}
-
-void GpuTimer::abandon() noexcept {
-  // available() reads valid_bits_, so this retires the pool, which a submit
-  // left to the device still holds; the window keeps what it resolved.
-  valid_bits_ = 0;
-}
-
-void GpuTimer::report_into(StageMetrics& out) {
-  for (const Span& span : spans_) {
-    if (span.resolved) out.add_gpu(span.name, span.ms);
-  }
-  end_window();
-}
-
-std::uint64_t GpuTimer::open_scope() {
-  const std::uint64_t id = next_scope_++;
-  scopes_.push_back(OpenScope{id, false});
-  return id;
-}
-
-void GpuTimer::close_scope(std::uint64_t id, StageMetrics& out) {
-  // From the back: scopes nest, so it is the innermost open one.
-  const auto open =
-      std::find_if(scopes_.rbegin(), scopes_.rend(),
-                   [id](const OpenScope& scope) { return scope.id == id; });
-  if (open == scopes_.rend()) return;  // the timer was moved or replaced
-  const bool truncated = open->truncated;
-  scopes_.erase(std::next(open).base());
-  if (!truncated) {
-    for (const Span& span : spans_) {
-      if (span.scope == id && span.resolved) out.add_gpu(span.name, span.ms);
-    }
-  }
-  // Every span of a closed scope is published or never will be: one still
-  // unresolved never ran, or ran on a submit that failed.
-  if (scopes_.empty()) end_window();
-}
-
-GpuTimer::OpenScope* GpuTimer::find_scope(std::uint64_t id) noexcept {
-  for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
-    if (it->id == id) return &*it;
-  }
-  return nullptr;
-}
-
-void GpuTimer::end_window() noexcept {
-  spans_.clear();
-  warned_full_ = false;
-  warned_closed_ = false;
-  // A scope still open starts the next window with nothing refused.
-  for (OpenScope& scope : scopes_) scope.truncated = false;
-}
+std::shared_ptr<void> GpuTimer::keep_alive() const noexcept { return queries_; }
 
 Status GpuTimer::reserve(const Device& device, std::uint32_t max_spans) {
   if (valid() && device.handle() != device_) {
@@ -291,28 +226,338 @@ Status GpuTimer::reserve(const Device& device, std::uint32_t max_spans) {
         "GpuTimer::reserve: not the device the timer was made for");
   }
   const std::uint32_t wanted = std::min(max_spans, kMaxSpans);
-  if (!available() || wanted <= max_spans_ || !spans_.empty()) return {};
+  if (!available() || wanted * 2 <= queries_->pool.query_count()) return {};
   Result<QueryPool> pool = QueryPool::create(device_, wanted * 2);
   if (!pool) {
     // A larger pool failing is no reason to stop timing at the size that
-    // works: the timer keeps its own, and its bound.
+    // works: the timer keeps its own.
     log_message(LogLevel::Warning, kLogSource,
                 "GpuTimer::reserve: " + pool.status().message() + "; keeping " +
-                    std::to_string(max_spans_) + " spans a window");
+                    std::to_string(queries_->pool.query_count() / 2) +
+                    " spans");
     return {};
   }
   if (max_spans > kMaxSpans) {
     log_message(LogLevel::Warning, kLogSource,
                 "GpuTimer::reserve: " + std::to_string(max_spans) +
                     " spans asked, " + std::to_string(kMaxSpans) +
-                    " kept (kMaxSpans); a stage that fills the window reports "
-                    "no device time");
+                    " kept (kMaxSpans)");
   }
-  spans_.reserve(wanted);
-  readback_.reserve(static_cast<std::size_t>(wanted) * 4);
-  pool_ = std::make_shared<QueryPool>(*std::move(pool));
-  max_spans_ = wanted;
+  // A new pool beside the old, which the batches pending on it keep until
+  // they have read their ranges.
+  auto grown = std::make_shared<Queries>();
+  grown->valid_bits = queries_->valid_bits;
+  grown->period_ns = queries_->period_ns;
+  grown->calibrator = queries_->calibrator;
+  grown->retained = queries_->retained;
+  grown->pool = *std::move(pool);
+  queries_ = std::move(grown);
   return {};
+}
+
+// --- GpuTiles ----------------------------------------------------------------
+
+GpuTiles::~GpuTiles() { release(); }
+
+GpuTiles::GpuTiles(GpuTiles&& other) noexcept
+    : queries_(std::move(other.queries_)),
+      first_(std::exchange(other.first_, 0)),
+      capacity_(std::exchange(other.capacity_, 0)),
+      written_(std::exchange(other.written_, 0)),
+      depth_(std::exchange(other.depth_, 0)),
+      untimed_(std::exchange(other.untimed_, DeviceTime::None)),
+      overflowed_(std::exchange(other.overflowed_, false)),
+      ended_(std::exchange(other.ended_, false)),
+      leaked_(std::exchange(other.leaked_, false)),
+      settled_(std::exchange(other.settled_, false)),
+      keys_(std::exchange(other.keys_, {})),
+      tiles_(std::exchange(other.tiles_, {})),
+      tile_ms_(std::exchange(other.tile_ms_, {})),
+      tile_state_(std::exchange(other.tile_state_, {})),
+      rows_(std::exchange(other.rows_, StageMetrics{})),
+      span_(std::exchange(other.span_, std::nullopt)) {}
+
+GpuTiles& GpuTiles::operator=(GpuTiles&& other) noexcept {
+  if (this != &other) {
+    release();
+    queries_ = std::move(other.queries_);
+    first_ = std::exchange(other.first_, 0);
+    capacity_ = std::exchange(other.capacity_, 0);
+    written_ = std::exchange(other.written_, 0);
+    depth_ = std::exchange(other.depth_, 0);
+    untimed_ = std::exchange(other.untimed_, DeviceTime::None);
+    overflowed_ = std::exchange(other.overflowed_, false);
+    ended_ = std::exchange(other.ended_, false);
+    leaked_ = std::exchange(other.leaked_, false);
+    settled_ = std::exchange(other.settled_, false);
+    keys_ = std::exchange(other.keys_, {});
+    tiles_ = std::exchange(other.tiles_, {});
+    tile_ms_ = std::exchange(other.tile_ms_, {});
+    tile_state_ = std::exchange(other.tile_state_, {});
+    rows_ = std::exchange(other.rows_, StageMetrics{});
+    span_ = std::exchange(other.span_, std::nullopt);
+  }
+  return *this;
+}
+
+GpuTiles GpuTiles::begin(GpuTimer& timer, VkCommandBuffer cmd,
+                         std::uint32_t tiles) {
+  return open(timer, cmd, tiles, {});
+}
+
+GpuTiles GpuTiles::open(GpuTimer& timer, VkCommandBuffer cmd,
+                        std::uint32_t tiles,
+                        std::vector<detail::TileKey> keys) {
+  GpuTiles out;
+  out.keys_ = std::move(keys);
+  out.depth_ = timer.max_depth();
+  out.tiles_.push_back(kNoKey);  // the open tile, unnamed until a mark
+  if (!timer.available() || cmd == VK_NULL_HANDLE) {
+    out.untimed_ = DeviceTime::Unavailable;
+    return out;
+  }
+  // One mark more than tiles; a batch of more than the pool holds finds no
+  // run, as a full pool does (and one at the ceiling never fits either).
+  const std::uint32_t room = std::max(tiles, 1U);
+  const std::uint32_t marks =
+      room == std::numeric_limits<std::uint32_t>::max() ? room : room + 1;
+  const std::optional<std::uint32_t> first = timer.queries_->acquire(marks);
+  if (!first.has_value()) {
+    out.untimed_ = DeviceTime::NotTimed;
+    return out;
+  }
+  out.queries_ = timer.queries_;
+  out.first_ = *first;
+  out.capacity_ = marks;
+  // One reset for the range, at the start, before any mark: a reset between
+  // two commands can split a Metal compute encoder, perturbing what is
+  // measured.
+  out.queries_->pool.cmd_reset(cmd, out.first_, marks);
+  // BOTTOM_OF_PIPE, as every mark: written once the earlier work on the
+  // queue completes, so a tile never starts while another library's work
+  // drains, and the tiles of a command buffer tile rather than nest.
+  out.queries_->pool.cmd_write_timestamp(
+      cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, out.first_);
+  out.written_ = 1;
+  return out;
+}
+
+GpuTiles GpuTiles::refused(const GpuTimer& timer,
+                           std::vector<detail::TileKey> keys) {
+  GpuTiles out;
+  out.keys_ = std::move(keys);
+  out.depth_ = timer.max_depth();
+  out.untimed_ =
+      timer.available() ? DeviceTime::NotTimed : DeviceTime::Unavailable;
+  for (std::size_t k = 0; k < out.keys_.size(); ++k) {
+    out.tiles_.push_back(static_cast<std::uint32_t>(k));
+  }
+  out.settle(nullptr);
+  return out;
+}
+
+void GpuTiles::mark(VkCommandBuffer cmd, const char* name) {
+  VKC_CHECK(name != nullptr, "GpuTiles::mark: the tile's name is null");
+  // A tile named by hand is a key of its name alone.
+  const auto named = [name](const detail::TileKey& key) {
+    return key.names.size() == 1 && key.serials[0] == 0 &&
+           std::strcmp(key.names[0], name) == 0;
+  };
+  const auto found = std::find_if(keys_.begin(), keys_.end(), named);
+  const auto key = static_cast<std::uint32_t>(found - keys_.begin());
+  if (found == keys_.end()) keys_.push_back(detail::TileKey{{name}, {0}});
+  mark_key(cmd, key);
+}
+
+void GpuTiles::mark_key(VkCommandBuffer cmd, std::uint32_t key) {
+  if (tiles_.empty() || settled_) return;  // never opened, or done
+  if (tiles_.back() == kNoKey) {
+    tiles_.back() = key;  // the first name names the open tile
+    return;
+  }
+  if (same_tile(keys_, depth_, tiles_.back(), key)) return;
+  if (queries_ != nullptr && !overflowed_) {
+    // Room is kept for the last mark.
+    if (written_ + 2 > capacity_) {
+      overflowed_ = true;
+    } else {
+      queries_->pool.cmd_write_timestamp(
+          cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, first_ + written_);
+      ++written_;
+    }
+  }
+  tiles_.push_back(key);
+}
+
+void GpuTiles::end(VkCommandBuffer cmd) {
+  if (ended_ || settled_) return;
+  ended_ = true;
+  if (queries_ == nullptr || written_ >= capacity_) return;
+  queries_->pool.cmd_write_timestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                     first_ + written_);
+  ++written_;
+}
+
+bool GpuTiles::same_tile(const std::vector<detail::TileKey>& keys,
+                         std::uint32_t depth, std::uint32_t a,
+                         std::uint32_t b) noexcept {
+  if (a == b) return true;
+  const detail::TileKey& x = keys[a];
+  const detail::TileKey& y = keys[b];
+  const auto deep = [depth](const detail::TileKey& key) {
+    return depth == 0 ? key.names.size()
+                      : std::min<std::size_t>(depth, key.names.size());
+  };
+  const std::size_t n = deep(x);
+  if (n != deep(y)) return false;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (x.serials[i] != y.serials[i] ||
+        std::strcmp(x.names[i], y.names[i]) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+template <class Fn>
+void GpuTiles::for_each_credit(const Fn& fn) const {
+  const auto depth = [this](const detail::TileKey& key) {
+    return depth_ == 0 ? key.names.size()
+                       : std::min<std::size_t>(depth_, key.names.size());
+  };
+  // Each tile counts to its key's scopes, down to the depth...
+  for (std::size_t t = 0; t < tiles_.size() && t < tile_state_.size(); ++t) {
+    if (tiles_[t] == kNoKey) continue;
+    const detail::TileKey& key = keys_[tiles_[t]];
+    for (std::size_t i = 0; i < depth(key); ++i) {
+      fn(key.names[i], key.serials[i], tile_state_[t], tile_ms_[t]);
+    }
+  }
+  // ...and the scopes deeper than it ran untimed.
+  const DeviceTime deeper = untimed_ == DeviceTime::Unavailable
+                                ? DeviceTime::Unavailable
+                                : DeviceTime::NotTimed;
+  for (const detail::TileKey& key : keys_) {
+    for (std::size_t i = depth(key); i < key.names.size(); ++i) {
+      fn(key.names[i], key.serials[i], deeper, 0.0);
+    }
+  }
+}
+
+void GpuTiles::settle(const std::uint64_t* marks) {
+  settled_ = true;
+  const std::size_t n = tiles_.size();
+  const DeviceTime fallback =
+      untimed_ != DeviceTime::None ? untimed_ : DeviceTime::NotTimed;
+  tile_ms_.assign(n, 0.0);
+  tile_state_.assign(n, fallback);
+  // Every tile has its two marks only when nothing overflowed and the last
+  // was written; a mark not yet readable leaves its tiles unmeasured.
+  const bool marked =
+      marks != nullptr && ended_ && !overflowed_ && written_ == n + 1;
+  if (marked) {
+    for (std::size_t t = 0; t < n; ++t) {
+      const std::uint64_t* a = marks + (2 * t);
+      const std::uint64_t* b = marks + (2 * (t + 1));
+      if (a[1] == 0 || b[1] == 0) continue;
+      tile_ms_[t] =
+          ticks_to_ms(timestamp_delta(a[0], b[0], queries_->valid_bits),
+                      queries_->period_ns);
+      tile_state_[t] = DeviceTime::Measured;
+    }
+  }
+  rows_.clear();
+  for_each_credit([this](const char* name, std::uint64_t, DeviceTime state,
+                         double ms) { rows_.add_device(name, state, ms); });
+  // The span needs only the two ends.
+  const std::size_t last = written_ == 0 ? 0 : std::size_t{written_} - 1;
+  if (marks != nullptr && ended_ && written_ >= 2 && marks[1] != 0 &&
+      marks[(2 * last) + 1] != 0) {
+    DeviceSpan span;
+    span.begin_ticks = marks[0];
+    span.end_ticks = marks[2 * last];
+    if (const std::optional<ClockPair> pair = queries_->clock_pair()) {
+      const auto host = [&](std::uint64_t ticks) {
+        const double ns =
+            static_cast<double>(
+                signed_ticks(pair->device_ticks, ticks, queries_->valid_bits)) *
+            static_cast<double>(queries_->period_ns);
+        return pair->host_ns + static_cast<std::int64_t>(std::llround(ns));
+      };
+      span.begin_ns = host(span.begin_ticks);
+      span.end_ns = host(span.end_ticks);
+      span.deviation_ns = pair->deviation_ns;
+      span.host_clock = true;
+    }
+    span_ = span;
+  }
+}
+
+void GpuTiles::resolve() {
+  if (settled_) return;
+  if (queries_ == nullptr || written_ == 0) {
+    settle(nullptr);
+    release();
+    return;
+  }
+  std::vector<std::uint64_t> marks(static_cast<std::size_t>(written_) * 2);
+  const Status read =
+      queries_->pool.read_results(first_, written_, marks.data(),
+                                  /*with_availability=*/true);
+  if (read.ok()) {
+    settle(marks.data());
+  } else {
+    // Logged, not returned: the work succeeded, and failing it over a
+    // diagnostic is what this class exists not to do.
+    log_message(LogLevel::Warning, kLogSource,
+                "GpuTiles: timestamps not read (" + read.message() +
+                    "); the work itself succeeded");
+    untimed_ = DeviceTime::NotTimed;
+    settle(nullptr);
+  }
+  release();
+}
+
+void GpuTiles::drop(bool may_still_run) {
+  if (settled_) return;
+  // Work the device may still run may still write every query in the range,
+  // which no later batch may then reset (VUID-vkCmdResetQueryPool-None-02841).
+  leaked_ = may_still_run;
+  if (may_still_run && queries_ != nullptr) {
+    const std::scoped_lock lock(queries_->retained->mutex);
+    if (queries_->retirement != nullptr) {
+      // Keeping the range prevents reuse, but not destruction after reserve
+      // replaced the pool or the timer died. Hand the last owner to Device;
+      // it can prove completion even though these tiles know no fence.
+      auto retirement = std::move(queries_->retirement);
+      retirement->resource = queries_;
+      retirement->next = std::move(queries_->retained->head);
+      queries_->retained->head = std::move(retirement);
+    }
+  }
+  if (untimed_ == DeviceTime::None) untimed_ = DeviceTime::NotTimed;
+  settle(nullptr);
+  release();
+}
+
+void GpuTiles::publish() const noexcept {
+  for_each_credit(
+      [](const char*, std::uint64_t serial, DeviceTime state, double ms) {
+        if (serial == 0) return;
+        for (detail::ScopeFrame* frame = detail::innermost_scope();
+             frame != nullptr; frame = frame->outer) {
+          if (frame->serial != serial) continue;
+          if (state == DeviceTime::Measured) frame->device_ms += ms;
+          frame->device = std::max(frame->device, state);
+          return;
+        }
+      });
+}
+
+void GpuTiles::release() noexcept {
+  if (queries_ == nullptr) return;
+  if (!leaked_) queries_->release(first_);
+  queries_.reset();
 }
 
 }  // namespace volumetric_kit::core

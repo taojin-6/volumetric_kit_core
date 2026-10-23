@@ -3,6 +3,7 @@
 
 #include "volumetric_kit/core/vulkan/shared_device.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -11,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "device_access.hpp"
 #include "queue_plan.hpp"
 #include "support.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -160,8 +162,11 @@ void SharedDevice::wait_idle() const noexcept {
   const auto drain = [](VkQueue queue, std::mutex* guard) {
     if (queue == VK_NULL_HANDLE) return;
     const std::scoped_lock lock(*guard);
-    // A drain that fails (device lost) leaves nothing more to wait for.
+    // A drain that fails (device lost) leaves nothing more to wait for. It
+    // blocks the thread as Device::wait_idle does, with no Device to count.
+    const auto start = std::chrono::steady_clock::now();
     static_cast<void>(vkQueueWaitIdle(queue));
+    detail::report_blocked(detail::elapsed_ns(start), nullptr);
   };
   drain(graphics_queue_, &graphics_mutex_);
   if (compute_queue_ != graphics_queue_) drain(compute_queue_, compute_mutex());

@@ -27,6 +27,58 @@ namespace volumetric_kit::core {
 
 class GpuStageScope;
 class Instance;
+class PendingBatch;
+
+namespace detail {
+struct DeviceAccess;             // the vulkan tier's own reach into a Device
+struct DeviceCounterState;       // the counters, shared with its semaphores
+struct DeviceRetainedResources;  // resources of work with no known fence
+}  // namespace detail
+
+/// @brief What a @ref Device has done since it was created: the counts a
+///        test pins per frame, and a measurement logs beside its timings.
+///
+/// Always on: each is an atomic add where it happens.
+///
+/// @code
+/// const DeviceCounters before = device.counters();
+/// VKC_TRY(play_one_frame());
+/// const DeviceCounters after = device.counters();
+/// EXPECT_EQ(after.submits - before.submits, 1U);
+/// @endcode
+struct DeviceCounters {
+  /// `vkQueueSubmit` calls through the device (@ref Device::queue_submit).
+  std::uint64_t submits = 0;
+  /// Blocking waits through the device that found the work unfinished: on
+  /// the fences of its submits and pending submits, and on its timeline
+  /// semaphores; and every @ref Device::wait_idle, which Vulkan cannot ask
+  /// first. A @ref Fence and `SharedDevice::wait_idle` know no Device: their
+  /// waits reach the scopes (@ref note_blocked), not these counts.
+  std::uint64_t host_waits = 0;
+  /// The time those waits blocked, in nanoseconds.
+  std::uint64_t blocked_ns = 0;
+  /// Staging and readback buffers the @ref CommandBatch es on the device
+  /// allocated.
+  std::uint64_t staging_buffers = 0;
+};
+
+/// @brief One reading of the host's clock and the queue's timestamp counter
+///        at the same instant, within @ref deviation_ns: what puts a device
+///        timestamp on the host's clock.
+///
+/// @code
+/// VKC_ASSIGN(const ClockPair pair, device.calibrate());
+/// // a tick count `t` near the pair is at about, on the host:
+/// // pair.host_ns + (t - pair.device_ticks) * timestampPeriod
+/// @endcode
+struct ClockPair {
+  /// `std::chrono::steady_clock`, in nanoseconds since its epoch.
+  std::int64_t host_ns = 0;
+  /// The queue's timestamp counter, in ticks.
+  std::uint64_t device_ticks = 0;
+  /// How far apart the two readings may be, in nanoseconds.
+  std::uint64_t deviation_ns = 0;
+};
 
 /// @brief Cast any Vulkan handle to the `std::uint64_t`
 ///        @ref Device::set_object_name takes.
@@ -176,7 +228,9 @@ class VKC_VULKAN_API Device {
   /// optional extensions the device offers; `VK_KHR_portability_subset`
   /// where the device exposes it (the spec requires it);
   /// `VK_EXT_memory_budget` where offered, so an @ref Allocator allocates
-  /// within the driver's own heap budgets; and `VK_KHR_swapchain` with
+  /// within the driver's own heap budgets; calibrated timestamps
+  /// (`VK_KHR_calibrated_timestamps`, else `VK_EXT_calibrated_timestamps`)
+  /// where offered, for @ref calibrate; and `VK_KHR_swapchain` with
   /// presentation. Creates one queue on the first family with every
   /// @ref DeviceRequirements::queue_flags bit, and a present queue, which is
   /// that same queue when its family can present.
@@ -361,7 +415,9 @@ class VKC_VULKAN_API Device {
   ///
   /// Takes a command buffer on a pool of this call's own, begins it
   /// (`ONE_TIME_SUBMIT`), lets @p record fill it, ends and submits it, and
-  /// waits on a kept fence. Safe from several threads at once, and @p record
+  /// waits on a kept fence, reporting the time it blocks to the scopes open
+  /// on this thread (@ref note_blocked). Safe from several threads at once,
+  /// and @p record
   /// may itself submit on this device; what it records -- descriptor sets,
   /// buffers -- must still be its own. Blocking, so it suits setup and
   /// single-shot work; per-frame work batches its own submits.
@@ -390,26 +446,26 @@ class VKC_VULKAN_API Device {
                             std::shared_ptr<void> keep_alive = nullptr,
                             bool* in_flight = nullptr) const;
 
-  /// @brief @ref submit_single_time, with the recorded work inside a device
-  ///        span of @p stage, resolved once the fence has signalled.
+  /// @brief @ref submit_single_time, with the recorded work one device tile
+  ///        of @p stage, read once the fence has signalled.
   ///
-  /// The span covers what @p record records, not the command buffer's
+  /// The tile covers what @p record records, not the command buffer's
   /// allocation, the submit or the wait -- the difference a wall-clock row
-  /// cannot show. An inert @p stage (null metrics) is exactly the untimed
-  /// call. The span settles as @ref GpuTimer::settle says: resolved on
-  /// success, a failed read logged rather than returned; dropped when the
-  /// work never ran, a @p record that throws included; and the timer retired
-  /// when the device may still run it. The timer's query pool goes with
-  /// @p keep_alive, so a timer destroyed after that frees no queries the work
-  /// may still write. @p record may itself submit, timed on @p stage too:
-  /// each submit reads only its own span.
+  /// cannot show -- and counts to @p stage and the scopes open around it, as
+  /// a @ref CommandBatch's tiles do. An inert @p stage (null metrics) is
+  /// exactly the untimed call. The tile reads @ref DeviceTime::NotTimed when
+  /// the work never ran, or may still run, whose query range is then never
+  /// reused; a @p record that throws returns the range. The timer's query
+  /// pool goes with @p keep_alive, so a timer destroyed meanwhile frees no
+  /// queries the work may still write. @p record may itself submit, timed on
+  /// @p stage too: each submit reads only its own tiles.
   ///
   /// @code
   /// GpuStageScope stage(metrics, timer, "rebuild");
   /// VKC_TRY(device.submit_single_time(record, stage));
   /// @endcode
   /// @param record      Records into the command buffer it is given.
-  /// @param stage       The span's timer and label.
+  /// @param stage       The tile's timer and label.
   /// @param keep_alive  As the untimed overload.
   /// @return As the untimed overload.
   Status submit_single_time(const std::function<void(VkCommandBuffer)>& record,
@@ -509,9 +565,28 @@ class VKC_VULKAN_API Device {
   ///
   /// The shared-device-safe `vkDeviceWaitIdle`: that call idles every queue,
   /// another library's included, and cannot be synchronized against their
-  /// mutexes.
+  /// mutexes. Its time is reported as blocked (@ref note_blocked), as the
+  /// device's own fence waits are.
   /// @return OK once the queues drain; or a backend @ref Status (device lost).
   Status wait_idle() const;
+
+  /// @return The counts since the device was created or adopted; all zero
+  ///         for a moved-from device.
+  DeviceCounters counters() const noexcept;
+
+  /// @brief Read the host's clock and the queue's timestamp counter
+  ///        together.
+  ///
+  /// Through `vkGetCalibratedTimestamps*` with the device's own time domain
+  /// and the host domain `std::chrono::steady_clock` reads, where the driver
+  /// offers it (`CLOCK_MONOTONIC` on Linux); otherwise the device's reading
+  /// alone, bracketed by two host readings. The deviation then covers half
+  /// the bracket plus the driver's own uncertainty.
+  /// @return The pair; @ref Status::Code::Unsupported where the device did
+  ///         not enable a calibrated-timestamps extension (or, adopted, did
+  ///         not declare one) or does not offer its own time domain; or a
+  ///         backend @ref Status.
+  Result<ClockPair> calibrate() const;
 
   /// @return Whether the `VK_EXT_debug_utils` entry points resolved, so
   ///         @ref set_object_name and the labels reach a profiler. Every such
@@ -558,6 +633,8 @@ class VKC_VULKAN_API Device {
   bool imports_metal_textures() const noexcept { return state_.metal_objects; }
 
  private:
+  friend struct detail::DeviceAccess;
+
   // Everything trivially copyable a device holds, so a move copies it and
   // resets the source to `State{}` in one assignment, with no member list to
   // keep in step.
@@ -584,6 +661,12 @@ class VKC_VULKAN_API Device {
     PFN_vkCmdEndDebugUtilsLabelEXT end_label = nullptr;
     PFN_vkGetMemoryFdKHR get_memory_fd = nullptr;
     bool metal_objects = false;
+    // vkGetCalibratedTimestamps{KHR,EXT}, null without the extension or the
+    // device's own time domain; and the host domain it reads beside it, when
+    // the driver offers steady_clock's.
+    PFN_vkGetCalibratedTimestampsEXT get_calibrated = nullptr;
+    bool host_time_domain = false;
+    VkTimeDomainEXT time_domain = VK_TIME_DOMAIN_DEVICE_EXT;
     // What create enabled, or adopt's creator declared, for check_enabled.
     EnabledFeatures enabled;
   };
@@ -616,9 +699,14 @@ class VKC_VULKAN_API Device {
   Status check_record(const DeviceRequirements& reqs,
                       const std::vector<std::string>& required) const;
   // Resolves the debug-utils entry points (on the creator's word that the
-  // instance enabled the extension), the memory-fd export and the
-  // metal-objects flag, from enabled_extensions_.
-  void resolve_entry_points(bool instance_debug_utils) noexcept;
+  // instance enabled the extension), the memory-fd export, the
+  // metal-objects flag and the calibrated clocks (whose time domains
+  // `instance` is asked for), from enabled_extensions_.
+  void resolve_entry_points(VkInstance instance,
+                            bool instance_debug_utils) noexcept;
+  // Its calibrated-clocks half: the entry point, where the device's own time
+  // domain is offered, and the host domain read beside it.
+  void resolve_calibration(VkInstance instance) noexcept;
   std::mutex* present_mutex() const noexcept;
   // `record`: the submit records, so the command needs its buffer.
   Result<Command> take_command(bool record) const;
@@ -654,6 +742,11 @@ class VKC_VULKAN_API Device {
   State state_;
   PhysicalDeviceInfo caps_;
   std::vector<std::string> enabled_extensions_;
+  // Shared with the device's timeline semaphores, which count their waits.
+  std::shared_ptr<detail::DeviceCounterState> counters_;
+  // Shared with timers, so dropping their manually submitted work is safe
+  // even after this Device moves. Drained before its VkDevice is destroyed.
+  std::shared_ptr<detail::DeviceRetainedResources> retained_;
   // Not moved: a moved-to device uses its own (see submit_mutex()).
   mutable std::mutex queue_mutex_;
   mutable std::mutex present_queue_mutex_;
@@ -726,6 +819,9 @@ class VKC_VULKAN_API Device::PendingSubmit {
 
  private:
   friend class Device;
+  // Whose destructor and move assignment finish() its submit before its
+  // tiles go, to know whether the device may still write their range.
+  friend class PendingBatch;
 
   // Waits for unfinished work, logging a failure: the destructor's and a
   // move assignment's, which cannot return one. Warns, once a wait has run a

@@ -153,10 +153,10 @@ if(VKC_WITH_VULKAN)
     endif()
   endforeach()
 
-  # The queue-family reduction, the memory-type masks and the queue-plan choice
-  # are internal to core_vulkan, so their tests -- and the device tests that
-  # check a resource landed in its placement's types -- reach into the source
-  # directory for them.
+  # The queue-family reduction, the memory-type masks, the queue-plan choice and
+  # the clock pairing are internal to core_vulkan, so their tests -- and the
+  # device tests that check a resource landed in its placement's types -- reach
+  # into the source directory for them.
   foreach(
     _vkc_test
     vulkan_queue_families
@@ -165,7 +165,8 @@ if(VKC_WITH_VULKAN)
     vulkan_allocation_budget
     vulkan_compute
     vulkan_shared_device
-    vulkan_command_batch)
+    vulkan_command_batch
+    vulkan_timer)
     target_include_directories(
       vkc_${_vkc_test}_test
       PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")
@@ -182,6 +183,19 @@ if(VKC_WITH_VULKAN)
       "$<TARGET_PROPERTY:GPUOpen::VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>"
   )
   get_target_property(_vkc_vulkan_type core_vulkan TYPE)
+  if(_vkc_vulkan_type STREQUAL "STATIC_LIBRARY")
+    # The executable interposes the loader lookup to inject calibration errors.
+    # A shared core binds directly to the loader on macOS (two-level namespace),
+    # so this injection runs only against a static core. Pairing and real-device
+    # calibration remain covered by vulkan_timer in both configurations.
+    add_executable(vkc_vulkan_calibration_test vulkan_calibration_test.cpp)
+    target_link_libraries(
+      vkc_vulkan_calibration_test
+      PRIVATE volumetric_kit::core_test_support volumetric_kit::core_test_main
+              ${CMAKE_DL_LIBS})
+    vkc_target_warnings(vkc_vulkan_calibration_test)
+    _vkc_discover_device_tests(vkc_vulkan_calibration_test)
+  endif()
   if(_vkc_vulkan_type STREQUAL "SHARED_LIBRARY")
     target_compile_definitions(vkc_vulkan_allocation_budget_test
                                PRIVATE VKC_TEST_PRIVATE_VMA)

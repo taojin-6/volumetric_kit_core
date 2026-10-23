@@ -1676,20 +1676,24 @@ TEST_F(PendingTest, IsInFlightUntilAWaitSeesItComplete) {
 
 TEST_F(PendingComputeTest, MovesCarryTheWorkAndWaitForWhatTheyDrop) {
   upload(a_, pattern(0));
-  // Work the host releases from another thread after `delay`, raising the
-  // timeline from `from` to `from + 1`; the work then sets `from + 2`.
+  Result<TimelineSemaphore> gate = TimelineSemaphore::create(device());
+  ASSERT_TRUE(gate.ok());
+  // Only the host signals the gate, and only the queue signals completion.
+  // Older validation layers can race their timeline bookkeeping when the
+  // host's signal and the submission it releases signal the same semaphore.
+  // Work waits for gate `from + 1`, then sets completion `from + 2`.
   const auto held = [&](std::uint64_t from, std::uint32_t delta) {
     CommandBatch batch(device(), allocator());
     EXPECT_TRUE(add_to(batch, a_, delta).ok());
     Result<PendingBatch> made =
-        batch.submit_async({{&timeline_, from + 1}}, {{&timeline_, from + 2}});
+        batch.submit_async({{&*gate, from + 1}}, {{&timeline_, from + 2}});
     EXPECT_TRUE(made.ok()) << made.status().message();
     return made.ok() ? *std::move(made) : PendingBatch{};
   };
   const auto release_later = [&](std::uint64_t value) {
-    return std::thread([this, value] {
+    return std::thread([&gate, value] {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      EXPECT_TRUE(timeline_.signal(value).ok());
+      EXPECT_TRUE(gate->signal(value).ok());
     });
   };
 

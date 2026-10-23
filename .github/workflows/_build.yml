@@ -9,13 +9,26 @@ on:
       os:
         type: string
         required: true
+      runner:
+        description: Self-hosted GPU runner label (vk-linux-gpu or mac).
+        type: string
+        required: true
+      container:
+        description: JSON job container for Linux; empty on the native Mac.
+        type: string
+        default: ''
 
 jobs:
   build:
-    runs-on: ${{ inputs.os }}
+    runs-on: [self-hosted, '${{ inputs.runner }}']
+    container: ${{ inputs.container != '' && fromJSON(inputs.container) || null }}
     timeout-minutes: 30
-    # Every leg builds the vulkan tier and runs its device tests: Linux on
-    # lavapipe, macOS on the runner's device through MoltenVK. The test policy
+    defaults:
+      run:
+        # A container otherwise runs steps under sh (dash).
+        shell: bash
+    # Every leg builds the vulkan tier and runs its device tests on a physical
+    # GPU: Linux through the container's ICD, macOS through MoltenVK. The policy
     # (README.md, "Build and test"): no device, the layer missing, or a
     # validation error fails a test, under synchronization validation and,
     # where the layer has them, shader-access checks.
@@ -24,45 +37,54 @@ jobs:
       VKC_TEST_VALIDATION: '1'
       VKC_TEST_SYNC_VALIDATION: '1'
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Vulkan (Linux)
+      # The bare Ubuntu image runs as root and needs git before checkout. The
+      # NVIDIA ICD also needs libXext.so.6 and libEGL.so.1 to create a device.
+      # No software ICD is installed: these legs exercise discrete memory.
+      - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          # glslc and spirv-val compile and validate the compute tests' shaders.
-          sudo apt-get install -y --no-install-recommends \
-            libvulkan-dev vulkan-tools vulkan-validationlayers glslc \
-            spirv-tools
-          # lavapipe, Mesa's software Vulkan driver, installed WITH recommends:
-          # without them its runtime libraries (LLVM) are stripped and it loads
-          # as INCOMPATIBLE_DRIVER, which would skip every device test.
-          sudo apt-get install -y mesa-vulkan-drivers
-          icd=""
-          for f in /usr/share/vulkan/icd.d/lvp_icd*.json; do
-            [ -e "$f" ] && { icd="$f"; break; }
-          done
-          [ -n "$icd" ] || { echo "::error::lavapipe ICD not found"; exit 1; }
-          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
-          VK_ICD_FILENAMES="$icd" vulkaninfo --summary
+          mkdir -p "$__GL_SHADER_DISK_CACHE_PATH"
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git \
+            cmake build-essential libvulkan-dev vulkan-tools \
+            vulkan-validationlayers glslc spirv-tools libxext6 libegl1
 
-      - name: Install Vulkan (macOS)
+      # Other repositories share the host; leave no token in the checkout.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Homebrew is shared by the Mac's runners. Install or upgrade its
+      # dependencies by hand while idle, never from a job.
+      - name: Check dependencies (macOS)
         if: runner.os == 'macOS'
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: '1'
-          HOMEBREW_NO_INSTALL_CLEANUP: '1'
         run: |
-          # vulkan-utility-libraries: tests/vulkan_format_reference_test.cpp
-          # checks format.hpp against it.
-          brew install vulkan-headers vulkan-loader molten-vk shaderc \
-            spirv-tools vulkan-validationlayers vulkan-tools \
-            vulkan-utility-libraries
-          # The layer's manifest names its library without a path; the Test
-          # step alone searches Homebrew's lib for it, as job-wide its
-          # libraries would shadow those of every later tool.
+          command -v brew >/dev/null || {
+            echo "::error::brew is not on this runner's PATH"
+            exit 1
+          }
+          missing=""
+          # The format reference test needs vulkan-utility-libraries.
+          for pkg in cmake molten-vk vulkan-headers vulkan-loader shaderc \
+              spirv-tools vulkan-validationlayers vulkan-tools \
+              vulkan-utility-libraries; do
+            brew list --formula "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::install by hand on this runner's host, while CI is idle:${missing}"
+            exit 1
+          fi
+          # The layer's manifest names its library without a path. Set the
+          # library search path only on Vulkan commands below.
           echo "VKC_LAYER_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
           echo "VK_LAYER_PATH=$(brew --prefix)/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
-          DYLD_LIBRARY_PATH="$(brew --prefix)/lib" vulkaninfo --summary
+
+      - name: GPU diagnostic
+        run: |
+          DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" vulkaninfo --summary || {
+            echo "::error::no Vulkan device visible on this GPU runner"
+            exit 1
+          }
 
       - name: Configure
         run: |
@@ -75,15 +97,18 @@ jobs:
       - name: Build
         run: cmake --build build --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
-      # The level, as for the build: hosted runners set none. The tests
-      # labelled cmake run on ubuntu-26.04 alone (tests/CMakeLists.txt).
+      # The level comes from the runner's .env on the Mac and the container
+      # env on Linux. The cmake-labelled tests run on ubuntu-26.04 alone;
+      # the ios-labelled configures still run on the Mac (tests/CMakeLists.txt).
       - name: Test
         env:
-          DYLD_LIBRARY_PATH: ${{ env.VKC_LAYER_LIBRARY_PATH }}
           LABELS: ${{ inputs.os != 'ubuntu-26.04' && '-LE cmake' || '' }}
         run: |
-          # shellcheck disable=SC2086 # LABELS is zero or two arguments
-          ctest --test-dir build --output-on-failure \
+          # Set DYLD_* on the command: macOS strips a step's value when
+          # starting the system shell. LABELS is zero or two arguments.
+          # shellcheck disable=SC2086
+          DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
+            ctest --test-dir build --output-on-failure \
             --parallel "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}" $LABELS
 
       # A skip within a shard shows only in the shard's output, which ctest
@@ -94,7 +119,7 @@ jobs:
         run: |
           log=build/Testing/Temporary/LastTest.log
           [ -f "$log" ] || exit 0
-          skipped="$(sed -n 's/^\[  SKIPPED \] \([A-Za-z][^ ]*\).*/- \1/p' "$log" | grep -v 'Probe\.' | sort -u)"
+          skipped="$(sed -n 's/^\[  SKIPPED \] \([A-Za-z][^ ]*\).*/- \1/p' "$log" | grep -v 'Probe\.' | sort -u || true)"
           printf '### Skipped tests\n\n%s\n' "${skipped:-none}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Base-only build has no JSON or GPU dependency

@@ -163,7 +163,8 @@ V1's choices, from comparing the two cores on 2026-10-03:
   the same run. Under it, a test fails if validation is off or does not reach
   the log sink, and the run fails on errors the layer reports as the shared
   devices and instances are destroyed ("One Vulkan test fixture for the
-  family", below).
+  family", below). The 2026-10-23 decision moves the build legs to physical
+  GPUs; the hosted sanitizer job keeps this lavapipe coverage.
 
 V2's choices, from the same comparison:
 
@@ -269,7 +270,7 @@ V3's choices, from the same comparison (gfx has no compute):
   command buffer it may still run and frees once `destroy` has waited for it,
   before the `VkDevice`. A batch's staging, and the allocator behind it, is
   then neither freed under the GPU nor leaked past the device.
-- **Timer spans came with V4** (below): recon's optional `GpuStageScope*`
+- **Timing came with V4** (below): recon's optional `GpuStageScope*`
   parameters are back as trailing defaults.
 - **One shader toolchain.** `vkc_compile_shaders` and `vkc_embed_shaders`
   replace recon's `vr_*`, gfx's `vg_*`, and the copy of recon's ios borrows.
@@ -298,43 +299,93 @@ in "Where memory lives"):
   part of its value: a copy or an assignment carries the rows only, so
   `metrics = StageMetrics{}` inside a scope leaves it counted. A null name
   is a programmer error (`VKC_CHECK`), not a crash in `strcmp`.
-- **gfx's `QueryPool`, recon's `GpuTimer` on it.** The pool owns the handle
-  and range-checks its commands. It holds timestamp and occlusion queries
-  only, one 64-bit result each, which is what it reads. The timer is recon's
-  -- fence-blocked spans read the moment a submit returns, unavailable rather
-  than failing where a family has no timestamps. gfx's frames-in-flight
-  profiler stays in gfx, rebuilt on these.
-- **`GpuStageScope` is how work is timed.** `CommandBatch`'s uploads,
-  copies and dispatches and `dispatch` take recon's trailing
-  `GpuStageScope* = nullptr`, so recon migrates by namespace. A command keeps
-  the scope's `GpuSpanTag` (timer, label, scope id), not the scope, so a
-  scope that closes before the submit leaves the command untimed rather than
-  dangling. The `Device` overload takes a `GpuStageScope&`: a nullable
-  pointer beside the untimed overload's `keep_alive` would let
-  `submit_single_time(record, nullptr)` pick the timed one.
-- **A span is read after its own submit, and published by its own scope.**
-  recon's `resolve` read every unresolved span, so a submit nested in
-  another's recording read the outer span before its command buffer ran --
-  unreset queries in a first window, the last frame's value after -- and a
-  closing scope published every span on the timer, a helper's scope taking
-  its stage's. `GpuTimer::settle` resolves exactly the spans one submit
-  carried, and a scope publishes the spans opened under it; the window ends
-  when the last open scope closes.
-- **A failed submit drops its spans, or retires its timers, as recon did.**
-  `Device::submit_single_time` reports `in_flight`, whether a failed call
-  left work the device may still run. Spans whose work never reached the
-  device are dropped, a `record` that throws included, and the timer keeps
-  timing; work in flight retires its timers (`abandon`), which still publish
-  what they resolved. A timer's query pool rides the submit's `keep_alive`,
-  so the device holds it past a failed wait, as it holds a batch's staging.
-- **One query reset a timer a batch.** A batch resets each timer's queries
-  once, ahead of its spans, not between every two commands, where a reset
-  can split MoltenVK's compute encoder and perturb what is measured.
-- **At most 2048 spans a window.** MoltenVK backs a timestamp pool with a
-  32 KiB Metal counter sample buffer -- 4096 timestamps -- and emulates
-  timing past it, so recon's 4096-span ceiling became 2048. A `reserve` past
-  it is clamped, logged, and a stage that loses a span to a full window
-  publishes no device time: a partial sum would read as the whole stage's.
+- **A row says where its time went** (D3 of the 2026-10-22 data-flow
+  design, core 0.20.0). Host time splits into busy and blocked (`wait_ms`),
+  and the device half says what it holds (`DeviceTime`: none, measured, not
+  timed, unavailable), so an unmeasured cell says why; a row is measured
+  only when all its device work was. The new fields follow the first four,
+  so a row built positionally keeps its meaning; `has_gpu` stays,
+  deprecated.
+- **Each thread keeps a stack of its open scopes.** This replaces "no
+  global sink": every blocking wait in the core -- a blocking submit's fence,
+  `PendingSubmit::wait`, `Fence::wait`, `TimelineSemaphore::wait`,
+  `wait_idle` -- reports what it blocked (`note_blocked`) to every scope
+  open on its thread, whose host span already contains it, so every row
+  becomes honest with no change at its call site. A fence or semaphore wait
+  that finds the work done reports nothing; a `wait_idle`, which Vulkan
+  cannot ask first, always reports. A wait counts in each enclosing row as
+  its host time does, and the totals skip breakdowns, so it counts once. A
+  scope with null metrics never joins the stack, so nothing is measured when
+  unasked. The stack lives in `core_base`'s source, one per thread for the
+  whole process, and `WaitScope` covers a wait the core does not see. A
+  scope opens and closes on one thread (`VKC_CHECK`): closed on another, it
+  would stay on its opener's stack once freed. Serials are drawn for the
+  whole process, so a tag recorded or submitted on another thread than its
+  scope's matches none of that thread's scopes and keys on its own name.
+- **gfx's `QueryPool`, the timer on it.** The pool owns the handle and
+  range-checks its commands. It holds timestamp and occlusion queries only,
+  one 64-bit result each, which is what it reads. A timer is unavailable
+  rather than failing where a family has no timestamps or its pool will not
+  allocate. A renderer's frames time on the timer's ranges too
+  (`GpuTiles`), so gfx's profiler moves onto it (D9 of the same design).
+- **`GpuStageScope` tags the work.** `CommandBatch`'s uploads, copies and
+  dispatches and `dispatch` take recon's trailing `GpuStageScope* =
+  nullptr`, so recon migrates by namespace. A command keeps the scope's tag
+  and the chain of scopes open around it when recorded, never the scope, so
+  one that closes before the submit leaves nothing dangling. The `Device`
+  overload takes a `GpuStageScope&`: a nullable pointer beside the untimed
+  overload's `keep_alive` would let `submit_single_time(record, nullptr)`
+  pick the timed one.
+- **Device time is tiled, not spanned per command.** A timed command buffer
+  writes a `BOTTOM_OF_PIPE` timestamp before its first command, at each
+  change of tile and after its last, and a command without a tag joins the
+  open tile. So a stage's time counts its fills, copies, barriers and gaps,
+  and a batch's tiles add up to its span; per-command spans missed all
+  four. A tile counts to its tag's scope and to every scope open around it,
+  as a wait does, so a host-only stage around a library's tagged work gets
+  that work's device time, a breakdown nests in its stage, and
+  `total_gpu_ms` skips breakdowns as `total_cpu_ms` does.
+  `GpuTimer::set_max_depth` folds deeper scopes into their ancestor for the
+  fewest timestamps, the deeper rows not timed. On a GPU layered on Metal a
+  mark may snap to an encoder boundary (unverified): the attribution test
+  says so there, and an app there tiles at depth 1 (`set_max_depth(1)`), so
+  its sub-stage cells read not timed.
+- **A batch holds a range of its timer's queries from recording until it is
+  read.** So one timer times any number of pending batches, each read after
+  its own work: a nested submit never reads the outer range, and
+  `submit_async` is timed (below). The range is reset once, at the batch's
+  start: a reset between commands can split MoltenVK's compute encoder. It
+  is read once its fence has signalled, never on a timeline value: through
+  MoltenVK a value is reached before the timestamps are readable. No free
+  range, a failed batch -- before the device or on it -- or a timestamp not
+  yet readable reads not timed, never an error: a diagnostic must not fail
+  the work. A range the device may still write is never reused, a pending
+  batch destroyed after a failed wait included, and the timer keeps timing
+  on the rest; its pool rides the submit's `keep_alive`, so the device holds
+  it past a failed wait, as it holds a batch's staging. Manually recorded
+  tiles dropped while their work may still run also hand the pool to the
+  device, without waiting or allocating: losing the timer's last pool owner
+  after growth must not destroy queries still in use. With no submission
+  fence known, these pools stay until Device destruction waits for its queue
+  idle under the shared queue mutex, including on an adopted device. Manual
+  tiles submit on the timer's device queue; an indeterminate wait leaks them as
+  it does other unfinished work. At most 4096 queries a
+  pool: MoltenVK backs one with a 32 KiB Metal counter sample buffer and
+  emulates timing past it, so `reserve` clamps there.
+- **Calibrated clocks where offered.** A device enables
+  `VK_KHR_calibrated_timestamps`, else the EXT, where offered.
+  `Device::calibrate` reads the queue's counter with the host domain
+  `steady_clock` reads (`CLOCK_MONOTONIC` on Linux) and, where the driver
+  has no such domain, brackets the device's reading by two host ones. Its
+  deviation adds half the bracket to the driver's uncertainty. A timer uses
+  a clock pair for at most one second; a failed refresh leaves spans in ticks
+  until a later read succeeds. Gaps between batches on one queue need
+  no calibration, being raw ticks of one counter.
+- **Counts per device.** `DeviceCounters` -- submits, blocking waits that
+  found the work unfinished and their time, staging buffers -- are atomic
+  adds where they happen, always on: what a test pins per frame. A timeline
+  semaphore shares its device's, so its waits count there; a `Fence` and
+  `SharedDevice::wait_idle` know no device, so theirs reach the scopes only.
 
 V5's choices, from recon's `examples/viewer/shared_device.hpp` and ios's
 `Bridge/SharedDevice`, which did the same job twice and differed only in how
@@ -472,10 +523,11 @@ without the wait:
   freed since the submit. It cannot tell a write after the work completed
   from one during it, so the rule is the one it can check: a set stays as it
   was until the wait.
-- **A pending batch's commands are untimed.** A span is read after its own
-  submit, and while a batch is pending, a later window on its timer may reset
-  the queries the batch will write. The stage's device row is missing, not
-  wrong, until spans get queries a later window cannot reset.
+- **A pending batch is timed, and hands its rows back.** It holds its query
+  range until its wait reads it, then returns the rows by name
+  (`device_rows`) and its span (`device_span`) for the caller to fold in:
+  nothing points at a caller's metrics while the batch is pending, so the
+  caller may move them.
 - **`submit` keeps its path and cost.** It still waits through
   `submit_single_time`; the two submits share only their checks, the
   readback layout and write-out, and the device's recording and submitting
@@ -974,16 +1026,6 @@ versions.
 
 ## Open decisions
 
-- **Discrete GPU CI for the vulkan tier.** Hosted Linux uses lavapipe;
-  macOS requires a Vulkan device. Both require validation, with synchronization
-  checks enabled and shader-access checks requested where supported by the
-  layer. No discrete-memory runner is registered
-  here yet. `recon`'s GPU runners
-  (`vk-linux-gpu`, `mac`) are registered per repository, so they must be
-  registered here too. They were to come before the allocator (V2), whose
-  memory placement differs on a discrete GPU; V2 landed without them, so the
-  discrete-GPU path -- `DeviceOnly` in VRAM, staging in system RAM -- is
-  tested only through the memory-type masks, against recorded layouts.
 - **Unified memory.** `recon` deliberately runs the staged path on unified
   memory too, pending measurements of staging cost. The vulkan tier inherits that
   rule until the measurement says otherwise. On unified memory a staged
@@ -1192,8 +1234,31 @@ recon's and gfx's finds of Vulkan and glm.
   release's version.
 - **Tested at configure** on macOS, against stubs of the release and of
   Homebrew's glm (`tests/ios_consumer/`): the root, the Vulkan entries, the
-  floor, the frameworks, glm and the messages are all decided there. Core has
-  no self-hosted runner, and a hosted one has no MoltenVK; the real compile
-  and link are the siblings' iOS steps on the self-hosted Mac, whose runners
-  get `MoltenVK_ROOT` from setup
+  floor, the frameworks, glm and the messages are all decided there. The
+  real compile and link remain the siblings' iOS steps on the self-hosted
+  Mac; moving core's builds there does not change its configure-only iOS
+  coverage. The runners get `MoltenVK_ROOT` from setup
   ([tools/runners/README.md](tools/runners/README.md#macs)).
+
+## 2026-10-23 — The core's build legs use the family's GPUs
+
+Release/static builds run on the self-hosted `vk-linux-gpu` and `mac`
+runners, as the owner requested after the generic runner setup landed.
+Ubuntu 24.04 and 26.04 run in matching containers with `--gpus all` and
+`NVIDIA_DRIVER_CAPABILITIES=all`; the Mac runs natively through MoltenVK.
+Why: the allocator and timer need the physical driver's behavior, including
+separate device and host memory, which hosted lavapipe does not exercise.
+
+- **Validation stays required:** device presence, the Khronos layer,
+  synchronization validation, and shader-access checks where supported.
+  The four test shards, the CMake tests on Ubuntu 26.04, the iOS configure
+  tests on the Mac, and every leg's base-only dependency check stay intact.
+- **A container sets both parallel levels to 4,** because the runner's
+  `.env` does not enter it, and keeps the driver's shader cache under the
+  persistent runner tool cache. The Mac uses the levels setup writes.
+- **The Mac only checks dependencies.** Its Homebrew is shared; installs and
+  upgrades happen by hand while the host is idle, as the runner guide says.
+  Checkout leaves no token in the shared host's repository configuration.
+- **Lint, sanitizers and the required gate stay hosted.** Sanitizers retain
+  lavapipe and validation; moving the build legs adds physical GPU coverage
+  without removing that independent check.

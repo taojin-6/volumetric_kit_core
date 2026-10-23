@@ -33,9 +33,9 @@ Claude Code; `CLAUDE.md` imports it.
 
 | Tier | Target | Holds |
 | --- | --- | --- |
-| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics, whole-file I/O, version |
+| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics (busy, blocked and device time), whole-file I/O, version |
 | `config` | `volumetric_kit::core_config` | Optional CPU-only family scenario format, typed settings, defaults and static validation; private nlohmann/json dependency |
-| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap |
+| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, tiled GPU timers and calibrated clocks, external memory, shared-device bootstrap |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no
 GPU (calib's headless solver) links only the tiers it uses.
@@ -117,9 +117,11 @@ three:
 Synchronization sessions temporarily override legacy layer enable/disable
 environment variables and restore them on exit.
 
-Linux CI uses a software Vulkan driver; macOS requires an available device.
-Discrete DRAM/VRAM hardware coverage remains planned (DECISIONS.md, "Open
-decisions").
+Release CI runs on the family's physical GPUs: Ubuntu 24.04 and 26.04 in
+containers on the Linux GPU hosts, and MoltenVK on the Mac. The Linux legs
+exercise discrete DRAM/VRAM memory placement. Sanitizers still run on hosted
+Linux with lavapipe; lint and the required gate also stay hosted
+([tools/runners/README.md](tools/runners/README.md)).
 
 `Allocator::memory_stats()` reports each heap's usage against its budget
 (`usage_bytes`, `budget_bytes`) beside this allocator's own share: its

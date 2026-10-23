@@ -4,21 +4,26 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
-#include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "device_access.hpp"
 #include "support.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
@@ -36,6 +41,11 @@ constexpr const char* kExternalMemoryFd =
 // Its name macro needs VK_USE_PLATFORM_METAL_EXT, which only Metal code
 // defines; the string is stable.
 constexpr const char* kMetalObjects = "VK_EXT_metal_objects";
+// Newer than the oldest headers the tier supports (VKC_VULKAN_MIN_VERSION);
+// the EXT it promotes has the same commands and types.
+constexpr const char* kCalibratedKhr = "VK_KHR_calibrated_timestamps";
+constexpr const char* kCalibratedExt =
+    VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
 
 // Runs `cleanup` on scope exit unless release()d. Templated on the callable,
 // so the destructor calls it directly and nothing on the way can throw.
@@ -202,6 +212,12 @@ std::vector<std::string> enabled_extensions(const PhysicalDeviceInfo& caps,
   enable_if_offered(kPortabilitySubset);
   // The driver's own heap budgets, which an Allocator allocates within.
   enable_if_offered(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+  // Device::calibrate: one of the two, which share their commands.
+  if (caps.supports_device_extension(kCalibratedKhr)) {
+    enable_if_offered(kCalibratedKhr);
+  } else {
+    enable_if_offered(kCalibratedExt);
+  }
   for (const std::string& name : reqs.optional_extensions) {
     enable_if_offered(name);
   }
@@ -286,8 +302,6 @@ Result<Device> Device::create(VkInstance instance,
                               const PhysicalDeviceInfo& physical,
                               const DeviceRequirements& reqs,
                               VkSurfaceKHR surface) {
-  // `instance` is a lifetime contract: the device stores only handles.
-  (void)instance;
   if (physical.handle() == VK_NULL_HANDLE) {
     return Status::invalid_argument(
         "Device::create: no physical device captured");
@@ -324,10 +338,12 @@ Result<Device> Device::create(VkInstance instance,
   }
   device.caps_ = caps;
   device.enabled_extensions_ = std::move(extensions);
+  device.counters_ = std::make_shared<detail::DeviceCounterState>();
+  device.retained_ = std::make_shared<detail::DeviceRetainedResources>();
   // After the handle is held, so a failure here destroys the device.
   VKC_ASSIGN(device.state_.pipeline_cache,
              create_pipeline_cache(device.state_.device));
-  device.resolve_entry_points(instance_debug_utils_enabled);
+  device.resolve_entry_points(instance, instance_debug_utils_enabled);
   return device;
 }
 
@@ -405,10 +421,12 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
   device.state_.enabled = adopted.enabled_features;
   device.caps_ = std::move(caps);
   device.enabled_extensions_ = std::move(declared);
+  device.counters_ = std::make_shared<detail::DeviceCounterState>();
+  device.retained_ = std::make_shared<detail::DeviceRetainedResources>();
   VKC_TRY(device.check_record(reqs, required).with_context("Device::adopt"));
   VKC_ASSIGN(device.state_.pipeline_cache,
              create_pipeline_cache(device.state_.device));
-  device.resolve_entry_points(adopted.enabled_debug_utils);
+  device.resolve_entry_points(adopted.instance, adopted.enabled_debug_utils);
   return device;
 }
 
@@ -479,7 +497,8 @@ Status Device::check_record(const DeviceRequirements& reqs,
   return {};
 }
 
-void Device::resolve_entry_points(bool instance_debug_utils) noexcept {
+void Device::resolve_entry_points(VkInstance instance,
+                                  bool instance_debug_utils) noexcept {
   // Only on the caller's word that the instance enabled the extension:
   // vkGetDeviceProcAddr for a command of an extension that was not enabled is
   // not portable (a conformant loader returns null, a directly linked
@@ -504,12 +523,57 @@ void Device::resolve_entry_points(bool instance_debug_utils) noexcept {
         vkGetDeviceProcAddr(state_.device, "vkGetMemoryFdKHR"));
   }
   state_.metal_objects = extension_enabled(kMetalObjects);
+  resolve_calibration(instance);
+}
+
+void Device::resolve_calibration(VkInstance instance) noexcept {
+  const bool khr = extension_enabled(kCalibratedKhr);
+  if (instance == VK_NULL_HANDLE ||
+      (!khr && !extension_enabled(kCalibratedExt))) {
+    return;
+  }
+  // The same commands under either suffix; the physical-device query is an
+  // instance-level one.
+  const auto domains_of =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT>(
+          vkGetInstanceProcAddr(
+              instance,
+              khr ? "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR"
+                  : "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT"));
+  const auto get = reinterpret_cast<PFN_vkGetCalibratedTimestampsEXT>(
+      vkGetDeviceProcAddr(state_.device, khr ? "vkGetCalibratedTimestampsKHR"
+                                             : "vkGetCalibratedTimestampsEXT"));
+  if (domains_of == nullptr || get == nullptr) return;
+  // Four domains exist; a longer list is cut short (VK_INCOMPLETE), and a
+  // domain past it is one this code does not read anyway.
+  std::array<VkTimeDomainEXT, 8> domains{};
+  auto count = static_cast<std::uint32_t>(domains.size());
+  const VkResult listed = domains_of(state_.physical, &count, domains.data());
+  if (listed != VK_SUCCESS && listed != VK_INCOMPLETE) return;
+  const auto offered = [&](VkTimeDomainEXT domain) {
+    return std::find(domains.begin(), domains.begin() + count, domain) !=
+           domains.begin() + count;
+  };
+  if (!offered(VK_TIME_DOMAIN_DEVICE_EXT)) return;
+  state_.get_calibrated = get;
+  // steady_clock is CLOCK_MONOTONIC on Linux; calibrate() checks, per
+  // reading, that the host domain is the clock it reads.
+  for (const VkTimeDomainEXT host : {VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT,
+                                     VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT}) {
+    if (offered(host)) {
+      state_.host_time_domain = true;
+      state_.time_domain = host;
+      break;
+    }
+  }
 }
 
 Device::Device(Device&& other) noexcept
     : state_(std::exchange(other.state_, State{})),
       caps_(std::exchange(other.caps_, PhysicalDeviceInfo{})),
       enabled_extensions_(std::exchange(other.enabled_extensions_, {})),
+      counters_(std::move(other.counters_)),
+      retained_(std::move(other.retained_)),
       made_(std::exchange(other.made_, {})),
       free_commands_(std::exchange(other.free_commands_, {})) {}
 
@@ -519,6 +583,8 @@ Device& Device::operator=(Device&& other) noexcept {
     state_ = std::exchange(other.state_, State{});
     caps_ = std::exchange(other.caps_, PhysicalDeviceInfo{});
     enabled_extensions_ = std::exchange(other.enabled_extensions_, {});
+    counters_ = std::move(other.counters_);
+    retained_ = std::move(other.retained_);
     made_ = std::exchange(other.made_, {});
     free_commands_ = std::exchange(other.free_commands_, {});
   }
@@ -529,14 +595,38 @@ Device::~Device() { destroy(); }
 
 void Device::destroy() noexcept {
   bool unfinished = false;
+  if (retained_ != nullptr && retained_->head != nullptr) {
+    // Manually submitted timing has no fence here. Its dropped pool must
+    // outlive the assigned queue's work, even on an adopted device. Respect
+    // the embedder's shared queue mutex just as wait_idle does.
+    VkResult waited = VK_SUCCESS;
+    {
+      const std::scoped_lock lock(*submit_mutex());
+      waited = vkQueueWaitIdle(state_.queue);
+    }
+    if (waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST) {
+      unfinished = true;
+      // As for the failed fence waits below, preserve resources when their
+      // completion is unknown. The list was allocated before work began.
+      // NOLINTNEXTLINE(bugprone-unused-return-value) -- intentionally leak it.
+      static_cast<void>(retained_->head.release());
+    } else {
+      // Unlink before destruction: releasing a pool can drop its last
+      // reference to this shared state. Avoid recursive list destruction.
+      while (retained_->head != nullptr) {
+        auto retired = std::move(retained_->head);
+        retained_->head = std::move(retired->next);
+      }
+    }
+  }
   for (Command& command : made_) {
     // One whose work may still run -- a PendingSubmit's, or one left to the
     // device after a failed wait -- is waited for first, and leaked if the
     // device may still run it. A lost device's is freed: its children must
     // still be destroyed.
     if (command.pending) {
-      const VkResult waited = vkWaitForFences(state_.device, 1, &command.fence,
-                                              VK_TRUE, UINT64_MAX);
+      const VkResult waited = detail::wait_for_fence(
+          state_.device, command.fence, UINT64_MAX, counters_.get());
       if (waited != VK_SUCCESS && waited != VK_ERROR_DEVICE_LOST) {
         unfinished = true;
         // What the work uses is leaked with it: freeing memory a running
@@ -578,6 +668,8 @@ void Device::destroy() noexcept {
   state_ = State{};
   caps_ = PhysicalDeviceInfo{};
   enabled_extensions_.clear();
+  counters_.reset();
+  retained_.reset();
 }
 
 bool Device::extension_enabled(const char* name) const {
@@ -595,6 +687,9 @@ std::mutex* Device::present_mutex() const noexcept {
 
 VkResult Device::queue_submit(std::uint32_t count, const VkSubmitInfo* submits,
                               VkFence fence) const {
+  if (counters_ != nullptr) {
+    counters_->submits.fetch_add(1, std::memory_order_relaxed);
+  }
   const std::scoped_lock lock(*submit_mutex());
   return vkQueueSubmit(state_.queue, count, submits, fence);
 }
@@ -606,15 +701,38 @@ VkResult Device::queue_present(const VkPresentInfoKHR& present_info) const {
 }
 
 Status Device::wait_idle() const {
-  {
-    const std::scoped_lock lock(*submit_mutex());
-    VKC_VK_TRY(vkQueueWaitIdle(state_.queue));
-  }
+  // Vulkan cannot be asked whether a queue is idle, so every drain counts as
+  // a wait; the time it takes is what it blocked.
+  const auto drain = [this](VkQueue queue, std::mutex* guard) {
+    const std::scoped_lock lock(*guard);
+    const auto start = std::chrono::steady_clock::now();
+    const VkResult drained = vkQueueWaitIdle(queue);
+    detail::report_blocked(detail::elapsed_ns(start), counters_.get());
+    return drained;
+  };
+  VKC_VK_TRY(drain(state_.queue, submit_mutex()));
   if (has_present() && state_.present_queue != state_.queue) {
-    const std::scoped_lock lock(*present_mutex());
-    VKC_VK_TRY(vkQueueWaitIdle(state_.present_queue));
+    VKC_VK_TRY(drain(state_.present_queue, present_mutex()));
   }
   return {};
+}
+
+DeviceCounters Device::counters() const noexcept {
+  if (counters_ == nullptr) return {};
+  DeviceCounters out;
+  out.submits = counters_->submits.load(std::memory_order_relaxed);
+  out.host_waits = counters_->host_waits.load(std::memory_order_relaxed);
+  out.blocked_ns = counters_->blocked_ns.load(std::memory_order_relaxed);
+  out.staging_buffers =
+      counters_->staging_buffers.load(std::memory_order_relaxed);
+  return out;
+}
+
+Result<ClockPair> Device::calibrate() const {
+  if (state_.device == VK_NULL_HANDLE) {
+    return Status::invalid_argument("Device::calibrate: an empty device");
+  }
+  return detail::calibrate(detail::DeviceAccess::calibrator(*this));
 }
 
 Result<Device::Command> Device::take_command(bool record) const {
@@ -772,8 +890,8 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
   const Status submitted = submit_command(submit, command, &keep_alive, &left);
   *reusable = !left;
   VKC_TRY(submitted);
-  const VkResult waited =
-      vkWaitForFences(state_.device, 1, &command.fence, VK_TRUE, UINT64_MAX);
+  const VkResult waited = detail::wait_for_fence(state_.device, command.fence,
+                                                 UINT64_MAX, counters_.get());
   if (waited != VK_SUCCESS) {
     // As a submit that lost the device: the work may still run.
     leave_to_device(command, std::move(keep_alive));
@@ -806,28 +924,37 @@ Status Device::submit_single_time(
     const std::function<void(VkCommandBuffer)>& record, GpuStageScope& stage,
     std::shared_ptr<void> keep_alive) const {
   const GpuSpanTag tag = stage.tag();
-  if (tag.timer == nullptr || !tag.timer->available()) {
+  if (tag.timer == nullptr) {
     return submit_single_time(record, std::move(keep_alive));
   }
   GpuTimer& timer = *tag.timer;
+  std::vector<detail::TileKey> keys{detail::tile_key(tag)};
   // The pool goes with what the work uses, so the device holds it past a
   // failed wait.
   auto kept =
       std::make_shared<std::pair<std::shared_ptr<void>, std::shared_ptr<void>>>(
           std::move(keep_alive), timer.keep_alive());
-  std::uint32_t span = GpuTimer::kNoSpan;
-  // A record that throws leaves a span whose command buffer never ran.
-  ScopeGuard drop_span([&] { timer.discard(span); });
+  // Outside the record, so a record that throws returns the range of a
+  // command buffer that never ran.
+  GpuTiles tiles;
   bool in_flight = false;
   const Status submitted = submit_single_time(
       [&](VkCommandBuffer cmd) {
-        span = timer.begin(cmd, tag);
+        tiles = GpuTiles::open(timer, cmd, 1, std::move(keys));
+        tiles.mark_key(cmd, 0);
         record(cmd);
-        timer.end(cmd, span);
+        tiles.end(cmd);
       },
       std::move(kept), &in_flight);
-  drop_span.release();
-  if (span != GpuTimer::kNoSpan) timer.settle(span, 1, submitted, in_flight);
+  if (submitted.ok()) {
+    tiles.resolve();
+  } else if (!keys.empty()) {
+    // Never recorded: the call was short of a command buffer.
+    tiles = GpuTiles::refused(timer, std::move(keys));
+  } else {
+    tiles.drop(in_flight);
+  }
+  tiles.publish();
   return submitted;
 }
 
@@ -969,8 +1096,8 @@ bool Device::PendingSubmit::ready() const {
 
 Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) {
   if (!running_) return failed_;
-  const VkResult waited = vkWaitForFences(device_->handle(), 1, &command_.fence,
-                                          VK_TRUE, timeout_ns);
+  const VkResult waited = detail::wait_for_fence(
+      device_->handle(), command_.fence, timeout_ns, device_->counters_.get());
   if (waited == VK_TIMEOUT) return vk_error(waited, "vkWaitForFences");
   running_ = false;
   if (waited != VK_SUCCESS) {
@@ -1053,5 +1180,97 @@ VkResult Device::memory_fd(VkDeviceMemory memory, int* fd) const noexcept {
                                   VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT};
   return state_.get_memory_fd(state_.device, &info, fd);
 }
+
+namespace detail {
+
+std::int64_t elapsed_ns(std::chrono::steady_clock::time_point start) noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now() - start)
+      .count();
+}
+
+void report_blocked(std::int64_t ns, DeviceCounterState* counters) noexcept {
+  note_blocked(ns);
+  if (counters == nullptr) return;
+  counters->host_waits.fetch_add(1, std::memory_order_relaxed);
+  if (ns > 0) {
+    counters->blocked_ns.fetch_add(static_cast<std::uint64_t>(ns),
+                                   std::memory_order_relaxed);
+  }
+}
+
+VkResult wait_for_fence(VkDevice device, VkFence fence,
+                        std::uint64_t timeout_ns,
+                        DeviceCounterState* counters) noexcept {
+  // A poll, or work already done, blocks nothing: neither is a wait.
+  if (timeout_ns == 0 || vkGetFenceStatus(device, fence) == VK_SUCCESS) {
+    return vkWaitForFences(device, 1, &fence, VK_TRUE, timeout_ns);
+  }
+  const auto start = std::chrono::steady_clock::now();
+  const VkResult waited =
+      vkWaitForFences(device, 1, &fence, VK_TRUE, timeout_ns);
+  report_blocked(elapsed_ns(start), counters);
+  return waited;
+}
+
+Result<ClockPair> calibrate(const Calibrator& calibrator) {
+  if (calibrator.get == nullptr) {
+    return Status::unsupported(
+        "Device::calibrate: the device enabled no calibrated timestamps "
+        "(VK_KHR_calibrated_timestamps or VK_EXT_calibrated_timestamps), or "
+        "does not offer its own time domain");
+  }
+  std::array<VkCalibratedTimestampInfoEXT, 2> infos{};
+  for (VkCalibratedTimestampInfoEXT& info : infos) {
+    info.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+  }
+  infos[0].timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+  infos[1].timeDomain = calibrator.domain;
+  const std::uint32_t count = calibrator.host_domain ? 2 : 1;
+  std::array<std::uint64_t, 2> stamps{};
+  std::uint64_t deviation = 0;
+  using std::chrono::nanoseconds;
+  using std::chrono::steady_clock;
+  const std::int64_t before = std::chrono::duration_cast<nanoseconds>(
+                                  steady_clock::now().time_since_epoch())
+                                  .count();
+  const VkResult read = calibrator.get(calibrator.device, count, infos.data(),
+                                       stamps.data(), &deviation);
+  const std::int64_t after = std::chrono::duration_cast<nanoseconds>(
+                                 steady_clock::now().time_since_epoch())
+                                 .count();
+  VKC_VK_TRY(read);
+  return pair_clocks(
+      stamps[0],
+      count == 2 ? std::optional<std::uint64_t>(stamps[1]) : std::nullopt,
+      deviation, before, after);
+}
+
+ClockPair pair_clocks(std::uint64_t device_ticks,
+                      std::optional<std::uint64_t> host_stamp,
+                      std::uint64_t deviation_ns, std::int64_t before_ns,
+                      std::int64_t after_ns) noexcept {
+  ClockPair pair;
+  pair.device_ticks = device_ticks;
+  if (host_stamp.has_value()) {
+    const auto host = static_cast<std::int64_t>(*host_stamp);
+    if (host >= before_ns && host <= after_ns) {
+      // The driver's host domain is steady_clock's own: the pair it read.
+      pair.host_ns = host;
+      pair.deviation_ns = deviation_ns;
+      return pair;
+    }
+  }
+  // Another clock, or none: the device's reading lies inside the call. Its
+  // own uncertainty (including clock quantization) still applies when the
+  // host reading is replaced by the bracket's midpoint.
+  const auto half = static_cast<std::uint64_t>(after_ns - before_ns + 1) / 2;
+  pair.host_ns = before_ns + static_cast<std::int64_t>(half);
+  constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+  pair.deviation_ns = deviation_ns > kMax - half ? kMax : deviation_ns + half;
+  return pair;
+}
+
+}  // namespace detail
 
 }  // namespace volumetric_kit::core

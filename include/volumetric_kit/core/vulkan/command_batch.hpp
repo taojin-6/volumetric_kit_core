@@ -16,9 +16,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -50,6 +52,11 @@ struct ComputeKernel;
 /// no call -- @ref wait, @ref ready, @ref in_flight, a move -- may overlap
 /// another on the same batch.
 ///
+/// A timed batch holds its tiles' query range too, and its wait reads them:
+/// the rows by name (@ref device_rows) and the span (@ref device_span), which
+/// the caller folds into its metrics. Nothing points at a caller's
+/// @ref StageMetrics while the batch is pending, so the caller may move it.
+///
 /// @warning The batch's @ref Device and @ref Allocator must outlive it.
 ///
 /// @code
@@ -57,19 +64,21 @@ struct ComputeKernel;
 ///            batch.submit_async({{&prepared, n}}, {{&fused_timeline, n}}));
 /// // ... record and submit the next stage, which waits for fused_timeline ...
 /// VKC_TRY(fused.wait());  // the batch's readbacks are written now
+/// metrics.merge_device(fused.device_rows());
 /// @endcode
 class VKC_VULKAN_API PendingBatch {
  public:
   /// @brief Construct an empty pending batch: @ref ready, nothing to wait for.
   PendingBatch() noexcept = default;
   /// Waits for the work if it is unfinished, as @ref Device::PendingSubmit
-  /// does.
-  ~PendingBatch() = default;
+  /// does; its query range goes back only if that wait saw the work
+  /// complete.
+  ~PendingBatch();
   PendingBatch(const PendingBatch&) = delete;
   PendingBatch& operator=(const PendingBatch&) = delete;
   PendingBatch(PendingBatch&& other) noexcept;
   /// Waits for this one's own unfinished work, its readbacks unwritten,
-  /// before taking @p other's.
+  /// before taking @p other's, as the destructor does.
   PendingBatch& operator=(PendingBatch&& other) noexcept;
 
   /// @return Whether @ref wait would return without blocking: the work has
@@ -78,7 +87,11 @@ class VKC_VULKAN_API PendingBatch {
   bool ready() const { return submit_.ready(); }
 
   /// @brief Wait until the work completes, or the timeout passes, then write
-  ///        every readback destination and free the batch's staging.
+  ///        every readback destination, free the batch's staging, and read
+  ///        its tiles.
+  ///
+  /// A wait that blocks reports the time to the scopes open on this thread
+  /// (@ref note_blocked); one that finds the work complete does not.
   /// @param timeout_ns  The longest wait, in nanoseconds.
   /// @return As @ref Device::PendingSubmit::wait: OK once complete -- the
   ///         destinations written by the first such call only -- a
@@ -95,6 +108,26 @@ class VKC_VULKAN_API PendingBatch {
   ///         @ref Device::PendingSubmit::in_flight says: what the batch
   ///         recorded must stay alive while it does.
   bool in_flight() const noexcept { return submit_.in_flight(); }
+
+  /// @return The batch's device rows by name, once a wait has seen the work
+  ///         complete: one for every scope its tiles count to, whichever
+  ///         set opened it -- so fold them into one set, once --
+  ///         @ref DeviceTime::Measured, @ref DeviceTime::NotTimed for what
+  ///         ran untimed, or @ref DeviceTime::Unavailable on a timer that
+  ///         cannot time; every row @ref DeviceTime::NotTimed after a failed
+  ///         wait. Empty before, and for a batch that timed nothing
+  ///         (@ref CommandBatch::time).
+  const std::vector<StageRow>& device_rows() const noexcept {
+    return tiles_.rows();
+  }
+
+  /// @return The batch's device span, first tile to last, once a wait has
+  ///         seen the work complete and its timestamps were readable; on the
+  ///         host's clock too where the device is calibrated. Empty
+  ///         otherwise.
+  std::optional<DeviceSpan> device_span() const noexcept {
+    return tiles_.span();
+  }
 
  private:
   friend class CommandBatch;
@@ -117,6 +150,12 @@ class VKC_VULKAN_API PendingBatch {
   static void write_readbacks(const void* memory,
                               const std::vector<Readback>& readbacks);
 
+  // The destructor's and a move assignment's: waits for unfinished work,
+  // then gives up the unread tiles, keeping the range from reuse if the
+  // device may still write it.
+  void retire() noexcept;
+
+  GpuTiles tiles_;
   Device::PendingSubmit submit_;
   // The batch's staging and readback memory, which the submit's keep_alive
   // shares; readback_memory_ is the mapping inside it.
@@ -181,12 +220,17 @@ class VKC_VULKAN_API PendingBatch {
 /// batches on several threads may share a device and allocator, each
 /// recording its own kernels and buffers.
 ///
-/// An upload, a copy or a dispatch given a @ref GpuStageScope is timed: its
-/// span covers the command alone, inside the dispatch's debug region, and
-/// @ref submit resolves it once the fence has signalled, for the scope to
-/// publish when it closes. The command keeps the scope's @ref GpuSpanTag, not
-/// the scope: one that closes before @ref submit leaves the command untimed.
-/// @ref submit_async runs every command untimed.
+/// **Device time is tiled.** An upload, a copy or a dispatch given a
+/// @ref GpuStageScope is tagged with it, and a timed batch -- one with a
+/// tagged command, or @ref time -- writes a timestamp before its first
+/// command, at each change of tag, and after its last (@ref GpuTiles). A
+/// command without a tag joins the open tile, so a stage's device time
+/// includes its fills, barriers and gaps, and the tiles add up to the batch.
+/// A tile counts to its tag's scope and to every scope open around it when
+/// the command was recorded. @ref submit publishes into those still open on
+/// its thread, at their close; @ref submit_async's @ref PendingBatch returns
+/// the rows by name after its wait. A batch with no tag and no @ref time
+/// writes no timestamp.
 ///
 /// @code
 /// CommandBatch batch(device, allocator);
@@ -226,9 +270,10 @@ class VKC_VULKAN_API CommandBatch {
   /// @param offset  The byte offset into @p dst.
   /// @param src     The bytes; null only when @p bytes is 0.
   /// @param bytes   How many; 0 records nothing.
-  /// @param stage   Optional span around the write, so a stage's device time
-  ///                counts moving its input; null or inert is untimed. Its
-  ///                timer must outlive @ref submit; the scope need not.
+  /// @param stage   Optional tag: the write counts to the scope's tile, so a
+  ///                stage's device time counts moving its input; null or
+  ///                inert leaves it untagged, in the open tile. Its timer
+  ///                must outlive @ref submit; the scope need not.
   /// @return OK; @ref Status::Code::InvalidArgument for a range past @p dst,
   ///         a missing usage bit, a null @p src, or a staged upload on a
   ///         batch with no allocator; a staging allocation's failure; or a
@@ -397,10 +442,7 @@ class VKC_VULKAN_API CommandBatch {
   /// @param max_groups  The device's `maxComputeWorkGroupCount[0]`: an
   ///                    oversized grid is invalid on a minimum-spec driver,
   ///                    and clamping it would drop work silently.
-  /// @param stage       Optional span around the dispatch, on the scope's
-  ///                    timer and label; null or inert is untimed. Its timer
-  ///                    must outlive @ref submit, which records and resolves
-  ///                    the span; the scope need not.
+  /// @param stage       Optional tag, as @ref upload's.
   /// @return OK; @ref Status::Code::InvalidArgument for @p groups past
   ///         @p max_groups, a null @p push with a size, a push size the
   ///         kernel does not take, or an unbuilt kernel;
@@ -485,16 +527,24 @@ class VKC_VULKAN_API CommandBatch {
   /// @param buffer  The buffer; may be empty, which keeps nothing.
   void retain(Buffer buffer);
 
+  /// @brief Time the batch's tiles in @p timer, even with no tagged command:
+  ///        such a batch still has a span (@ref PendingBatch::device_span).
+  ///
+  /// Without it, a batch times in its first tagged command's timer. The
+  /// timer's @ref GpuTimer::max_depth applies.
+  /// @param timer  The timer; it must outlive the submit.
+  void time(GpuTimer& timer) noexcept { timer_ = &timer; }
+
   /// @brief Submit everything recorded as one command buffer, wait for it,
   ///        and fill every readback destination.
   ///
-  /// Frees the batch's staging, and settles the spans of every timer a
-  /// command used (@ref GpuTimer::settle): resolved, a read that fails logged
-  /// rather than returned, as the batch succeeded; dropped if the work never
-  /// reached the device; and the timer retired if the device may still run
-  /// it, with its query pool kept beside the staging until then. Each timer's
-  /// queries are reset once, ahead of its spans. An empty batch submits
-  /// nothing. A batch is submitted at most once, by this or
+  /// Frees the batch's staging, and reads its tiles once the fence has
+  /// signalled, crediting them to the scopes still open on this thread that
+  /// they count to. They read @ref DeviceTime::NotTimed when the batch
+  /// failed, before the device or on it, or found no free query range; a
+  /// range the device may still write is never reused. The fence wait reports
+  /// its time to the scopes open on this thread (@ref note_blocked). An empty
+  /// batch submits nothing. A batch is submitted at most once, by this or
   /// @ref submit_async.
   /// @return OK; the first refusal a recording call returned;
   ///         @ref Status::Code::InvalidArgument for a second submit, a
@@ -524,10 +574,9 @@ class VKC_VULKAN_API CommandBatch {
   /// value the host sets is set, work held for it holds every later wait on
   /// the queue -- @ref submit, @ref Device::wait_idle -- with it.
   ///
-  /// Every command runs untimed, its @ref GpuStageScope ignored: a span is
-  /// read after its own submit, and while this one is pending a later window
-  /// on the same timer may reset its queries. The stage's device row is
-  /// missing, not wrong.
+  /// Timed as @ref submit is: the batch holds its query range until the
+  /// pending batch's wait reads it, which returns the rows by name
+  /// (@ref PendingBatch::device_rows) rather than writing into a scope.
   ///
   /// @code
   /// VKC_ASSIGN(PendingBatch prepared, prep.submit_async({}, {{&frames, n}}));
@@ -590,18 +639,8 @@ class VKC_VULKAN_API CommandBatch {
     VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     std::uint32_t width = 0;   // an ImageCopy's texels a row
     std::uint32_t height = 0;  // and rows
-    // Its span: the timer, which must stay put until submit, and the label
-    // and scope by value, so a scope that closes first leaves it untimed.
-    GpuSpanTag timing;
-  };
-  // One timer's spans in a submit. Counted before recording, so one reset
-  // ahead covers them and recording allocates nothing; opened as
-  // [first, first + count), as nothing else opens one on it meanwhile.
-  struct TimerRun {
-    GpuTimer* timer = nullptr;
-    std::uint32_t ahead = 0;  // the commands that name it
-    std::uint32_t first = 0;
-    std::uint32_t count = 0;
+    // Its tile: an index into keys_, taken when recorded, or untagged.
+    std::uint32_t tile = GpuTiles::kNoKey;
   };
 
   Status check(Status status);
@@ -609,6 +648,9 @@ class VKC_VULKAN_API CommandBatch {
   // The two submits' common start: refuses a moved-from batch, a second
   // submit and a poisoned batch, marking the batch submitted.
   Status begin_submit();
+  // submit() up to the failure it credits to the scopes: the checks, the
+  // readbacks' placement, the submit, its wait and the write-out.
+  Status submit_blocking();
   // Refuses a dispatch whose set was rewritten or freed since it was
   // recorded, naming `call`.
   Status check_sets(const char* call) const;
@@ -628,13 +670,29 @@ class VKC_VULKAN_API CommandBatch {
   // Zeroes `bytes` (under 4) of `dst` at `offset` by a copy from zeros_.
   Status zero_edge(const Buffer& dst, VkDeviceSize offset, VkDeviceSize bytes);
   bool needs_barrier(std::size_t first, std::size_t i) const;
-  void record(VkCommandBuffer cmd, std::vector<TimerRun>& runs) const;
+  // The tile key a command recorded now under `stage` counts to, made once
+  // per scope; GpuTiles::kNoKey when untagged.
+  std::uint32_t tag(GpuStageScope* stage);
+  // The timer the batch times in, or null.
+  GpuTimer* timing_timer() const noexcept {
+    return timer_ != nullptr ? timer_ : tag_timer_;
+  }
+  // The tiles the commands make at `depth`: one, and one per change of tile.
+  std::uint32_t tile_bound(std::uint32_t depth) const noexcept;
+  // Records every command into `cmd`, marking `tiles`, when not null, at
+  // each tagged command; the recording both submits run.
+  void record(VkCommandBuffer cmd, GpuTiles* tiles) const;
 
   const Device* device_;
   Allocator* allocator_;
   std::vector<Op> ops_;
   std::vector<Buffer> staging_;      // and what retain() keeps
   VkBuffer zeros_ = VK_NULL_HANDLE;  // a staged word of zeros, made once
+  // The tile keys the tagged commands count to, one per scope, and the
+  // first tagged command's timer.
+  std::vector<detail::TileKey> keys_;
+  GpuTimer* tag_timer_ = nullptr;
+  GpuTimer* timer_ = nullptr;  // time()'s
   Status status_;
   bool submitted_ = false;
 };

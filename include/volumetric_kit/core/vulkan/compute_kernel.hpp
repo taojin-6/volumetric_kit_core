@@ -236,9 +236,10 @@ class VKC_VULKAN_API KernelSets {
 ///
 /// So it binds, pushes, dispatches and makes the writes visible to the next
 /// dispatch, the host and a renderer exactly as a batch does, and refuses
-/// what @ref CommandBatch::dispatch refuses. Its span, given a @p stage,
-/// covers the dispatch alone, not the allocation, submit and wait around it --
-/// the difference a wall-clock row cannot show.
+/// what @ref CommandBatch::dispatch refuses. Its tile, given a @p stage,
+/// covers the batch's one command -- the dispatch, its label and barriers --
+/// not the allocation, submit and wait around it: the difference a
+/// wall-clock row cannot show.
 ///
 /// @code
 /// const Push push{count, delta};
@@ -252,7 +253,7 @@ class VKC_VULKAN_API KernelSets {
 ///                    @ref ComputeKernel::push_bytes.
 /// @param groups      Workgroups along x.
 /// @param max_groups  The device's `maxComputeWorkGroupCount[0]`.
-/// @param stage       Optional span around the dispatch; null, or a scope
+/// @param stage       Optional tag for the dispatch's tile; null, or a scope
 ///                    whose metrics are null, is untimed.
 /// @return OK; @ref Status::Code::InvalidArgument for @p groups past
 ///         @p max_groups, a bad push, or an unbuilt kernel; or the submit's
