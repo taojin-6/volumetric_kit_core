@@ -269,7 +269,7 @@ V3's choices, from the same comparison (gfx has no compute):
   command buffer it may still run and frees once `destroy` has waited for it,
   before the `VkDevice`. A batch's staging, and the allocator behind it, is
   then neither freed under the GPU nor leaked past the device.
-- **Timer spans came with V4** (below): recon's optional `GpuStageScope*`
+- **Timing came with V4** (below): recon's optional `GpuStageScope*`
   parameters are back as trailing defaults.
 - **One shader toolchain.** `vkc_compile_shaders` and `vkc_embed_shaders`
   replace recon's `vr_*`, gfx's `vg_*`, and the copy of recon's ios borrows.
@@ -298,43 +298,75 @@ in "Where memory lives"):
   part of its value: a copy or an assignment carries the rows only, so
   `metrics = StageMetrics{}` inside a scope leaves it counted. A null name
   is a programmer error (`VKC_CHECK`), not a crash in `strcmp`.
-- **gfx's `QueryPool`, recon's `GpuTimer` on it.** The pool owns the handle
-  and range-checks its commands. It holds timestamp and occlusion queries
-  only, one 64-bit result each, which is what it reads. The timer is recon's
-  -- fence-blocked spans read the moment a submit returns, unavailable rather
-  than failing where a family has no timestamps. gfx's frames-in-flight
-  profiler stays in gfx, rebuilt on these.
-- **`GpuStageScope` is how work is timed.** `CommandBatch`'s uploads,
-  copies and dispatches and `dispatch` take recon's trailing
-  `GpuStageScope* = nullptr`, so recon migrates by namespace. A command keeps
-  the scope's `GpuSpanTag` (timer, label, scope id), not the scope, so a
-  scope that closes before the submit leaves the command untimed rather than
-  dangling. The `Device` overload takes a `GpuStageScope&`: a nullable
-  pointer beside the untimed overload's `keep_alive` would let
-  `submit_single_time(record, nullptr)` pick the timed one.
-- **A span is read after its own submit, and published by its own scope.**
-  recon's `resolve` read every unresolved span, so a submit nested in
-  another's recording read the outer span before its command buffer ran --
-  unreset queries in a first window, the last frame's value after -- and a
-  closing scope published every span on the timer, a helper's scope taking
-  its stage's. `GpuTimer::settle` resolves exactly the spans one submit
-  carried, and a scope publishes the spans opened under it; the window ends
-  when the last open scope closes.
-- **A failed submit drops its spans, or retires its timers, as recon did.**
-  `Device::submit_single_time` reports `in_flight`, whether a failed call
-  left work the device may still run. Spans whose work never reached the
-  device are dropped, a `record` that throws included, and the timer keeps
-  timing; work in flight retires its timers (`abandon`), which still publish
-  what they resolved. A timer's query pool rides the submit's `keep_alive`,
-  so the device holds it past a failed wait, as it holds a batch's staging.
-- **One query reset a timer a batch.** A batch resets each timer's queries
-  once, ahead of its spans, not between every two commands, where a reset
-  can split MoltenVK's compute encoder and perturb what is measured.
-- **At most 2048 spans a window.** MoltenVK backs a timestamp pool with a
-  32 KiB Metal counter sample buffer -- 4096 timestamps -- and emulates
-  timing past it, so recon's 4096-span ceiling became 2048. A `reserve` past
-  it is clamped, logged, and a stage that loses a span to a full window
-  publishes no device time: a partial sum would read as the whole stage's.
+- **A row says where its time went** (D3 of the 2026-10-22 data-flow
+  design, core 0.20.0). Host time splits into busy and blocked (`wait_ms`),
+  and the device half says what it holds (`DeviceTime`: none, measured, not
+  timed, unavailable), so an unmeasured cell says why; a row is measured
+  only when all its device work was. The new fields follow the first four,
+  so a row built positionally keeps its meaning; `has_gpu` stays,
+  deprecated.
+- **Each thread keeps a stack of its open scopes.** This replaces "no
+  global sink": every blocking wait in the core -- a blocking submit's fence,
+  `PendingSubmit::wait`, `TimelineSemaphore::wait`, `wait_idle` -- reports
+  what it blocked (`note_blocked`) to every scope open on its thread, whose
+  host span already contains it, so every row becomes honest with no change
+  at its call site; a wait that finds the work done reports nothing. A wait
+  counts in each enclosing row as its host time does, and the totals skip
+  breakdowns, so it counts once. A scope with null metrics never joins the
+  stack, so nothing is measured when unasked. The stack lives in
+  `core_base`'s source, one per thread for the whole process, and
+  `WaitScope` covers a wait the core does not see.
+- **gfx's `QueryPool`, the timer on it.** The pool owns the handle and
+  range-checks its commands. It holds timestamp and occlusion queries only,
+  one 64-bit result each, which is what it reads. A timer is unavailable
+  rather than failing where a family has no timestamps or its pool will not
+  allocate. A renderer's frames time on the timer's ranges too
+  (`GpuTiles`), so gfx's profiler moves onto it (D9 of the same design).
+- **`GpuStageScope` tags the work.** `CommandBatch`'s uploads, copies and
+  dispatches and `dispatch` take recon's trailing `GpuStageScope* =
+  nullptr`, so recon migrates by namespace. A command keeps the scope's tag
+  and the chain of scopes open around it when recorded, never the scope, so
+  one that closes before the submit leaves nothing dangling. The `Device`
+  overload takes a `GpuStageScope&`: a nullable pointer beside the untimed
+  overload's `keep_alive` would let `submit_single_time(record, nullptr)`
+  pick the timed one.
+- **Device time is tiled, not spanned per command.** A timed command buffer
+  writes a `BOTTOM_OF_PIPE` timestamp before its first command, at each
+  change of tile and after its last, and a command without a tag joins the
+  open tile. So a stage's time counts its fills, copies, barriers and gaps,
+  and a batch's tiles add up to its span; per-command spans missed all
+  four. A tile counts to its tag's scope and to every scope open around it,
+  as a wait does, so a host-only stage around a library's tagged work gets
+  that work's device time, a breakdown nests in its stage, and
+  `total_gpu_ms` skips breakdowns as `total_cpu_ms` does.
+  `GpuTimer::set_max_depth` folds deeper scopes into their ancestor for the
+  fewest timestamps, the deeper rows not timed. On a GPU layered on Metal a
+  mark may snap to an encoder boundary (unverified): the attribution test
+  says so there, and sub-stage cells read not timed.
+- **A batch holds a range of its timer's queries from recording until it is
+  read.** So one timer times any number of pending batches, each read after
+  its own work: a nested submit never reads the outer range, and
+  `submit_async` is timed (below). The range is reset once, at the batch's
+  start: a reset between commands can split MoltenVK's compute encoder. No
+  free range, a failed batch, or a timestamp not yet readable reads not
+  timed, never an error: a diagnostic must not fail the work. A range the
+  device may still write is never reused, and the timer keeps timing on the
+  rest; its pool rides the submit's `keep_alive`, so the device holds it
+  past a failed wait, as it holds a batch's staging. At most 4096 queries a
+  pool: MoltenVK backs one with a 32 KiB Metal counter sample buffer and
+  emulates timing past it, so `reserve` clamps there.
+- **Calibrated clocks where offered.** A device enables
+  `VK_KHR_calibrated_timestamps`, else the EXT, where offered.
+  `Device::calibrate` reads the queue's counter with the host domain
+  `steady_clock` reads (`CLOCK_MONOTONIC` on Linux) and, where the driver
+  has no such domain, brackets the device's reading by two host ones, which
+  the deviation then covers. A timer reads the clocks at most once a second
+  to put a span on the host clock; gaps between batches on one queue need
+  no calibration, being raw ticks of one counter.
+- **Counts per device.** `DeviceCounters` -- submits, blocking waits that
+  found the work unfinished and their time, staging buffers -- are atomic
+  adds where they happen, always on: what a test pins per frame. A timeline
+  semaphore shares its device's, so its waits count there.
 
 V5's choices, from recon's `examples/viewer/shared_device.hpp` and ios's
 `Bridge/SharedDevice`, which did the same job twice and differed only in how
@@ -472,10 +504,11 @@ without the wait:
   freed since the submit. It cannot tell a write after the work completed
   from one during it, so the rule is the one it can check: a set stays as it
   was until the wait.
-- **A pending batch's commands are untimed.** A span is read after its own
-  submit, and while a batch is pending, a later window on its timer may reset
-  the queries the batch will write. The stage's device row is missing, not
-  wrong, until spans get queries a later window cannot reset.
+- **A pending batch is timed, and hands its rows back.** It holds its query
+  range until its wait reads it, then returns the rows by name
+  (`device_rows`) and its span (`device_span`) for the caller to fold in:
+  nothing points at a caller's metrics while the batch is pending, so the
+  caller may move them.
 - **`submit` keeps its path and cost.** It still waits through
   `submit_single_time`; the two submits share only their checks, the
   readback layout and write-out, and the device's recording and submitting

@@ -33,9 +33,9 @@ Claude Code; `CLAUDE.md` imports it.
 
 | Tier | Target | Holds |
 | --- | --- | --- |
-| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics, whole-file I/O, version |
+| `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics (busy, blocked and device time), whole-file I/O, version |
 | `config` | `volumetric_kit::core_config` | Optional CPU-only family scenario format, typed settings, defaults and static validation; private nlohmann/json dependency |
-| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, GPU timers, external memory, shared-device bootstrap |
+| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, shader build functions, tiled GPU timers and calibrated clocks, external memory, shared-device bootstrap |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no
 GPU (calib's headless solver) links only the tiers it uses.
