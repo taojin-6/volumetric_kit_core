@@ -64,8 +64,7 @@ constexpr double ticks_to_ms(std::uint64_t ticks,
 }
 
 /// @brief What a recorded command keeps of a @ref GpuStageScope: the timer,
-///        the label, and the scope by its serial on its thread
-///        (@ref StageScope::serial).
+///        the label, and the scope by its serial (@ref StageScope::serial).
 ///
 /// A value, so a scope that closes before the submit leaves nothing to
 /// dangle.
@@ -107,8 +106,10 @@ struct DeviceSpan {
   std::int64_t begin_ns = 0;
   /// The last timestamp, likewise.
   std::int64_t end_ns = 0;
-  /// How far @ref begin_ns and @ref end_ns may be off, in nanoseconds: the
-  /// calibration's uncertainty.
+  /// The deviation of the clock pair @ref begin_ns and @ref end_ns are
+  /// placed from (@ref ClockPair::deviation_ns), in nanoseconds. It leaves
+  /// out the error of projecting from that pair, read up to a second
+  /// earlier, at the device's reported tick period.
   std::uint64_t deviation_ns = 0;
   /// Whether @ref begin_ns and @ref end_ns hold host times.
   bool host_clock = false;
@@ -143,9 +144,9 @@ VKC_VULKAN_API TileKey tile_key(const GpuSpanTag& tag);
 ///        are read.
 ///
 /// A batch holds its range while it is pending, so a timer times any number
-/// of batches in flight, each read after its own work. Two timestamps are
-/// written per tile boundary at most -- one each, plus one at each end -- so
-/// a batch of `n` tiles needs `n + 1` queries.
+/// of batches in flight, each read after its own work. One timestamp is
+/// written at each tile boundary and one at each end, so a batch of `n`
+/// tiles takes `n + 1` queries.
 ///
 /// **Unavailable is not an error.** A queue family may have no timestamps
 /// (`timestampValidBits` 0, as some implementations and some compute-only
@@ -175,10 +176,11 @@ VKC_VULKAN_API TileKey tile_key(const GpuSpanTag& tag);
 /// @endcode
 class VKC_VULKAN_API GpuTimer {
  public:
-  /// The ceiling on @ref create's `max_spans`: 4096 queries, two a span.
-  /// An implementation layered on Metal backs a timestamp pool with a counter
-  /// sample buffer of at most 32 KiB -- 4096 timestamps -- and silently
-  /// emulates timing for a larger one.
+  /// The ceiling on @ref create's `max_spans`, which counts the pool in
+  /// pairs of queries: 4096 queries, however the batches sharing them tile.
+  /// An implementation layered on Metal backs a timestamp pool with a
+  /// counter sample buffer of at most 32 KiB -- 4096 timestamps -- and
+  /// silently emulates timing for a larger one.
   static constexpr std::uint32_t kMaxSpans = 2048U;
 
   /// @brief Construct an empty timer; @ref valid is false.
@@ -280,7 +282,8 @@ class VKC_VULKAN_API GpuTimer {
 /// @endcode
 ///
 /// @warning Move-only. Destroying one, or moving over it, returns its range:
-///          its command buffer must have completed or never run by then --
+///          its command buffer's fence must have signalled (as
+///          @ref resolve says), or the buffer never run, by then --
 ///          @ref drop one the device may still run.
 class VKC_VULKAN_API GpuTiles {
  public:
@@ -321,8 +324,10 @@ class VKC_VULKAN_API GpuTiles {
   /// @brief Read the marks and return the range, once the command buffer has
   ///        completed. Never waits: a mark not yet readable leaves the tiles
   ///        it bounds @ref DeviceTime::NotTimed.
-  /// @pre The command buffer has completed (its fence or timeline value has
-  ///      been reached).
+  /// @pre The command buffer's fence has signalled. A timeline value is not
+  ///      enough: on a GPU layered on Metal it is reached before the
+  ///      submission's completion handler runs, and the timestamps become
+  ///      readable only then.
   void resolve();
 
   /// @brief Give up on the timestamps: the command buffer failed. Every tile
@@ -355,6 +360,10 @@ class VKC_VULKAN_API GpuTiles {
   // scopes still open on this thread.
   static GpuTiles open(GpuTimer& timer, VkCommandBuffer cmd,
                        std::uint32_t tiles, std::vector<detail::TileKey> keys);
+  // Settled tiles for keys whose command buffer was never recorded: a tile
+  // each, not timed (unavailable on a timer that cannot time), for publish().
+  static GpuTiles refused(const GpuTimer& timer,
+                          std::vector<detail::TileKey> keys);
   void mark_key(VkCommandBuffer cmd, std::uint32_t key);
   void publish() const noexcept;
   // Whether keys a and b of `keys` are one tile: equal down to `depth`

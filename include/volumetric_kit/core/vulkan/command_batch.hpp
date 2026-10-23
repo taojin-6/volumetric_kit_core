@@ -71,13 +71,14 @@ class VKC_VULKAN_API PendingBatch {
   /// @brief Construct an empty pending batch: @ref ready, nothing to wait for.
   PendingBatch() noexcept = default;
   /// Waits for the work if it is unfinished, as @ref Device::PendingSubmit
-  /// does.
-  ~PendingBatch() = default;
+  /// does; its query range goes back only if that wait saw the work
+  /// complete.
+  ~PendingBatch();
   PendingBatch(const PendingBatch&) = delete;
   PendingBatch& operator=(const PendingBatch&) = delete;
   PendingBatch(PendingBatch&& other) noexcept;
   /// Waits for this one's own unfinished work, its readbacks unwritten,
-  /// before taking @p other's.
+  /// before taking @p other's, as the destructor does.
   PendingBatch& operator=(PendingBatch&& other) noexcept;
 
   /// @return Whether @ref wait would return without blocking: the work has
@@ -109,10 +110,13 @@ class VKC_VULKAN_API PendingBatch {
   bool in_flight() const noexcept { return submit_.in_flight(); }
 
   /// @return The batch's device rows by name, once a wait has seen the work
-  ///         complete: @ref DeviceTime::Measured, or
-  ///         @ref DeviceTime::NotTimed for what ran untimed, and every row
-  ///         @ref DeviceTime::NotTimed after a failed wait. Empty before, and
-  ///         for a batch that timed nothing (@ref CommandBatch::time).
+  ///         complete: one for every scope its tiles count to, whichever
+  ///         set opened it -- so fold them into one set, once --
+  ///         @ref DeviceTime::Measured, @ref DeviceTime::NotTimed for what
+  ///         ran untimed, or @ref DeviceTime::Unavailable on a timer that
+  ///         cannot time; every row @ref DeviceTime::NotTimed after a failed
+  ///         wait. Empty before, and for a batch that timed nothing
+  ///         (@ref CommandBatch::time).
   const std::vector<StageRow>& device_rows() const noexcept {
     return tiles_.rows();
   }
@@ -146,8 +150,11 @@ class VKC_VULKAN_API PendingBatch {
   static void write_readbacks(const void* memory,
                               const std::vector<Readback>& readbacks);
 
-  // Before submit_, so it is destroyed after it: the range goes back only
-  // once the work's destructor has waited for it.
+  // The destructor's and a move assignment's: waits for unfinished work,
+  // then gives up the unread tiles, keeping the range from reuse if the
+  // device may still write it.
+  void retire() noexcept;
+
   GpuTiles tiles_;
   Device::PendingSubmit submit_;
   // The batch's staging and readback memory, which the submit's keep_alive
@@ -533,11 +540,12 @@ class VKC_VULKAN_API CommandBatch {
   ///
   /// Frees the batch's staging, and reads its tiles once the fence has
   /// signalled, crediting them to the scopes still open on this thread that
-  /// they count to. They read @ref DeviceTime::NotTimed when the batch failed
-  /// or found no free query range; a range the device may still write is
-  /// never reused. The fence wait reports its time to the scopes open on this
-  /// thread (@ref note_blocked). An empty batch submits nothing. A batch is
-  /// submitted at most once, by this or @ref submit_async.
+  /// they count to. They read @ref DeviceTime::NotTimed when the batch
+  /// failed, before the device or on it, or found no free query range; a
+  /// range the device may still write is never reused. The fence wait reports
+  /// its time to the scopes open on this thread (@ref note_blocked). An empty
+  /// batch submits nothing. A batch is submitted at most once, by this or
+  /// @ref submit_async.
   /// @return OK; the first refusal a recording call returned;
   ///         @ref Status::Code::InvalidArgument for a second submit, a
   ///         moved-from batch, or a set rewritten through any copy, or freed,
@@ -640,6 +648,9 @@ class VKC_VULKAN_API CommandBatch {
   // The two submits' common start: refuses a moved-from batch, a second
   // submit and a poisoned batch, marking the batch submitted.
   Status begin_submit();
+  // submit() up to the failure it credits to the scopes: the checks, the
+  // readbacks' placement, the submit, its wait and the write-out.
+  Status submit_blocking();
   // Refuses a dispatch whose set was rewritten or freed since it was
   // recorded, naming `call`.
   Status check_sets(const char* call) const;

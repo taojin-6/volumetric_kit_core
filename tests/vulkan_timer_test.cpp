@@ -11,8 +11,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <ratio>
 #include <string>
@@ -23,6 +26,7 @@
 #include <gtest/gtest.h>
 
 #include "add_comp.spv.hpp"
+#include "device_access.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
@@ -80,6 +84,27 @@ TEST(TimestampMath, WrapsAndConverts) {
   EXPECT_EQ(timestamp_delta(begin, begin + 20, 32), 20U);
   EXPECT_EQ(ticks_to_ms(1'000'000, 1.0F), 1.0);  // 1e6 ns is 1 ms
   EXPECT_EQ(ticks_to_ms(1'000'000, 0.0F), 0.0);  // no period, no claim
+}
+
+// A host stamp inside the call is steady_clock's own, kept with the driver's
+// deviation, edges included; one outside it (another clock), or none, puts
+// the device's reading at the call's middle, off by half the call at most.
+TEST(ClockPairs, KeepAHostStampOnlyInsideTheCall) {
+  const ClockPair read = detail::pair_clocks(7, 1'040, 3, 1'000, 1'100);
+  EXPECT_EQ(read.device_ticks, 7U);
+  EXPECT_EQ(read.host_ns, 1'040);
+  EXPECT_EQ(read.deviation_ns, 3U);
+  EXPECT_EQ(detail::pair_clocks(7, 1'000, 3, 1'000, 1'100).host_ns, 1'000);
+  EXPECT_EQ(detail::pair_clocks(7, 1'100, 3, 1'000, 1'100).host_ns, 1'100);
+  for (const std::optional<std::uint64_t> stamp :
+       {std::optional<std::uint64_t>(999),
+        std::optional<std::uint64_t>(5'000'000'000),
+        std::optional<std::uint64_t>()}) {
+    const ClockPair bracketed = detail::pair_clocks(7, stamp, 3, 1'000, 1'100);
+    EXPECT_EQ(bracketed.device_ticks, 7U);
+    EXPECT_EQ(bracketed.host_ns, 1'050);
+    EXPECT_EQ(bracketed.deviation_ns, 50U);
+  }
 }
 
 TEST(QueryPoolArgs, RefusesANullDeviceOrNoQueries) {
@@ -163,6 +188,28 @@ TEST(TileKey, NamesTheScopesAroundTheTag) {
       detail::tile_key(GpuSpanTag{&timer, "elsewhere", 0});
   ASSERT_EQ(stray.names.size(), 1U);
   EXPECT_EQ(stray.serials[0], 0U);
+}
+
+// A tag carried to another thread keys on its own name there, never on that
+// thread's scopes: each fresh thread's first scope would share a serial
+// counted per thread.
+TEST(TileKey, ATagOnAnotherThreadKeysOnItsName) {
+  GpuTimer timer;
+  StageMetrics recording;
+  StageMetrics other;
+  GpuSpanTag tag;
+  std::thread([&] {
+    const GpuStageScope stage(&recording, timer, "codec decode");
+    tag = stage.tag();
+  }).join();
+  detail::TileKey key;
+  std::thread([&] {
+    const StageScope unrelated(other, "unrelated host stage");
+    key = detail::tile_key(tag);
+  }).join();
+  ASSERT_EQ(key.names.size(), 1U);
+  EXPECT_STREQ(key.names[0], "codec decode");
+  EXPECT_EQ(key.serials[0], 0U);
 }
 
 // --- on a device -------------------------------------------------------------
@@ -496,6 +543,101 @@ TEST_F(TimerWorkTest, NoFreeRangeReadsNotTimed) {
   EXPECT_EQ(again.device_rows()[0].device, DeviceTime::Measured);
 }
 
+// A pending batch destroyed, or moved over, without a wait still waits for
+// its work, and its range goes back once that wait sees the work complete: a
+// timer with room for one batch times the next.
+TEST_F(TimerWorkTest, APendingBatchLeftUnwaitedReturnsItsRange) {
+  Result<GpuTimer> made = GpuTimer::create(device(), 1);  // one batch's room
+  ASSERT_TRUE(made.ok());
+  GpuTimer tiny = *std::move(made);
+  if (!tiny.available()) GTEST_SKIP() << "the queue has no timestamps";
+  StageMetrics recording;
+  const auto submit = [&](const char* name) {
+    CommandBatch batch(device(), allocator());
+    GpuStageScope stage(&recording, tiny, name);
+    EXPECT_TRUE(tagged(batch, &stage).ok());
+    Result<PendingBatch> pending = batch.submit_async({}, {});
+    EXPECT_TRUE(pending.ok());
+    return pending.ok() ? *std::move(pending) : PendingBatch{};
+  };
+  {
+    const PendingBatch dropped = submit("dropped");
+  }
+  PendingBatch kept = submit("kept");
+  kept = submit("refused");  // submitted while "kept" holds the range
+  PendingBatch next = submit("next");
+  ASSERT_TRUE(kept.wait(kLongWaitNs).ok());
+  ASSERT_TRUE(next.wait(kLongWaitNs).ok());
+  ASSERT_EQ(kept.device_rows().size(), 1U);
+  ASSERT_EQ(next.device_rows().size(), 1U);
+  EXPECT_EQ(kept.device_rows()[0].device, DeviceTime::NotTimed);
+  EXPECT_EQ(next.device_rows()[0].device, DeviceTime::Measured);
+}
+
+// Pending batches may be waited on another thread while this one records on
+// their timer: every wait returns its own rows and its range, so once they
+// are all back the pool's whole room times batches pending at once.
+TEST_F(TimerWorkTest, PendingBatchesWaitedElsewhereReturnTheirRanges) {
+  constexpr std::uint32_t kRoom = 4;  // batches of one tile: 8 queries
+  Result<GpuTimer> made = GpuTimer::create(device(), kRoom);
+  ASSERT_TRUE(made.ok());
+  GpuTimer room = *std::move(made);
+  if (!room.available()) GTEST_SKIP() << "the queue has no timestamps";
+  StageMetrics recording;
+  const auto submit = [&] {
+    CommandBatch batch(device(), allocator());
+    GpuStageScope stage(&recording, room, "batch");
+    EXPECT_TRUE(tagged(batch, &stage).ok());
+    Result<PendingBatch> pending = batch.submit_async({}, {});
+    EXPECT_TRUE(pending.ok()) << pending.status().message();
+    return pending.ok() ? *std::move(pending) : PendingBatch{};
+  };
+  constexpr int kBatches = 200;
+  std::mutex mutex;
+  std::condition_variable posted;
+  std::deque<PendingBatch> queue;
+  bool done = false;
+  int waited = 0;  // the waiter's alone until it is joined
+  std::thread waiter([&] {
+    for (;;) {
+      PendingBatch pending;
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        posted.wait(lock, [&] { return !queue.empty() || done; });
+        if (queue.empty()) return;
+        pending = std::move(queue.front());
+        queue.pop_front();
+      }
+      EXPECT_TRUE(pending.wait(kLongWaitNs).ok());
+      EXPECT_EQ(pending.device_rows().size(), 1U);
+      ++waited;
+    }
+  });
+  for (int i = 0; i < kBatches; ++i) {
+    PendingBatch pending = submit();
+    {
+      const std::scoped_lock lock(mutex);
+      queue.push_back(std::move(pending));
+    }
+    posted.notify_one();
+  }
+  {
+    const std::scoped_lock lock(mutex);
+    done = true;
+  }
+  posted.notify_one();
+  waiter.join();
+  EXPECT_EQ(waited, kBatches);
+  std::vector<PendingBatch> together;
+  together.reserve(kRoom);
+  for (std::uint32_t i = 0; i < kRoom; ++i) together.push_back(submit());
+  for (PendingBatch& pending : together) {
+    ASSERT_TRUE(pending.wait(kLongWaitNs).ok());
+    ASSERT_EQ(pending.device_rows().size(), 1U);
+    EXPECT_EQ(pending.device_rows()[0].device, DeviceTime::Measured);
+  }
+}
+
 // A parent's time is its children's tiles: a scope open around two tagged
 // scopes reads their sum. At depth 1 it is one tile, which fits a timer two
 // tiles would not, and the deeper scopes read NotTimed.
@@ -663,6 +805,37 @@ TEST_F(TimerWorkTest, ABlockingWaitIsEveryOpenScopesWait) {
   EXPECT_GE(after.blocked_ns - before.blocked_ns, 20'000'000U);
 }
 
+// A fence's wait blocks the thread as the core's own waits do, so it reaches
+// the scopes open around it: here a fence behind work held for the host,
+// waited until a 20 ms timeout, on the thread that then lets the work go.
+TEST_F(TimerWorkTest, AFenceWaitIsTheOpenScopesWait) {
+  Result<Fence> fence = Fence::create(device().handle());
+  ASSERT_TRUE(fence.ok()) << fence.status().message();
+  Result<TimelineSemaphore> made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  TimelineSemaphore gate = *std::move(made);
+  CommandBatch hold(device(), allocator());
+  Result<PendingBatch> held = hold.submit_async({{&gate, 1}}, {});
+  ASSERT_TRUE(held.ok()) << held.status().message();
+  // An empty submission: its fence signals once the work before it is done.
+  const VkResult queued = device().queue_submit(0, nullptr, fence->handle());
+  EXPECT_EQ(queued, VK_SUCCESS);
+  StageMetrics metrics;
+  {
+    const StageScope stage(metrics, "fence");
+    EXPECT_TRUE(is_timeout(fence->wait(20'000'000)));
+  }
+  ASSERT_TRUE(gate.signal(1).ok());
+  if (queued == VK_SUCCESS) {
+    EXPECT_TRUE(fence->wait(kLongWaitNs).ok());
+  }
+  ASSERT_TRUE(held->wait(kLongWaitNs).ok());
+  const StageRow* fenced = row(metrics, "fence");
+  ASSERT_NE(fenced, nullptr);
+  EXPECT_GE(fenced->wait_ms, 15.0);
+  EXPECT_LE(fenced->wait_ms, fenced->cpu_ms);
+}
+
 // A wait that finds the work done blocks nothing: no host wait, no blocked
 // time; a timeline wait that blocks counts as one.
 TEST_F(TimerWorkTest, OnlyWaitsThatBlockCount) {
@@ -730,10 +903,11 @@ TEST_F(TimerWorkTest, CountersCountAndNullMetricsTimeNothing) {
   EXPECT_EQ(detail::innermost_scope(), nullptr);
 }
 
-// Where the device offers calibrated timestamps, the pairs advance and a
-// batch's span falls inside [submit call, wait return] on the host clock,
-// within the reported deviation; elsewhere calibrate() says Unsupported and
-// spans stay in ticks.
+// Where the device offers calibrated timestamps, a pair's host time lies
+// within its deviation of the call, the pairs advance, and a batch's span
+// falls inside [submit call, wait return] on the host clock, within the
+// reported deviation; elsewhere calibrate() says Unsupported and spans stay
+// in ticks.
 TEST_F(TimerWorkTest, CalibratedSpansFallInsideTheHostBounds) {
   const Result<ClockPair> first = device().calibrate();
   if (!first.ok()) {
@@ -743,8 +917,13 @@ TEST_F(TimerWorkTest, CalibratedSpansFallInsideTheHostBounds) {
   } else {
     RecordProperty("calibrated", "yes");
     RecordProperty("deviation_ns", std::to_string(first->deviation_ns));
+    const std::int64_t before = steady_ns();
     const Result<ClockPair> second = device().calibrate();
+    const std::int64_t after = steady_ns();
     ASSERT_TRUE(second.ok());
+    const auto deviation = static_cast<std::int64_t>(second->deviation_ns);
+    EXPECT_GE(second->host_ns + deviation, before);
+    EXPECT_LE(second->host_ns - deviation, after);
     EXPECT_GE(second->host_ns, first->host_ns);
     if (timestamps_advance()) {
       EXPECT_GT(timestamp_delta(first->device_ticks, second->device_ticks,
@@ -765,10 +944,13 @@ TEST_F(TimerWorkTest, CalibratedSpansFallInsideTheHostBounds) {
   const DeviceSpan span = made->device_span().value_or(DeviceSpan{});
   EXPECT_EQ(span.host_clock, first.ok());
   if (!span.host_clock) return;
+  EXPECT_LE(span.begin_ns, span.end_ns);
+  // Timestamps that do not advance (a paravirtualized GPU) are no reading of
+  // the queue's counter, so where they land on the host clock means nothing.
+  if (!timestamps_advance()) return;
   const auto slack = static_cast<std::int64_t>(span.deviation_ns);
   EXPECT_GE(span.begin_ns, submit_call - slack);
   EXPECT_LE(span.end_ns, wait_return + slack);
-  EXPECT_LE(span.begin_ns, span.end_ns);
 }
 
 // A device adopted without a calibrated-timestamps extension declared says
@@ -825,7 +1007,9 @@ class TileAttributionTest : public TimerWorkTest {
     // A pass well past any cache on a GPU; a CPU device runs a smaller one,
     // still long beside a dispatch's scheduling on its threads.
     const std::uint32_t wanted = cpu_device() ? 1U << 22 : 1U << 25;
-    count_ = std::min(wanted, max_groups_ * 64U);
+    // In 64 bits: a group limit of 2^26 or more, times 64, wraps 32.
+    count_ = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(wanted, std::uint64_t{max_groups_} * 64U));
     Result<Buffer> values =
         device_storage_buffer(allocator(), VkDeviceSize{count_} * 4);
     ASSERT_TRUE(values.ok()) << values.status().message();
@@ -998,6 +1182,24 @@ TEST_F(TimerWorkTest, ABlockingSubmitPublishesIntoOpenScopesOnly) {
   ASSERT_NE(row(metrics, "gone"), nullptr);
   EXPECT_EQ(row(metrics, "gone")->device, DeviceTime::None);
   EXPECT_EQ(row(metrics, "later")->device, DeviceTime::None);
+}
+
+// A blocking submit that fails before the device -- here refused for a
+// recording call's refusal -- reads as one that failed on it: its open
+// scopes not timed, never a host-only blank.
+TEST_F(TimerWorkTest, ASubmitRefusedBeforeTheDeviceReadsNotTimed) {
+  StageMetrics metrics;
+  {
+    GpuStageScope stage(&metrics, timer_, "refused");
+    CommandBatch batch(device(), allocator());
+    ASSERT_TRUE(tagged(batch, &stage).ok());
+    EXPECT_TRUE(is_invalid(batch.fill(target_, 0, 3, 0U)));  // misaligned
+    EXPECT_TRUE(is_invalid(batch.submit()));
+  }
+  const StageRow* refused = row(metrics, "refused");
+  ASSERT_NE(refused, nullptr);
+  EXPECT_EQ(refused->device, timer_.available() ? DeviceTime::NotTimed
+                                                : DeviceTime::Unavailable);
 }
 
 // reserve grows the pool at any time, and refuses a device other than the

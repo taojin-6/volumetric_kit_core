@@ -12,9 +12,11 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/export.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core::detail {
@@ -38,6 +40,18 @@ struct Calibrator {
 
 // One reading of both clocks, as Device::calibrate documents it.
 Result<ClockPair> calibrate(const Calibrator& calibrator);
+
+// The pair one reading makes: the device's ticks; the stamp read in the host
+// domain beside them, if any; the driver's deviation; and steady_clock just
+// before and after the call. A stamp inside [before, after] is steady_clock's
+// own, and keeps the driver's deviation; otherwise the device's reading lies
+// somewhere in the call, placed at its middle, off by half the call at most.
+// Exported for the tests alone, which reach this header.
+VKC_VULKAN_API ClockPair pair_clocks(std::uint64_t device_ticks,
+                                     std::optional<std::uint64_t> host_stamp,
+                                     std::uint64_t deviation_ns,
+                                     std::int64_t before_ns,
+                                     std::int64_t after_ns) noexcept;
 
 // The tier's reach into a Device's privates, in one place.
 struct DeviceAccess {

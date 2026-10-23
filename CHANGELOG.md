@@ -36,10 +36,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   the command was recorded, so a stage's device time holds its fills,
   copies, barriers and breakdowns, and `total_gpu_ms` skips breakdown rows.
 - A timer's queries go per batch, so it times any number of pending batches.
-  A batch that finds no free range reads `NotTimed`; one the device may still
-  run keeps its range, and the timer times on.
-- `GpuSpanTag::scope` is the scope's serial on its thread
-  (`StageScope::serial`).
+  A batch that finds no free range, or fails before the device or on it,
+  reads `NotTimed`; one the device may still run keeps its range, and the
+  timer times on.
+- `GpuSpanTag::scope` is the scope's serial (`StageScope::serial`), unique
+  in the process.
+- A `StageScope` or `WaitScope` opens and closes on one thread: closing one
+  on another is a programmer error (`VKC_CHECK`).
 
 ### Removed
 
@@ -54,11 +57,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   positionally keeps its meaning; set `device` beside `has_gpu`.
 - Drop any subtraction of breakdown rows from `total_gpu_ms`, and expect a
   stage's device time to include its nested scopes'.
-- Fold an async batch's rows in after its wait:
-  `metrics.merge_device(pending.device_rows())`.
+- A scope on any set, open around tagged work, now gets that work's device
+  time, as it gets the waits inside it. Drop any loop that copies a
+  library's device rows into the row around its call (as the player's
+  `StreamPlayer::decode` adds recon's `gpu_ms` to "decode"): that row holds
+  them already, and the loop counts them twice.
+- Fold an async batch's rows in after its wait, into one set, once:
+  `metrics.merge_device(pending.device_rows())`. They name every scope its
+  tiles count to, whichever set opened it.
+- Close each scope on the thread that opened it.
 - A timer used by hand moves to `GpuTiles`: `begin(timer, cmd, tiles)`,
-  `mark(cmd, name)` at each tile, `end(cmd)`, `resolve()` once the work has
-  completed, then `rows()` and `span()`.
+  `mark(cmd, name)` at each tile, `end(cmd)`, `resolve()` once the command
+  buffer's fence has signalled (a timeline value is not enough through
+  MoltenVK), then `rows()` and `span()`.
 
 ## [0.19.0] - 2026-10-22
 

@@ -334,6 +334,20 @@ GpuTiles GpuTiles::open(GpuTimer& timer, VkCommandBuffer cmd,
   return out;
 }
 
+GpuTiles GpuTiles::refused(const GpuTimer& timer,
+                           std::vector<detail::TileKey> keys) {
+  GpuTiles out;
+  out.keys_ = std::move(keys);
+  out.depth_ = timer.max_depth();
+  out.untimed_ =
+      timer.available() ? DeviceTime::NotTimed : DeviceTime::Unavailable;
+  for (std::size_t k = 0; k < out.keys_.size(); ++k) {
+    out.tiles_.push_back(static_cast<std::uint32_t>(k));
+  }
+  out.settle(nullptr);
+  return out;
+}
+
 void GpuTiles::mark(VkCommandBuffer cmd, const char* name) {
   VKC_CHECK(name != nullptr, "GpuTiles::mark: the tile's name is null");
   // A tile named by hand is a key of its name alone.

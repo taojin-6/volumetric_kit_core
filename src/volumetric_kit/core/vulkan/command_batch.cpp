@@ -32,7 +32,7 @@ namespace volumetric_kit::core {
 namespace {
 
 // What a submit's work uses past the batch: the staging it copies through,
-// and the query pools its spans write.
+// and the query pools its tiles write.
 struct Retained {
   std::vector<Buffer> staging;
   std::vector<std::shared_ptr<void>> queries;
@@ -831,6 +831,17 @@ Result<const Buffer*> CommandBatch::place_readbacks(
 }
 
 Status CommandBatch::submit() {
+  const Status submitted = submit_blocking();
+  // Failed before its tiles opened -- refused, or short of staging or a
+  // command buffer -- the batch reads as one that failed on the device: the
+  // scopes its commands count to, not timed.
+  if (!submitted.ok() && !keys_.empty()) {
+    GpuTiles::refused(*timing_timer(), std::move(keys_)).publish();
+  }
+  return submitted;
+}
+
+Status CommandBatch::submit_blocking() {
   VKC_TRY(begin_submit());
   if (ops_.empty()) return {};
   VKC_TRY(check_sets("CommandBatch::submit"));
@@ -936,10 +947,11 @@ PendingBatch::PendingBatch(PendingBatch&& other) noexcept
       sets_(std::exchange(other.sets_, {})),
       failed_(std::exchange(other.failed_, Status{})) {}
 
+PendingBatch::~PendingBatch() { retire(); }
+
 PendingBatch& PendingBatch::operator=(PendingBatch&& other) noexcept {
   if (this != &other) {
-    // Waits for this one's own work first, which keeps what it uses; its
-    // range goes back after that.
+    retire();
     submit_ = std::move(other.submit_);
     tiles_ = std::move(other.tiles_);
     retained_ = std::exchange(other.retained_, nullptr);
@@ -949,6 +961,14 @@ PendingBatch& PendingBatch::operator=(PendingBatch&& other) noexcept {
     failed_ = std::exchange(other.failed_, Status{});
   }
   return *this;
+}
+
+// Settling the tiles' rows may allocate; out of memory here terminates, as
+// from any destructor.
+// NOLINTNEXTLINE(bugprone-exception-escape)
+void PendingBatch::retire() noexcept {
+  submit_.finish();
+  tiles_.drop(submit_.in_flight());
 }
 
 void PendingBatch::write_readbacks(const void* memory,

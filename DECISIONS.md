@@ -307,15 +307,20 @@ in "Where memory lives"):
   deprecated.
 - **Each thread keeps a stack of its open scopes.** This replaces "no
   global sink": every blocking wait in the core -- a blocking submit's fence,
-  `PendingSubmit::wait`, `TimelineSemaphore::wait`, `wait_idle` -- reports
-  what it blocked (`note_blocked`) to every scope open on its thread, whose
-  host span already contains it, so every row becomes honest with no change
-  at its call site; a wait that finds the work done reports nothing. A wait
-  counts in each enclosing row as its host time does, and the totals skip
-  breakdowns, so it counts once. A scope with null metrics never joins the
-  stack, so nothing is measured when unasked. The stack lives in
-  `core_base`'s source, one per thread for the whole process, and
-  `WaitScope` covers a wait the core does not see.
+  `PendingSubmit::wait`, `Fence::wait`, `TimelineSemaphore::wait`,
+  `wait_idle` -- reports what it blocked (`note_blocked`) to every scope
+  open on its thread, whose host span already contains it, so every row
+  becomes honest with no change at its call site. A fence or semaphore wait
+  that finds the work done reports nothing; a `wait_idle`, which Vulkan
+  cannot ask first, always reports. A wait counts in each enclosing row as
+  its host time does, and the totals skip breakdowns, so it counts once. A
+  scope with null metrics never joins the stack, so nothing is measured when
+  unasked. The stack lives in `core_base`'s source, one per thread for the
+  whole process, and `WaitScope` covers a wait the core does not see. A
+  scope opens and closes on one thread (`VKC_CHECK`): closed on another, it
+  would stay on its opener's stack once freed. Serials are drawn for the
+  whole process, so a tag recorded or submitted on another thread than its
+  scope's matches none of that thread's scopes and keys on its own name.
 - **gfx's `QueryPool`, the timer on it.** The pool owns the handle and
   range-checks its commands. It holds timestamp and occlusion queries only,
   one 64-bit result each, which is what it reads. A timer is unavailable
@@ -342,17 +347,21 @@ in "Where memory lives"):
   `GpuTimer::set_max_depth` folds deeper scopes into their ancestor for the
   fewest timestamps, the deeper rows not timed. On a GPU layered on Metal a
   mark may snap to an encoder boundary (unverified): the attribution test
-  says so there, and sub-stage cells read not timed.
+  says so there, and an app there tiles at depth 1 (`set_max_depth(1)`), so
+  its sub-stage cells read not timed.
 - **A batch holds a range of its timer's queries from recording until it is
   read.** So one timer times any number of pending batches, each read after
   its own work: a nested submit never reads the outer range, and
   `submit_async` is timed (below). The range is reset once, at the batch's
-  start: a reset between commands can split MoltenVK's compute encoder. No
-  free range, a failed batch, or a timestamp not yet readable reads not
-  timed, never an error: a diagnostic must not fail the work. A range the
-  device may still write is never reused, and the timer keeps timing on the
-  rest; its pool rides the submit's `keep_alive`, so the device holds it
-  past a failed wait, as it holds a batch's staging. At most 4096 queries a
+  start: a reset between commands can split MoltenVK's compute encoder. It
+  is read once its fence has signalled, never on a timeline value: through
+  MoltenVK a value is reached before the timestamps are readable. No free
+  range, a failed batch -- before the device or on it -- or a timestamp not
+  yet readable reads not timed, never an error: a diagnostic must not fail
+  the work. A range the device may still write is never reused, a pending
+  batch destroyed after a failed wait included, and the timer keeps timing
+  on the rest; its pool rides the submit's `keep_alive`, so the device holds
+  it past a failed wait, as it holds a batch's staging. At most 4096 queries a
   pool: MoltenVK backs one with a 32 KiB Metal counter sample buffer and
   emulates timing past it, so `reserve` clamps there.
 - **Calibrated clocks where offered.** A device enables
@@ -366,7 +375,8 @@ in "Where memory lives"):
 - **Counts per device.** `DeviceCounters` -- submits, blocking waits that
   found the work unfinished and their time, staging buffers -- are atomic
   adds where they happen, always on: what a test pins per frame. A timeline
-  semaphore shares its device's, so its waits count there.
+  semaphore shares its device's, so its waits count there; a `Fence` and
+  `SharedDevice::wait_idle` know no device, so theirs reach the scopes only.
 
 V5's choices, from recon's `examples/viewer/shared_device.hpp` and ios's
 `Bridge/SharedDevice`, which did the same job twice and differed only in how

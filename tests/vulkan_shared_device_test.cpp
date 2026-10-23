@@ -22,6 +22,7 @@
 
 #include "queue_plan.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -371,6 +372,23 @@ TEST_F(SharedDeviceCreateTest, ABufferCrossesBetweenTheLibrariesInPlace) {
     ASSERT_TRUE(read.submit().ok());
   }
   EXPECT_EQ(drawn, words);
+}
+
+// A drain blocks the thread as Device::wait_idle does, so its time reaches
+// the scopes open on it.
+TEST_F(SharedDeviceCreateTest, ADrainIsTheOpenScopesWait) {
+  Result<std::unique_ptr<SharedDevice>> made =
+      SharedDevice::create(windowless());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const std::unique_ptr<SharedDevice> shared = *std::move(made);
+  StageMetrics metrics;
+  {
+    const StageScope stage(metrics, "drain");
+    shared->wait_idle();
+  }
+  ASSERT_EQ(metrics.rows().size(), 1U);
+  EXPECT_GT(metrics.rows()[0].wait_ms, 0.0);
+  EXPECT_LE(metrics.rows()[0].wait_ms, metrics.rows()[0].cpu_ms);
 }
 
 // The two libraries submit from their own threads while a third drains: the

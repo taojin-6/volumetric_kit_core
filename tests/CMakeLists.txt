@@ -153,10 +153,10 @@ if(VKC_WITH_VULKAN)
     endif()
   endforeach()
 
-  # The queue-family reduction, the memory-type masks and the queue-plan choice
-  # are internal to core_vulkan, so their tests -- and the device tests that
-  # check a resource landed in its placement's types -- reach into the source
-  # directory for them.
+  # The queue-family reduction, the memory-type masks, the queue-plan choice and
+  # the clock pairing are internal to core_vulkan, so their tests -- and the
+  # device tests that check a resource landed in its placement's types -- reach
+  # into the source directory for them.
   foreach(
     _vkc_test
     vulkan_queue_families
@@ -165,7 +165,8 @@ if(VKC_WITH_VULKAN)
     vulkan_allocation_budget
     vulkan_compute
     vulkan_shared_device
-    vulkan_command_batch)
+    vulkan_command_batch
+    vulkan_timer)
     target_include_directories(
       vkc_${_vkc_test}_test
       PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")

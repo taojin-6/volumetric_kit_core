@@ -27,6 +27,7 @@ namespace volumetric_kit::core {
 
 class GpuStageScope;
 class Instance;
+class PendingBatch;
 
 namespace detail {
 struct DeviceAccess;        // the vulkan tier's own reach into a Device
@@ -47,8 +48,11 @@ struct DeviceCounterState;  // the counters, shared with its semaphores
 struct DeviceCounters {
   /// `vkQueueSubmit` calls through the device (@ref Device::queue_submit).
   std::uint64_t submits = 0;
-  /// Blocking waits that found the work unfinished: on the device's fences,
-  /// its timeline semaphores, and every @ref Device::wait_idle.
+  /// Blocking waits through the device that found the work unfinished: on
+  /// the fences of its submits and pending submits, and on its timeline
+  /// semaphores; and every @ref Device::wait_idle, which Vulkan cannot ask
+  /// first. A @ref Fence and `SharedDevice::wait_idle` know no Device: their
+  /// waits reach the scopes (@ref note_blocked), not these counts.
   std::uint64_t host_waits = 0;
   /// The time those waits blocked, in nanoseconds.
   std::uint64_t blocked_ns = 0;
@@ -449,18 +453,18 @@ class VKC_VULKAN_API Device {
   /// cannot show -- and counts to @p stage and the scopes open around it, as
   /// a @ref CommandBatch's tiles do. An inert @p stage (null metrics) is
   /// exactly the untimed call. The tile reads @ref DeviceTime::NotTimed when
-  /// the work never ran, a @p record that throws included, or may still run,
-  /// whose query range is then never reused. The timer's query pool goes
-  /// with @p keep_alive, so a timer destroyed meanwhile frees no queries the
-  /// work may still write. @p record may itself submit, timed on @p stage
-  /// too: each submit reads only its own tiles.
+  /// the work never ran, or may still run, whose query range is then never
+  /// reused; a @p record that throws returns the range. The timer's query
+  /// pool goes with @p keep_alive, so a timer destroyed meanwhile frees no
+  /// queries the work may still write. @p record may itself submit, timed on
+  /// @p stage too: each submit reads only its own tiles.
   ///
   /// @code
   /// GpuStageScope stage(metrics, timer, "rebuild");
   /// VKC_TRY(device.submit_single_time(record, stage));
   /// @endcode
   /// @param record      Records into the command buffer it is given.
-  /// @param stage       The span's timer and label.
+  /// @param stage       The tile's timer and label.
   /// @param keep_alive  As the untimed overload.
   /// @return As the untimed overload.
   Status submit_single_time(const std::function<void(VkCommandBuffer)>& record,
@@ -810,6 +814,9 @@ class VKC_VULKAN_API Device::PendingSubmit {
 
  private:
   friend class Device;
+  // Whose destructor and move assignment finish() its submit before its
+  // tiles go, to know whether the device may still write their range.
+  friend class PendingBatch;
 
   // Waits for unfinished work, logging a failure: the destructor's and a
   // move assignment's, which cannot return one. Warns, once a wait has run a

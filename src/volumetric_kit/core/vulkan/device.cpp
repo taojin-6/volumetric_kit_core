@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -917,6 +918,9 @@ Status Device::submit_single_time(
       std::move(kept), &in_flight);
   if (submitted.ok()) {
     tiles.resolve();
+  } else if (!keys.empty()) {
+    // Never recorded: the call was short of a command buffer.
+    tiles = GpuTiles::refused(timer, std::move(keys));
   } else {
     tiles.drop(in_flight);
   }
@@ -1206,19 +1210,31 @@ Result<ClockPair> calibrate(const Calibrator& calibrator) {
                                  steady_clock::now().time_since_epoch())
                                  .count();
   VKC_VK_TRY(read);
+  return pair_clocks(
+      stamps[0],
+      count == 2 ? std::optional<std::uint64_t>(stamps[1]) : std::nullopt,
+      deviation, before, after);
+}
+
+ClockPair pair_clocks(std::uint64_t device_ticks,
+                      std::optional<std::uint64_t> host_stamp,
+                      std::uint64_t deviation_ns, std::int64_t before_ns,
+                      std::int64_t after_ns) noexcept {
   ClockPair pair;
-  pair.device_ticks = stamps[0];
-  const auto host = static_cast<std::int64_t>(stamps[1]);
-  if (count == 2 && host >= before && host <= after) {
-    // The driver's host domain is steady_clock's own: the pair it read.
-    pair.host_ns = host;
-    pair.deviation_ns = deviation;
-  } else {
-    // Another clock, or none: the device's reading lies inside the call.
-    const auto half = static_cast<std::uint64_t>(after - before + 1) / 2;
-    pair.host_ns = before + static_cast<std::int64_t>(half);
-    pair.deviation_ns = half;
+  pair.device_ticks = device_ticks;
+  if (host_stamp.has_value()) {
+    const auto host = static_cast<std::int64_t>(*host_stamp);
+    if (host >= before_ns && host <= after_ns) {
+      // The driver's host domain is steady_clock's own: the pair it read.
+      pair.host_ns = host;
+      pair.deviation_ns = deviation_ns;
+      return pair;
+    }
   }
+  // Another clock, or none: the device's reading lies inside the call.
+  const auto half = static_cast<std::uint64_t>(after_ns - before_ns + 1) / 2;
+  pair.host_ns = before_ns + static_cast<std::int64_t>(half);
+  pair.deviation_ns = half;
   return pair;
 }
 
