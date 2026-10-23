@@ -19,8 +19,10 @@ host side, for all four.
 Runners on a personal account belong to one repository, so a host serving
 several carries a set for each. Any other repository is named in full, as
 `owner/repo`: `setup-runners.sh example-owner/example-repo` gives it runners
-with the family's labels and services, in `~/ci-runners/example-repo`. Give
-it the owner-only Actions policy (below) before it has runners.
+with the family's labels and services, in `~/ci-runners/example-repo`. The
+scripts lower-case the name, as GitHub ignores its case, so every spelling
+finds the same runners. Give it the owner-only Actions policy (below) before
+it has runners.
 
 ## Who can trigger CI
 

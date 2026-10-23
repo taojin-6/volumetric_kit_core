@@ -738,10 +738,18 @@ for os in Linux Darwin; do
   setup example-owner/example-repo || status=$?
   expect "a re-run asks gh for nothing, registers nothing and changes no service ($os)" \
     "$status $(calls '^(config|gh|curl) ') $(changes)" "0 0 0"
+  # GitHub's names ignore case, so another spelling is the same repository:
+  # setup finds its runners rather than registering a second set, and teardown
+  # (below) removes them.
+  : >"$CALLS"
+  status=0
+  setup Example-Owner/Example-Repo || status=$?
+  expect "a re-run spelling the name in other case finds the same runners ($os)" \
+    "$status $(calls '^(config|gh|curl) ') $(changes)" "0 0 0"
 
   : >"$CALLS"
   status=0
-  teardown example-owner/example-repo || status=$?
+  teardown EXAMPLE-OWNER/example-repo || status=$?
   remaining=""
   for dir in "$HOME"/ci-runners/*/runner-*; do
     [ -d "$dir" ] && remaining="$remaining ${dir#"$HOME"/ci-runners/}"

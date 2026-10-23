@@ -17,8 +17,8 @@ die() {
 }
 
 # Sets REPO, SLUG and RUNNER_ROOT for a repository, or exits 2: one of the
-# family's by its short name, or any other in full, as owner/repo, used as
-# given. SLUG, which names the runners, is the short name or the repository's
+# family's by its short name, or any other in full, as owner/repo, in lower
+# case. SLUG, which names the runners, is the short name or the repository's
 # name.
 select_repo() {
   # GitHub's characters: an owner's letters, digits, hyphens and underscores,
@@ -34,11 +34,13 @@ select_repo() {
         echo "unknown repository '${1:-}': expected recon, gfx, calib, player or owner/repo" >&2
         exit 2
       fi
-      REPO="$1"
+      # GitHub ignores case in a name, so every spelling of a repository must
+      # find the same runners: one directory, and the URL their .runner keeps.
+      REPO="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
       ;;
   esac
   # shellcheck disable=SC2034 # setup-runners.sh names runners with it
-  SLUG="${1#*/}"
+  SLUG="$(printf '%s' "${1#*/}" | tr '[:upper:]' '[:lower:]')"
   RUNNER_ROOT="$BASE/${REPO#*/}"
 }
 
