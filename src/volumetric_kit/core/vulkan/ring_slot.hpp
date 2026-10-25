@@ -30,7 +30,7 @@ struct RingSlot {
 inline constexpr std::uint32_t kRingOutputPoison = 0xBADC0FFEU;
 
 // Whether CommandBatch::output poisons its range. Off unless a test process
-// switches it on: the test policy's ValidationSession does while it lives
+// switches it on: the test policy's RingOutputPoison does while it lives
 // (vulkan_policy.cpp), so an app or probe never records the poison. Exported
 // for that policy and the tests.
 VKC_VULKAN_API void set_ring_output_poison(bool on) noexcept;

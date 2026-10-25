@@ -27,8 +27,8 @@ add_library(volumetric_kit::core_test_policy ALIAS core_test_policy)
 target_include_directories(core_test_policy
                            PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(core_test_policy PUBLIC volumetric_kit::core_vulkan)
-# A ValidationSession switches on the ring-output poison, internal to
-# core_vulkan (ring_slot.hpp).
+# RingOutputPoison switches on the ring-output poison, internal to core_vulkan
+# (ring_slot.hpp).
 target_include_directories(
   core_test_policy
   PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/vulkan")

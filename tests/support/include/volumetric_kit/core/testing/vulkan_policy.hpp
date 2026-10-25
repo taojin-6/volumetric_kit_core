@@ -46,6 +46,7 @@
 ///
 /// int main() {
 ///   const test::ValidationSession validation;
+///   const test::RingOutputPoison poison;  // a test, not a measuring tool
 ///   const test::LogCapture log;
 ///   return log.exit_code(run());
 /// }
@@ -135,22 +136,14 @@ class ScopedEnv {
   std::optional<std::string> old_;
 };
 
-/// @brief The word each whole word of a ring output's range holds before its
-///        batch runs, while a @ref ValidationSession lives
-///        (`CommandBatch::output`).
-inline constexpr std::uint32_t kRingOutputPoison = 0xBADC0FFEU;
-
 /// @brief The validation layer's settings for a level, in the process
 ///        environment while this lives: the layer reads them as each
-///        instance is created. The ring outputs are poisoned meanwhile.
+///        instance is created.
 ///
 /// It loads no layer; an instance from @ref instance_config does that.
 /// At @ref Validation::Sync and above, it overrides legacy layer enables and
 /// disables (including their environment aliases), which otherwise suppress
-/// the synchronization setting. At every level, each ring output's range
-/// holds @ref kRingOutputPoison before its batch runs, so a result word a
-/// kernel skips shows (`CommandBatch::output`). The caller's values and the
-/// poison's earlier setting return on destruction.
+/// the synchronization setting. The caller's values return on destruction.
 ///
 /// @code
 /// const test::ValidationSession validation(test::Validation::Sync);
@@ -169,7 +162,40 @@ class ValidationSession {
 
  private:
   std::vector<std::unique_ptr<ScopedEnv>> settings_;
-  bool poisoned_ = false;  // the poison's setting before this session
+};
+
+/// @brief The word each whole word of a ring output's range holds before its
+///        batch runs, while a @ref RingOutputPoison lives
+///        (`CommandBatch::output`).
+inline constexpr std::uint32_t kRingOutputPoison = 0xBADC0FFEU;
+
+/// @brief Poison every ring output in the process while this lives: each
+///        whole word of an output's range holds @ref kRingOutputPoison before
+///        its batch runs, so a result word a kernel skips shows
+///        (`CommandBatch::output`).
+///
+/// A test holds one; the GoogleTest fixtures hold one for every test. A tool
+/// that measures holds none, so its counts and GPU times are an app's: the
+/// poison costs a copied output a fill, and may cost its batch a barrier.
+/// The earlier setting returns on destruction.
+///
+/// @code
+/// const test::ValidationSession validation;
+/// const test::RingOutputPoison poison;
+/// const test::LogCapture log;
+/// return log.exit_code(run());
+/// @endcode
+class RingOutputPoison {
+ public:
+  RingOutputPoison();
+  ~RingOutputPoison();
+  RingOutputPoison(const RingOutputPoison&) = delete;
+  RingOutputPoison& operator=(const RingOutputPoison&) = delete;
+  RingOutputPoison(RingOutputPoison&&) = delete;
+  RingOutputPoison& operator=(RingOutputPoison&&) = delete;
+
+ private:
+  bool was_;  // the setting before this
 };
 
 /// @brief The log handler while this lives, counting the validation layer's

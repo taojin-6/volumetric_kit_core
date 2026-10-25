@@ -4,9 +4,9 @@
 // core_test_policy without GoogleTest, as a test that is a main() of its own
 // uses it: a ValidationSession's settings reach an instance made from
 // instance_config(), and a LogCapture counts the hazard the layer reports and
-// nothing else. A ring output no kernel writes holds the session's poison
-// word. A missing device or layer ends it as the environment asks; CTest
-// registers kSkipExitCode as its SKIP_RETURN_CODE.
+// nothing else; under a RingOutputPoison, a ring output no kernel writes holds
+// the poison word. A missing device or layer ends it as the environment asks;
+// CTest registers kSkipExitCode as its SKIP_RETURN_CODE.
 
 #include <algorithm>
 #include <array>
@@ -39,9 +39,9 @@ test::Validation level() {
   return std::max(test::requested_validation(), test::Validation::Sync);
 }
 
-// Runs a batch that binds a ring output and nothing writes it: the session
-// alone poisons, with no GoogleTest environment, so every word reads as
-// test::kRingOutputPoison.
+// Runs a batch that binds a ring output and nothing writes it: main's
+// RingOutputPoison poisons with no GoogleTest environment, so every word reads
+// as test::kRingOutputPoison.
 int check_poison(const vkc::Device& device, vkc::Allocator& allocator) {
   std::array<std::uint32_t, 4> words{};
   vkc::HostRingDesc desc;
@@ -148,6 +148,7 @@ int run(const test::LogCapture& log, int& hazards) {
 
 int main() {
   const test::ValidationSession validation(level());
+  const test::RingOutputPoison poison;
   const test::LogCapture log;
   int hazards = 0;
   const int code = run(log, hazards);

@@ -555,8 +555,8 @@ class VKC_VULKAN_API CommandBatch {
   /// @ref submit returns OK or a wait of @ref submit_async's
   /// @ref PendingBatch returns OK; after a failure it is undefined.
   ///
-  /// Kernels must write every byte the host reads. While a test process holds
-  /// the core's test policy's `ValidationSession` (`core_test_policy`; the
+  /// Kernels must write every byte the host reads. While a test holds the
+  /// core's test policy's `RingOutputPoison` (`core_test_policy`; the
   /// GoogleTest fixtures hold one), the range is poisoned before the batch
   /// runs: in place the host writes a poison word; copied, a fill of the
   /// mirror at the batch's front writes it, which costs one more barrier in a

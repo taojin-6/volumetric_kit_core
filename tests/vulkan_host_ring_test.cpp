@@ -323,22 +323,26 @@ TEST_F(HostRingTest, WithoutThePoisonASkippedWordKeepsItsValue) {
   }
 }
 
-// The test policy's ValidationSession is what poisons, at any level: on while
-// it lives, a nested one included, and the setting it found after. Its word
-// is the one a batch writes.
-TEST_F(HostRingTest, AValidationSessionPoisonsWhileItLives) {
+// The test policy's RingOutputPoison poisons while it lives, a nested one
+// included, and leaves the setting it found; its word is the one a batch
+// writes. A ValidationSession alone, as a measuring tool holds, does not.
+TEST_F(HostRingTest, ARingOutputPoisonHoldsWhileItLives) {
   static_assert(test::kRingOutputPoison == detail::kRingOutputPoison);
   const Unpoisoned unpoisoned;
   {
-    const test::ValidationSession outer(test::Validation::Off);
+    const test::ValidationSession session(test::Validation::Sync);
+    EXPECT_FALSE(detail::ring_output_poison()) << "a ValidationSession";
+  }
+  {
+    const test::RingOutputPoison outer;
     EXPECT_TRUE(detail::ring_output_poison());
     {
-      const test::ValidationSession inner(test::Validation::Off);
+      const test::RingOutputPoison inner;
       EXPECT_TRUE(detail::ring_output_poison());
     }
-    EXPECT_TRUE(detail::ring_output_poison()) << "the inner session's end";
+    EXPECT_TRUE(detail::ring_output_poison()) << "the inner one's end";
   }
-  EXPECT_FALSE(detail::ring_output_poison()) << "the outer session's end";
+  EXPECT_FALSE(detail::ring_output_poison()) << "the outer one's end";
 }
 
 // --- slots ------------------------------------------------------------------

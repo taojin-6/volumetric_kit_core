@@ -20,9 +20,9 @@
 /// (@ref volumetric_kit::core::test::VulkanTest::validation); it then gets it
 /// wherever the layer is installed.
 ///
-/// The environment's @ref volumetric_kit::core::test::ValidationSession also
-/// poisons every ring output in the process, so a result word a kernel skips
-/// shows (@ref volumetric_kit::core::CommandBatch::output).
+/// The environment also holds a
+/// @ref volumetric_kit::core::test::RingOutputPoison, so a result word a
+/// kernel skips shows (@ref volumetric_kit::core::CommandBatch::output).
 ///
 /// The tests in a process share one instance per validation level, one device
 /// per level and set of requirements, and one two-family device, with an

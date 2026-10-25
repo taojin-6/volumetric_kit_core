@@ -131,9 +131,7 @@ ScopedEnv::~ScopedEnv() {
 // Override legacy enables/disables, including their aliases, for the session:
 // any of them can suppress the synchronization setting. ScopedEnv restores
 // the caller's settings afterwards.
-ValidationSession::ValidationSession(Validation validation)
-    : poisoned_(core::detail::ring_output_poison()) {
-  core::detail::set_ring_output_poison(true);
+ValidationSession::ValidationSession(Validation validation) {
   const auto set = [this](const char* name, const char* value) {
     settings_.push_back(std::make_unique<ScopedEnv>(name, value));
   };
@@ -156,8 +154,15 @@ ValidationSession::ValidationSession(Validation validation)
   }
 }
 
-ValidationSession::~ValidationSession() {
-  core::detail::set_ring_output_poison(poisoned_);
+ValidationSession::~ValidationSession() = default;
+
+RingOutputPoison::RingOutputPoison()
+    : was_(core::detail::ring_output_poison()) {
+  core::detail::set_ring_output_poison(true);
+}
+
+RingOutputPoison::~RingOutputPoison() {
+  core::detail::set_ring_output_poison(was_);
 }
 
 // What the handler gathers, behind a pointer so it stays put for the handler.

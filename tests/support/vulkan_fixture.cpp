@@ -254,9 +254,9 @@ void no_device(const std::string& why) {
 class VulkanEnvironment final : public ::testing::Environment {
  public:
   void SetUp() override {
-    // Instances a test makes itself run the environment's checks too, and
-    // the ring outputs are poisoned.
+    // Instances a test makes itself run the environment's checks too.
     session_.emplace(requested_validation());
+    poison_.emplace();
     if (::testing::UnitTest::GetInstance()->test_to_run_count() > 1) {
       Registry::get().hold_anchor();
     }
@@ -268,11 +268,13 @@ class VulkanEnvironment final : public ::testing::Environment {
                        "(an object a test never destroyed?): "
                     << error;
     }
+    poison_.reset();
     session_.reset();
   }
 
  private:
   std::optional<ValidationSession> session_;
+  std::optional<RingOutputPoison> poison_;
 };
 
 }  // namespace
