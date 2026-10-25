@@ -72,7 +72,8 @@ bash tools/runners/teardown-runners.sh --user ci recon
 - The invoking user's home must be closed to the account: mode 700 on a
   Mac, where every user is in the `staff` group that a home's mode 750 lets
   in.
-- A `MoltenVK_ROOT` must be a directory the account can read; setup checks.
+- A `MoltenVK_ROOT` must be a directory the account can reach; setup checks
+  it as the account.
 - Registering takes over any runner of the same name, so setup refuses while
   the invoking user still has runners of the repository on the host: tear
   those down first.
