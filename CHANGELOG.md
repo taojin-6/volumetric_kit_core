@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- `tools/runners/`: `--user <account>` sets up or tears down runners that run
+  as another account, in its home, its files written as it through `sudo -u`
+  ([tools/runners/README.md](tools/runners/README.md#a-dedicated-account)).
+
 ### Changed
 
 - `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take any
