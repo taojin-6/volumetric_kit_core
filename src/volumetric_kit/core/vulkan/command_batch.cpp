@@ -4,6 +4,7 @@
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -15,6 +16,8 @@
 
 #include "command_batch_barriers.hpp"
 #include "device_access.hpp"
+#include "ring_slot.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -23,6 +26,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/format.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
+#include "volumetric_kit/core/vulkan/host_ring.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
@@ -32,11 +36,16 @@ namespace volumetric_kit::core {
 namespace {
 
 // What a submit's work uses past the batch: the staging it copies through,
-// and the query pools its tiles write.
+// the query pools its tiles write, and the ring slots it binds.
 struct Retained {
   std::vector<Buffer> staging;
   std::vector<std::shared_ptr<void>> queries;
+  std::vector<std::shared_ptr<const void>> slots;
 };
+
+// The ring-output poison's switch (ring_slot.hpp). Relaxed: the environment
+// sets it before its tests start the threads that record.
+std::atomic<bool> poison_ring_outputs{false};
 
 // `bytes` at `offset` lie inside `buffer`, written so neither sum can wrap.
 Status in_range(const Buffer& buffer, VkDeviceSize offset, VkDeviceSize bytes,
@@ -112,6 +121,18 @@ bool copy_accepts(VkFormat format) {
 
 }  // namespace
 
+namespace detail {
+
+void set_ring_output_poison(bool on) noexcept {
+  poison_ring_outputs.store(on, std::memory_order_relaxed);
+}
+
+bool ring_output_poison() noexcept {
+  return poison_ring_outputs.load(std::memory_order_relaxed);
+}
+
+}  // namespace detail
+
 CommandBatch::CommandBatch(const Device& device)
     : device_(&device), allocator_(nullptr) {
   if (device.handle() == VK_NULL_HANDLE) {
@@ -138,6 +159,7 @@ CommandBatch::CommandBatch(CommandBatch&& other) noexcept
     : device_(std::exchange(other.device_, nullptr)),
       allocator_(std::exchange(other.allocator_, nullptr)),
       ops_(std::exchange(other.ops_, {})),
+      slots_(std::exchange(other.slots_, {})),
       staging_(std::exchange(other.staging_, {})),
       zeros_(std::exchange(other.zeros_, VK_NULL_HANDLE)),
       keys_(std::exchange(other.keys_, {})),
@@ -151,6 +173,7 @@ CommandBatch& CommandBatch::operator=(CommandBatch&& other) noexcept {
     device_ = std::exchange(other.device_, nullptr);
     allocator_ = std::exchange(other.allocator_, nullptr);
     ops_ = std::exchange(other.ops_, {});
+    slots_ = std::exchange(other.slots_, {});
     staging_ = std::exchange(other.staging_, {});
     zeros_ = std::exchange(other.zeros_, VK_NULL_HANDLE);
     keys_ = std::exchange(other.keys_, {});
@@ -163,7 +186,15 @@ CommandBatch& CommandBatch::operator=(CommandBatch&& other) noexcept {
 }
 
 Status CommandBatch::check(Status status) {
-  if (!status.ok() && status_.ok()) status_ = status;
+  if (!status.ok() && status_.ok()) {
+    try {
+      status_ = status;
+    } catch (...) {
+      // Keep the batch poisoned even if copying the diagnostic failed.
+      status_ = Status::out_of_memory({});
+      return exception_status("CommandBatch", Status::Code::OutOfMemory);
+    }
+  }
   return status;
 }
 
@@ -602,6 +633,84 @@ Status CommandBatch::readback(const Buffer& src, VkDeviceSize offset,
   return {};
 }
 
+Status CommandBatch::bind(const HostSlot& slot, VkDeviceSize offset,
+                          VkDeviceSize bytes, const char* call) {
+  VKC_TRY(check(usable()));
+  if (!slot.valid()) {
+    return check(
+        Status::invalid_argument(std::string(call) + ": the slot is empty"));
+  }
+  if (bytes == 0) {
+    return check(Status::invalid_argument(std::string(call) + ": bytes is 0"));
+  }
+  if (offset > slot.capacity() || bytes > slot.capacity() - offset) {
+    return check(Status::invalid_argument(std::string(call) +
+                                          ": the range lies past the slot"));
+  }
+  slots_.push_back(slot.slot_);
+  return {};
+}
+
+Result<VkBuffer> CommandBatch::input(const HostSlot& slot, VkDeviceSize offset,
+                                     VkDeviceSize bytes) try {
+  VKC_TRY(bind(slot, offset, bytes, "CommandBatch::input"));
+  const detail::RingSlot& ring = *slot.slot_;
+  if (!ring.mirror.valid()) return ring.host.handle();  // in place
+  Op op;
+  op.kind = Kind::Copy;
+  op.src = ring.host.handle();
+  op.src_offset = offset;
+  op.dst = ring.mirror.handle();
+  op.dst_offset = offset;
+  op.bytes = bytes;
+  ops_.push_back(std::move(op));
+  return ring.mirror.handle();
+} catch (...) {
+  return check(
+      exception_status("CommandBatch::input", Status::Code::OutOfMemory));
+}
+
+Result<VkBuffer> CommandBatch::output(const HostSlot& slot, VkDeviceSize offset,
+                                      VkDeviceSize bytes) try {
+  VKC_TRY(bind(slot, offset, bytes, "CommandBatch::output"));
+  const detail::RingSlot& ring = *slot.slot_;
+  const bool in_place = !ring.mirror.valid();
+  if (detail::ring_output_poison()) {
+    // Every whole word of the range, before the batch runs: written by the
+    // host in place, and by a fill ahead of every command when copied.
+    const VkDeviceSize first = (offset + 3) & ~VkDeviceSize{3};
+    const VkDeviceSize last =
+        std::max((offset + bytes) & ~VkDeviceSize{3}, first);
+    if (in_place) {
+      for (VkDeviceSize at = first; at < last; at += 4) {
+        std::memcpy(slot.data() + at, &detail::kRingOutputPoison, 4);
+      }
+    } else if (last > first) {
+      Op fill;
+      fill.kind = Kind::Fill;
+      fill.dst = ring.mirror.handle();
+      fill.dst_offset = first;
+      fill.bytes = last - first;
+      fill.value = detail::kRingOutputPoison;
+      ops_.insert(ops_.begin(), std::move(fill));
+    }
+  }
+  if (in_place) return ring.host.handle();
+  // Recorded after every other command (record).
+  Op op;
+  op.kind = Kind::Output;
+  op.src = ring.mirror.handle();
+  op.src_offset = offset;
+  op.dst = ring.host.handle();
+  op.dst_offset = offset;
+  op.bytes = bytes;
+  ops_.push_back(std::move(op));
+  return ring.mirror.handle();
+} catch (...) {
+  return check(
+      exception_status("CommandBatch::output", Status::Code::OutOfMemory));
+}
+
 // Two transfers run unordered unless they share a buffer one of them writes;
 // a dispatch is always ordered. A readback's write is left out: its slice of
 // the batch's own buffer is touched by no other command.
@@ -616,9 +725,11 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
     return buffer != VK_NULL_HANDLE && (op.src == buffer || op.dst == buffer);
   };
   // An acquire is a barrier of its own, and orders what reads its buffer
-  // after it; a release is recorded after everything, past the last barrier.
+  // after it; a release, and a ring output's copy, are recorded after
+  // everything, past the last barrier.
   const auto transfers = [](const Op& op) {
-    return op.kind == Kind::Acquire || op.kind == Kind::Release;
+    return op.kind == Kind::Acquire || op.kind == Kind::Release ||
+           op.kind == Kind::Output;
   };
   const Op& b = ops_[i];
   if (transfers(b)) return false;
@@ -667,10 +778,18 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
   const detail::BatchScope commands =
       detail::batch_commands(device_->queue_flags());
 
+  std::uint64_t dispatches = 0;
+  std::uint64_t barriers = 0;
+  bool outputs = false;
   std::size_t first = 0;  // the first command since the last barrier
   for (std::size_t i = 0; i < ops_.size(); ++i) {
     const Op& op = ops_[i];
-    if (op.kind == Kind::Release) continue;  // after everything, below
+    // After everything, below.
+    if (op.kind == Kind::Release) continue;
+    if (op.kind == Kind::Output) {
+      outputs = true;
+      continue;
+    }
     // A new tile starts before the barrier its command needs, which is part
     // of that command's cost.
     if (tiles != nullptr && op.tile != GpuTiles::kNoKey) {
@@ -680,6 +799,7 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
     // dispatch would give for free.
     if (i > 0 && needs_barrier(first, i)) {
       detail::batch_barrier(cmd, writes, commands);
+      ++barriers;
       first = i;
     }
     // Only a dispatch is named, so the others open no region.
@@ -721,9 +841,11 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
         b.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              commands.stages, 0, 0, nullptr, 1, &b, 0, nullptr);
+        ++barriers;
         break;
       }
       case Kind::Release:
+      case Kind::Output:
         break;  // skipped above
       case Kind::Dispatch:
       case Kind::DispatchIndirect: {
@@ -741,15 +863,48 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
         } else {
           vkCmdDispatchIndirect(cmd, op.src, op.src_offset);
         }
+        ++dispatches;
         break;
       }
     }
     device_->end_debug_label(cmd, op.name);
   }
+  // Each copied ring output after every other command, whenever recorded,
+  // behind an initial barrier: the kernels wrote the mirrors, and the final
+  // barrier makes the slots' bytes visible to the host.
+  if (outputs) {
+    detail::batch_barrier(cmd, writes, commands);
+    ++barriers;
+    std::size_t first_output = 0;
+    for (std::size_t i = 0; i < ops_.size(); ++i) {
+      const Op& op = ops_[i];
+      if (op.kind != Kind::Output) continue;
+      // Repeated output ranges may overlap, even though their mirror reads
+      // are harmless. Order the host-buffer writes against every output
+      // since the last barrier; disjoint ranges still copy together.
+      for (std::size_t j = first_output; j < i; ++j) {
+        const Op& previous = ops_[j];
+        if (previous.kind == Kind::Output && previous.dst == op.dst &&
+            previous.dst_offset < op.dst_offset + op.bytes &&
+            op.dst_offset < previous.dst_offset + previous.bytes) {
+          detail::batch_barrier(cmd, writes, commands);
+          ++barriers;
+          first_output = i;
+          break;
+        }
+      }
+      VkBufferCopy region{};
+      region.srcOffset = op.src_offset;
+      region.dstOffset = op.dst_offset;
+      region.size = op.bytes;
+      vkCmdCopyBuffer(cmd, op.src, op.dst, 1, &region);
+    }
+  }
   // The final dependency covers all readers on this queue, including a
   // renderer's uniforms and storage buffers. Another queue still needs its
   // own synchronization, regardless of whether it belongs to the same family.
   detail::batch_final_barrier(cmd, device_->queue_flags());
+  ++barriers;
   // Each release last, so every command, whenever recorded, ran on the
   // buffer first: it waits for them all and makes their writes available to
   // the family the buffer goes to, whose acquire makes them visible.
@@ -765,8 +920,10 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
     vkCmdPipelineBarrier(cmd, commands.stages,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 1,
                          &b, 0, nullptr);
+    ++barriers;
   }
   if (tiles != nullptr) tiles->end(cmd);
+  detail::DeviceAccess::count_recorded(*device_, dispatches, barriers);
 }
 
 Status CommandBatch::begin_submit() {
@@ -842,6 +999,9 @@ Status CommandBatch::submit() {
 }
 
 Status CommandBatch::submit_blocking() {
+  // Submitted from here on, whatever happens: the ring slots go with the
+  // work, or as this returns.
+  std::vector<std::shared_ptr<const void>> slots = std::exchange(slots_, {});
   VKC_TRY(begin_submit());
   if (ops_.empty()) return {};
   VKC_TRY(check_sets("CommandBatch::submit"));
@@ -851,10 +1011,11 @@ Status CommandBatch::submit_blocking() {
   // Shared with the device, which keeps it past a failed wait, with the
   // command buffer it may still run, until it has waited for that. Moving the
   // vector leaves its buffers in place, so `readbacks` still points at one.
-  // The timer's queries go with it.
+  // The timer's queries and the ring slots go with it.
   GpuTimer* timer = timing_timer();
   const auto retained = std::make_shared<Retained>();
   retained->staging = std::exchange(staging_, {});
+  retained->slots = std::move(slots);
   if (timer != nullptr) retained->queries.push_back(timer->keep_alive());
   // Outside the record, so a record that throws returns the range of a
   // command buffer that never ran.
@@ -896,6 +1057,9 @@ Result<PendingBatch> CommandBatch::submit_async(
     VKC_TRY(check_timeline_points(*device_, wait, signal,
                                   "CommandBatch::submit_async"));
   }
+  // Submitted from here on, whatever happens: the ring slots go with the
+  // work, or as this returns.
+  std::vector<std::shared_ptr<const void>> slots = std::exchange(slots_, {});
   VKC_TRY(begin_submit());
   if (ops_.empty() && wait.empty() && signal.empty()) return PendingBatch{};
   VKC_TRY(check_sets("CommandBatch::submit_async"));
@@ -911,6 +1075,7 @@ Result<PendingBatch> CommandBatch::submit_async(
   GpuTimer* timer = timing_timer();
   const auto retained = std::make_shared<Retained>();
   retained->staging = std::exchange(staging_, {});
+  retained->slots = std::move(slots);
   if (timer != nullptr) retained->queries.push_back(timer->keep_alive());
   // The range stays the pending batch's until its wait reads it; a submit
   // that never reached the device returns it as `pending` goes.

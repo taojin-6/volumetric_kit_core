@@ -134,9 +134,9 @@ Result<VkBuffer> StorageInput::buffer(CommandBatch& batch, Allocator& allocator,
     // What the batch recorded on the old one still runs on it.
     batch.retain(std::move(upload));
     upload = Buffer();
-    // TODO: on unified memory, write the bytes into a DeviceMapped buffer
-    // instead of staging a copy, once unified-memory measurements settle which
-    // inputs gain (DECISIONS.md, "Unified memory").
+    // Staged on every device: bytes a call moves every frame go through a
+    // HostRing slot instead (CommandBatch::input), bound in place where
+    // device-mapped memory is cached.
     VKC_ASSIGN(upload, device_storage_buffer(allocator, bytes));
   }
   VKC_TRY(batch.upload(upload, 0, host_, bytes));

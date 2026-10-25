@@ -245,6 +245,54 @@ TEST(MemoryTypes, HostAccessNarrowsTheMappedTypes) {
   EXPECT_EQ(placed(cached_only, MemoryUsage::DeviceMapped), bits({0}));
 }
 
+// Device-mapped memory is cached only where a device-local, host-visible,
+// host-coherent type is host-cached too -- exactly where a DeviceMapped buffer
+// may take HostAccess::Random, and so where a HostRing binds in place.
+TEST(MemoryTypes, DeviceMappedMemoryIsCachedOnlyWhereTheHostReadsIt) {
+  const auto expect = [](const VkPhysicalDeviceMemoryProperties& props,
+                         bool cached) {
+    EXPECT_EQ(detail::device_mapped_cached(props), cached);
+    EXPECT_EQ(
+        placed(props, MemoryUsage::DeviceMapped, kAny, HostAccess::Random) != 0,
+        cached);
+  };
+  {
+    SCOPED_TRACE("a unified cached pool");
+    expect(layout({kLocalHeap}, {{0, kDL}, {0, kDL | kHV | kHC | kCached}}),
+           true);
+  }
+  {
+    SCOPED_TRACE("one type with every flag (a CPU implementation)");
+    expect(layout({kLocalHeap}, {{0, kDL | kHV | kHC | kCached}}), true);
+  }
+  {
+    SCOPED_TRACE("a discrete GPU with a small BAR heap");
+    expect(discrete_layout(), false);
+  }
+  {
+    SCOPED_TRACE("Resizable BAR: all of VRAM mapped, write-combined");
+    expect(layout({kLocalHeap, 0}, {{0, kDL},
+                                    {1, kHV | kHC},
+                                    {1, kHV | kHC | kCached},
+                                    {0, kDL | kHV | kHC}}),
+           false);
+  }
+  {
+    SCOPED_TRACE("a unified uncached coherent pool");
+    expect(layout({kLocalHeap}, {{0, kDL}, {0, kDL | kHV | kHC}}), false);
+  }
+  {
+    SCOPED_TRACE("a unified cached pool that is not coherent");
+    expect(layout({kLocalHeap}, {{0, kDL}, {0, kDL | kHV | kCached}}), false);
+  }
+  {
+    SCOPED_TRACE("no mapped type");
+    expect(layout({kLocalHeap, 0},
+                  {{0, kDL}, {1, kHV | kHC}, {1, kHV | kHC | kCached}}),
+           false);
+  }
+}
+
 // A heap's figures: its usage and budget, and this allocator's blocks in it.
 HeapStats heap(std::uint64_t usage, std::uint64_t budget,
                std::uint64_t reserved = 0) {

@@ -7,18 +7,59 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-24
+
 ### Added
 
+- `HostRing`, `HostSlot` and `HostRingDesc` (`vulkan/host_ring.hpp`):
+  persistent slots for the bytes a stage moves between host and device every
+  frame, placed once and grown only by a claim too big for every free slot.
+  In place where device-mapped memory is cached (`HostRing::in_place`),
+  copied through a device-only mirror elsewhere: the device's memory decides.
+  A slot is a lease, which may be dropped on any thread.
+- `CommandBatch::input` and `CommandBatch::output`: bind a slot's range and
+  return the `VkBuffer` the kernels bind. Copied, an input records one copy
+  where it is called, and an output's copy is recorded after every other
+  command. While a test holds a `test::RingOutputPoison`, as the core's
+  GoogleTest fixtures do, an output's range holds `test::kRingOutputPoison`
+  before the batch runs.
+- `PhysicalDeviceInfo::device_mapped_cached`: whether a `DeviceMapped`
+  buffer may take `HostAccess::Random`.
+- `DeviceCounters::dispatches` and `DeviceCounters::barriers`: the dispatches
+  and pipeline barriers the device's batches record.
 - `tools/runners/`: `--user <account>` sets up or tears down runners that run
   as another account, in its home, its files written as it through `sudo -u`
   ([tools/runners/README.md](tools/runners/README.md#a-dedicated-account)).
 
 ### Changed
 
+- `DeviceCounters::staging_buffers` also counts each ring slot placed, at
+  create and when a claim grows one.
 - `tools/runners/`: `setup-runners.sh` and `teardown-runners.sh` take any
   repository in full, as `owner/repo`, as well as the family's short names.
   Its runners go in `~/ci-runners/<repo>`, named `<host>-<repo>-<i>`, with the
   same labels and services ([tools/runners/README.md](tools/runners/README.md)).
+- CI: the Mac leg runs the `HostRing` tests built with ThreadSanitizer, and
+  each leg names the ring path its device must run (`VKC_EXPECT_RING_PATH`).
+
+### Fixed
+
+- Overlapping `CommandBatch::output` ranges synchronize their copies back to
+  the same host slot. Disjoint output ranges still share one barrier.
+- Moved-from `HostSlot` handles return a null mapping and zero capacity.
+- `HostRing::create`, `HostRing::claim`, `CommandBatch::input` and
+  `CommandBatch::output` return allocation failures as `OutOfMemory`; a failed
+  recording poisons the batch so it cannot submit partial work.
+
+### Migration
+
+- Nothing breaks: bump the pin. Bytes a call moves every frame -- a frame's
+  input, the results the host decides on -- move from `upload`/`readback` to
+  a `HostRing` slot bound by `input`/`output`; a kernel that writes an
+  output must write every word the host reads, which a test shows by holding
+  a `test::RingOutputPoison`. A test that pins `staging_buffers` counts its
+  rings' slots at their create; one that pins `barriers` counts the poison's
+  (`CommandBatch::output`).
 
 ## [0.20.0] - 2026-10-22
 

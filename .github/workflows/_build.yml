@@ -1,8 +1,9 @@
 name: build
 
 # One build leg, Release and static as the siblings build the core: configure,
-# build and test, then build the base tier alone. Invoked by ci.yml, which owns
-# the triggers and the matrix.
+# build and test, on the Mac the HostRing tests under ThreadSanitizer too, then
+# build the base tier alone. Invoked by ci.yml, which owns the triggers and the
+# matrix.
 on:
   workflow_call:
     inputs:
@@ -31,11 +32,14 @@ jobs:
     # GPU: Linux through the container's ICD, macOS through MoltenVK. The policy
     # (README.md, "Build and test"): no device, the layer missing, or a
     # validation error fails a test, under synchronization validation and,
-    # where the layer has them, shader-access checks.
+    # where the layer has them, shader-access checks. The HostRing tests also
+    # check the leg runs its ring path: copied on the discrete Linux GPUs, in
+    # place on the Mac's unified memory.
     env:
       VKC_REQUIRE_VULKAN_DEVICE: '1'
       VKC_TEST_VALIDATION: '1'
       VKC_TEST_SYNC_VALIDATION: '1'
+      VKC_EXPECT_RING_PATH: ${{ inputs.runner == 'mac' && 'in_place' || 'copied' }}
     steps:
       # The bare Ubuntu image runs as root and needs git before checkout. The
       # NVIDIA ICD also needs libXext.so.6 and libEGL.so.1 to create a device.
@@ -121,6 +125,26 @@ jobs:
           [ -f "$log" ] || exit 0
           skipped="$(sed -n 's/^\[  SKIPPED \] \([A-Za-z][^ ]*\).*/- \1/p' "$log" | grep -v 'Probe\.' | sort -u || true)"
           printf '### Skipped tests\n\n%s\n' "${skipped:-none}" >> "$GITHUB_STEP_SUMMARY"
+
+      # A ring slot's lease fails its test only under ThreadSanitizer, and Apple
+      # ships the libc++ on which the rule it replaced raced (DECISIONS.md,
+      # "Where memory lives"). Only the ring's tests, Debug, on the sources the
+      # build above fetched; the Mac installs nothing. The suppressions cover
+      # the layer's and the driver's own lock order, never a race.
+      - name: HostRing under ThreadSanitizer (macOS)
+        if: runner.os == 'macOS'
+        env:
+          TSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/tsan.supp
+        run: |
+          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
+            -DVKC_SANITIZE=thread -DVKC_WITH_CONFIG=OFF \
+            -DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR="$PWD/build/_deps/vulkanmemoryallocator-src" \
+            -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST="$PWD/build/_deps/googletest-src"
+          cmake --build build-tsan --target vkc_vulkan_host_ring_test \
+            --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
+          DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
+            ctest --test-dir build-tsan --output-on-failure --no-tests=error \
+            -R HostRing
 
       - name: Base-only build has no JSON or GPU dependency
         run: |

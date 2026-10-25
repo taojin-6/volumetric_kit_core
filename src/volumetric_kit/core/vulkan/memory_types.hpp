@@ -96,6 +96,15 @@ inline std::uint32_t device_mapped_types(
                            0);
 }
 
+// Whether a device-mapped type is host-cached too, so a DeviceMapped buffer
+// may take HostAccess::Random (PhysicalDeviceInfo::device_mapped_cached): the
+// one pool of unified memory, where it is cached; never a BAR window.
+inline bool device_mapped_cached(
+    const VkPhysicalDeviceMemoryProperties& props) {
+  return (device_mapped_types(props) &
+          memory_types_with(props, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0)) != 0;
+}
+
 // The types a MemoryUsage::Staging buffer may use: host memory the device
 // does not hold -- a discrete GPU's system RAM -- so staging never takes VRAM
 // or the BAR window; on a device with none (unified memory), every coherent

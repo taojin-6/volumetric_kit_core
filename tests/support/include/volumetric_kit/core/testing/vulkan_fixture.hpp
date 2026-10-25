@@ -20,6 +20,10 @@
 /// (@ref volumetric_kit::core::test::VulkanTest::validation); it then gets it
 /// wherever the layer is installed.
 ///
+/// The environment also holds a
+/// @ref volumetric_kit::core::test::RingOutputPoison, so a result word a
+/// kernel skips shows (@ref volumetric_kit::core::CommandBatch::output).
+///
 /// The tests in a process share one instance per validation level, one device
 /// per level and set of requirements, and one two-family device, with an
 /// instance of its own, per level and pair of requirements: the first test
@@ -280,8 +284,8 @@ class SharedDeviceTest : public VulkanTest {
 namespace detail {
 
 /// @brief Register the process-wide setup and teardown around the tests: the
-///        layer's settings, and the destruction of the shared instances and
-///        devices.
+///        layer's settings, the ring-output poison, and the destruction of the
+///        shared instances and devices.
 /// @return The registered environment, which GoogleTest owns.
 ::testing::Environment* register_vulkan_environment() noexcept;
 

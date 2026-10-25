@@ -18,12 +18,16 @@
 // NOLINTNEXTLINE(modernize-deprecated-headers): setenv and unsetenv are POSIX's
 #include <stdlib.h>
 
+#include "ring_slot.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core::test {
+
+static_assert(kRingOutputPoison == core::detail::kRingOutputPoison,
+              "the policy's poison word is the one CommandBatch writes");
 
 namespace {
 
@@ -151,6 +155,15 @@ ValidationSession::ValidationSession(Validation validation) {
 }
 
 ValidationSession::~ValidationSession() = default;
+
+RingOutputPoison::RingOutputPoison()
+    : was_(core::detail::ring_output_poison()) {
+  core::detail::set_ring_output_poison(true);
+}
+
+RingOutputPoison::~RingOutputPoison() {
+  core::detail::set_ring_output_poison(was_);
+}
 
 // What the handler gathers, behind a pointer so it stays put for the handler.
 struct LogCapture::State {

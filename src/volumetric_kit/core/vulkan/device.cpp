@@ -725,6 +725,8 @@ DeviceCounters Device::counters() const noexcept {
   out.blocked_ns = counters_->blocked_ns.load(std::memory_order_relaxed);
   out.staging_buffers =
       counters_->staging_buffers.load(std::memory_order_relaxed);
+  out.dispatches = counters_->dispatches.load(std::memory_order_relaxed);
+  out.barriers = counters_->barriers.load(std::memory_order_relaxed);
   return out;
 }
 

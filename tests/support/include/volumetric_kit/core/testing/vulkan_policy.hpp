@@ -46,6 +46,7 @@
 ///
 /// int main() {
 ///   const test::ValidationSession validation;
+///   const test::RingOutputPoison poison;  // a test, not a measuring tool
 ///   const test::LogCapture log;
 ///   return log.exit_code(run());
 /// }
@@ -161,6 +162,40 @@ class ValidationSession {
 
  private:
   std::vector<std::unique_ptr<ScopedEnv>> settings_;
+};
+
+/// @brief The word each whole word of a ring output's range holds before its
+///        batch runs, while a @ref RingOutputPoison lives
+///        (`CommandBatch::output`).
+inline constexpr std::uint32_t kRingOutputPoison = 0xBADC0FFEU;
+
+/// @brief Poison every ring output in the process while this lives: each
+///        whole word of an output's range holds @ref kRingOutputPoison before
+///        its batch runs, so a result word a kernel skips shows
+///        (`CommandBatch::output`).
+///
+/// A test holds one; the GoogleTest fixtures hold one for every test. A tool
+/// that measures holds none, so its counts and GPU times are an app's: the
+/// poison costs a copied output a fill, and may cost its batch a barrier.
+/// The earlier setting returns on destruction.
+///
+/// @code
+/// const test::ValidationSession validation;
+/// const test::RingOutputPoison poison;
+/// const test::LogCapture log;
+/// return log.exit_code(run());
+/// @endcode
+class RingOutputPoison {
+ public:
+  RingOutputPoison();
+  ~RingOutputPoison();
+  RingOutputPoison(const RingOutputPoison&) = delete;
+  RingOutputPoison& operator=(const RingOutputPoison&) = delete;
+  RingOutputPoison(RingOutputPoison&&) = delete;
+  RingOutputPoison& operator=(RingOutputPoison&&) = delete;
+
+ private:
+  bool was_;  // the setting before this
 };
 
 /// @brief The log handler while this lives, counting the validation layer's

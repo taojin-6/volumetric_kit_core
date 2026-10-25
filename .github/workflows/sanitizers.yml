@@ -28,6 +28,8 @@ jobs:
       # too (README.md, "Build and test").
       VKC_TEST_VALIDATION: '1'
       VKC_TEST_SYNC_VALIDATION: '1'
+      # lavapipe's one memory type is cached, so its HostRings run in place.
+      VKC_EXPECT_RING_PATH: in_place
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

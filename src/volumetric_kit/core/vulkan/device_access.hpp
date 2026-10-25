@@ -28,6 +28,8 @@ struct DeviceCounterState {
   std::atomic<std::uint64_t> host_waits{0};
   std::atomic<std::uint64_t> blocked_ns{0};
   std::atomic<std::uint64_t> staging_buffers{0};
+  std::atomic<std::uint64_t> dispatches{0};
+  std::atomic<std::uint64_t> barriers{0};
 };
 
 // Preallocated by a resource whose failed work may have no fence known to
@@ -85,6 +87,15 @@ struct DeviceAccess {
   static void count_staging(const Device& device) noexcept {
     if (device.counters_ != nullptr) {
       device.counters_->staging_buffers.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  // What one command buffer recorded.
+  static void count_recorded(const Device& device, std::uint64_t dispatches,
+                             std::uint64_t barriers) noexcept {
+    if (device.counters_ != nullptr) {
+      device.counters_->dispatches.fetch_add(dispatches,
+                                             std::memory_order_relaxed);
+      device.counters_->barriers.fetch_add(barriers, std::memory_order_relaxed);
     }
   }
 };

@@ -52,10 +52,12 @@ target_sources(
           device_access.hpp
           device_requirements.cpp
           external_memory.cpp
+          host_ring.cpp
           image.cpp
           instance.cpp
           physical_device_info.cpp
           query_pool.cpp
+          ring_slot.hpp
           shared_device.cpp
           queue_families.hpp
           queue_plan.hpp

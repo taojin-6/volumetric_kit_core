@@ -75,7 +75,9 @@ On macOS with Homebrew's `vulkan-validationlayers`, the loader finds the
 layer's manifest but not its library; add `DYLD_LIBRARY_PATH=/opt/homebrew/lib`,
 or every device test fails with "validation is off". Capability skips, such
 as unsupported external-memory handles, remain distinct from tests that
-executed successfully.
+executed successfully. CI also sets `VKC_EXPECT_RING_PATH` (`in_place` or
+`copied`), the path its device's `HostRing` tests must run; unset, they
+accept either.
 
 CI configures `-DVKC_TEST_SHARDS=4`: each ordinary device-test binary runs in
 four processes, reusing its shared Vulkan fixtures within each shard, and a

@@ -57,9 +57,17 @@ struct DeviceCounters {
   std::uint64_t host_waits = 0;
   /// The time those waits blocked, in nanoseconds.
   std::uint64_t blocked_ns = 0;
-  /// Staging and readback buffers the @ref CommandBatch es on the device
-  /// allocated.
+  /// Buffers allocated to move bytes between host and device: the staging and
+  /// readback buffers of the @ref CommandBatch es on the device, and each slot
+  /// its @ref HostRing s place, at create and when a claim grows one.
   std::uint64_t staging_buffers = 0;
+  /// Dispatches, direct and indirect, that those batches recorded, counted as
+  /// a submit records its command buffer.
+  std::uint64_t dispatches = 0;
+  /// Pipeline barriers those batches recorded: one before each command that
+  /// could see an earlier one's writes, one per ownership transfer, one before
+  /// a batch's ring output copies, and each batch's final one.
+  std::uint64_t barriers = 0;
 };
 
 /// @brief One reading of the host's clock and the queue's timestamp counter

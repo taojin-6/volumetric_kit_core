@@ -28,6 +28,8 @@ PhysicalDeviceInfo PhysicalDeviceInfo::query(
   info.unified_memory_ = detail::unified_memory(info.memory_properties_);
   info.device_mapped_memory_ =
       detail::device_mapped_types(info.memory_properties_) != 0;
+  info.device_mapped_cached_ =
+      detail::device_mapped_cached(info.memory_properties_);
 
   std::uint32_t family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);

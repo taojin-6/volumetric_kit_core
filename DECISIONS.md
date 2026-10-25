@@ -238,12 +238,14 @@ V3's choices, from the same comparison (gfx has no compute):
   `VkPhysicalDevice` again: recon's one caller changes. A kernel registered
   again is built aside and moved in whole, so a failure leaves it as it was
   and a rebuilt kernel holds no set of its old layout.
-- **One path between host and kernel memory.** `CommandBatch` is it: uploads
-  inline up to 64 KiB and staged beyond, readbacks through one host buffer,
-  barriers only where a command could see another's writes, a refusal that
-  poisons the batch, and a descriptor set rewritten after its dispatch
-  refused at submit. Kernel memory is never mapped, so unified memory runs the
-  path a discrete GPU does (the open "Unified memory" question below).
+- **Two kinds of path between host and kernel memory, both through
+  `CommandBatch`** (D1 of the 2026-10-22 data-flow design, core 0.21.0). Per
+  call: uploads inline up to 64 KiB and staged beyond, readbacks through one
+  host buffer. Per frame: a persistent `HostRing` slot the batch binds
+  (`input`, `output`), so a frame allocates nothing ("Where memory lives").
+  Either way: barriers only where a command could see another's writes, a
+  refusal that poisons the batch, and a descriptor set rewritten after its
+  dispatch refused at submit. Kernel memory is never mapped.
 - **Batch barriers follow queue capabilities.** Transfer-only work can run
   without naming unsupported compute stages; dispatch requires a compute
   queue. The final barrier includes graphics uniform and storage-buffer
@@ -382,10 +384,15 @@ in "Where memory lives"):
   until a later read succeeds. Gaps between batches on one queue need
   no calibration, being raw ticks of one counter.
 - **Counts per device.** `DeviceCounters` -- submits, blocking waits that
-  found the work unfinished and their time, staging buffers -- are atomic
-  adds where they happen, always on: what a test pins per frame. A timeline
-  semaphore shares its device's, so its waits count there; a `Fence` and
-  `SharedDevice::wait_idle` know no device, so theirs reach the scopes only.
+  found the work unfinished and their time, staging buffers, and the
+  dispatches and pipeline barriers batches record (core 0.21.0) -- are atomic
+  adds where they happen, always on: what a test pins per frame. A batch's
+  dispatches and barriers are counted once, as its submit records them: a
+  GPU layered on Metal showed a step in a batch's GPU time near 80 of each
+  (cause unknown), so a library pins its frame's batch at its counts. A
+  timeline semaphore shares its device's, so its waits count there; a `Fence`
+  and `SharedDevice::wait_idle` know no device, so theirs reach the scopes
+  only.
 
 V5's choices, from recon's `examples/viewer/shared_device.hpp` and ios's
 `Bridge/SharedDevice`, which did the same job twice and differed only in how
@@ -443,8 +450,9 @@ without the wait:
 
 - **A pending handle holds the work until a wait sees it complete.**
   `PendingBatch` and `Device::PendingSubmit` keep the command buffer, the fence
-  and the `keep_alive` -- a batch's staging and readback memory -- and give the
-  command back to the device once a wait sees the fence signalled. A failed
+  and the `keep_alive` -- a batch's staging and readback memory, and the ring
+  slots it binds -- and give the command back to the device once a wait sees
+  the fence signalled. A failed
   wait leaves them to the device, as a failed `submit_single_time` wait does.
   Destroying an unfinished handle waits for it, with no limit: what the work
   uses is never freed under it, and a command is not parked with the device
@@ -561,6 +569,7 @@ rules after review, the same day.
 | Kernel buffers, images, scratch (`device_storage_buffer`, `create_image`) | `DeviceOnly` | VRAM the host cannot map, never the BAR window | GPU-private storage where the device has it; else the one pool, unmapped |
 | Data the host writes and shaders read: uniforms, per-frame parameters, tables (`mapped_storage_buffer`) | `DeviceMapped` | VRAM through the BAR window (all of VRAM under Resizable BAR) | the one pool, mapped |
 | Uploads and readbacks (`CommandBatch`) | `Staging`, transfer usage only | system RAM: write-combined uploads, cached readbacks | the one pool |
+| Bytes moved every frame: a stage's input, the results it decides on (`HostRing`) | `DeviceMapped` + `Random` where that memory is cached; else `Staging` + `Random` and a `DeviceOnly` mirror | cached system RAM and a mirror in VRAM, one GPU copy of each range a batch binds | the one pool, mapped and cached, bound in place |
 
 - **Three placements, no `Auto`.** `DeviceOnly` replaces `DeviceLocal`, and
   a buffer is device-only unless it says otherwise; `Auto`, which let VMA put
@@ -586,7 +595,7 @@ rules after review, the same day.
   input is staged into `DeviceOnly` memory (`StorageInput`), and a buffer the
   host fills for a copy is `Staging`. The host writes it sequentially: its
   reads of the BAR window cross PCIe uncached, so results come back by
-  `CommandBatch::readback`.
+  `CommandBatch::readback` or a ring's `output`.
 - **`Staging`** takes host memory the device does not hold -- system RAM on a
   discrete GPU, never VRAM or the BAR window -- and copy usage only:
   `TRANSFER_SRC` and `TRANSFER_DST`. A storage, uniform, vertex, index or
@@ -680,9 +689,51 @@ rules after review, the same day.
   reports a VRAM carve-out beside host memory is not unified: the core
   follows the driver's own accounting, so kernel data fills the carve-out
   and fails when it is full, as VRAM does, rather than land in host memory
-  the driver does not call device-local. A library may branch on it; the
-  core's own paths do not yet (the open "Unified memory" question; a
-  `TODO:` in `StorageInput::buffer` marks where).
+  the driver does not call device-local. A library may branch on it.
+  `HostRing` branches on memory by `device_mapped_cached` (below);
+  `StorageInput` stays staged on every device.
+- **A `HostRing` takes its path from the device's memory, with no switch**
+  (D1 and D2 of the 2026-10-22 data-flow design, core 0.21.0). In place where
+  a `DeviceMapped` + `Random` buffer lands in cached memory
+  (`PhysicalDeviceInfo::device_mapped_cached`: unified memory's cached pool,
+  a CPU implementation's one type): kernels bind the slot the host maps.
+  Copied everywhere else, a discrete GPU with or without Resizable BAR
+  included: a cached `Staging` slot and a `DeviceOnly` mirror, with one GPU
+  copy of each range a batch binds -- an input's where `input` is called, an
+  output's after every other command. On a discrete GPU that copy is the bus
+  crossing, not an extra one, and the host never reads the BAR window. Slots
+  are placed at create and replaced only by a claim that finds none big
+  enough (at 1.5x), each placement counted in `staging_buffers`, so a frame
+  allocates nothing. This closes the open "Unified memory" question: cached
+  unified memory runs in place, by the device's facts. recon ran the staged
+  path there so that Mac runs would exercise a discrete GPU's; the NVIDIA
+  legs exercise it now, the Mac and lavapipe legs run in place, and each leg
+  names its path (`VKC_EXPECT_RING_PATH`), which every ring test asserts.
+- **A ring slot is a lease.** `claim` marks the slot held and hands out a
+  `shared_ptr` whose deleter clears the mark with a release store, which
+  `claim` reads with an acquire load. So a slot may be dropped on any thread
+  -- a `PendingBatch` waited on another -- and what that thread did with the
+  bytes happens before the claim that next returns the slot. Rejected:
+  freeing a slot at `use_count() == 1`, which is a relaxed load in both
+  standard libraries and orders nothing (P0521R0); a ThreadSanitizer model of
+  the ring flagged it on every libc++ run, and on libstdc++ when a claim
+  regrew a slot. `HostRingTest.ASlotDroppedOnAnotherThreadIsClaimedWithItsBytes`
+  catches that only under ThreadSanitizer, so the Mac leg builds the ring's
+  tests with it (Debug) and runs them: Apple ships libc++.
+- **A result word a kernel skips shows in tests.** In a test process,
+  `output` poisons every whole word of its range before the batch runs -- the
+  host writes it in place, a fill of the mirror at the batch's front when
+  copied -- so a sibling's tests see a kernel that leaves a result word
+  unwritten, rather than an earlier frame's value. Copied, that is one more
+  command, and one more barrier in a batch that would otherwise open with a
+  dispatch, so a test's counts may exceed an app's. A run-time switch, which
+  the test policy's `RingOutputPoison` turns on while it lives: the GoogleTest
+  environment holds one, and a sibling's test that is a `main()` of its own
+  holds its own, so a sibling needs no reach into the core's internals. It is
+  not part of `ValidationSession`, which a measuring tool holds too (the
+  player's `vp_probe`). A build option would also poison every app and probe
+  built in a tree with tests, and with them the counts and GPU times a
+  measurement records.
 - **The masks are tested against memory topologies**: separate host/device
   heaps with and without a BAR window, unified heaps with and without private
   types, device-local carve-outs, and feature-gated memory. These cover a
@@ -1026,13 +1077,8 @@ versions.
 
 ## Open decisions
 
-- **Unified memory.** `recon` deliberately runs the staged path on unified
-  memory too, pending measurements of staging cost. The vulkan tier inherits that
-  rule until the measurement says otherwise. On unified memory a staged
-  upload costs one GPU copy within the same DRAM; the alternative,
-  `DeviceMapped` memory the host writes in place and a kernel reads as a
-  `StorageInput` device buffer, now exists. Which inputs take it, and on
-  which architecture (`unified_memory()`), is the open part.
+None. "Unified memory" closed with core 0.21.0 ("Where memory lives", the
+`HostRing` entry).
 
 ## 2026-10-11 — One family scenario format in the core
 

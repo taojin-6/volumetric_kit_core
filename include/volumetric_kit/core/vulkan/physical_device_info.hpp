@@ -91,9 +91,9 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   /// memory beside its VRAM, and for an APU whose driver reports a VRAM
   /// carve-out beside host memory, whose device-local memory is the
   /// carve-out. On unified memory a `MemoryUsage::DeviceMapped` input costs a
-  /// kernel no more than a device-only one, so a library may skip a staging
-  /// copy there; otherwise kernel data belongs in `MemoryUsage::DeviceOnly`
-  /// memory, reached from the host by staging.
+  /// kernel no more than a device-only one, and @ref HostRing::in_place says
+  /// where a ring's slots skip the staging copy; otherwise kernel data belongs
+  /// in `MemoryUsage::DeviceOnly` memory, reached from the host by staging.
   /// @return Whether memory is unified; when it is,
   ///         @ref device_mapped_memory is too.
   bool unified_memory() const noexcept { return unified_memory_; }
@@ -107,6 +107,21 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   /// staging -- a `CommandBatch` upload into `DeviceOnly` memory.
   /// @return Whether `DeviceMapped` memory exists.
   bool device_mapped_memory() const noexcept { return device_mapped_memory_; }
+  /// @brief Whether a device-mapped memory type is also host-cached, so a
+  ///        `MemoryUsage::DeviceMapped` buffer may take `HostAccess::Random`.
+  ///
+  /// True where a device-local, host-visible, host-coherent type is
+  /// host-cached, as unified memory's one pool may be: there a @ref HostRing
+  /// binds its slots in place. False where every such type is
+  /// write-combined, as a BAR window is (Resizable BAR included), and without
+  /// device-mapped memory. Cached memory that is not coherent is not
+  /// device-mapped memory.
+  /// @return Whether a cached `DeviceMapped` type exists; when it does,
+  ///         @ref device_mapped_memory is true too.
+  // TODO: the device-mapped heap's size, and whether it spans the device's
+  // memory (Resizable BAR), once measuring a host write straight into device
+  // memory against a ring's copy needs them.
+  bool device_mapped_cached() const noexcept { return device_mapped_cached_; }
 
   /// @return The queue families, indexed by family.
   const std::vector<VkQueueFamilyProperties>& queue_families() const noexcept {
@@ -158,6 +173,7 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   VkPhysicalDeviceMemoryProperties memory_properties_{};
   bool unified_memory_ = false;
   bool device_mapped_memory_ = false;
+  bool device_mapped_cached_ = false;
   std::uint32_t api_version_ = 0;
   std::vector<VkQueueFamilyProperties> queue_families_;
   // Owned names, not VkExtensionProperties, so the info is self-contained and
