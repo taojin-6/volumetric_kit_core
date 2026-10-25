@@ -628,7 +628,7 @@ if(VKC_WITH_VULKAN)
           "${CMAKE_COMMAND}" -E env ${_vkc_env} "${CMAKE_COMMAND}" -S
           "${CMAKE_CURRENT_SOURCE_DIR}/ios_consumer" -B "${_vkc_dir}" -G Xcode
           -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=27.0
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
           "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
           "-DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR=${_vkc_vma_source}"
           ${_vkc_args})
