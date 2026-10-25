@@ -1,0 +1,12 @@
+# ThreadSanitizer suppressions for the Mac leg's HostRing step
+# (.github/workflows/_build.yml), and for a local ThreadSanitizer build.
+#
+# Lock-order reports ("deadlock") only, and only inside the Vulkan layer and
+# driver, whose own locks ThreadSanitizer sees through the interposed pthread
+# calls in code this repository does not build: the Khronos validation layer
+# takes two of its rwlocks in both orders as a kernel's set layout is made and
+# destroyed, on one thread. Each entry names a library, never a first-party
+# frame, and no data race is suppressed: those are what the step checks.
+deadlock:libVkLayer_khronos_validation
+# MoltenVK, the Mac's driver, for the same kind of report from its own locks.
+deadlock:libMoltenVK

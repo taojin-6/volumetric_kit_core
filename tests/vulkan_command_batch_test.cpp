@@ -802,6 +802,54 @@ TEST_F(BatchComputeTest, DispatchesIndirectlyFromABuffer) {
   }));
 }
 
+// Every dispatch, direct or indirect, and every pipeline barrier a batch
+// records counts once, as its submit records it: here one barrier before each
+// dispatch, one before the fill after them, the final one and the release's;
+// the acquire that takes the buffer back is one more. A refused submit
+// records nothing, and counts nothing.
+TEST_F(BatchComputeTest, CountsEveryDispatchAndBarrierItRecords) {
+  Result<Buffer> made =
+      device_storage_buffer(allocator(), sizeof(VkDispatchIndirectCommand),
+                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+  ASSERT_TRUE(made.ok());
+  const Buffer args = *std::move(made);
+  const VkDispatchIndirectCommand command{group_count(kCount, 64), 1, 1};
+  add_.set.write_storage_buffer(0, a_.handle(), 0, VK_WHOLE_SIZE);
+  const Push push{kCount, 2};
+  std::uint32_t first = 0;
+  const DeviceCounters before = device().counters();
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(batch.upload(args, 0, &command, sizeof(command)).ok());
+  ASSERT_TRUE(batch.fill(a_, 0, kBytes, 1U).ok());
+  ASSERT_TRUE(batch
+                  .dispatch(add_, &push, sizeof(push), group_count(kCount, 64),
+                            max_groups_)
+                  .ok());
+  ASSERT_TRUE(batch.dispatch_indirect(add_, &push, sizeof(push), args, 0).ok());
+  ASSERT_TRUE(batch.fill(b_, 0, kBytes, 3U).ok());
+  ASSERT_TRUE(batch.readback(a_, 0, sizeof(first), &first).ok());
+  ASSERT_TRUE(batch.release(b_, VK_QUEUE_FAMILY_EXTERNAL).ok());
+  ASSERT_TRUE(batch.submit().ok());
+  EXPECT_EQ(first, 5U);
+  const DeviceCounters after = device().counters();
+  EXPECT_EQ(after.dispatches - before.dispatches, 2U);
+  EXPECT_EQ(after.barriers - before.barriers, 5U);
+
+  CommandBatch next(device(), allocator());
+  ASSERT_TRUE(next.acquire(b_, VK_QUEUE_FAMILY_EXTERNAL).ok());
+  ASSERT_TRUE(next.submit().ok());
+  const DeviceCounters taken = device().counters();
+  EXPECT_EQ(taken.dispatches - after.dispatches, 0U);
+  EXPECT_EQ(taken.barriers - after.barriers, 2U);
+
+  CommandBatch refused_batch(device(), allocator());
+  ASSERT_TRUE(add_to(refused_batch, a_, 1).ok());
+  add_.set.write_storage_buffer(0, b_.handle(), 0, VK_WHOLE_SIZE);
+  EXPECT_TRUE(is_invalid(refused_batch.submit()));
+  EXPECT_EQ(device().counters().dispatches, taken.dispatches);
+  EXPECT_EQ(device().counters().barriers, taken.barriers);
+}
+
 TEST_F(BatchComputeTest, RefusesASetRewrittenAfterItsDispatch) {
   const std::vector<std::uint32_t> z(kCount, 0);
   upload(a_, z);

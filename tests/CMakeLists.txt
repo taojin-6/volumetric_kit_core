@@ -111,6 +111,7 @@ if(VKC_WITH_VULKAN)
       vulkan_resources
       vulkan_compute
       vulkan_command_batch
+      vulkan_host_ring
       vulkan_timer
       vulkan_external_memory
       vulkan_shared_device)
@@ -129,6 +130,7 @@ if(VKC_WITH_VULKAN)
     vulkan_resources
     vulkan_compute
     vulkan_command_batch
+    vulkan_host_ring
     vulkan_timer
     vulkan_external_memory
     vulkan_shared_device
@@ -153,10 +155,10 @@ if(VKC_WITH_VULKAN)
     endif()
   endforeach()
 
-  # The queue-family reduction, the memory-type masks, the queue-plan choice and
-  # the clock pairing are internal to core_vulkan, so their tests -- and the
-  # device tests that check a resource landed in its placement's types -- reach
-  # into the source directory for them.
+  # The queue-family reduction, the memory-type masks, the queue-plan choice,
+  # the clock pairing and a ring output's poison word are internal to
+  # core_vulkan, so their tests -- and the device tests that check a resource
+  # landed in its placement's types -- reach into the source directory for them.
   foreach(
     _vkc_test
     vulkan_queue_families
@@ -166,6 +168,7 @@ if(VKC_WITH_VULKAN)
     vulkan_compute
     vulkan_shared_device
     vulkan_command_batch
+    vulkan_host_ring
     vulkan_timer)
     target_include_directories(
       vkc_${_vkc_test}_test
@@ -212,10 +215,11 @@ if(VKC_WITH_VULKAN)
     SHADERS
     shaders/add.comp
     shaders/fill.comp
+    shaders/ring.comp
     shaders/batch_visibility.vert
     shaders/batch_visibility.frag)
-  foreach(_vkc_test vulkan_compute vulkan_command_batch vulkan_timer
-                    testing_vulkan_fixture)
+  foreach(_vkc_test vulkan_compute vulkan_command_batch vulkan_host_ring
+                    vulkan_timer testing_vulkan_fixture)
     target_link_libraries(vkc_${_vkc_test}_test PRIVATE vkc_test_shaders)
   endforeach()
 

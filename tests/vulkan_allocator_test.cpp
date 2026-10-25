@@ -209,6 +209,29 @@ TEST_F(AllocatorTest, ADeviceMappedBufferTheHostReadsIsCached) {
   EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0U);
 }
 
+// The fact a HostRing takes its path from matches what the allocator does: a
+// device-mapped buffer the host reads is made exactly where device-mapped
+// memory is cached. Recorded per device.
+class PhysicalDeviceInfoTest : public AllocatorTest {};
+
+TEST_F(PhysicalDeviceInfoTest, DeviceMappedCachedMatchesARandomAllocation) {
+  const bool cached = physical().device_mapped_cached();
+  RecordProperty("device_mapped_cached", cached ? "yes" : "no");
+  if (cached) {
+    EXPECT_TRUE(physical().device_mapped_memory());
+  }
+  BufferDesc desc;
+  desc.size = 4096;
+  desc.usage = kStorage;
+  desc.memory = MemoryUsage::DeviceMapped;
+  desc.host_access = HostAccess::Random;
+  const Result<Buffer> made = allocator().create_buffer(desc);
+  EXPECT_EQ(made.ok(), cached) << made.status().message();
+  if (!cached) {
+    EXPECT_EQ(made.status().domain(), Status::Code::Unsupported);
+  }
+}
+
 // Every allocation is made within its heap's budget: one larger than any
 // heap's budget is refused, not oversubscribed.
 TEST_F(AllocatorTest, AnAllocationPastTheHeapBudgetFails) {
