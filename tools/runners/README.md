@@ -220,7 +220,7 @@ the core commit the repository already pins, so it keeps one core pin:
   with:
     formulae: ${{ steps.formulae.outputs.formulae }}
 - name: Cache third-party deps
-  uses: actions/cache@v6
+  uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
   with:
     path: build/_deps
     key: deps-<leg>-brew${{ steps.brew.outputs.key }}-${{ hashFiles('third_party/CMakeLists.txt') }}
