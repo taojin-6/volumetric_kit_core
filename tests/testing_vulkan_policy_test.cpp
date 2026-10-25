@@ -4,18 +4,26 @@
 // core_test_policy without GoogleTest, as a test that is a main() of its own
 // uses it: a ValidationSession's settings reach an instance made from
 // instance_config(), and a LogCapture counts the hazard the layer reports and
-// nothing else. A missing device or layer ends it as the environment asks;
-// CTest registers kSkipExitCode as its SKIP_RETURN_CODE.
+// nothing else. A ring output no kernel writes holds the session's poison
+// word. A missing device or layer ends it as the environment asks; CTest
+// registers kSkipExitCode as its SKIP_RETURN_CODE.
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <memory>
 #include <utility>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/host_ring.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -29,6 +37,48 @@ namespace {
 // the environment asks for it.
 test::Validation level() {
   return std::max(test::requested_validation(), test::Validation::Sync);
+}
+
+// Runs a batch that binds a ring output and nothing writes it: the session
+// alone poisons, with no GoogleTest environment, so every word reads as
+// test::kRingOutputPoison.
+int check_poison(const vkc::Device& device, vkc::Allocator& allocator) {
+  std::array<std::uint32_t, 4> words{};
+  vkc::HostRingDesc desc;
+  desc.slot_bytes = sizeof(words);
+  desc.slots = 1;
+  vkc::Result<std::unique_ptr<vkc::HostRing>> ring =
+      vkc::HostRing::create(device, allocator, desc);
+  if (!ring) {
+    std::fprintf(stderr, "HostRing::create: %s\n",
+                 ring.status().message().c_str());
+    return 1;
+  }
+  vkc::Result<vkc::HostSlot> slot = (*ring)->claim(sizeof(words));
+  if (!slot) {
+    std::fprintf(stderr, "claim: %s\n", slot.status().message().c_str());
+    return 1;
+  }
+  std::memset(slot->data(), 0, sizeof(words));
+  vkc::CommandBatch batch(device, allocator);
+  if (const vkc::Result<VkBuffer> out = batch.output(*slot, 0, sizeof(words));
+      !out) {
+    std::fprintf(stderr, "output: %s\n", out.status().message().c_str());
+    return 1;
+  }
+  if (const vkc::Status submitted = batch.submit(); !submitted.ok()) {
+    std::fprintf(stderr, "submit: %s\n", submitted.message().c_str());
+    return 1;
+  }
+  std::memcpy(words.data(), slot->data(), sizeof(words));
+  for (std::size_t i = 0; i < words.size(); ++i) {
+    if (words[i] != test::kRingOutputPoison) {
+      std::fprintf(stderr, "ring output word %zu is 0x%08X, not the poison\n",
+                   i, words[i]);
+      return 1;
+    }
+  }
+  return 0;
 }
 
 // Records two writes of the same bytes with no barrier between -- write after
@@ -91,7 +141,7 @@ int run(const test::LogCapture& log, int& hazards) {
     return 1;
   }
   hazards = log.errors() - before;
-  return 0;
+  return check_poison(*device, *allocator);
 }
 
 }  // namespace

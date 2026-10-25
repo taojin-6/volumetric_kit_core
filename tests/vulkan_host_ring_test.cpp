@@ -323,6 +323,24 @@ TEST_F(HostRingTest, WithoutThePoisonASkippedWordKeepsItsValue) {
   }
 }
 
+// The test policy's ValidationSession is what poisons, at any level: on while
+// it lives, a nested one included, and the setting it found after. Its word
+// is the one a batch writes.
+TEST_F(HostRingTest, AValidationSessionPoisonsWhileItLives) {
+  static_assert(test::kRingOutputPoison == detail::kRingOutputPoison);
+  const Unpoisoned unpoisoned;
+  {
+    const test::ValidationSession outer(test::Validation::Off);
+    EXPECT_TRUE(detail::ring_output_poison());
+    {
+      const test::ValidationSession inner(test::Validation::Off);
+      EXPECT_TRUE(detail::ring_output_poison());
+    }
+    EXPECT_TRUE(detail::ring_output_poison()) << "the inner session's end";
+  }
+  EXPECT_FALSE(detail::ring_output_poison()) << "the outer session's end";
+}
+
 // --- slots ------------------------------------------------------------------
 
 // Every slot held -- by a copy, or by a batch -- refuses a claim, naming the

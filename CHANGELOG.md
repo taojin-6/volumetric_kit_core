@@ -20,8 +20,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - `CommandBatch::input` and `CommandBatch::output`: bind a slot's range and
   return the `VkBuffer` the kernels bind. Copied, an input records one copy
   where it is called, and an output's copy is recorded after every other
-  command. In a test process on the core's GoogleTest fixtures, an output's
-  range is poisoned before the batch runs.
+  command. While a test process holds a `test::ValidationSession`, as the
+  core's GoogleTest fixtures do, an output's range holds
+  `test::kRingOutputPoison` before the batch runs.
 - `PhysicalDeviceInfo::device_mapped_cached`: whether a `DeviceMapped`
   buffer may take `HostAccess::Random`.
 - `DeviceCounters::dispatches` and `DeviceCounters::barriers`: the dispatches
@@ -43,9 +44,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - Nothing breaks: bump the pin. Bytes a call moves every frame -- a frame's
   input, the results the host decides on -- move from `upload`/`readback` to
   a `HostRing` slot bound by `input`/`output`; a kernel that writes an
-  output must write every word the host reads, which the fixtures' poison
-  shows. A test that pins `staging_buffers` counts its rings' slots at their
-  create; one that pins `barriers` counts the poison's (`CommandBatch::output`).
+  output must write every word the host reads, which the test policy's
+  poison shows. A test that pins `staging_buffers` counts its rings' slots at
+  their create; one that pins `barriers` counts the poison's
+  (`CommandBatch::output`).
 
 ## [0.20.0] - 2026-10-22
 

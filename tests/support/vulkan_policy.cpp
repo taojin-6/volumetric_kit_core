@@ -18,12 +18,16 @@
 // NOLINTNEXTLINE(modernize-deprecated-headers): setenv and unsetenv are POSIX's
 #include <stdlib.h>
 
+#include "ring_slot.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core::test {
+
+static_assert(kRingOutputPoison == core::detail::kRingOutputPoison,
+              "the policy's poison word is the one CommandBatch writes");
 
 namespace {
 
@@ -127,7 +131,9 @@ ScopedEnv::~ScopedEnv() {
 // Override legacy enables/disables, including their aliases, for the session:
 // any of them can suppress the synchronization setting. ScopedEnv restores
 // the caller's settings afterwards.
-ValidationSession::ValidationSession(Validation validation) {
+ValidationSession::ValidationSession(Validation validation)
+    : poisoned_(core::detail::ring_output_poison()) {
+  core::detail::set_ring_output_poison(true);
   const auto set = [this](const char* name, const char* value) {
     settings_.push_back(std::make_unique<ScopedEnv>(name, value));
   };
@@ -150,7 +156,9 @@ ValidationSession::ValidationSession(Validation validation) {
   }
 }
 
-ValidationSession::~ValidationSession() = default;
+ValidationSession::~ValidationSession() {
+  core::detail::set_ring_output_poison(poisoned_);
+}
 
 // What the handler gathers, behind a pointer so it stays put for the handler.
 struct LogCapture::State {

@@ -727,9 +727,12 @@ rules after review, the same day.
   unwritten, rather than an earlier frame's value. Copied, that is one more
   command, and one more barrier in a batch that would otherwise open with a
   dispatch, so a test's counts may exceed an app's. A run-time switch, which
-  the GoogleTest environment of `core_test_support` turns on: a build option
-  would also poison every app and probe built in a tree with tests, and with
-  them the counts and GPU times a measurement records.
+  the test policy's `ValidationSession` turns on while it lives: every test
+  process holds one (the GoogleTest environment does, and so does a sibling
+  test that is a `main()` of its own), so a sibling needs no reach into the
+  core's internals. A build option would also poison every app and probe
+  built in a tree with tests, and with them the counts and GPU times a
+  measurement records.
 - **The masks are tested against memory topologies**: separate host/device
   heaps with and without a BAR window, unified heaps with and without private
   types, device-local carve-outs, and feature-gated memory. These cover a
