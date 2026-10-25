@@ -285,7 +285,9 @@ TEST_F(HostRingTest, OverlappingOutputsReturnTheFinalBytesInOrder) {
       for (const auto& [offset, bytes] : ranges) {
         Result<VkBuffer> output = batch.output(*out, offset, bytes);
         ASSERT_TRUE(output.ok()) << output.status().message();
-        if (dst != VK_NULL_HANDLE) EXPECT_EQ(*output, dst);
+        if (dst != VK_NULL_HANDLE) {
+          EXPECT_EQ(*output, dst);
+        }
         dst = *output;
       }
       ASSERT_TRUE(record(batch, src->handle(), 0, dst, 0, 9).ok());
