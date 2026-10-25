@@ -32,11 +32,14 @@ jobs:
     # GPU: Linux through the container's ICD, macOS through MoltenVK. The policy
     # (README.md, "Build and test"): no device, the layer missing, or a
     # validation error fails a test, under synchronization validation and,
-    # where the layer has them, shader-access checks.
+    # where the layer has them, shader-access checks. The HostRing tests also
+    # check the leg runs its ring path: copied on the discrete Linux GPUs, in
+    # place on the Mac's unified memory.
     env:
       VKC_REQUIRE_VULKAN_DEVICE: '1'
       VKC_TEST_VALIDATION: '1'
       VKC_TEST_SYNC_VALIDATION: '1'
+      VKC_EXPECT_RING_PATH: ${{ inputs.runner == 'mac' && 'in_place' || 'copied' }}
     steps:
       # The bare Ubuntu image runs as root and needs git before checkout. The
       # NVIDIA ICD also needs libXext.so.6 and libEGL.so.1 to create a device.

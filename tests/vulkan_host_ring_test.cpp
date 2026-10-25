@@ -4,15 +4,19 @@
 // HostRing, and CommandBatch::input and ::output, on the one path the
 // device's memory gives a ring: in place where device-mapped memory is cached
 // (unified memory, CPU implementations), copied through a device-only mirror
-// elsewhere (a discrete GPU). Every test asserts which path it ran, so a leg
-// meant for one cannot pass on the other. Barrier-heavy, so under
-// synchronization validation wherever the layer is installed; the lease's
-// threading rule needs ThreadSanitizer to fail (core's CI runs these under it).
+// elsewhere (a discrete GPU). Every ring asserts that its path follows that
+// fact, and that it is the path the run expects, where VKC_EXPECT_RING_PATH
+// names one (`in_place` or `copied`): CI's legs set it, so a driver that
+// moved a leg to the other path would fail it rather than leave a path
+// untested. Barrier-heavy, so under synchronization validation wherever the
+// layer is installed; the lease's threading rule needs ThreadSanitizer to fail
+// (core's CI runs these under it).
 
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -81,6 +85,29 @@ bool is_invalid(const Status& s) {
   return s.domain() == Status::Code::InvalidArgument;
 }
 
+// The path the run expects, `in_place` or `copied`; null or empty for any.
+const char* expected_path() {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): the test thread
+  return std::getenv("VKC_EXPECT_RING_PATH");
+}
+
+// The ring-output poison off while this lives, as outside a test process;
+// the environment's setting comes back after.
+class Unpoisoned {
+ public:
+  Unpoisoned() : was_(detail::ring_output_poison()) {
+    detail::set_ring_output_poison(false);
+  }
+  ~Unpoisoned() { detail::set_ring_output_poison(was_); }
+  Unpoisoned(const Unpoisoned&) = delete;
+  Unpoisoned& operator=(const Unpoisoned&) = delete;
+  Unpoisoned(Unpoisoned&&) = delete;
+  Unpoisoned& operator=(Unpoisoned&&) = delete;
+
+ private:
+  bool was_;
+};
+
 // Claims `bytes` of `ring`, retrying while another thread still holds every
 // slot: that thread's drop is the only order between the two.
 Result<HostSlot> claim_when_free(HostRing& ring, VkDeviceSize bytes) {
@@ -123,7 +150,8 @@ class HostRingTest : public test::VulkanDeviceTest {
   }
 
   // A ring of `slots` slots of `bytes`, on the path the device's memory gives
-  // it: in place exactly where device-mapped memory is cached.
+  // it: in place exactly where device-mapped memory is cached, which is the
+  // path the run expects.
   std::unique_ptr<HostRing> make_ring(VkDeviceSize bytes,
                                       std::uint32_t slots = 2) {
     HostRingDesc desc;
@@ -135,6 +163,12 @@ class HostRingTest : public test::VulkanDeviceTest {
     EXPECT_TRUE(ring.ok()) << ring.status().message();
     if (!ring.ok()) return nullptr;
     EXPECT_EQ((*ring)->in_place(), physical().device_mapped_cached());
+    const char* expected = expected_path();
+    if (expected != nullptr && *expected != '\0') {
+      EXPECT_STREQ((*ring)->in_place() ? "in_place" : "copied", expected)
+          << "VKC_EXPECT_RING_PATH names another path than "
+          << physical().properties().deviceName << "'s memory gives";
+    }
     return *std::move(ring);
   }
 
@@ -250,6 +284,45 @@ TEST_F(HostRingTest, AWordTheKernelsSkipShowsThePoison) {
   }
 }
 
+// Outside a test process nothing is poisoned or recorded for it: a skipped
+// word keeps the earlier use's value, and a batch that opens with its kernel
+// records the final barrier in place; copied, one more before the output's
+// copy, and none for a fill.
+TEST_F(HostRingTest, WithoutThePoisonASkippedWordKeepsItsValue) {
+  EXPECT_TRUE(detail::ring_output_poison());  // the environment's
+  const Unpoisoned unpoisoned;
+  std::unique_ptr<HostRing> results = make_ring(kBytes, 1);
+  ASSERT_NE(results, nullptr);
+  // The kernel reads a device buffer, so nothing is recorded before it.
+  Result<Buffer> src = device_storage_buffer(allocator(), kBytes);
+  ASSERT_TRUE(src.ok()) << src.status().message();
+  const std::vector<std::uint32_t> words = pattern(11);
+  {
+    CommandBatch upload(device(), allocator());
+    ASSERT_TRUE(upload.upload(*src, 0, words.data(), kBytes).ok());
+    ASSERT_TRUE(upload.submit().ok());
+  }
+  for (const std::uint32_t skip : {0U, 4U}) {
+    Result<HostSlot> out = results->claim(kBytes);
+    ASSERT_TRUE(out.ok());
+    const DeviceCounters before = device().counters();
+    CommandBatch batch(device(), allocator());
+    Result<VkBuffer> dst = batch.output(*out, 0, kBytes);
+    ASSERT_TRUE(dst.ok());
+    ASSERT_TRUE(record(batch, src->handle(), 0, *dst, 0, 1 + skip, skip).ok());
+    ASSERT_TRUE(batch.submit().ok());
+    EXPECT_EQ(device().counters().barriers - before.barriers,
+              results->in_place() ? 1U : 2U)
+        << "skip " << skip;
+    const std::vector<std::uint32_t> got = words_of(*out);
+    for (std::uint32_t i = 0; i < kWords; ++i) {
+      const bool skipped = skip != 0 && i % skip == 0;
+      ASSERT_EQ(got[i], words[i] + (skipped ? 1U : 1U + skip))
+          << "word " << i << ", skip " << skip;
+    }
+  }
+}
+
 // --- slots ------------------------------------------------------------------
 
 // Every slot held -- by a copy, or by a batch -- refuses a claim, naming the
@@ -339,6 +412,20 @@ TEST_F(HostRingTest, ClaimTakesTheSmallestFitElseRegrowsTheSmallestFreeSlot) {
   EXPECT_EQ(device().counters().staging_buffers - before.staging_buffers, 2U);
   EXPECT_EQ(small->data()[kBytes - 1], 0x5A);
   EXPECT_EQ(again->data()[0], 0xB1);
+
+  // Two free slots, of 1x and 3x, both too small: the smaller is replaced,
+  // and the bigger then comes back as it was.
+  *small = HostSlot{};
+  *again = HostSlot{};
+  Result<HostSlot> biggest = ring->claim(8 * kBytes);
+  ASSERT_TRUE(biggest.ok());
+  EXPECT_EQ(biggest->capacity(), 12 * kBytes);
+  EXPECT_EQ(device().counters().staging_buffers - before.staging_buffers, 3U);
+  Result<HostSlot> kept = ring->claim(3 * kBytes);
+  ASSERT_TRUE(kept.ok());
+  EXPECT_EQ(kept->capacity(), 3 * kBytes);
+  EXPECT_EQ(kept->data()[0], 0xB1);
+  EXPECT_EQ(device().counters().staging_buffers - before.staging_buffers, 3U);
 }
 
 // A hundred frames after create allocate nothing: the slots are placed once,

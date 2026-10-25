@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include "ring_slot.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -256,6 +257,8 @@ class VulkanEnvironment final : public ::testing::Environment {
   void SetUp() override {
     // Instances a test makes itself run the environment's checks too.
     session_.emplace(requested_validation());
+    // A result word a kernel skips shows as the poison (ring_slot.hpp).
+    core::detail::set_ring_output_poison(true);
     if (::testing::UnitTest::GetInstance()->test_to_run_count() > 1) {
       Registry::get().hold_anchor();
     }
@@ -267,6 +270,7 @@ class VulkanEnvironment final : public ::testing::Environment {
                        "(an object a test never destroyed?): "
                     << error;
     }
+    core::detail::set_ring_output_poison(false);
     session_.reset();
   }
 

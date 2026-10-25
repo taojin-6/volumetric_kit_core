@@ -197,8 +197,9 @@ class VKC_VULKAN_API PendingBatch {
 /// the destination, so a buffer's memory type never changes what a batch
 /// does. Per frame, with nothing allocated: a @ref HostRing slot, bound in
 /// place where @ref HostRing::in_place says so and otherwise copied once
-/// through its device-only mirror (@ref input, @ref output). Only a slot's own
-/// shape changes what a batch records.
+/// through its device-only mirror (@ref input, @ref output). Outside a test
+/// process (@ref output), only a slot's own shape changes what a batch
+/// records.
 ///
 /// **A failed call poisons the batch.** Each recording call returns its own
 /// refusal, and every later call, @ref submit included, returns the first of
@@ -554,13 +555,15 @@ class VKC_VULKAN_API CommandBatch {
   /// @ref submit returns OK or a wait of @ref submit_async's
   /// @ref PendingBatch returns OK; after a failure it is undefined.
   ///
-  /// Kernels must write every byte the host reads. In test builds (the core
-  /// built with its tests or its test support) the range is poisoned before
-  /// the batch runs: in place the host writes a poison word; copied, a fill of
-  /// the mirror writes it. A byte the kernels skip then shows as the poison in
-  /// that device's results; elsewhere it holds an earlier use's value. So an
-  /// output's bytes are not also an @ref input. The batch holds @p slot until
-  /// it resolves.
+  /// Kernels must write every byte the host reads. In a test process on the
+  /// core's GoogleTest fixtures (`core_test_support`), the range is poisoned
+  /// before the batch runs: in place the host writes a poison word; copied, a
+  /// fill of the mirror at the batch's front writes it, which costs one more
+  /// barrier in a batch that would otherwise open with a dispatch. A byte the
+  /// kernels skip then shows as the poison in that device's results.
+  /// Elsewhere nothing is poisoned, and such a byte holds an earlier use's
+  /// value. So an output's bytes are not also an @ref input. The batch holds
+  /// @p slot until it resolves.
   ///
   /// @code
   /// VKC_ASSIGN(const VkBuffer verdict, batch.output(results, 0, 64));

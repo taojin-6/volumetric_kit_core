@@ -110,13 +110,6 @@ endif()
 
 target_compile_features(core_vulkan PUBLIC cxx_std_17)
 
-# A test build -- the core's own tests, or a sibling's through the test support
-# -- poisons each ring output's range before its batch runs, so a byte a kernel
-# skips shows in its results (CommandBatch::output).
-if(VKC_BUILD_TESTS OR VKC_BUILD_TEST_SUPPORT)
-  target_compile_definitions(core_vulkan PRIVATE VKC_POISON_RING_OUTPUTS)
-endif()
-
 target_include_directories(core_vulkan PUBLIC "${PROJECT_SOURCE_DIR}/include"
                                               "${_vkc_generated_inc}")
 

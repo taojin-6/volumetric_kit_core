@@ -27,6 +27,9 @@ struct RingSlot;  // a slot's buffers and its lease (src, internal)
 
 /// @brief Parameters for @ref HostRing::create.
 ///
+/// TODO: a `host_access` member, defaulting to `HostAccess::Random`, for
+/// write-only slots in write-combined memory, once a writer needs them.
+///
 /// @code
 /// HostRingDesc desc;
 /// desc.slot_bytes = 64 << 10;
@@ -63,8 +66,8 @@ struct HostRingDesc {
 ///
 /// @code
 /// VKC_ASSIGN(HostSlot slot, ring->claim(record_bytes));
-/// VKC_TRY(reader.read(record, slot.data(), slot.capacity()));  // I/O lands
-/// here
+/// // The I/O lands in the slot.
+/// VKC_TRY(reader.read(record, slot.data(), slot.capacity()));
 /// @endcode
 class VKC_VULKAN_API HostSlot {
  public:

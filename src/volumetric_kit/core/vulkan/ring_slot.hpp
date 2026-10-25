@@ -4,12 +4,14 @@
 #pragma once
 
 // Internal to core_vulkan: a HostRing slot's buffers and its lease, which
-// CommandBatch binds. Not installed.
+// CommandBatch binds, and the poison a test process writes into a ring
+// output. Not installed.
 
 #include <atomic>
 #include <cstdint>
 
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/export.hpp"
 
 namespace volumetric_kit::core::detail {
 
@@ -24,7 +26,14 @@ struct RingSlot {
 };
 
 // The word every whole word of an output's range holds before the batch
-// runs, in test builds (CommandBatch::output).
+// runs, while the poison is on (CommandBatch::output).
 inline constexpr std::uint32_t kRingOutputPoison = 0xBADC0FFEU;
+
+// Whether CommandBatch::output poisons its range. Off unless a test process
+// switches it on: the test support's environment does, before its tests run
+// (vulkan_fixture.cpp), so an app or probe never records the poison. Exported
+// for that environment and the tests.
+VKC_VULKAN_API void set_ring_output_poison(bool on) noexcept;
+VKC_VULKAN_API bool ring_output_poison() noexcept;
 
 }  // namespace volumetric_kit::core::detail

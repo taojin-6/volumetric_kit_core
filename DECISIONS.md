@@ -707,8 +707,8 @@ rules after review, the same day.
   allocates nothing. This closes the open "Unified memory" question: cached
   unified memory runs in place, by the device's facts. recon ran the staged
   path there so that Mac runs would exercise a discrete GPU's; the NVIDIA
-  legs exercise it now, the Mac and lavapipe legs run in place, and each ring
-  test asserts its device's path.
+  legs exercise it now, the Mac and lavapipe legs run in place, and each leg
+  names its path (`VKC_EXPECT_RING_PATH`), which every ring test asserts.
 - **A ring slot is a lease.** `claim` marks the slot held and hands out a
   `shared_ptr` whose deleter clears the mark with a release store, which
   `claim` reads with an acquire load. So a slot may be dropped on any thread
@@ -720,11 +720,16 @@ rules after review, the same day.
   regrew a slot. `HostRingTest.ASlotDroppedOnAnotherThreadIsClaimedWithItsBytes`
   catches that only under ThreadSanitizer, so the Mac leg builds the ring's
   tests with it (Debug) and runs them: Apple ships libc++.
-- **A result word a kernel skips shows in test builds.** Where the core is
-  built with its tests or its test support, `output` poisons every whole word
-  of its range before the batch runs -- the host writes it in place, a fill of
-  the mirror when copied -- so a sibling's tests see a kernel that leaves a
-  result word unwritten, rather than an earlier frame's value.
+- **A result word a kernel skips shows in tests.** In a test process,
+  `output` poisons every whole word of its range before the batch runs -- the
+  host writes it in place, a fill of the mirror at the batch's front when
+  copied -- so a sibling's tests see a kernel that leaves a result word
+  unwritten, rather than an earlier frame's value. Copied, that is one more
+  command, and one more barrier in a batch that would otherwise open with a
+  dispatch, so a test's counts may exceed an app's. A run-time switch, which
+  the GoogleTest environment of `core_test_support` turns on: a build option
+  would also poison every app and probe built in a tree with tests, and with
+  them the counts and GPU times a measurement records.
 - **The masks are tested against memory topologies**: separate host/device
   heaps with and without a BAR window, unified heaps with and without private
   types, device-local carve-outs, and feature-gated memory. These cover a

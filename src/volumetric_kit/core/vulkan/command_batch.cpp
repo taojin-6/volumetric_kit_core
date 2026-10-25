@@ -4,6 +4,7 @@
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -41,14 +42,9 @@ struct Retained {
   std::vector<std::shared_ptr<const void>> slots;
 };
 
-// A test build -- the core built with its tests or its test support --
-// poisons each ring output's range before the batch runs
-// (CommandBatch::output).
-#ifdef VKC_POISON_RING_OUTPUTS
-constexpr bool kPoisonOutputs = true;
-#else
-constexpr bool kPoisonOutputs = false;
-#endif
+// The ring-output poison's switch (ring_slot.hpp). Relaxed: the environment
+// sets it before its tests start the threads that record.
+std::atomic<bool> poison_ring_outputs{false};
 
 // `bytes` at `offset` lie inside `buffer`, written so neither sum can wrap.
 Status in_range(const Buffer& buffer, VkDeviceSize offset, VkDeviceSize bytes,
@@ -123,6 +119,18 @@ bool copy_accepts(VkFormat format) {
 }
 
 }  // namespace
+
+namespace detail {
+
+void set_ring_output_poison(bool on) noexcept {
+  poison_ring_outputs.store(on, std::memory_order_relaxed);
+}
+
+bool ring_output_poison() noexcept {
+  return poison_ring_outputs.load(std::memory_order_relaxed);
+}
+
+}  // namespace detail
 
 CommandBatch::CommandBatch(const Device& device)
     : device_(&device), allocator_(nullptr) {
@@ -655,7 +663,7 @@ Result<VkBuffer> CommandBatch::output(const HostSlot& slot, VkDeviceSize offset,
   VKC_TRY(bind(slot, offset, bytes, "CommandBatch::output"));
   const detail::RingSlot& ring = *slot.slot_;
   const bool in_place = !ring.mirror.valid();
-  if constexpr (kPoisonOutputs) {
+  if (detail::ring_output_poison()) {
     // Every whole word of the range, before the batch runs: written by the
     // host in place, and by a fill ahead of every command when copied.
     const VkDeviceSize first = (offset + 3) & ~VkDeviceSize{3};
