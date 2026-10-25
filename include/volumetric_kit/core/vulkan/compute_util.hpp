@@ -203,7 +203,8 @@ VKC_VULKAN_API Status ensure_device_scratch(const Device& device,
 ///        pass's output), bound in place. One or the other, by construction.
 ///
 /// So a call takes both with one check and one binding path. Both are
-/// borrowed, and outlive the call.
+/// borrowed, and outlive the call. Bytes a call moves every frame go through
+/// a @ref HostRing slot instead (@ref CommandBatch::input).
 ///
 /// @code
 /// Status integrate(const StorageInput& depth, ...) {
