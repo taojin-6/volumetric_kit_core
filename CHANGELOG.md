@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Changed
+
+- iOS builds target iOS 27.0: the configure lines in README.md and
+  `cmake/vkc_ios.cmake`, and the iOS configure tests, pass
+  `-DCMAKE_OSX_DEPLOYMENT_TARGET=27.0`.
+
 ## [0.21.0] - 2026-10-24
 
 ### Added

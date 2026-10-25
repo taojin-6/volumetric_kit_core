@@ -9,7 +9,7 @@
 # CMake's own iOS support does the rest, with no toolchain file:
 #
 # cmake -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64
-# -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 [-DMoltenVK_ROOT=<dir>]
+# -DCMAKE_OSX_DEPLOYMENT_TARGET=27.0 [-DMoltenVK_ROOT=<dir>]
 #
 # Reads:
 #

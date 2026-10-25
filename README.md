@@ -80,7 +80,7 @@ configure:
 
 ```sh
 cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=27.0 \
   -DMoltenVK_ROOT=<workspace>/third_party/MoltenVK_ios_v1.4.2/MoltenVK
 ```
 
