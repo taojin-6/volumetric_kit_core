@@ -17,6 +17,7 @@
 #include "command_batch_barriers.hpp"
 #include "device_access.hpp"
 #include "ring_slot.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -185,7 +186,15 @@ CommandBatch& CommandBatch::operator=(CommandBatch&& other) noexcept {
 }
 
 Status CommandBatch::check(Status status) {
-  if (!status.ok() && status_.ok()) status_ = status;
+  if (!status.ok() && status_.ok()) {
+    try {
+      status_ = status;
+    } catch (...) {
+      // Keep the batch poisoned even if copying the diagnostic failed.
+      status_ = Status::out_of_memory({});
+      return exception_status("CommandBatch", Status::Code::OutOfMemory);
+    }
+  }
   return status;
 }
 
@@ -643,7 +652,7 @@ Status CommandBatch::bind(const HostSlot& slot, VkDeviceSize offset,
 }
 
 Result<VkBuffer> CommandBatch::input(const HostSlot& slot, VkDeviceSize offset,
-                                     VkDeviceSize bytes) {
+                                     VkDeviceSize bytes) try {
   VKC_TRY(bind(slot, offset, bytes, "CommandBatch::input"));
   const detail::RingSlot& ring = *slot.slot_;
   if (!ring.mirror.valid()) return ring.host.handle();  // in place
@@ -656,10 +665,13 @@ Result<VkBuffer> CommandBatch::input(const HostSlot& slot, VkDeviceSize offset,
   op.bytes = bytes;
   ops_.push_back(std::move(op));
   return ring.mirror.handle();
+} catch (...) {
+  return check(
+      exception_status("CommandBatch::input", Status::Code::OutOfMemory));
 }
 
 Result<VkBuffer> CommandBatch::output(const HostSlot& slot, VkDeviceSize offset,
-                                      VkDeviceSize bytes) {
+                                      VkDeviceSize bytes) try {
   VKC_TRY(bind(slot, offset, bytes, "CommandBatch::output"));
   const detail::RingSlot& ring = *slot.slot_;
   const bool in_place = !ring.mirror.valid();
@@ -694,6 +706,9 @@ Result<VkBuffer> CommandBatch::output(const HostSlot& slot, VkDeviceSize offset,
   op.bytes = bytes;
   ops_.push_back(std::move(op));
   return ring.mirror.handle();
+} catch (...) {
+  return check(
+      exception_status("CommandBatch::output", Status::Code::OutOfMemory));
 }
 
 // Two transfers run unordered unless they share a buffer one of them writes;
@@ -855,13 +870,29 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
     device_->end_debug_label(cmd, op.name);
   }
   // Each copied ring output after every other command, whenever recorded,
-  // behind one barrier: the kernels wrote the mirrors, and the final barrier
-  // makes the slots' bytes visible to the host.
+  // behind an initial barrier: the kernels wrote the mirrors, and the final
+  // barrier makes the slots' bytes visible to the host.
   if (outputs) {
     detail::batch_barrier(cmd, writes, commands);
     ++barriers;
-    for (const Op& op : ops_) {
+    std::size_t first_output = 0;
+    for (std::size_t i = 0; i < ops_.size(); ++i) {
+      const Op& op = ops_[i];
       if (op.kind != Kind::Output) continue;
+      // Repeated output ranges may overlap, even though their mirror reads
+      // are harmless. Order the host-buffer writes against every output
+      // since the last barrier; disjoint ranges still copy together.
+      for (std::size_t j = first_output; j < i; ++j) {
+        const Op& previous = ops_[j];
+        if (previous.kind == Kind::Output && previous.dst == op.dst &&
+            previous.dst_offset < op.dst_offset + op.bytes &&
+            op.dst_offset < previous.dst_offset + previous.bytes) {
+          detail::batch_barrier(cmd, writes, commands);
+          ++barriers;
+          first_output = i;
+          break;
+        }
+      }
       VkBufferCopy region{};
       region.srcOffset = op.src_offset;
       region.dstOffset = op.dst_offset;

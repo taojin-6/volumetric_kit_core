@@ -42,6 +42,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 - CI: the Mac leg runs the `HostRing` tests built with ThreadSanitizer, and
   each leg names the ring path its device must run (`VKC_EXPECT_RING_PATH`).
 
+### Fixed
+
+- Overlapping `CommandBatch::output` ranges synchronize their copies back to
+  the same host slot. Disjoint output ranges still share one barrier.
+- Moved-from `HostSlot` handles return a null mapping and zero capacity.
+- `HostRing::create`, `HostRing::claim`, `CommandBatch::input` and
+  `CommandBatch::output` return allocation failures as `OutOfMemory`; a failed
+  recording poisons the batch so it cannot submit partial work.
+
 ### Migration
 
 - Nothing breaks: bump the pin. Bytes a call moves every frame -- a frame's

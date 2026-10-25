@@ -12,6 +12,7 @@
 
 #include "device_access.hpp"
 #include "ring_slot.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -21,9 +22,8 @@
 
 namespace volumetric_kit::core {
 
-Result<std::unique_ptr<HostRing>> HostRing::create(const Device& device,
-                                                   Allocator& allocator,
-                                                   const HostRingDesc& desc) {
+Result<std::unique_ptr<HostRing>> HostRing::create(
+    const Device& device, Allocator& allocator, const HostRingDesc& desc) try {
   if (desc.slot_bytes == 0 || desc.slots == 0) {
     return Status::invalid_argument(
         "HostRing::create: slot_bytes and slots must be non-zero");
@@ -41,6 +41,8 @@ Result<std::unique_ptr<HostRing>> HostRing::create(const Device& device,
     VKC_TRY(ring->place(*slot, desc.slot_bytes));
   }
   return ring;
+} catch (...) {
+  return exception_status("HostRing::create", Status::Code::OutOfMemory);
 }
 
 HostRing::HostRing(const Device& device, Allocator& allocator,
@@ -89,7 +91,7 @@ Status HostRing::place(detail::RingSlot& slot, VkDeviceSize bytes) {
   return {};
 }
 
-Result<HostSlot> HostRing::claim(VkDeviceSize bytes) {
+Result<HostSlot> HostRing::claim(VkDeviceSize bytes) try {
   if (bytes == 0) {
     return Status::invalid_argument("HostRing::claim: bytes is 0");
   }
@@ -132,6 +134,8 @@ Result<HostSlot> HostRing::claim(VkDeviceSize bytes) {
   slot.data_ = static_cast<std::uint8_t*>(chosen->host.mapped());
   slot.capacity_ = chosen->host.size();
   return slot;
+} catch (...) {
+  return exception_status("HostRing::claim", Status::Code::OutOfMemory);
 }
 
 }  // namespace volumetric_kit::core

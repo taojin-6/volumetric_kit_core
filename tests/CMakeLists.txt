@@ -112,6 +112,7 @@ if(VKC_WITH_VULKAN)
       vulkan_compute
       vulkan_command_batch
       vulkan_host_ring
+      vulkan_host_slot
       vulkan_timer
       vulkan_external_memory
       vulkan_shared_device)
@@ -131,6 +132,7 @@ if(VKC_WITH_VULKAN)
     vulkan_compute
     vulkan_command_batch
     vulkan_host_ring
+    vulkan_host_slot
     vulkan_timer
     vulkan_external_memory
     vulkan_shared_device
@@ -187,6 +189,16 @@ if(VKC_WITH_VULKAN)
   )
   get_target_property(_vkc_vulkan_type core_vulkan TYPE)
   if(_vkc_vulkan_type STREQUAL "STATIC_LIBRARY")
+    # Replace allocation only in this binary. Failure is armed exclusively
+    # around host-side ring work, before any Vulkan/validation allocation.
+    add_executable(vkc_vulkan_host_ring_allocation_test
+                   vulkan_host_ring_allocation_test.cpp allocation_failure.cpp)
+    target_link_libraries(
+      vkc_vulkan_host_ring_allocation_test
+      PRIVATE volumetric_kit::core_test_support volumetric_kit::core_test_main)
+    vkc_target_warnings(vkc_vulkan_host_ring_allocation_test)
+    _vkc_discover_device_tests(vkc_vulkan_host_ring_allocation_test)
+
     # The executable interposes the loader lookup to inject calibration errors.
     # A shared core binds directly to the loader on macOS (two-level namespace),
     # so this injection runs only against a static core. Pairing and real-device

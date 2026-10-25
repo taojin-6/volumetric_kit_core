@@ -74,10 +74,10 @@ class VKC_VULKAN_API HostSlot {
   /// @brief Construct an empty slot; @ref valid is false.
   HostSlot() noexcept = default;
   /// @return The host mapping, @ref capacity bytes; null when empty.
-  std::uint8_t* data() const noexcept { return data_; }
+  std::uint8_t* data() const noexcept { return valid() ? data_ : nullptr; }
   /// @return Its bytes: at least what @ref HostRing::claim asked for; 0 when
   ///         empty.
-  VkDeviceSize capacity() const noexcept { return capacity_; }
+  VkDeviceSize capacity() const noexcept { return valid() ? capacity_ : 0; }
   /// @return Whether this holds a slot.
   bool valid() const noexcept { return slot_ != nullptr; }
 
@@ -168,7 +168,8 @@ class VKC_VULKAN_API HostRing {
   /// @return The slot; @ref Status::Code::InvalidArgument for 0 bytes, or
   ///         when every slot is held (naming the count); or a grow's
   ///         allocation failure, which leaves that slot empty for a later
-  ///         claim to grow.
+  ///         claim to grow. Allocating the lease can also fail without a
+  ///         grow; the slot stays free for a later claim.
   Result<HostSlot> claim(VkDeviceSize bytes);
 
  private:

@@ -539,7 +539,9 @@ class VKC_VULKAN_API CommandBatch {
   /// @param bytes   Its length; non-zero.
   /// @return The buffer to bind; @ref Status::Code::InvalidArgument for an
   ///         empty @p slot, zero @p bytes, a range past the slot or a
-  ///         moved-from batch; or a poisoned batch's first refusal.
+  ///         moved-from batch; @ref Status::Code::OutOfMemory if retaining
+  ///         the slot or recording commands fails; or a poisoned batch's
+  ///         first refusal. A recording failure poisons the batch.
   Result<VkBuffer> input(const HostSlot& slot, VkDeviceSize offset,
                          VkDeviceSize bytes);
 

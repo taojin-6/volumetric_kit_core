@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <thread>
@@ -253,6 +254,60 @@ TEST_F(HostRingTest, ABatchOfOnlySlotsRecordsWhatItsPathCopies) {
   EXPECT_EQ(after.barriers - before.barriers, copied ? 2U : 0U);
   EXPECT_EQ(after.dispatches - before.dispatches, 0U);
   EXPECT_EQ(after.staging_buffers - before.staging_buffers, 0U);
+}
+
+// Every requested range returns the final kernel's bytes, including repeated
+// and overlapping requests. Sync validation catches unordered copied writes;
+// disjoint copies need no extra barrier. No poison fills mask that count.
+TEST_F(HostRingTest, OverlappingOutputsReturnTheFinalBytesInOrder) {
+  const Unpoisoned unpoisoned;
+  std::unique_ptr<HostRing> results = make_ring(kBytes, 1);
+  ASSERT_NE(results, nullptr);
+  Result<Buffer> src = device_storage_buffer(allocator(), kBytes);
+  ASSERT_TRUE(src.ok()) << src.status().message();
+  const std::vector<std::uint32_t> words = pattern(17);
+  {
+    CommandBatch upload(device(), allocator());
+    ASSERT_TRUE(upload.upload(*src, 0, words.data(), kBytes).ok());
+    ASSERT_TRUE(upload.submit().ok());
+  }
+  using Range = std::pair<VkDeviceSize, VkDeviceSize>;
+  const auto run = [&](const char* name, std::initializer_list<Range> ranges,
+                       std::uint64_t conflicts) {
+    SCOPED_TRACE(name);
+    for (const bool async : {false, true}) {
+      SCOPED_TRACE(async ? "submit_async" : "submit");
+      Result<HostSlot> out = results->claim(kBytes);
+      ASSERT_TRUE(out.ok());
+      const DeviceCounters before = device().counters();
+      CommandBatch batch(device(), allocator());
+      VkBuffer dst = VK_NULL_HANDLE;
+      for (const auto& [offset, bytes] : ranges) {
+        Result<VkBuffer> output = batch.output(*out, offset, bytes);
+        ASSERT_TRUE(output.ok()) << output.status().message();
+        if (dst != VK_NULL_HANDLE) EXPECT_EQ(*output, dst);
+        dst = *output;
+      }
+      ASSERT_TRUE(record(batch, src->handle(), 0, dst, 0, 9).ok());
+      if (async) {
+        Result<PendingBatch> pending = batch.submit_async({}, {});
+        ASSERT_TRUE(pending.ok()) << pending.status().message();
+        ASSERT_TRUE(pending->wait(kLongWaitNs).ok());
+      } else {
+        ASSERT_TRUE(batch.submit().ok());
+      }
+      EXPECT_EQ(words_of(*out), plus(words, 9));
+      EXPECT_EQ(device().counters().barriers - before.barriers,
+                results->in_place() ? 1U : 2U + conflicts);
+    }
+  };
+  run("contained", {{0, kBytes}, {16, 32}}, 1);
+  run("containing", {{16, 32}, {0, kBytes}}, 1);
+  run("duplicate", {{0, kBytes}, {0, kBytes}, {0, kBytes}}, 2);
+  run("partial overlap", {{0, 3 * kBytes / 4}, {kBytes / 2, kBytes / 2}}, 1);
+  run("non-adjacent conflict",
+      {{0, kBytes / 2}, {kBytes / 2, kBytes / 2}, {16, 32}}, 1);
+  run("disjoint", {{kBytes / 2, kBytes / 2}, {0, kBytes / 2}}, 0);
 }
 
 // A word the kernels skip shows the poison, not the earlier use's value: the
@@ -661,7 +716,7 @@ TEST_F(HostRingTest, ASlotDroppedOnAnotherThreadIsClaimedWithItsBytes) {
         break;
       }
       waiter = std::thread(
-          [ran = *std::move(pending), read = *out, words, f]() mutable {
+          [ran = *std::move(pending), read = *out, words = words, f]() mutable {
             EXPECT_TRUE(ran.wait(kLongWaitNs).ok());
             EXPECT_EQ(words_of(read), plus(words, f));
           });
