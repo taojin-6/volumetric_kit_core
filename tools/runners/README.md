@@ -11,8 +11,8 @@ host side, for the family.
 
 | File | Does |
 | --- | --- |
-| `setup-runners.sh <recon\|gfx\|calib\|player\|owner/repo>` | registers a repository's runners on this host |
-| `teardown-runners.sh <recon\|gfx\|calib\|player\|owner/repo>` | stops, deregisters and deletes them |
+| `setup-runners.sh [--user <account>] <recon\|gfx\|calib\|player\|owner/repo>` | registers a repository's runners on this host |
+| `teardown-runners.sh [--user <account>] <recon\|gfx\|calib\|player\|owner/repo>` | stops, deregisters and deletes them |
 | `common.sh` | what the two scripts share |
 | `homebrew-key.sh <formula>...` | prints a cache key of their installed Homebrew versions ([Upgrading Homebrew](#upgrading-homebrew)) |
 
@@ -55,6 +55,32 @@ gh api -X POST repos/taojin-6/<repo>/actions/policies --input - <<'EOF'
 EOF
 ```
 
+## A dedicated account
+
+The runners can run as an account of their own, with no `sudo`, which a user
+who can `sudo` sets up and tears down with `--user`:
+
+```sh
+bash tools/runners/setup-runners.sh --user ci recon
+bash tools/runners/teardown-runners.sh --user ci recon
+```
+
+- The runners live in the account's `~/ci-runners/<repo>`. Their files are
+  written, registered and deregistered as the account, through `sudo -u`,
+  and their services run as it. The `gh` login that mints the tokens stays
+  the invoking user's; the account needs none.
+- The invoking user's home must be closed to the account: mode 700 on a
+  Mac, where every user is in the `staff` group that a home's mode 750 lets
+  in.
+- A `MoltenVK_ROOT` must be a directory the account can reach; setup checks
+  it as the account.
+- Registering takes over any runner of the same name, so setup refuses while
+  the invoking user still has runners of the repository on the host: tear
+  those down first.
+- On Linux the account must not join the `docker` group, which is
+  root-equivalent. Its runners need a Docker daemon of their own, which this
+  tooling does not set up.
+
 ## Linux hosts
 
 1. **Docker Engine**, by the apt-repository method
@@ -79,7 +105,8 @@ EOF
      'apt-get update -qq && apt-get install -y -qq libxext6 libegl1 vulkan-tools >/dev/null && vulkaninfo --summary | grep deviceName'
    ```
 
-3. As the login user (not root):
+3. As the login user (not root), or for another account with `--user`
+   ([A dedicated account](#a-dedicated-account)):
    `bash tools/runners/setup-runners.sh recon`, and again with `gfx`,
    `player` and `taojin-6/volumetric_kit_core`. Each registers 6 runners
    labelled `vk-linux-gpu` -- a run has at
@@ -114,8 +141,10 @@ driver ignores a path that does not exist.
    session, so a `DEVELOPER_DIR` a shell exports does not reach them.
 2. **Homebrew** (<https://brew.sh>) and the formulae the legs use
    ([Upgrading Homebrew](#upgrading-homebrew)).
-3. As the user the jobs run as, in Terminal or over SSH, with conda or any
-   other environment deactivated: `bash tools/runners/setup-runners.sh recon`,
+3. As the user the jobs run as, or for another account with `--user`
+   ([A dedicated account](#a-dedicated-account)), in Terminal or over SSH,
+   with conda or any other environment deactivated:
+   `bash tools/runners/setup-runners.sh recon`,
    and again with `gfx`, `calib`, `player` and
    `taojin-6/volumetric_kit_core`. Each registers 2 runners
    labelled `mac` (Debug and Release in parallel), each a system LaunchDaemon
@@ -220,7 +249,7 @@ the core commit the repository already pins, so it keeps one core pin:
   with:
     formulae: ${{ steps.formulae.outputs.formulae }}
 - name: Cache third-party deps
-  uses: actions/cache@v6
+  uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
   with:
     path: build/_deps
     key: deps-<leg>-brew${{ steps.brew.outputs.key }}-${{ hashFiles('third_party/CMakeLists.txt') }}
@@ -253,7 +282,8 @@ up, then tear the old one down.
 
   The runners stay offline until the host restarts. Resume with
   `bash tools/runners/setup-runners.sh recon`, which starts every runner of
-  the repository that is not running.
+  the repository that is not running. Another account's: `select_args --user
+  <account> recon` in place of `select_repo recon`.
 - **Remove**, on the old host: `bash tools/runners/teardown-runners.sh recon`,
   and again with each other repository there. It uninstalls each runner's
   service (a Mac's daemon only once launchd has let go of it),

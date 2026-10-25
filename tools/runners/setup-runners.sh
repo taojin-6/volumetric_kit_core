@@ -6,30 +6,39 @@
 # hosts (label vk-linux-gpu) or Macs (label mac). README.md has the
 # prerequisites and the layout.
 #
-#   bash tools/runners/setup-runners.sh <recon|gfx|calib|player|owner/repo>
+#   bash tools/runners/setup-runners.sh [--user <account>] <recon|gfx|calib|player|owner/repo>
 #
 # Run as the user that owns ~/ci-runners, in a terminal or over SSH; it calls
-# sudo for the services. Safe to re-run: registered runners are kept, so no
-# new token is needed, a stopped one is started, and a running one restarts
-# only when its .env changed. A MoltenVK_ROOT the shell sets goes into each
-# runner's .env, for the iOS builds (README.md, "Macs").
+# sudo for the services. With --user, the runners are another account's, in
+# its home, and run as it (README.md, "A dedicated account"). Safe to re-run:
+# registered runners are kept, so no new token is needed, a stopped one is
+# started, and a running one restarts only when its .env changed. A
+# MoltenVK_ROOT the shell sets goes into each runner's .env, for the iOS
+# builds (README.md, "Macs").
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-[ $# -eq 1 ] || {
-  echo "usage: $0 <recon|gfx|calib|player|owner/repo>" >&2
-  exit 2
-}
-select_repo "$1"
+select_args "$@"
 if [ -n "${MoltenVK_ROOT:-}" ]; then
   # Absolute: the jobs run in the runners' own directories.
   case "$MoltenVK_ROOT" in
     /*) ;;
     *) die "MoltenVK_ROOT is not an absolute path: $MoltenVK_ROOT" ;;
   esac
-  [ -d "$MoltenVK_ROOT" ] || die "MoltenVK_ROOT is not a directory: $MoltenVK_ROOT"
+  as_runner test -d "$MoltenVK_ROOT" || die "MoltenVK_ROOT is not a directory: $MoltenVK_ROOT"
+fi
+# Registering takes over any runner of the same name, and this user's own
+# runners of the repository carry the names the account's would get, so they
+# are torn down first.
+own_runners() {
+  local RUNNER_USER="$USER" RUNNER_HOME="$HOME" RUNNER_ROOT="$HOME/ci-runners/${REPO#*/}"
+  find_runner_dirs
+  [ "${#RUNNER_DIRS[@]}" -gt 0 ]
+}
+if [ "$RUNNER_USER" != "$USER" ] && own_runners; then
+  die "$USER has runners of $REPO here: tear them down first, then set up $RUNNER_USER's"
 fi
 
 case "$(uname -m)" in
@@ -94,11 +103,11 @@ if [ "$have" -lt "$N" ]; then
     echo "gh is not authed: get a token at https://github.com/$REPO/settings/actions/runners/new"
     read -r -p "Paste registration token: " TOKEN
   fi
-  mkdir -p "$BASE"
+  as_runner mkdir -p "$BASE"
   TAR="$BASE/actions-runner-$PKG_OS-$PKG_ARCH-$VER.tar.gz"
   # Reuse a cached tarball only if it is a whole archive: an interrupted
   # download leaves a truncated file that tar would choke on.
-  tar tzf "$TAR" >/dev/null 2>&1 || curl -fsSL -o "$TAR" \
+  as_runner tar tzf "$TAR" >/dev/null 2>&1 || as_runner curl -fsSL -o "$TAR" \
     "https://github.com/actions/runner/releases/download/v$VER/actions-runner-$PKG_OS-$PKG_ARCH-$VER.tar.gz"
 fi
 
@@ -112,13 +121,13 @@ i=0
 while [ "$have" -lt "$N" ]; do
   i=$((i + 1))
   dir="$RUNNER_ROOT/runner-$i"
-  if [ -f "$dir/.runner" ] || [ -d "$HOME/actions-runner-$SLUG-$i" ]; then continue; fi
+  if as_runner test -f "$dir/.runner" || as_runner test -d "$RUNNER_HOME/actions-runner-$SLUG-$i"; then continue; fi
   echo "==> Registering $dir"
-  mkdir -p "$dir"
-  tar xzf "$TAR" -C "$dir"
-  (cd "$dir" && ./config.sh --unattended --url "https://github.com/$REPO" \
+  as_runner mkdir -p "$dir"
+  as_runner tar xzf "$TAR" -C "$dir"
+  in_dir "$dir" ./config.sh --unattended --url "https://github.com/$REPO" \
     --token "$TOKEN" --labels "$LABEL" --name "$(hostname -s)-$SLUG-$i" \
-    --work _work --replace)
+    --work _work --replace
   have=$((have + 1))
 done
 find_runner_dirs
@@ -163,7 +172,7 @@ for dir in "${RUNNER_DIRS[@]}"; do
 done
 [ "$broken" -eq 0 ] || die "$broken runner services failed (above): fix the cause and re-run"
 
-echo "Done: ${#RUNNER_DIRS[@]} runners of $REPO labelled '$LABEL', $THREADS build threads each."
+echo "Done: ${#RUNNER_DIRS[@]} runners of $REPO labelled '$LABEL', $THREADS build threads each, run as $RUNNER_USER."
 if [ "$OS" = Linux ]; then
   echo "Check they are running: systemctl list-units 'actions.runner.*' --no-pager"
 else

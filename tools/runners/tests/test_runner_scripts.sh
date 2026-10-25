@@ -27,14 +27,32 @@ stubs="$tmp/stubs"
 runner_files="$tmp/runner-files"
 mkdir -p "$stubs" "$runner_files"
 export CALLS="$tmp/calls.log" RUNNER_FILES="$runner_files"
-export RUNNER_DAEMON_DIR="$tmp/daemons"
+export RUNNER_DAEMON_DIR="$tmp/daemons" STUB_HOMES="$tmp/homes"
 
 # stub NAME BODY: an executable NAME on the stubs' PATH.
 stub() {
   printf '#!/bin/sh\n%s\n' "$2" >"$stubs/$1"
   chmod +x "$stubs/$1"
 }
-stub sudo 'STUB_ROOT=1 exec "$@"'
+# As root; with -u ACCOUNT -H, as an account whose home is $STUB_HOMES/ACCOUNT,
+# which the real user stands in for, and which cannot read $STUB_CLOSED.
+stub sudo 'if [ "$1" = -u ]; then
+  echo "sudo -u $2" >>"$CALLS"
+  [ -d "$STUB_HOMES/$2" ] || { echo "sudo: unknown user $2" >&2; exit 1; }
+  case " $* " in *" ${STUB_CLOSED:-/nonexistent}"*) echo "Permission denied" >&2; exit 1 ;; esac
+  HOME="$STUB_HOMES/$2" STUB_AS="$2"
+  export HOME STUB_AS
+  shift 2
+  [ "$1" != -H ] || shift
+  exec "$@"
+fi
+STUB_ROOT=1 exec "$@"'
+# An account's home is closed to this user: only the account or root deletes
+# in it.
+stub rm 'case " $* " in *" $STUB_HOMES/"*)
+  [ -n "${STUB_AS:-}${STUB_ROOT:-}" ] || { echo "rm: Permission denied" >&2; exit 1; } ;;
+esac
+exec /bin/rm "$@"'
 stub uname 'if [ "$1" = -s ] && [ -n "${STUB_OS:-}" ]; then echo "$STUB_OS"; else exec '"$(command -v uname)"' "$@"; fi'
 stub nproc 'echo "${STUB_CORES:-24}"'
 stub sysctl '[ "$*" = "-n hw.ncpu" ] && echo "${STUB_CORES:-24}"'
@@ -76,6 +94,7 @@ esac'
 # $HOME/.stub-agents. As launchd does, it refuses to bootstrap a loaded
 # service, and a bootout returns before the service is gone: it stays loaded,
 # and running, for two more prints. STUB_BOOTOUT_FAILS makes a daemon's fail.
+# That state is launchd's own, which the rm stub below does not guard.
 stub launchctl '
 echo "launchctl $*" >>"$CALLS"
 kill=""
@@ -102,7 +121,7 @@ case "$1" in
   print)
     if [ -f "${p}unloading" ]; then
       left="$(cat "${p}unloading")"
-      if [ "$left" -gt 0 ]; then echo $((left - 1)) >"${p}unloading"; else rm -f "${p}loaded" "${p}running" "${p}unloading"; fi
+      if [ "$left" -gt 0 ]; then echo $((left - 1)) >"${p}unloading"; else /bin/rm -f "${p}loaded" "${p}running" "${p}unloading"; fi
     fi
     loaded || { echo "Could not find service" >&2; exit 113; }
     if [ -f "${p}running" ]; then echo "	state = running"; else echo "	state = not running"; fi ;;
@@ -114,7 +133,7 @@ case "$1" in
     [ -n "${STUB_START_FAILS:-}" ] || touch "${p}running" ;;
   kickstart)
     loaded && [ ! -f "${p}unloading" ] || exit 113
-    [ -z "$kill" ] || rm -f "${p}running"
+    [ -z "$kill" ] || /bin/rm -f "${p}running"
     [ -n "${STUB_START_FAILS:-}" ] || touch "${p}running" ;;
   bootout)
     loaded || exit 113
@@ -165,11 +184,12 @@ real_home="$HOME"
 user="${USER:-$(id -un)}"
 export USER="$user"
 
-# fresh_home: an empty HOME, daemon directory and calls log.
+# fresh_home: an empty HOME, daemon directory and calls log, and no other
+# account.
 fresh_home() {
   export HOME="$tmp/home"
-  rm -rf "$HOME" "$RUNNER_DAEMON_DIR"
-  mkdir -p "$HOME" "$RUNNER_DAEMON_DIR"
+  rm -rf "$HOME" "$RUNNER_DAEMON_DIR" "$STUB_HOMES"
+  mkdir -p "$HOME" "$RUNNER_DAEMON_DIR" "$STUB_HOMES"
   : >"$CALLS"
 }
 
@@ -761,6 +781,127 @@ for os in Linux Darwin; do
     "$(calls "$other_calls") $(touched recon) $(running "$other") $(running ci-runners/volumetric_kit_recon/runner-1)" \
     "0 0 yes yes"
 done
+
+# --- Another account, with --user ------------------------------------------
+
+# With --user, the runners are another account's: registered, their files
+# written and deregistered as it, through sudo, in its home, and their
+# services run as it. This user's runners of other repositories are left
+# alone; its own of the same repository stop setup, since the account's would
+# take over their names. An account that does not exist, or a name that is no
+# login name, is refused before anything is touched; this user's own name is
+# no other account.
+account=ci
+# in_account CMD...: CMD with HOME the account's, for the helpers above.
+in_account() {
+  local HOME="$STUB_HOMES/$account"
+  "$@"
+}
+for os in Linux Darwin; do
+  export STUB_OS="$os"
+  if [ "$os" = Linux ]; then n=6 label=vk-linux-gpu; else n=2 label=mac; fi
+  fresh_home
+  mkdir -p "$STUB_HOMES/$account"
+  runner ci-runners/volumetric_kit_gfx/runner-1 gfx "$(levels 2)\n"
+  in_account cache_tarball
+  mkdir -p "$tmp/MoltenVK"
+  status=0
+  MoltenVK_ROOT="$tmp/MoltenVK" setup --user "$account" recon || status=$?
+  expect "setup for another account succeeds ($os)" "$status" 0
+  [ "$status" -eq 0 ] || sed 's/^/     | /' "$tmp/out"
+  registered=0 services=0 up=0
+  for i in $(seq 1 "$n"); do
+    d="ci-runners/volumetric_kit_recon/runner-$i"
+    grep -qF "config $d --unattended --url https://github.com/taojin-6/volumetric_kit_recon --token REGTOKEN --labels $label --name $host-recon-$i " "$CALLS" &&
+      registered=$((registered + 1))
+    [ "$(in_account installed "$d")" = no ] || services=$((services + 1))
+    [ "$(in_account running "$d")" = no ] || up=$((up + 1))
+  done
+  expect "it registers $n runners in the account's home, as the account, and installs and runs their services ($os)" \
+    "$registered $(calls '^config ') $services $up $([ -d "$HOME/ci-runners/volumetric_kit_recon" ] && echo mine || echo none)" \
+    "$n $n $n $n none"
+  expect "they get the cores split across them, and MoltenVK_ROOT ($os)" \
+    "$(in_account env_of ci-runners/volumetric_kit_recon/runner-1)" \
+    "$(levels "$(share "$n")")
+MoltenVK_ROOT=$tmp/MoltenVK"
+  ahome="$STUB_HOMES/$account"
+  if [ "$os" = Linux ]; then
+    expect "each service is installed as the account (Linux)" \
+      "$(calls "^svc $ahome/ci-runners/volumetric_kit_recon/runner-[0-9]* install $account\$")" "$n"
+  else
+    d=ci-runners/volumetric_kit_recon/runner-1
+    daemon="$(in_account daemon_of "$d")"
+    expect "each daemon runs the runner as the account, with its HOME and logs (Darwin)" \
+      "$(grep -c -F -e "<string>$ahome/$d/runsvc.sh</string>" -e "<key>UserName</key><string>$account</string>" \
+        -e "<key>HOME</key><string>$ahome</string>" -e "<key>USER</key><string>$account</string>" \
+        -e "<string>$ahome/Library/Logs/$(in_account label_of "$d")/stdout.log</string>" "$daemon") $([ -d "$ahome/Library/Logs/$(in_account label_of "$d")" ] && echo logs)" \
+      "5 logs"
+  fi
+  expect "this user's runners of another repository are left alone ($os)" \
+    "$(touched gfx) $(env_of ci-runners/volumetric_kit_gfx/runner-1) $(running ci-runners/volumetric_kit_gfx/runner-1)" \
+    "0 $(levels 2) yes"
+  expect "it says whom they run as ($os)" "$(grep -c "^Done: $n runners .*, run as $account\.\$" "$tmp/out")" 1
+
+  : >"$CALLS"
+  status=0
+  setup --user "$account" recon || status=$?
+  expect "a re-run for the account asks gh for nothing, registers nothing and changes no service ($os)" \
+    "$status $(calls '^(config|gh|curl) ') $(changes)" "0 0 0"
+
+  runner ci-runners/volumetric_kit_recon/runner-1 recon
+  : >"$CALLS"
+  status=0
+  setup --user "$account" recon || status=$?
+  expect "this user's own runners of the repository stop setup for the account, before any change ($os)" \
+    "$status $(grep -c "has runners of taojin-6/volumetric_kit_recon here: tear them down first" "$tmp/out") $(calls '^(config|svc|gh|curl|launchctl) ')" \
+    "1 1 0"
+  rm -f "$(daemon_of ci-runners/volumetric_kit_recon/runner-1)"
+  rm -rf "$HOME/ci-runners/volumetric_kit_recon"
+
+  : >"$CALLS"
+  status=0
+  teardown --user "$account" recon || status=$?
+  remaining=""
+  for dir in "$ahome"/ci-runners/*/runner-* "$HOME"/ci-runners/*/runner-*; do
+    [ -d "$dir" ] && remaining="$remaining ${dir#"$tmp"/}"
+  done
+  expect "teardown for the account deregisters and deletes its runners, and only them ($os)" \
+    "$status $(calls '^config ci-runners/volumetric_kit_recon/runner-[0-9]* remove --token RMTOKEN$')$remaining | $(daemons)" \
+    "0 $n home/ci-runners/volumetric_kit_gfx/runner-1 | $(basename "$(daemon_of ci-runners/volumetric_kit_gfx/runner-1)") "
+  expect "it leaves this user's runner running ($os)" \
+    "$(touched gfx) $(running ci-runners/volumetric_kit_gfx/runner-1)" "0 yes"
+done
+
+# Refused: no such account, or no login name; nothing is touched. Each name
+# but the first has a home, so only the name check refuses it. This user's own
+# name sets up this user's runners, with no sudo to any account.
+export STUB_OS=Linux os=Linux
+fresh_home
+mkdir -p "$STUB_HOMES/-x" "$STUB_HOMES/c i" "$STUB_HOMES/../ci"
+for name in nobody-here -x 'c i' '../ci' ''; do
+  status=0
+  setup --user "$name" recon || status=$?
+  expect "setup refuses the account '$name', touching nothing" \
+    "$status $(calls '^(config|svc|gh|curl|launchctl) ')" "2 0"
+  status=0
+  teardown --user "$name" recon || status=$?
+  expect "teardown refuses the account '$name', touching nothing" \
+    "$status $(calls '^(config|svc|gh|curl|launchctl) ')" "2 0"
+done
+# A MoltenVK_ROOT the account cannot read stops setup before any change.
+mkdir -p "$STUB_HOMES/$account" "$tmp/closed/MoltenVK"
+: >"$CALLS"
+status=0
+MoltenVK_ROOT="$tmp/closed/MoltenVK" STUB_CLOSED="$tmp/closed" setup --user "$account" player || status=$?
+expect "a MoltenVK_ROOT the account cannot read stops setup, naming it, before any change" \
+  "$status $(grep -c "^error: MoltenVK_ROOT is not a directory: $tmp/closed/MoltenVK\$" "$tmp/out") $(calls '^(config|svc|gh|curl|launchctl) ')" \
+  "1 1 0"
+cache_tarball
+: >"$CALLS"
+status=0
+setup --user "$user" recon || status=$?
+expect "--user naming this user sets up this user's runners, as plain setup does" \
+  "$status $(calls '^config ci-runners/volumetric_kit_recon/runner-') $(calls '^sudo -u ')" "0 6 0"
 
 # --- Teardown ---------------------------------------------------------------
 

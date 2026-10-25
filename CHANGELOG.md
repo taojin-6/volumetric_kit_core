@@ -27,6 +27,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   buffer may take `HostAccess::Random`.
 - `DeviceCounters::dispatches` and `DeviceCounters::barriers`: the dispatches
   and pipeline barriers the device's batches record.
+- `tools/runners/`: `--user <account>` sets up or tears down runners that run
+  as another account, in its home, its files written as it through `sudo -u`
+  ([tools/runners/README.md](tools/runners/README.md#a-dedicated-account)).
 
 ### Changed
 

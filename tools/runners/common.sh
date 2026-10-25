@@ -3,17 +3,65 @@
 # Copyright (c) 2026 Tao Jin
 #
 # Sourced by setup-runners.sh and teardown-runners.sh: which repository a
-# runner belongs to, where its files live, and how its service is driven.
-# README.md describes the layout.
+# runner belongs to, which account it runs as, where its files live, and how
+# its service is driven. README.md describes the layout.
 
-# Every repository's runners live under one directory, each repository's in its
-# own subdirectory, so several repositories share a host without colliding.
-BASE="$HOME/ci-runners"
 OS="$(uname -s)"
+: "${USER:=$(id -un)}" # not every shell sets it
 
 die() {
   echo "error: $*" >&2
   exit 1
+}
+
+# The account the runners run as and its home: this user, or with --user
+# another account, whose files this user reaches through sudo (README.md, "A
+# dedicated account"). Every repository's runners live under one directory
+# there, each repository's in its own subdirectory, so several repositories
+# share a host without colliding.
+RUNNER_USER="$USER"
+RUNNER_HOME="$HOME"
+BASE="$RUNNER_HOME/ci-runners"
+
+# select_account NAME: the runners run as account NAME, or exits 2 if there
+# is no such account. Before select_repo, which places them in its home.
+select_account() {
+  local home
+  [ "$1" != "$USER" ] || return 0
+  # A login name, so it can be neither a sudo option nor a path.
+  if ! [[ $1 =~ ^[a-z_][a-z0-9_-]*$ ]] ||
+    ! home="$(sudo -u "$1" -H sh -c 'printf %s "$HOME"')" || [ -z "$home" ]; then
+    echo "no account '$1' to run the runners as" >&2
+    exit 2
+  fi
+  RUNNER_USER="$1"
+  RUNNER_HOME="$home"
+  BASE="$RUNNER_HOME/ci-runners"
+}
+
+# as_runner CMD...: CMD as the runners' account, on this shell's PATH, which
+# registering records as the runners' own (README.md, "Macs").
+as_runner() {
+  if [ "$RUNNER_USER" = "$USER" ]; then
+    "$@"
+  else
+    sudo -u "$RUNNER_USER" -H env PATH="$PATH" "$@"
+  fi
+}
+
+# in_dir DIR CMD...: CMD run in DIR as the runners' account.
+in_dir() {
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  as_runner sh -c 'cd "$1" && shift && exec "$@"' in_dir "$@"
+}
+
+# dirs_of PREFIX...: each directory whose path is PREFIX and more, as the
+# runners' account sees them, one a line, without the trailing slash.
+dirs_of() {
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  as_runner sh -c 'for p; do for d in "$p"*/; do
+    if [ -d "$d" ]; then printf "%s\n" "${d%/}"; fi
+  done; done' dirs_of "$@"
 }
 
 # Sets REPO, SLUG and RUNNER_ROOT for a repository, or exits 2: one of the
@@ -44,19 +92,32 @@ select_repo() {
   RUNNER_ROOT="$BASE/${REPO#*/}"
 }
 
-# Each runner is a service of the host's init system, run as this user:
-# systemd's, through the runner's own svc.sh, on Linux, and on macOS a system
-# LaunchDaemon in DAEMON_DIR, which comes up at boot with nobody logged in
-# (DECISIONS.md, 2026-10-17). The tests point DAEMON_DIR elsewhere.
+# select_args ARGS...: the scripts' arguments, [--user <account>] <repo>: the
+# account, then the repository, or exits 2.
+select_args() {
+  if [ "${1:-}" = --user ] && [ $# -ge 2 ]; then
+    select_account "$2"
+    shift 2
+  fi
+  [ $# -eq 1 ] || {
+    echo "usage: $0 [--user <account>] <recon|gfx|calib|player|owner/repo>" >&2
+    exit 2
+  }
+  select_repo "$1"
+}
+
+# Each runner is a service of the host's init system, run as the runners'
+# account: systemd's, through the runner's own svc.sh, on Linux, and on macOS
+# a system LaunchDaemon in DAEMON_DIR, which comes up at boot with nobody
+# logged in (DECISIONS.md, 2026-10-17). The tests point DAEMON_DIR elsewhere.
 DAEMON_DIR="${RUNNER_DAEMON_DIR:-/Library/LaunchDaemons}"
-: "${USER:=$(id -un)}" # the user they run as; not every shell sets it
 
 # svc DIR ARGS...: the runner's own service script, run from its directory as
-# root (Linux only).
+# root (Linux only). Root changes directory itself: another account's home
+# may be closed to this user.
 svc() {
-  local dir="$1"
-  shift
-  (cd "$dir" && sudo ./svc.sh "$@")
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  sudo sh -c 'cd "$1" && shift && exec ./svc.sh "$@"' svc "$@"
 }
 
 # daemon_label DIR: runner $1's service name, which registering wrote into its
@@ -65,19 +126,19 @@ svc() {
 # for a runner that never finished registering.
 daemon_label() {
   local label service
-  label="$(sed -n 's/^SVC_NAME="\(.*\)"$/\1/p' "$1/svc.sh" 2>/dev/null | head -n 1 | tr ' ' _)"
-  if [ -z "$label" ] && [ -f "$1/.service" ]; then
-    service="$(head -n 1 "$1/.service")"
+  label="$(as_runner sed -n 's/^SVC_NAME="\(.*\)"$/\1/p' "$1/svc.sh" 2>/dev/null | head -n 1 | tr ' ' _)"
+  if [ -z "$label" ] && as_runner test -f "$1/.service"; then
+    service="$(as_runner head -n 1 "$1/.service")"
     case "$service" in */*.plist) label="$(basename "$service" .plist)" ;; esac
   fi
   echo "$label"
 }
 
 # daemon_xml DIR LABEL: the LaunchDaemon that runs runner $1: the runner's own
-# LaunchAgent template as this user, plus KeepAlive, which restarts a listener
-# that exits, and the HOME and USER a login session would give it.
+# LaunchAgent template as the runners' account, plus KeepAlive, which restarts
+# a listener that exits, and the HOME and USER a login session would give it.
 daemon_xml() {
-  local logs="$HOME/Library/Logs/$2"
+  local logs="$RUNNER_HOME/Library/Logs/$2"
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -85,7 +146,7 @@ daemon_xml() {
 <dict>
   <key>Label</key><string>$2</string>
   <key>ProgramArguments</key><array><string>$1/runsvc.sh</string></array>
-  <key>UserName</key><string>$USER</string>
+  <key>UserName</key><string>$RUNNER_USER</string>
   <key>WorkingDirectory</key><string>$1</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -94,8 +155,8 @@ daemon_xml() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>ACTIONS_RUNNER_SVC</key><string>1</string>
-    <key>HOME</key><string>$HOME</string>
-    <key>USER</key><string>$USER</string>
+    <key>HOME</key><string>$RUNNER_HOME</string>
+    <key>USER</key><string>$RUNNER_USER</string>
   </dict>
   <key>ProcessType</key><string>Interactive</string>
   <key>SessionCreate</key><true/>
@@ -137,16 +198,16 @@ remove_launch_agent() {
   [ "$OS" = Darwin ] || return 0
   label="$(daemon_label "$1")"
   [ -n "$label" ] || return 0
-  agent="$HOME/Library/LaunchAgents/$label.plist"
-  target="gui/$(id -u)/$label"
-  [ -f "$agent" ] || target_loaded "$target" || return 0
+  agent="$RUNNER_HOME/Library/LaunchAgents/$label.plist"
+  target="gui/$(as_runner id -u)/$label"
+  as_runner test -f "$agent" || target_loaded "$target" || return 0
   # As root, which reaches a login session from SSH too; with none, nothing runs.
   sudo launchctl bootout "$target" 2>/dev/null || true
   wait_for 30 target_gone "$target" || {
     echo "error: launchd still has $target loaded" >&2
     return 1
   }
-  rm -f "$agent"
+  as_runner rm -f "$agent"
 }
 
 # Whether runner $1's service is installed: on macOS whether its daemon is,
@@ -154,7 +215,7 @@ remove_launch_agent() {
 service_installed() {
   local label
   if [ "$OS" = Linux ]; then
-    [ -f "$1/.service" ]
+    as_runner test -f "$1/.service"
   else
     label="$(daemon_label "$1")"
     [ -n "$label" ] && [ -f "$DAEMON_DIR/$label.plist" ]
@@ -168,7 +229,7 @@ service_installed() {
 install_service() {
   local label plist tmp
   if [ "$OS" = Linux ]; then
-    svc "$1" install "$USER" # as this user, not root
+    svc "$1" install "$RUNNER_USER" # as the runners' account, not root
     return
   fi
   label="$(daemon_label "$1")"
@@ -178,11 +239,11 @@ install_service() {
   }
   plist="$DAEMON_DIR/$label.plist"
   tmp="$(mktemp)" || return 1
-  if mkdir -p "$HOME/Library/Logs/$label" &&
-    cp "$1/bin/runsvc.sh" "$1/runsvc.sh" && chmod u+x "$1/runsvc.sh" &&
+  if as_runner mkdir -p "$RUNNER_HOME/Library/Logs/$label" &&
+    as_runner cp "$1/bin/runsvc.sh" "$1/runsvc.sh" && as_runner chmod u+x "$1/runsvc.sh" &&
     daemon_xml "$1" "$label" >"$tmp" && plutil -lint "$tmp" >/dev/null &&
     sudo cp "$tmp" "$plist" && sudo chmod 644 "$plist" &&
-    echo "$plist" >"$1/.service"; then
+    echo "$plist" | as_runner tee "$1/.service" >/dev/null; then
     rm -f "$tmp"
     return 0
   fi
@@ -196,53 +257,56 @@ install_service() {
 uninstall_service() {
   local label
   if [ "$OS" = Linux ]; then
-    [ ! -f "$1/.service" ] || svc "$1" uninstall
+    ! as_runner test -f "$1/.service" || svc "$1" uninstall
     return
   fi
   label="$(daemon_label "$1")"
   if [ -n "$label" ]; then
     stop_service "$1" && sudo rm -f "$DAEMON_DIR/$label.plist" && remove_launch_agent "$1" || return 1
   fi
-  rm -f "$1/.service"
+  as_runner rm -f "$1/.service"
 }
 
 # Whether runner directory $1 is registered to $REPO. Its .runner records the
 # repository URL; the closing quote stops one name matching another's prefix.
 registered_to_repo() {
-  grep -qsF "github.com/${REPO}\"" "${1%/}/.runner"
+  as_runner grep -qsF "github.com/${REPO}\"" "${1%/}/.runner"
 }
 
 # Fills RUNNER_DIRS with this repository's registered runners on this host:
 # each ~/ci-runners/<repo>/runner-*, and each flat ~/actions-runner-* of hosts
 # set up before that layout, whose .runner names $REPO -- that glob matches
-# every repository's.
+# every repository's. ~ is the runners' account's home.
 find_runner_dirs() {
   RUNNER_DIRS=()
   local dir
-  for dir in "$RUNNER_ROOT"/runner-*/ "$HOME"/actions-runner-*/; do
-    if registered_to_repo "$dir"; then RUNNER_DIRS+=("${dir%/}"); fi
-  done
+  while IFS= read -r dir; do
+    if registered_to_repo "$dir"; then RUNNER_DIRS+=("$dir"); fi
+  done < <(dirs_of "$RUNNER_ROOT/runner-" "$RUNNER_HOME/actions-runner-")
 }
 
+# The awk program of set_env: KEY=VALUE in place of the first KEY line, other
+# KEY lines dropped, every other line kept.
+# shellcheck disable=SC2016 # awk's own variables
+SET_ENV_AWK='
+  index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
+  { print }
+  END { if (!done) print k "=" v }
+'
+
 # set_env FILE KEY VALUE: makes KEY=VALUE the only KEY line in FILE, in place
-# of the first old one, keeping every other line. Sets ENV_CHANGED=1 when the
-# file changes.
+# of the first old one, keeping every other line, as the runners' account.
+# Sets ENV_CHANGED=1 when the file changes.
 set_env() {
-  local file="$1" key="$2" value="$3" tmp
-  touch "$file"
-  tmp="$(mktemp "${file}.XXXXXX")"
-  awk -v k="$key" -v v="$value" '
-    index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
-    { print }
-    END { if (!done) print k "=" v }
-  ' "$file" >"$tmp"
-  if cmp -s "$tmp" "$file"; then
-    rm -f "$tmp"
-  else
-    mv -f "$tmp" "$file"
-    # shellcheck disable=SC2034 # setup-runners.sh reads it
-    ENV_CHANGED=1
-  fi
+  local out
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  out="$(as_runner sh -c '
+    touch "$1" && tmp="$(mktemp "$1.XXXXXX")" || exit 1
+    awk -v k="$2" -v v="$3" "$4" "$1" >"$tmp" || { rm -f "$tmp"; exit 1; }
+    if cmp -s "$tmp" "$1"; then rm -f "$tmp"; else mv -f "$tmp" "$1" && echo changed; fi
+  ' set_env "$1" "$2" "$3" "$SET_ENV_AWK")" || return 1
+  # shellcheck disable=SC2034 # setup-runners.sh reads it
+  [ "$out" != changed ] || ENV_CHANGED=1
 }
 
 # Whether runner directory $1's service is running: on Linux what svc.sh

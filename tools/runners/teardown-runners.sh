@@ -6,22 +6,19 @@
 # host, leaving other repositories' runners alone. Use it to decommission or
 # migrate a host (README.md).
 #
-#   bash tools/runners/teardown-runners.sh <recon|gfx|calib|player|owner/repo>
+#   bash tools/runners/teardown-runners.sh [--user <account>] <recon|gfx|calib|player|owner/repo>
 #
-# Run as the user that owns the runner directories, with gh authed, which
-# deregistering needs: without it, no registered runner is touched. It calls
-# sudo to uninstall the services. It keeps going past a runner it cannot
-# remove, and exits non-zero if any is left.
+# Run as the user that owns the runner directories, or with --user as one who
+# can sudo to the account that does, with gh authed, which deregistering
+# needs: without it, no registered runner is touched. It calls sudo to
+# uninstall the services. It keeps going past a runner it cannot remove, and
+# exits non-zero if any is left.
 set -uo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-[ $# -eq 1 ] || {
-  echo "usage: $0 <recon|gfx|calib|player|owner/repo>" >&2
-  exit 2
-}
-select_repo "$1"
+select_args "$@"
 
 # The repository's registered runners, in either layout, and its unregistered
 # leftovers -- a directory under ~/ci-runners/<repo>/, or one of recon's
@@ -29,9 +26,9 @@ select_repo "$1"
 # removal that did not finish.
 find_runner_dirs
 leftovers=()
-for dir in "$RUNNER_ROOT"/runner-*/ "$HOME/actions-runner-$SLUG"-*/; do
-  if [ -d "$dir" ] && [ ! -f "${dir}.runner" ]; then leftovers+=("${dir%/}"); fi
-done
+while IFS= read -r dir; do
+  if ! as_runner test -f "$dir/.runner"; then leftovers+=("$dir"); fi
+done < <(dirs_of "$RUNNER_ROOT/runner-" "$RUNNER_HOME/actions-runner-$SLUG-")
 if [ "$((${#RUNNER_DIRS[@]} + ${#leftovers[@]}))" -eq 0 ]; then
   echo "No runner of $REPO on this host (looked in $RUNNER_ROOT/ and ~/actions-runner-*/)."
   exit 0
@@ -55,13 +52,13 @@ for dir in ${RUNNER_DIRS[@]+"${RUNNER_DIRS[@]}"}; do # empty: set -u, bash 3.2
   # directory is deleted only once it is deregistered: it holds the
   # credentials deregistering needs, so deleting it first would strand an
   # offline registration that nothing on this host can remove.
-  if ! { uninstall_service "$dir" >/dev/null && (cd "$dir" && ./config.sh remove --token "$token"); }; then
+  if ! { uninstall_service "$dir" >/dev/null && in_dir "$dir" ./config.sh remove --token "$token"; }; then
     echo "    Kept $dir (still registered, and offline): re-run, or remove it under"
     echo "    Settings -> Actions -> Runners and then: rm -rf $dir"
     kept=$((kept + 1))
     continue
   fi
-  rm -rf "$dir"
+  as_runner rm -rf "$dir"
 done
 for dir in ${leftovers[@]+"${leftovers[@]}"}; do
   echo "==> Removing $dir (not registered)"
@@ -72,7 +69,7 @@ for dir in ${leftovers[@]+"${leftovers[@]}"}; do
     kept=$((kept + 1))
     continue
   fi
-  rm -rf "$dir"
+  as_runner rm -rf "$dir"
 done
 
 if command -v gh >/dev/null 2>&1; then

@@ -54,7 +54,7 @@ jobs:
             vulkan-validationlayers glslc spirv-tools libxext6 libegl1
 
       # Other repositories share the host; leave no token in the checkout.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
