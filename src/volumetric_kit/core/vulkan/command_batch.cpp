@@ -634,7 +634,7 @@ Status CommandBatch::readback(const Buffer& src, VkDeviceSize offset,
 }
 
 Status CommandBatch::bind(const HostSlot& slot, VkDeviceSize offset,
-                          VkDeviceSize bytes, const char* call) {
+                          VkDeviceSize bytes, bool output, const char* call) {
   VKC_TRY(check(usable()));
   if (!slot.valid()) {
     return check(
@@ -647,13 +647,19 @@ Status CommandBatch::bind(const HostSlot& slot, VkDeviceSize offset,
     return check(Status::invalid_argument(std::string(call) +
                                           ": the range lies past the slot"));
   }
+  // On every device, before the lease and the poison.
+  if (output && slot.slot_->write_only) {
+    return check(Status::invalid_argument(
+        std::string(call) +
+        ": the slot's ring is HostAccess::SequentialWrite, inputs only"));
+  }
   slots_.push_back(slot.slot_);
   return {};
 }
 
 Result<VkBuffer> CommandBatch::input(const HostSlot& slot, VkDeviceSize offset,
                                      VkDeviceSize bytes) try {
-  VKC_TRY(bind(slot, offset, bytes, "CommandBatch::input"));
+  VKC_TRY(bind(slot, offset, bytes, false, "CommandBatch::input"));
   const detail::RingSlot& ring = *slot.slot_;
   if (!ring.mirror.valid()) return ring.host.handle();  // in place
   Op op;
@@ -672,7 +678,7 @@ Result<VkBuffer> CommandBatch::input(const HostSlot& slot, VkDeviceSize offset,
 
 Result<VkBuffer> CommandBatch::output(const HostSlot& slot, VkDeviceSize offset,
                                       VkDeviceSize bytes) try {
-  VKC_TRY(bind(slot, offset, bytes, "CommandBatch::output"));
+  VKC_TRY(bind(slot, offset, bytes, true, "CommandBatch::output"));
   const detail::RingSlot& ring = *slot.slot_;
   const bool in_place = !ring.mirror.valid();
   if (detail::ring_output_poison()) {

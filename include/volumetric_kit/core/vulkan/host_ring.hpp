@@ -9,15 +9,17 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 
-class Allocator;
 class CommandBatch;
 class Device;
 
@@ -26,9 +28,6 @@ struct RingSlot;  // a slot's buffers and its lease (src, internal)
 }  // namespace detail
 
 /// @brief Parameters for @ref HostRing::create.
-///
-/// TODO: a `host_access` member, defaulting to `HostAccess::Random`, for
-/// write-only slots in write-combined memory, once a writer needs them.
 ///
 /// @code
 /// HostRingDesc desc;
@@ -45,6 +44,21 @@ struct HostRingDesc {
   /// The slots' debug name, `library.buffer`; borrowed (a string literal).
   /// Null leaves them unnamed.
   const char* name = nullptr;
+  /// How the host touches the slots. It places their mapped buffer within the
+  /// shape the device gives the ring (@ref HostRing::in_place), never changes
+  /// the shape:
+  /// - `HostAccess::Random`: the host reads as well as writes -- results, or
+  ///   an input it parses in place. Cached memory.
+  /// - `HostAccess::SequentialWrite`: the host fills each slot front to back
+  ///   and never reads it -- a frame copied in for kernels. Write-combined
+  ///   wherever the shape's mapped memory has an uncached type (system RAM
+  ///   staging on a discrete GPU), which the host fills and the GPU copies
+  ///   faster; else the same cached type as `Random`. Its slots are inputs
+  ///   only: @ref CommandBatch::output refuses them.
+  ///
+  /// Unlike @ref BufferDesc::host_access, the default is `Random`: a ring
+  /// that binds an output reads it.
+  HostAccess host_access = HostAccess::Random;
 };
 
 /// @brief One slot of a @ref HostRing: host-mapped bytes that a batch binds
@@ -59,10 +73,19 @@ struct HostRingDesc {
 /// failed leaves the slot to the device until the device is destroyed. Drop a
 /// slot once its frame is done.
 ///
-/// The mapping is cached and coherent: the host writes what kernels read and
-/// reads what they wrote, with no flush. Kernels read the bytes as they stand
-/// at the submit; bytes they write are there once the batch has resolved. A
-/// slot may outlive its ring; the ring's device must outlive both.
+/// The mapping is coherent, so nothing is flushed: kernels read the bytes as
+/// they stand at the submit, and bytes they write are there once the batch
+/// has resolved. How it is cached follows the ring's
+/// @ref HostRingDesc::host_access (@ref memory_info says which type it took):
+/// - `HostAccess::Random`: cached. The host writes what kernels read and
+///   reads what they wrote.
+/// - `HostAccess::SequentialWrite`: write-combined wherever the slot's
+///   placement has an uncached type, else cached. The host writes the bytes
+///   front to back and never reads them; a read through @ref data is not
+///   refused, and its result is undefined, as
+///   @ref HostAccess::SequentialWrite says. The slot is an input only.
+///
+/// A slot may outlive its ring; the ring's device must outlive both.
 ///
 /// @code
 /// VKC_ASSIGN(HostSlot slot, ring->claim(record_bytes));
@@ -80,6 +103,10 @@ class VKC_VULKAN_API HostSlot {
   VkDeviceSize capacity() const noexcept { return valid() ? capacity_ : 0; }
   /// @return Whether this holds a slot.
   bool valid() const noexcept { return slot_ != nullptr; }
+  /// @return The memory type @ref data maps -- the slot's own buffer in
+  ///         place, its staging where copied -- as @ref Buffer::memory_info
+  ///         reports it; empty when the slot is.
+  std::optional<MemoryInfo> memory_info() const noexcept;
 
  private:
   friend class CommandBatch;
@@ -97,13 +124,16 @@ class VKC_VULKAN_API HostSlot {
 /// The device's memory gives every slot one of two shapes, fixed at
 /// @ref create (@ref in_place):
 /// - **In place**, where device-mapped memory is cached, as unified memory's
-///   one pool is: one `MemoryUsage::DeviceMapped` storage buffer with
-///   `HostAccess::Random`, which kernels bind and the host maps.
-/// - **Copied** everywhere else: a `MemoryUsage::Staging` buffer
-///   (`HostAccess::Random`) and a `MemoryUsage::DeviceOnly` mirror of the same
-///   size. @ref CommandBatch::input copies a range in, and
+///   one pool is: one `MemoryUsage::DeviceMapped` storage buffer, placed with
+///   the ring's @ref HostRingDesc::host_access, which kernels bind and the
+///   host maps.
+/// - **Copied** everywhere else: a `MemoryUsage::Staging` buffer placed with
+///   the ring's access (cached for `HostAccess::Random`; write-combined for
+///   `HostAccess::SequentialWrite` where system RAM has an uncached type) and
+///   a `MemoryUsage::DeviceOnly` mirror of the same size.
+///   @ref CommandBatch::input copies a range in, and
 ///   @ref CommandBatch::output copies one out after the batch's last command.
-///   The BAR window is never used.
+///   The BAR window is never used, a write-only ring's included.
 ///
 /// Kernel memory stays `DeviceOnly` and unmapped, and no shader reads host
 /// memory. Slots are exclusive to the device's queue family. Each slot placed,
@@ -137,7 +167,7 @@ class VKC_VULKAN_API HostRing {
   ///        decides (@ref in_place).
   /// @param device     The device whose kernels bind the slots.
   /// @param allocator  Allocates the slots, now and when @ref claim grows one.
-  /// @param desc       Size, count and name.
+  /// @param desc       Size, count, name and host access.
   /// @return The ring; @ref Status::Code::InvalidArgument for a zero
   ///         `slot_bytes` or `slots`, or a moved-from device or allocator; or
   ///         an allocation's failure. Nothing is placed elsewhere instead.
@@ -153,9 +183,11 @@ class VKC_VULKAN_API HostRing {
 
   /// @return Whether kernels bind the slots themselves, with no copy: where
   ///         the device's `DeviceMapped` memory is cached
-  ///         (@ref PhysicalDeviceInfo::device_mapped_cached). A discrete GPU
-  ///         copies, with or without Resizable BAR, as the host's reads of
-  ///         VRAM cross the bus uncached.
+  ///         (@ref PhysicalDeviceInfo::device_mapped_cached), whatever the
+  ///         ring's host access. A discrete GPU copies, with or without
+  ///         Resizable BAR: the host reads VRAM uncached, and write-combined
+  ///         staging plus one copy beat writing VRAM through the BAR
+  ///         (DECISIONS.md, "Where memory lives").
   bool in_place() const noexcept { return in_place_; }
 
   /// @brief A free slot of at least @p bytes. Never waits.
@@ -175,12 +207,14 @@ class VKC_VULKAN_API HostRing {
  private:
   HostRing(const Device& device, Allocator& allocator,
            const HostRingDesc& desc);
-  // Allocates `slot`'s buffers for `bytes`, names them and counts the slot.
+  // Allocates `slot`'s buffers for `bytes` with the ring's access, names them
+  // and counts the slot.
   Status place(detail::RingSlot& slot, VkDeviceSize bytes);
 
   const Device& device_;
   Allocator& allocator_;
   const char* name_;
+  HostAccess access_;
   bool in_place_;
   // free: !RingSlot::held (acquire load)
   std::vector<std::shared_ptr<detail::RingSlot>> slots_;

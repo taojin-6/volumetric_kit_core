@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -50,10 +51,12 @@ HostRing::HostRing(const Device& device, Allocator& allocator,
     : device_(device),
       allocator_(allocator),
       name_(desc.name),
+      access_(desc.host_access),
       in_place_(device.caps().device_mapped_cached()) {
   slots_.reserve(desc.slots);
   for (std::uint32_t i = 0; i < desc.slots; ++i) {
     slots_.push_back(std::make_shared<detail::RingSlot>());
+    slots_.back()->write_only = access_ == HostAccess::SequentialWrite;
   }
 }
 
@@ -67,14 +70,17 @@ Status HostRing::place(detail::RingSlot& slot, VkDeviceSize bytes) {
   slot.mirror = Buffer();
   BufferDesc desc;
   desc.size = bytes;
-  desc.host_access = HostAccess::Random;  // the host reads results back
+  desc.host_access = access_;
   if (in_place_) {
     desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     desc.memory = MemoryUsage::DeviceMapped;
     VKC_ASSIGN(slot.host, allocator_.create_buffer(desc));
   } else {
-    desc.usage =
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    // A write-only slot is never an output, so no copy lands in it.
+    desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (access_ == HostAccess::Random) {
+      desc.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    }
     desc.memory = MemoryUsage::Staging;
     VKC_ASSIGN(Buffer host, allocator_.create_buffer(desc));
     VKC_ASSIGN(slot.mirror, device_storage_buffer(allocator_, bytes));
@@ -89,6 +95,10 @@ Status HostRing::place(detail::RingSlot& slot, VkDeviceSize bytes) {
   }
   detail::DeviceAccess::count_staging(device_);
   return {};
+}
+
+std::optional<MemoryInfo> HostSlot::memory_info() const noexcept {
+  return valid() ? slot_->host.memory_info() : std::nullopt;
 }
 
 Result<HostSlot> HostRing::claim(VkDeviceSize bytes) try {

@@ -20,6 +20,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -151,14 +152,16 @@ class HostRingTest : public test::VulkanDeviceTest {
   }
 
   // A ring of `slots` slots of `bytes`, on the path the device's memory gives
-  // it: in place exactly where device-mapped memory is cached, which is the
-  // path the run expects.
+  // it whatever its access: in place exactly where device-mapped memory is
+  // cached, which is the path the run expects.
   std::unique_ptr<HostRing> make_ring(VkDeviceSize bytes,
-                                      std::uint32_t slots = 2) {
+                                      std::uint32_t slots = 2,
+                                      HostAccess access = HostAccess::Random) {
     HostRingDesc desc;
     desc.slot_bytes = bytes;
     desc.slots = slots;
     desc.name = "test.ring";
+    desc.host_access = access;
     Result<std::unique_ptr<HostRing>> ring =
         HostRing::create(device(), allocator(), desc);
     EXPECT_TRUE(ring.ok()) << ring.status().message();
@@ -231,6 +234,25 @@ TEST_F(HostRingTest, ResultsComeBackThroughEitherSubmit) {
     std::memcpy(in->data() + align_, words.data(), kBytes);
     frame(*in, align_, *out, 3, async);
     EXPECT_EQ(words_of(*out), plus(words, 3));
+  }
+}
+
+// A write-only input carries the frame the host wrote, through either
+// submit, to results the host reads from a Random ring.
+TEST_F(HostRingTest, AWriteOnlyInputCarriesTheFrame) {
+  std::unique_ptr<HostRing> inputs =
+      make_ring(kBytes, 2, HostAccess::SequentialWrite);
+  std::unique_ptr<HostRing> results = make_ring(kBytes);
+  ASSERT_TRUE(inputs != nullptr && results != nullptr);
+  for (const bool async : {false, true}) {
+    SCOPED_TRACE(async ? "submit_async" : "submit");
+    Result<HostSlot> in = inputs->claim(kBytes);
+    Result<HostSlot> out = results->claim(kBytes);
+    ASSERT_TRUE(in.ok() && out.ok());
+    const std::vector<std::uint32_t> words = pattern(async ? 70 : 7);
+    std::memcpy(in->data(), words.data(), kBytes);
+    frame(*in, 0, *out, 6, async);
+    EXPECT_EQ(words_of(*out), plus(words, 6));
   }
 }
 
@@ -460,6 +482,26 @@ TEST_F(HostRingTest, ABatchHoldsItsSlotsUntilItResolves) {
   EXPECT_TRUE(ring->claim(kBytes).ok());
 }
 
+// A write-only ring's slot is no output, on every device: refused before the
+// batch holds it or poisons its range, so the batch is poisoned and holds no
+// lease -- the one-slot ring's claim succeeds while the batch lives.
+TEST_F(HostRingTest, AWriteOnlySlotIsNoOutput) {
+  EXPECT_TRUE(detail::ring_output_poison());  // the environment's
+  std::unique_ptr<HostRing> ring =
+      make_ring(kBytes, 1, HostAccess::SequentialWrite);
+  ASSERT_NE(ring, nullptr);
+  Result<HostSlot> slot = ring->claim(kBytes);
+  ASSERT_TRUE(slot.ok());
+  CommandBatch batch(device(), allocator());
+  const Status refused = batch.output(*slot, 0, kBytes).status();
+  EXPECT_TRUE(is_invalid(refused));
+  EXPECT_NE(refused.message().find("SequentialWrite"), std::string::npos)
+      << refused.message();
+  *slot = HostSlot{};
+  EXPECT_TRUE(ring->claim(kBytes).ok());
+  EXPECT_TRUE(is_invalid(batch.submit()));
+}
+
 // The smallest free slot that fits comes back as it was; with none, the
 // smallest free slot is replaced, by one counted placement of 1.5x, and a held
 // slot's bytes are never touched.
@@ -507,31 +549,98 @@ TEST_F(HostRingTest, ClaimTakesTheSmallestFitElseRegrowsTheSmallestFreeSlot) {
   EXPECT_EQ(device().counters().staging_buffers - before.staging_buffers, 3U);
 }
 
+// A slot maps the memory type the allocator gives its placement and the
+// ring's access -- `DeviceMapped` in place, `Staging` where copied -- and a
+// slot a claim grows keeps both. Copied on a discrete GPU, the staging is
+// system RAM: cached for a Random ring, write-combined for a write-only one.
+TEST_F(HostRingTest, ASlotsMemoryFollowsItsHostAccess) {
+  for (const HostAccess access :
+       {HostAccess::Random, HostAccess::SequentialWrite}) {
+    const bool write_only = access == HostAccess::SequentialWrite;
+    SCOPED_TRACE(write_only ? "SequentialWrite" : "Random");
+    std::unique_ptr<HostRing> ring = make_ring(kBytes, 1, access);
+    ASSERT_NE(ring, nullptr);
+    BufferDesc desc;
+    desc.size = kBytes;
+    desc.host_access = access;
+    if (ring->in_place()) {
+      desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      desc.memory = MemoryUsage::DeviceMapped;
+    } else {
+      desc.usage = write_only ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                              : VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      desc.memory = MemoryUsage::Staging;
+    }
+    Result<Buffer> same = allocator().create_buffer(desc);
+    ASSERT_TRUE(same.ok()) << same.status().message();
+    const std::optional<MemoryInfo> placed = same->memory_info();
+    if (!placed.has_value()) {
+      FAIL() << "no memory info";
+    }
+    const MemoryInfo expected = *placed;
+    const auto expect_placed = [&](const HostSlot& slot) {
+      const std::optional<MemoryInfo> info = slot.memory_info();
+      if (!info.has_value()) {
+        FAIL() << "the slot has no memory info";
+      }
+      EXPECT_EQ(info->type_index, expected.type_index);
+      EXPECT_EQ(info->heap_index, expected.heap_index);
+      EXPECT_EQ(info->properties, expected.properties);
+      if (ring->in_place() || physical().unified_memory()) return;
+      EXPECT_EQ(info->properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0U);
+      EXPECT_EQ((info->properties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0,
+                !write_only);
+    };
+    Result<HostSlot> slot = ring->claim(kBytes);
+    ASSERT_TRUE(slot.ok());
+    expect_placed(*slot);
+    *slot = HostSlot{};
+    Result<HostSlot> grown = ring->claim(2 * kBytes);
+    ASSERT_TRUE(grown.ok());
+    EXPECT_EQ(grown->capacity(), 3 * kBytes);
+    expect_placed(*grown);
+    if (write_only) {
+      CommandBatch batch(device(), allocator());
+      EXPECT_TRUE(is_invalid(batch.output(*grown, 0, kBytes).status()))
+          << "a grown slot is still write-only";
+    }
+  }
+}
+
 // A hundred frames after create allocate nothing: the slots are placed once,
 // each counted, and every frame after that is one submit with no staging --
 // one dispatch and the final barrier in place; copied, a barrier more before
-// the kernel and one before the output's copy.
+// the kernel and one before the output's copy. The same with a write-only
+// input.
 TEST_F(HostRingTest, AHundredFramesAllocateNothingAfterCreate) {
-  const DeviceCounters created = device().counters();
-  std::unique_ptr<HostRing> inputs = make_ring(kBytes);
-  std::unique_ptr<HostRing> results = make_ring(kBytes);
-  ASSERT_TRUE(inputs != nullptr && results != nullptr);
-  EXPECT_EQ(device().counters().staging_buffers - created.staging_buffers, 4U);
-  const DeviceCounters before = device().counters();
-  for (std::uint32_t f = 0; f < 100; ++f) {
-    Result<HostSlot> in = inputs->claim(kBytes);
-    Result<HostSlot> out = results->claim(kBytes);
-    ASSERT_TRUE(in.ok() && out.ok()) << "frame " << f;
-    const std::vector<std::uint32_t> words = pattern(f);
-    std::memcpy(in->data(), words.data(), kBytes);
-    frame(*in, 0, *out, f, false);
-    ASSERT_EQ(words_of(*out), plus(words, f)) << "frame " << f;
+  for (const HostAccess access :
+       {HostAccess::Random, HostAccess::SequentialWrite}) {
+    SCOPED_TRACE(access == HostAccess::Random ? "Random input"
+                                              : "SequentialWrite input");
+    const DeviceCounters created = device().counters();
+    std::unique_ptr<HostRing> inputs = make_ring(kBytes, 2, access);
+    std::unique_ptr<HostRing> results = make_ring(kBytes);
+    ASSERT_TRUE(inputs != nullptr && results != nullptr);
+    EXPECT_EQ(device().counters().staging_buffers - created.staging_buffers,
+              4U);
+    const DeviceCounters before = device().counters();
+    for (std::uint32_t f = 0; f < 100; ++f) {
+      Result<HostSlot> in = inputs->claim(kBytes);
+      Result<HostSlot> out = results->claim(kBytes);
+      ASSERT_TRUE(in.ok() && out.ok()) << "frame " << f;
+      const std::vector<std::uint32_t> words = pattern(f);
+      std::memcpy(in->data(), words.data(), kBytes);
+      frame(*in, 0, *out, f, false);
+      ASSERT_EQ(words_of(*out), plus(words, f)) << "frame " << f;
+    }
+    const DeviceCounters after = device().counters();
+    EXPECT_EQ(after.staging_buffers - before.staging_buffers, 0U);
+    EXPECT_EQ(after.submits - before.submits, 100U);
+    EXPECT_EQ(after.dispatches - before.dispatches, 100U);
+    EXPECT_EQ(after.barriers - before.barriers,
+              inputs->in_place() ? 100U : 300U);
   }
-  const DeviceCounters after = device().counters();
-  EXPECT_EQ(after.staging_buffers - before.staging_buffers, 0U);
-  EXPECT_EQ(after.submits - before.submits, 100U);
-  EXPECT_EQ(after.dispatches - before.dispatches, 100U);
-  EXPECT_EQ(after.barriers - before.barriers, inputs->in_place() ? 100U : 300U);
 }
 
 // A slot outlives its ring, its buffers freed with its last copy (ASan and
@@ -607,6 +716,7 @@ TEST_F(HostRingTest, RefusesBadArguments) {
   EXPECT_FALSE(empty.valid());
   EXPECT_EQ(empty.data(), nullptr);
   EXPECT_EQ(empty.capacity(), 0U);
+  EXPECT_FALSE(empty.memory_info().has_value());
   Result<HostSlot> slot = ring->claim(kBytes);
   ASSERT_TRUE(slot.ok());
   const auto refused = [&](auto&& bind) {
@@ -643,6 +753,25 @@ TEST_F(HostRingTest, RefusesBadArguments) {
   const Result<HostSlot> a = ring->claim(kBytes);
   const Result<HostSlot> b = ring->claim(kBytes);
   EXPECT_TRUE(a.ok() && b.ok());
+
+  // An output of a write-only slot is refused after the other checks: a
+  // poisoned batch returns its first refusal, and a range past the slot is
+  // named as such.
+  std::unique_ptr<HostRing> writes =
+      make_ring(kBytes, 1, HostAccess::SequentialWrite);
+  ASSERT_NE(writes, nullptr);
+  Result<HostSlot> written = writes->claim(kBytes);
+  ASSERT_TRUE(written.ok());
+  CommandBatch poisoned(device(), allocator());
+  const Status first = poisoned.output(empty, 0, 4).status();
+  const Status later = poisoned.output(*written, 0, kBytes).status();
+  EXPECT_TRUE(is_invalid(later));
+  EXPECT_EQ(later.message(), first.message());
+  CommandBatch batch(device(), allocator());
+  const Status past = batch.output(*written, 4, kBytes).status();
+  EXPECT_NE(past.message().find("the range lies past the slot"),
+            std::string::npos)
+      << past.message();
 }
 
 // --- threads ----------------------------------------------------------------

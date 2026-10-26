@@ -569,7 +569,7 @@ rules after review, the same day.
 | Kernel buffers, images, scratch (`device_storage_buffer`, `create_image`) | `DeviceOnly` | VRAM the host cannot map, never the BAR window | GPU-private storage where the device has it; else the one pool, unmapped |
 | Data the host writes and shaders read: uniforms, per-frame parameters, tables (`mapped_storage_buffer`) | `DeviceMapped` | VRAM through the BAR window (all of VRAM under Resizable BAR) | the one pool, mapped |
 | Uploads and readbacks (`CommandBatch`) | `Staging`, transfer usage only | system RAM: write-combined uploads, cached readbacks | the one pool |
-| Bytes moved every frame: a stage's input, the results it decides on (`HostRing`) | `DeviceMapped` + `Random` where that memory is cached; else `Staging` + `Random` and a `DeviceOnly` mirror | cached system RAM and a mirror in VRAM, one GPU copy of each range a batch binds | the one pool, mapped and cached, bound in place |
+| Bytes moved every frame: a stage's input, the results it decides on (`HostRing`) | `DeviceMapped` where `DeviceMapped` + `Random` memory is cached; else `Staging` and a `DeviceOnly` mirror; either placed with the ring's host access | system RAM, write-combined for a write-only ring, else cached, and a mirror in VRAM, one GPU copy of each range a batch binds | the one pool, mapped and cached, bound in place |
 
 - **Three placements, no `Auto`.** `DeviceOnly` replaces `DeviceLocal`, and
   a buffer is device-only unless it says otherwise; `Auto`, which let VMA put
@@ -698,7 +698,7 @@ rules after review, the same day.
   (`PhysicalDeviceInfo::device_mapped_cached`: unified memory's cached pool,
   a CPU implementation's one type): kernels bind the slot the host maps.
   Copied everywhere else, a discrete GPU with or without Resizable BAR
-  included: a cached `Staging` slot and a `DeviceOnly` mirror, with one GPU
+  included: a `Staging` slot and a `DeviceOnly` mirror, with one GPU
   copy of each range a batch binds -- an input's where `input` is called, an
   output's after every other command. On a discrete GPU that copy is the bus
   crossing, not an extra one, and the host never reads the BAR window. Slots
@@ -709,6 +709,23 @@ rules after review, the same day.
   path there so that Mac runs would exercise a discrete GPU's; the NVIDIA
   legs exercise it now, the Mac and lavapipe legs run in place, and each leg
   names its path (`VKC_EXPECT_RING_PATH`), which every ring test asserts.
+- **A ring the host only fills is write-combined where it is copied** (D8 of
+  the 2026-10-22 data-flow design, core 0.22.0). `HostRingDesc::host_access`
+  places a ring's mapped buffers within the shape the device gives it and
+  never changes the shape. `Random`, the default, stays cached. A
+  `SequentialWrite` ring's `Staging` takes write-combined system RAM where
+  the host heap has an uncached type; in place, its `DeviceMapped` buffer
+  takes an uncached type only where one exists beside the cached one, which
+  unified memory's one pool does not. Resizable BAR gets no in-place rule. On
+  a discrete GPU with all of its VRAM in one uncached `DEVICE_LOCAL |
+  HOST_VISIBLE | HOST_COHERENT` type behind a PCIe Gen4 link, writing the
+  frame through the BAR and binding it in place beat a cached slot's copy
+  back to back, but lost once paced: the host's BAR writes stalled when the
+  link dropped to Gen2. Write-combined staging plus one copy was fastest
+  both ways (recon's PERF.md has the figures). `CommandBatch::output` refuses
+  a write-only slot on every device, so code that passes where its rings run
+  in place also passes where they are copied; a ring of outputs, or of input
+  the host parses in place, keeps `Random`.
 - **A ring slot is a lease.** `claim` marks the slot held and hands out a
   `shared_ptr` whose deleter clears the mark with a release store, which
   `claim` reads with an acquire load. So a slot may be dropped on any thread
