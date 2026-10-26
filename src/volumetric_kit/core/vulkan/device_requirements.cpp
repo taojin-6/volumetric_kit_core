@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "support.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 
@@ -243,7 +244,7 @@ Result<DeviceRequirements> merge(const DeviceRequirements& a,
 
 Result<DeviceSupport> check_device_support(const PhysicalDeviceInfo& caps,
                                            const DeviceRequirements& reqs,
-                                           VkSurfaceKHR surface) {
+                                           VkSurfaceKHR surface) try {
   if (caps.handle() == VK_NULL_HANDLE) {
     return Status::invalid_argument(
         "check_device_support: no physical device captured");
@@ -294,6 +295,9 @@ Result<DeviceSupport> check_device_support(const PhysicalDeviceInfo& caps,
     }
   }
   return support;
+} catch (...) {
+  return exception_status("check_device_support",
+                          Status::Code::InvalidArgument);
 }
 
 }  // namespace volumetric_kit::core

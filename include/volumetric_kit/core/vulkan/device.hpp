@@ -429,7 +429,10 @@ class VKC_VULKAN_API Device {
   /// may itself submit on this device; what it records -- descriptor sets,
   /// buffers -- must still be its own. Blocking, so it suits setup and
   /// single-shot work; per-frame work batches its own submits.
-  /// @param record      Records into the command buffer it is given.
+  /// @param record      Records into the command buffer it is given. An
+  ///                    exception refuses the recording without submission:
+  ///                    `std::bad_alloc` becomes `OutOfMemory`, and other
+  ///                    exceptions become `InvalidArgument`.
   /// @param keep_alive  Optional; what the work reads or writes that the
   ///                    caller frees once this returns -- a
   ///                    @ref CommandBatch's staging. Released before this
@@ -472,7 +475,8 @@ class VKC_VULKAN_API Device {
   /// GpuStageScope stage(metrics, timer, "rebuild");
   /// VKC_TRY(device.submit_single_time(record, stage));
   /// @endcode
-  /// @param record      Records into the command buffer it is given.
+  /// @param record      Records into the command buffer it is given. Exceptions
+  ///                    are returned as for @ref submit_single_time.
   /// @param stage       The tile's timer and label.
   /// @param keep_alive  As the untimed overload.
   /// @return As the untimed overload.
@@ -524,7 +528,8 @@ class VKC_VULKAN_API Device {
   /// // ... other host work, while the device runs it ...
   /// VKC_TRY(pending.wait());
   /// @endcode
-  /// @param record      Records into the command buffer it is given.
+  /// @param record      Records into the command buffer it is given. Exceptions
+  ///                    are returned as for @ref submit_single_time.
   /// @param wait        Values to reach before anything recorded starts.
   /// @param signal      Values to set once everything recorded completes, one
   ///                    per semaphore; each above its semaphore's current
@@ -760,6 +765,9 @@ class VKC_VULKAN_API Device {
   mutable std::mutex present_queue_mutex_;
   mutable std::mutex commands_mutex_;  // guards made_ and free_commands_
   mutable std::vector<Command> made_;
+  // One preallocated holder per made_ entry: a failed destruction wait can
+  // retain its resources without allocating while the device may use them.
+  mutable std::vector<std::unique_ptr<std::shared_ptr<void>>> command_owners_;
   mutable std::vector<Command> free_commands_;
 };
 

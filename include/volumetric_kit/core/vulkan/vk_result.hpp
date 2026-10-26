@@ -41,11 +41,16 @@ namespace volumetric_kit::core {
 ///      @ref Status::backend_error aborts on one.
 /// @return A non-OK `Status`, domain `Code::Backend`, whose
 ///         @ref Status::backend is `Vulkan` and whose @ref Status::detail is
-///         @p result.
-inline Status vk_error(VkResult result, std::string_view what) {
+///         @p result. If the context cannot be allocated, the message is
+///         empty; the backend and result code are still preserved.
+inline Status vk_error(VkResult result, std::string_view what) try {
   return Status::backend_error(Status::Backend::Vulkan,
                                static_cast<std::int64_t>(result),
                                std::string(what));
+} catch (...) {
+  // Timeout and device-loss decisions must survive diagnostic OOM.
+  return Status::backend_error(Status::Backend::Vulkan,
+                               static_cast<std::int64_t>(result), {});
 }
 
 /// @brief The `VkResult` a Vulkan @ref Status carries.

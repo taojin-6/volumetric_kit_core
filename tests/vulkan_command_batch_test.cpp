@@ -1859,14 +1859,10 @@ TEST_F(PendingTest, ADeviceWaitsForWorkAHandleStillHolds) {
 TEST_F(BatchTest, ARecordThatThrowsGivesItsBufferBackReset) {
   // The next submit begins the same buffer, which the layer refuses while it
   // is still recording.
-  bool threw = false;
-  try {
-    static_cast<void>(device().submit_single_time(
-        [](VkCommandBuffer) { throw std::runtime_error("record"); }));
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  EXPECT_TRUE(threw);
+  const Status refused = device().submit_single_time(
+      [](VkCommandBuffer) { throw std::runtime_error("record"); });
+  EXPECT_EQ(refused.domain(), Status::Code::InvalidArgument);
+  EXPECT_NE(refused.message().find("record"), std::string::npos);
   EXPECT_TRUE(device().submit_single_time([](VkCommandBuffer) {}).ok());
 }
 #endif

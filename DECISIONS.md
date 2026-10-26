@@ -798,6 +798,10 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
 - **`with_context` adds context without losing the domain** (new). `recon`
   rebuilt a `Status` with a switch over every code to prefix a kernel's name;
   each such switch breaks when a code is added, as `Numerical` now is.
+  If allocating that context fails, it returns `OutOfMemory` and leaves the
+  original status unchanged. Vulkan result conversion keeps its backend and
+  code even when its diagnostic cannot be allocated: losing `VK_TIMEOUT`
+  would change whether the caller must keep pending work alive.
 - **`[[nodiscard]]` on both types** (`calib`'s). With no exceptions, a dropped
   `Status` is a silently lost failure. `recon` and `gfx` lacked it, so their
   migrations will surface call sites that drop one; each is a lost failure to

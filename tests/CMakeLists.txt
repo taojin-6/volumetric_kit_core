@@ -87,6 +87,15 @@ foreach(
   _vkc_discover_cpu_tests(vkc_${_vkc_test}_test 60)
 endforeach()
 
+# Isolate replacement allocation functions from the ordinary test binaries.
+add_executable(vkc_base_result_allocation_test base_result_allocation_test.cpp
+                                               allocation_failure.cpp)
+target_link_libraries(
+  vkc_base_result_allocation_test PRIVATE volumetric_kit::core_base
+                                          volumetric_kit::core_test_main)
+vkc_target_warnings(vkc_base_result_allocation_test)
+_vkc_discover_cpu_tests(vkc_base_result_allocation_test 60)
+
 # core_test_main (support/test_main.cpp), the main every test here links: on
 # Linux a death test's child dumps no core. Elsewhere it changes nothing.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -189,6 +198,15 @@ if(VKC_WITH_VULKAN)
   )
   get_target_property(_vkc_vulkan_type core_vulkan TYPE)
   if(_vkc_vulkan_type STREQUAL "STATIC_LIBRARY")
+    add_executable(vkc_vulkan_api_allocation_test vulkan_api_allocation_test.cpp
+                                                  allocation_failure.cpp)
+    target_link_libraries(
+      vkc_vulkan_api_allocation_test
+      PRIVATE volumetric_kit::core_test_support volumetric_kit::core_test_main
+              ${CMAKE_DL_LIBS})
+    vkc_target_warnings(vkc_vulkan_api_allocation_test)
+    _vkc_discover_device_tests(vkc_vulkan_api_allocation_test)
+
     # Replace allocation only in this binary. Failure is armed exclusively
     # around host-side ring work, before any Vulkan/validation allocation.
     add_executable(vkc_vulkan_host_ring_allocation_test

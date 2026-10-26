@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "device_access.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
@@ -37,7 +38,7 @@ DeviceRequirements timeline_requirements() {
 
 }  // namespace
 
-Result<Fence> Fence::create(VkDevice device, bool signaled) {
+Result<Fence> Fence::create(VkDevice device, bool signaled) try {
   if (device == VK_NULL_HANDLE) {
     return Status::invalid_argument("Fence::create: device is null");
   }
@@ -49,9 +50,11 @@ Result<Fence> Fence::create(VkDevice device, bool signaled) {
   Fence fence;
   fence.handle_ = UniqueHandle<VkFence, vkDestroyFence>(device, handle);
   return fence;
+} catch (...) {
+  return exception_status("Fence::create", Status::Code::InvalidArgument);
 }
 
-Status Fence::wait(std::uint64_t timeout_ns) const {
+Status Fence::wait(std::uint64_t timeout_ns) const try {
   if (!valid())
     return Status::invalid_argument("Fence::wait on an empty fence");
   // A fence knows no Device, so its waits reach the scopes alone.
@@ -60,15 +63,19 @@ Status Fence::wait(std::uint64_t timeout_ns) const {
   // VK_TIMEOUT too: reported, for the caller to tell apart with is_timeout().
   if (result != VK_SUCCESS) return vk_error(result, "vkWaitForFences");
   return {};
+} catch (...) {
+  return exception_status("Fence::wait", Status::Code::InvalidArgument);
 }
 
-Status Fence::reset() {
+Status Fence::reset() try {
   if (!valid()) {
     return Status::invalid_argument("Fence::reset on an empty fence");
   }
   VkFence fence = handle_.get();
   VKC_VK_TRY(vkResetFences(handle_.device(), 1, &fence));
   return {};
+} catch (...) {
+  return exception_status("Fence::reset", Status::Code::InvalidArgument);
 }
 
 bool Fence::is_signaled() const {
@@ -76,7 +83,7 @@ bool Fence::is_signaled() const {
          vkGetFenceStatus(handle_.device(), handle_.get()) == VK_SUCCESS;
 }
 
-Result<Semaphore> Semaphore::create(VkDevice device) {
+Result<Semaphore> Semaphore::create(VkDevice device) try {
   if (device == VK_NULL_HANDLE) {
     return Status::invalid_argument("Semaphore::create: device is null");
   }
@@ -88,10 +95,12 @@ Result<Semaphore> Semaphore::create(VkDevice device) {
   semaphore.handle_ =
       UniqueHandle<VkSemaphore, vkDestroySemaphore>(device, handle);
   return semaphore;
+} catch (...) {
+  return exception_status("Semaphore::create", Status::Code::InvalidArgument);
 }
 
 Result<TimelineSemaphore> TimelineSemaphore::create(
-    const Device& device, std::uint64_t initial_value) {
+    const Device& device, std::uint64_t initial_value) try {
   VKC_TRY(device.check_enabled(timeline_requirements())
               .with_context("TimelineSemaphore::create"));
   VkSemaphoreTypeCreateInfo type{};
@@ -108,6 +117,9 @@ Result<TimelineSemaphore> TimelineSemaphore::create(
       UniqueHandle<VkSemaphore, vkDestroySemaphore>(device.handle(), handle);
   semaphore.counters_ = detail::DeviceAccess::counters(device);
   return semaphore;
+} catch (...) {
+  return exception_status("TimelineSemaphore::create",
+                          Status::Code::InvalidArgument);
 }
 
 TimelineSemaphore::TimelineSemaphore(TimelineSemaphore&& other) noexcept
@@ -125,7 +137,7 @@ TimelineSemaphore& TimelineSemaphore::operator=(
   return *this;
 }
 
-Result<std::uint64_t> TimelineSemaphore::value() const {
+Result<std::uint64_t> TimelineSemaphore::value() const try {
   if (!valid()) {
     return Status::invalid_argument(
         "TimelineSemaphore::value on an empty semaphore");
@@ -134,9 +146,12 @@ Result<std::uint64_t> TimelineSemaphore::value() const {
   VKC_VK_TRY(
       vkGetSemaphoreCounterValue(handle_.device(), handle_.get(), &value));
   return value;
+} catch (...) {
+  return exception_status("TimelineSemaphore::value",
+                          Status::Code::InvalidArgument);
 }
 
-Status TimelineSemaphore::signal(std::uint64_t value) {
+Status TimelineSemaphore::signal(std::uint64_t value) try {
   // A host signal must advance the counter
   // (VUID-VkSemaphoreSignalInfo-value-03258); refuse one that does not, so a
   // stale value is an error rather than undefined behaviour with layers off.
@@ -153,10 +168,13 @@ Status TimelineSemaphore::signal(std::uint64_t value) {
   info.value = value;
   VKC_VK_TRY(vkSignalSemaphore(handle_.device(), &info));
   return {};
+} catch (...) {
+  return exception_status("TimelineSemaphore::signal",
+                          Status::Code::InvalidArgument);
 }
 
 Status TimelineSemaphore::wait(std::uint64_t value,
-                               std::uint64_t timeout_ns) const {
+                               std::uint64_t timeout_ns) const try {
   if (!valid()) {
     return Status::invalid_argument(
         "TimelineSemaphore::wait on an empty semaphore");
@@ -178,6 +196,9 @@ Status TimelineSemaphore::wait(std::uint64_t value,
   if (waits) detail::report_blocked(detail::elapsed_ns(start), counters_.get());
   if (result != VK_SUCCESS) return vk_error(result, "vkWaitSemaphores");
   return {};
+} catch (...) {
+  return exception_status("TimelineSemaphore::wait",
+                          Status::Code::InvalidArgument);
 }
 
 namespace detail {
@@ -202,7 +223,7 @@ struct TimelineSubmits {
 Status check_timeline_points(const Device& device,
                              const std::vector<TimelinePoint>& wait,
                              const std::vector<TimelinePoint>& signal,
-                             const char* call, TimelineWaits waits) {
+                             const char* call, TimelineWaits waits) try {
   if (wait.empty() && signal.empty()) return {};
   const auto refuse = [call](const char* why) {
     return Status::invalid_argument(std::string(call) + ": " + why);
@@ -270,6 +291,9 @@ Status check_timeline_points(const Device& device,
     }
   }
   return {};
+} catch (...) {
+  return exception_status("check_timeline_points",
+                          Status::Code::InvalidArgument);
 }
 
 void note_timeline_signals(const std::vector<TimelinePoint>& signal) noexcept {

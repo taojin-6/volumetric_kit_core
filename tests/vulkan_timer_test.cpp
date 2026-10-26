@@ -1379,17 +1379,16 @@ TEST_F(TimerWorkTest, ARecordThatThrowsReturnsItsRange) {
   StageMetrics metrics;
   {
     GpuStageScope stage(&metrics, tiny, "thrown");
-    bool threw = false;
-    try {
-      static_cast<void>(device().submit_single_time(
-          [](VkCommandBuffer) { throw std::runtime_error("record"); }, stage));
-    } catch (const std::runtime_error&) {
-      threw = true;
-    }
-    EXPECT_TRUE(threw);
+    const Status refused = device().submit_single_time(
+        [](VkCommandBuffer) { throw std::runtime_error("record"); }, stage);
+    EXPECT_EQ(refused.domain(), Status::Code::InvalidArgument);
+  }
+  EXPECT_EQ(row(metrics, "thrown")->device, DeviceTime::NotTimed);
+  {
+    GpuStageScope stage(&metrics, tiny, "retried");
     ASSERT_TRUE(device().submit_single_time(fill(), stage).ok());
   }
-  EXPECT_EQ(row(metrics, "thrown")->device, DeviceTime::Measured);
+  EXPECT_EQ(row(metrics, "retried")->device, DeviceTime::Measured);
 }
 #endif
 
