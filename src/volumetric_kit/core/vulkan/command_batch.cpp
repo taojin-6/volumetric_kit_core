@@ -536,7 +536,7 @@ Status CommandBatch::transfer(Kind kind, const Buffer& buffer,
 }
 
 Status CommandBatch::transfer(Kind kind, const Image& image,
-                              std::uint32_t family, VkImageLayout layout) {
+                              std::uint32_t family, VkImageLayout layout) try {
   const std::string caller =
       kind == Kind::Acquire ? "CommandBatch::acquire" : "CommandBatch::release";
   VKC_TRY(check(usable()));
@@ -595,6 +595,10 @@ Status CommandBatch::transfer(Kind kind, const Image& image,
   op.to_family = crossed->to;
   ops_.push_back(std::move(op));
   return {};
+} catch (...) {
+  return check(exception_status(
+      kind == Kind::Acquire ? "CommandBatch::acquire" : "CommandBatch::release",
+      Status::Code::OutOfMemory));
 }
 
 VkImageLayout CommandBatch::layout_here(const Image& image) const {
