@@ -7,6 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-26
+
+### Fixed
+
+- Allocator buffer, image and exported-buffer creation retains every partial
+  Vulkan/VMA resource until its returned owner's deleter is constructed.
+  Host allocation failure returns `OutOfMemory`, frees partial resources and
+  leaves the allocator usable for retry.
+- Synchronization and device submission APIs contain host allocation failures,
+  including validation diagnostics and user recording callbacks. A failed
+  recording returns its command for reuse without submitting partial work.
+- `Status::with_context` returns `OutOfMemory` if copying or prefixing its
+  diagnostic fails, leaving the original status unchanged. `vk_error` keeps
+  the Vulkan backend and result code with an empty message if only its
+  diagnostic cannot be allocated, preserving timeout and device-loss handling.
+- Timing-result allocation failure does not fail work that already completed.
+  Pending-submit destruction still waits if a warning cannot be allocated.
+- Device command storage preallocates an emergency resource holder, so an
+  unconfirmed completion at destruction can retain its owners even under
+  persistent host allocation failure.
+
+### Migration
+
+- Bump the pin and rebuild consumers: the private `Device` layout changes to
+  hold preallocated resource owners. Code that caught recording-callback
+  exceptions now checks the returned status (`OutOfMemory` for
+  `std::bad_alloc`, `InvalidArgument` for other exceptions).
+
 ## [0.22.0] - 2026-10-25
 
 ### Added

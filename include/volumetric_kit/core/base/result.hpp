@@ -159,16 +159,20 @@ class [[nodiscard]] Status {
   /// @param context  What was being done, e.g. the kernel being built.
   /// @return For an error, the same domain, @ref backend and @ref detail with
   ///         the message `"<context>: <message>"`; for success, success.
+  ///         If building the message fails, `OutOfMemory` with an empty
+  ///         message; the original status is unchanged.
   ///
   /// @code
   /// if (!s) return std::move(s).with_context(kernel_name);
   /// @endcode
-  Status with_context(std::string_view context) const& {
+  Status with_context(std::string_view context) const& try {
     Status copy = *this;
     return std::move(copy).with_context(context);
+  } catch (...) {
+    return out_of_memory({});
   }
   /// @copydoc with_context
-  Status with_context(std::string_view context) && {
+  Status with_context(std::string_view context) && try {
     if (!ok()) {
       std::string prefixed(context);
       prefixed += ": ";
@@ -176,6 +180,8 @@ class [[nodiscard]] Status {
       message_ = std::move(prefixed);
     }
     return std::move(*this);
+  } catch (...) {
+    return out_of_memory({});
   }
 
   /// @return `true` if this is a success status.

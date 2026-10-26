@@ -7,12 +7,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <new>
 #include <optional>
 #include <string>
 #include <utility>
@@ -21,6 +21,7 @@
 #include "device_access.hpp"
 #include "support.hpp"
 #include "volumetric_kit/core/base/check.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
@@ -64,6 +65,18 @@ class ScopeGuard {
   Cleanup cleanup_;
   bool active_ = true;
 };
+
+// A cleanup diagnostic includes building its message. A refused log must
+// not interrupt the waits or ownership transfers that make cleanup safe.
+template <class Log>
+bool try_log(const Log& emit) noexcept {
+  try {
+    emit();
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
 
 // The device's pipeline cache, empty: what create and adopt both make.
 Result<VkPipelineCache> create_pipeline_cache(VkDevice device) {
@@ -285,7 +298,7 @@ Result<CreatedDevice> create_device(const PhysicalDeviceInfo& caps,
 Result<Device> Device::create(const Instance& instance,
                               const PhysicalDeviceInfo& physical,
                               const DeviceRequirements& reqs,
-                              VkSurfaceKHR surface) {
+                              VkSurfaceKHR surface) try {
   // The usable version bounds the requirements by the instance's only when
   // the capabilities were captured on it, or on one of a lower version.
   if (physical.api_version() > instance.api_version()) {
@@ -295,13 +308,15 @@ Result<Device> Device::create(const Instance& instance,
   }
   return create(instance.handle(), instance.debug_utils_enabled(), physical,
                 reqs, surface);
+} catch (...) {
+  return exception_status("Device::create", Status::Code::InvalidArgument);
 }
 
 Result<Device> Device::create(VkInstance instance,
                               bool instance_debug_utils_enabled,
                               const PhysicalDeviceInfo& physical,
                               const DeviceRequirements& reqs,
-                              VkSurfaceKHR surface) {
+                              VkSurfaceKHR surface) try {
   if (physical.handle() == VK_NULL_HANDLE) {
     return Status::invalid_argument(
         "Device::create: no physical device captured");
@@ -345,10 +360,12 @@ Result<Device> Device::create(VkInstance instance,
              create_pipeline_cache(device.state_.device));
   device.resolve_entry_points(instance, instance_debug_utils_enabled);
   return device;
+} catch (...) {
+  return exception_status("Device::create", Status::Code::InvalidArgument);
 }
 
 Result<Device> Device::adopt(const AdoptedDevice& adopted,
-                             const DeviceRequirements& reqs) {
+                             const DeviceRequirements& reqs) try {
   if (adopted.instance == VK_NULL_HANDLE ||
       adopted.physical_device == VK_NULL_HANDLE ||
       adopted.device == VK_NULL_HANDLE || adopted.queue == VK_NULL_HANDLE) {
@@ -428,9 +445,11 @@ Result<Device> Device::adopt(const AdoptedDevice& adopted,
              create_pipeline_cache(device.state_.device));
   device.resolve_entry_points(adopted.instance, adopted.enabled_debug_utils);
   return device;
+} catch (...) {
+  return exception_status("Device::adopt", Status::Code::InvalidArgument);
 }
 
-Status Device::check_enabled(const DeviceRequirements& reqs) const {
+Status Device::check_enabled(const DeviceRequirements& reqs) const try {
   if (state_.device == VK_NULL_HANDLE) {
     return Status::invalid_argument("Device::check_enabled: an empty device");
   }
@@ -456,6 +475,9 @@ Status Device::check_enabled(const DeviceRequirements& reqs) const {
   VKC_TRY(detail::check_physical_support(caps_, reqs, required)
               .with_context("Device::check_enabled"));
   return check_record(reqs, required).with_context("Device::check_enabled");
+} catch (...) {
+  return exception_status("Device::check_enabled",
+                          Status::Code::InvalidArgument);
 }
 
 Status Device::check_record(const DeviceRequirements& reqs,
@@ -575,6 +597,7 @@ Device::Device(Device&& other) noexcept
       counters_(std::move(other.counters_)),
       retained_(std::move(other.retained_)),
       made_(std::exchange(other.made_, {})),
+      command_owners_(std::exchange(other.command_owners_, {})),
       free_commands_(std::exchange(other.free_commands_, {})) {}
 
 Device& Device::operator=(Device&& other) noexcept {
@@ -586,6 +609,7 @@ Device& Device::operator=(Device&& other) noexcept {
     counters_ = std::move(other.counters_);
     retained_ = std::move(other.retained_);
     made_ = std::exchange(other.made_, {});
+    command_owners_ = std::exchange(other.command_owners_, {});
     free_commands_ = std::exchange(other.free_commands_, {});
   }
   return *this;
@@ -619,7 +643,8 @@ void Device::destroy() noexcept {
       }
     }
   }
-  for (Command& command : made_) {
+  for (std::size_t index = 0; index < made_.size(); ++index) {
+    Command& command = made_[index];
     // One whose work may still run -- a PendingSubmit's, or one left to the
     // device after a failed wait -- is waited for first, and leaked if the
     // device may still run it. A lost device's is freed: its children must
@@ -631,9 +656,12 @@ void Device::destroy() noexcept {
         unfinished = true;
         // What the work uses is leaked with it: freeing memory a running
         // submit may read is undefined, where a leak is only a leak.
-        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-        static_cast<void>(new (std::nothrow) std::shared_ptr<void>(
-            std::move(command.keep_alive)));
+        // The holder was allocated before this command could be submitted.
+        // Even persistent host OOM cannot release a live resource here.
+        *command_owners_[index] = std::move(command.keep_alive);
+        // Intentionally retain the holder until process exit.
+        // NOLINTNEXTLINE(bugprone-unused-return-value)
+        static_cast<void>(command_owners_[index].release());
         continue;
       }
     }
@@ -646,6 +674,7 @@ void Device::destroy() noexcept {
     }
   }
   made_.clear();
+  command_owners_.clear();
   free_commands_.clear();
   // Made by this object even on an adopted device, which outlives it. No
   // pipeline refers to its cache once built, so it goes even beside work
@@ -658,9 +687,11 @@ void Device::destroy() noexcept {
       // Destroying it would destroy a device that may still run that work,
       // with the work's fence and pool alive (VUID-vkDestroyDevice-device-
       // 05137): undefined, where a leak is only a leak.
-      log_message(LogLevel::Error, kLogSource,
-                  "Device: a submit whose wait failed may still be running; "
-                  "its VkDevice is leaked rather than destroyed under it");
+      (void)try_log([&] {
+        log_message(LogLevel::Error, kLogSource,
+                    "Device: a submit whose wait failed may still be running; "
+                    "its VkDevice is leaked rather than destroyed under it");
+      });
     } else {
       vkDestroyDevice(state_.device, nullptr);
     }
@@ -700,7 +731,7 @@ VkResult Device::queue_present(const VkPresentInfoKHR& present_info) const {
   return vkQueuePresentKHR(state_.present_queue, &present_info);
 }
 
-Status Device::wait_idle() const {
+Status Device::wait_idle() const try {
   // Vulkan cannot be asked whether a queue is idle, so every drain counts as
   // a wait; the time it takes is what it blocked.
   const auto drain = [this](VkQueue queue, std::mutex* guard) {
@@ -715,6 +746,8 @@ Status Device::wait_idle() const {
     VKC_VK_TRY(drain(state_.present_queue, present_mutex()));
   }
   return {};
+} catch (...) {
+  return exception_status("Device::wait_idle", Status::Code::InvalidArgument);
 }
 
 DeviceCounters Device::counters() const noexcept {
@@ -730,14 +763,16 @@ DeviceCounters Device::counters() const noexcept {
   return out;
 }
 
-Result<ClockPair> Device::calibrate() const {
+Result<ClockPair> Device::calibrate() const try {
   if (state_.device == VK_NULL_HANDLE) {
     return Status::invalid_argument("Device::calibrate: an empty device");
   }
   return detail::calibrate(detail::DeviceAccess::calibrator(*this));
+} catch (...) {
+  return exception_status("Device::calibrate", Status::Code::InvalidArgument);
 }
 
-Result<Device::Command> Device::take_command(bool record) const {
+Result<Device::Command> Device::take_command(bool record) const try {
   const std::scoped_lock lock(commands_mutex_);
   Command command;
   if (!free_commands_.empty()) {
@@ -751,23 +786,30 @@ Result<Device::Command> Device::take_command(bool record) const {
     free_commands_.erase(fits);
   } else {
     // Every one is in use, so make another -- only as often as submits
-    // overlap. Both lists grow first, so give_back never allocates.
+    // overlap. Every list and the emergency owner grow first, so neither
+    // give_back nor retaining unfinished work at destruction allocates.
     made_.reserve(made_.size() + 1);
     free_commands_.reserve(made_.size() + 1);
+    command_owners_.reserve(made_.size() + 1);
+    auto owner = std::make_unique<std::shared_ptr<void>>();
     VkFenceCreateInfo fence_info{};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VKC_VK_TRY(
         vkCreateFence(state_.device, &fence_info, nullptr, &command.fence));
     made_.push_back(command);
+    command_owners_.push_back(std::move(owner));
   }
   if (record && command.pool == VK_NULL_HANDLE) {
-    const Status added = add_command_buffer(&command);
+    Status added = add_command_buffer(&command);
     if (!added) {
       free_commands_.push_back(command);  // its fence is still good
       return added;
     }
   }
   return command;
+} catch (...) {
+  return exception_status("Device::take_command",
+                          Status::Code::InvalidArgument);
 }
 
 Status Device::add_command_buffer(Command* command) const {
@@ -889,9 +931,9 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
   submit.commandBufferCount = 1;
   submit.pCommandBuffers = &cmd;
   bool left = false;
-  const Status submitted = submit_command(submit, command, &keep_alive, &left);
+  Status submitted = submit_command(submit, command, &keep_alive, &left);
   *reusable = !left;
-  VKC_TRY(submitted);
+  if (!submitted.ok()) return submitted;
   const VkResult waited = detail::wait_for_fence(state_.device, command.fence,
                                                  UINT64_MAX, counters_.get());
   if (waited != VK_SUCCESS) {
@@ -909,22 +951,27 @@ Status Device::submit_waiting(VkCommandBuffer cmd, const Command& command,
 
 Status Device::submit_single_time(
     const std::function<void(VkCommandBuffer)>& record,
-    std::shared_ptr<void> keep_alive, bool* in_flight) const {
+    std::shared_ptr<void> keep_alive, bool* in_flight) const try {
   if (in_flight != nullptr) *in_flight = false;
   VKC_ASSIGN(const Command command, record_one_time(record));
   bool reusable = true;
+  const ScopeGuard give_back_command([&] {
+    if (reusable) give_back(command);
+  });
   Status status =
       submit_waiting(command.buffer, command, std::move(keep_alive), &reusable);
-  if (reusable) give_back(command);
   // Failed and not reusable: left to the device, which may still run it. (A
   // fence that will not reset is not reusable either, but after success.)
   if (in_flight != nullptr) *in_flight = !status.ok() && !reusable;
   return status;
+} catch (...) {
+  return exception_status("Device::submit_single_time",
+                          Status::Code::InvalidArgument);
 }
 
 Status Device::submit_single_time(
     const std::function<void(VkCommandBuffer)>& record, GpuStageScope& stage,
-    std::shared_ptr<void> keep_alive) const {
+    std::shared_ptr<void> keep_alive) const try {
   const GpuSpanTag tag = stage.tag();
   if (tag.timer == nullptr) {
     return submit_single_time(record, std::move(keep_alive));
@@ -940,7 +987,7 @@ Status Device::submit_single_time(
   // command buffer that never ran.
   GpuTiles tiles;
   bool in_flight = false;
-  const Status submitted = submit_single_time(
+  Status submitted = submit_single_time(
       [&](VkCommandBuffer cmd) {
         tiles = GpuTiles::open(timer, cmd, 1, std::move(keys));
         tiles.mark_key(cmd, 0);
@@ -948,23 +995,33 @@ Status Device::submit_single_time(
         tiles.end(cmd);
       },
       std::move(kept), &in_flight);
-  if (submitted.ok()) {
-    tiles.resolve();
-  } else if (!keys.empty()) {
-    // Never recorded: the call was short of a command buffer.
-    tiles = GpuTiles::refused(timer, std::move(keys));
-  } else {
-    tiles.drop(in_flight);
+  try {
+    if (submitted.ok()) {
+      tiles.resolve();
+    } else if (!keys.empty()) {
+      // Never recorded: the call was short of a command buffer.
+      tiles = GpuTiles::refused(timer, std::move(keys));
+    } else {
+      // drop marks an in-flight range retained before settling metrics.
+      tiles.drop(in_flight);
+    }
+    tiles.publish();
+  } catch (...) {
+    // Timing is diagnostic. Work already completed must not be reported as
+    // retryable failure because resolving its metrics ran out of memory.
+    return submitted;
   }
-  tiles.publish();
   return submitted;
+} catch (...) {
+  return exception_status("Device::submit_single_time",
+                          Status::Code::InvalidArgument);
 }
 
 Result<Device::PendingSubmit> Device::submit_pending(
     const std::function<void(VkCommandBuffer)>& record,
     const std::vector<TimelinePoint>& wait,
     const std::vector<TimelinePoint>& signal,
-    std::shared_ptr<void> keep_alive) const {
+    std::shared_ptr<void> keep_alive) const try {
   if (state_.device == VK_NULL_HANDLE) {
     return Status::invalid_argument(
         "Device::submit_pending: the device is moved-from");
@@ -1011,11 +1068,14 @@ Result<Device::PendingSubmit> Device::submit_pending(
   submit.signalSemaphoreCount = static_cast<std::uint32_t>(signal.size());
   submit.pSignalSemaphores = signal_semaphores.data();
   bool left = false;
-  const Status submitted = submit_command(submit, command, &keep_alive, &left);
-  if (!submitted.ok()) {
+  ScopeGuard give_back_command([&] {
     if (!left) give_back(command);
+  });
+  Status submitted = submit_command(submit, command, &keep_alive, &left);
+  if (!submitted.ok()) {
     return submitted;
   }
+  give_back_command.release();
   note_timeline_signals(signal);
   // Pending until a wait sees the work complete, so a device destroyed under
   // a handle that was never waited on still waits for the work first.
@@ -1025,6 +1085,9 @@ Result<Device::PendingSubmit> Device::submit_pending(
   pending.keep_alive_ = std::move(keep_alive);
   pending.running_ = true;
   return pending;
+} catch (...) {
+  return exception_status("Device::submit_pending",
+                          Status::Code::InvalidArgument);
 }
 
 Device::PendingSubmit::~PendingSubmit() { finish(); }
@@ -1063,31 +1126,32 @@ std::uint64_t detail::set_pending_stall_ns(std::uint64_t ns) noexcept {
   return pending_stall_ns.exchange(ns);
 }
 
-// Only a message allocates, so only memory exhaustion can throw, and a
-// destructor has no caller to report it to: terminating is the answer.
-// NOLINTNEXTLINE(bugprone-exception-escape)
 void Device::PendingSubmit::finish() noexcept {
   if (!running_) return;
   Status waited = wait(pending_stall_ns.load());
   if (is_timeout(waited)) {
-    for (const TimelinePoint& point : waits_) {
-      const Result<std::uint64_t> reached = point.semaphore->value();
-      if (reached.ok() && *reached < point.value) {
-        log_message(LogLevel::Warning, kLogSource,
-                    "Device::PendingSubmit: destroying work that has waited "
-                    "a second for timeline value " +
-                        std::to_string(point.value) + " (the counter is at " +
-                        std::to_string(*reached) +
-                        "); it blocks until the value is set");
-        break;
+    (void)try_log([&] {
+      for (const TimelinePoint& point : waits_) {
+        const Result<std::uint64_t> reached = point.semaphore->value();
+        if (reached.ok() && *reached < point.value) {
+          log_message(LogLevel::Warning, kLogSource,
+                      "Device::PendingSubmit: destroying work that has waited "
+                      "a second for timeline value " +
+                          std::to_string(point.value) + " (the counter is at " +
+                          std::to_string(*reached) +
+                          "); it blocks until the value is set");
+          break;
+        }
       }
-    }
+    });
     waited = wait();
   }
   if (!waited.ok()) {
-    log_message(LogLevel::Error, kLogSource,
-                "Device::PendingSubmit: the wait on destruction failed (" +
-                    waited.message() + "); the work is left to the device");
+    (void)try_log([&] {
+      log_message(LogLevel::Error, kLogSource,
+                  "Device::PendingSubmit: the wait on destruction failed (" +
+                      waited.message() + "); the work is left to the device");
+    });
   }
 }
 
@@ -1096,7 +1160,7 @@ bool Device::PendingSubmit::ready() const {
   return vkGetFenceStatus(device_->handle(), command_.fence) != VK_NOT_READY;
 }
 
-Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) {
+Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) try {
   if (!running_) return failed_;
   const VkResult waited = detail::wait_for_fence(
       device_->handle(), command_.fence, timeout_ns, device_->counters_.get());
@@ -1119,9 +1183,12 @@ Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) {
   waits_.clear();
   device_ = nullptr;
   return failed_;
+} catch (...) {
+  return exception_status("Device::PendingSubmit::wait",
+                          Status::Code::InvalidArgument);
 }
 
-Status Device::submit_and_wait(VkCommandBuffer cmd) const {
+Status Device::submit_and_wait(VkCommandBuffer cmd) const try {
   if (cmd == VK_NULL_HANDLE) {
     return Status::invalid_argument(
         "Device::submit_and_wait: null command "
@@ -1130,11 +1197,15 @@ Status Device::submit_and_wait(VkCommandBuffer cmd) const {
   // Only the command's fence is used: one without a buffer when one is
   // free, and never a new buffer.
   VKC_ASSIGN(const Command command, take_command(/*record=*/false));
-  ScopeGuard give_back_command([&] { give_back(command); });
   bool reusable = true;
+  const ScopeGuard give_back_command([&] {
+    if (reusable) give_back(command);
+  });
   Status status = submit_waiting(cmd, command, nullptr, &reusable);
-  if (!reusable) give_back_command.release();
   return status;
+} catch (...) {
+  return exception_status("Device::submit_and_wait",
+                          Status::Code::InvalidArgument);
 }
 
 void Device::set_object_name(VkObjectType type, std::uint64_t handle,

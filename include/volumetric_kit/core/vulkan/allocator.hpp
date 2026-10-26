@@ -281,6 +281,11 @@ struct ImageDesc {
 /// because a documented order cannot express `a = std::move(b)`, which ends a
 /// resource's life while the wrapper `a` visibly lives on.
 ///
+/// Host allocation failures in resource bookkeeping return `OutOfMemory`.
+/// A failed creation releases its partial resource, view and allocation;
+/// the allocator remains usable for retry. Empty device-memory blocks may
+/// stay reserved for reuse, as after destroying a successful resource.
+///
 /// @warning The instance and @ref Device passed to @ref create must outlive the
 ///          allocator and every resource made from it.
 ///
@@ -300,7 +305,8 @@ class VKC_VULKAN_API Allocator {
   /// @param instance  The instance @p device belongs to.
   /// @param device    The device to allocate on; it must outlive this.
   /// @return The allocator; @ref Status::Code::InvalidArgument for a null
-  ///         @p instance or an empty @p device; or a backend @ref Status.
+  ///         @p instance or an empty @p device; `OutOfMemory` if its host owner
+  ///         cannot be allocated; or a backend @ref Status.
   static Result<Allocator> create(VkInstance instance, const Device& device);
 
   ~Allocator();

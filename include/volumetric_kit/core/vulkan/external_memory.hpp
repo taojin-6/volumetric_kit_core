@@ -94,6 +94,8 @@ VKC_VULKAN_API std::optional<std::uint32_t> find_memory_type(
 /// @ref MemoryUsage::DeviceOnly is -- never host memory, and on a discrete
 /// GPU never the BAR window -- within its heap's budget, which it then counts
 /// against as every allocation does.
+/// Host bookkeeping failures return `OutOfMemory` and free any partial
+/// buffer and allocation, leaving @p allocator usable for retry.
 ///
 /// The buffer crosses between the APIs twice a frame, and the host orders
 /// both crossings. The importer's writes must be done before the batch that

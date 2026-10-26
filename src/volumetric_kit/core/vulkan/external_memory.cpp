@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "memory_types.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -27,7 +28,7 @@ std::optional<std::uint32_t> find_memory_type(const Device& device,
 
 Result<ExportedBuffer> create_exported_buffer(const Device& device,
                                               Allocator& allocator,
-                                              VkDeviceSize bytes) {
+                                              VkDeviceSize bytes) try {
   if (!allocator.valid()) {
     return Status::invalid_argument(
         "create_exported_buffer: allocator is moved-from");
@@ -101,6 +102,9 @@ Result<ExportedBuffer> create_exported_buffer(const Device& device,
   out.fd = UniqueFd(fd);
   out.memory_size = memory_size;
   return out;
+} catch (...) {
+  return exception_status("create_exported_buffer",
+                          Status::Code::InvalidArgument);
 }
 
 }  // namespace volumetric_kit::core

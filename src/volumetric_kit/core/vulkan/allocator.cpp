@@ -31,6 +31,7 @@
 #include "allocation_budget.hpp"
 #include "memory_types.hpp"
 #include "queue_families.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -211,28 +212,52 @@ struct Placed {
   VmaAllocationInfo info{};
 };
 
+// Own every completed step until the returned Buffer/Image has its deleter.
+// In particular, constructing that std::function can allocate after placement
+// and view creation have already succeeded.
+struct OwnedResource {
+  OwnedResource(const AllocatorView& owner, Resource handles) noexcept
+      : device(owner.device), allocator(owner.vma), resource(handles) {}
+  OwnedResource(const OwnedResource&) = delete;
+  OwnedResource& operator=(const OwnedResource&) = delete;
+  OwnedResource(OwnedResource&&) = delete;
+  OwnedResource& operator=(OwnedResource&&) = delete;
+  ~OwnedResource() {
+    if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
+    if (resource.buffer != VK_NULL_HANDLE) {
+      vmaDestroyBuffer(allocator, resource.buffer, placed.allocation);
+    } else if (resource.image != VK_NULL_HANDLE) {
+      vmaDestroyImage(allocator, resource.image, placed.allocation);
+    }
+  }
+  void release() noexcept {
+    resource = {};
+    placed = {};
+    view = VK_NULL_HANDLE;
+  }
+
+  VkDevice device;
+  VmaAllocator allocator;
+  Resource resource;
+  Placed placed;
+  VkImageView view = VK_NULL_HANDLE;
+};
+
 // Gives `resource` memory of placement `usage`: cut to the types its
 // requirements allow (memory_types.hpp), allocated within budget
-// (allocation_budget.hpp), bound, and mapped unless it is DeviceOnly. On any
-// failure the resource is destroyed with whatever memory it got, and the
-// error names the step that failed; `caller` prefixes refusals of its own.
-Result<Placed> place(const AllocatorView& allocator, const Resource& resource,
-                     MemoryUsage usage, HostAccess access, const char* caller) {
+// (allocation_budget.hpp), bound, and mapped unless it is DeviceOnly. Its
+// owner keeps partial placement on every return or exception; `caller`
+// prefixes refusals of its own.
+Status place(const AllocatorView& allocator, OwnedResource& owner,
+             MemoryUsage usage, HostAccess access, const char* caller) {
+  const Resource& resource = owner.resource;
+  Placed& placed = owner.placed;
   const bool is_buffer = resource.buffer != VK_NULL_HANDLE;
-  // vmaDestroy* also destroys a resource with no allocation.
-  const auto destroy = [&](VmaAllocation allocation) {
-    if (is_buffer) {
-      vmaDestroyBuffer(allocator.vma, resource.buffer, allocation);
-    } else {
-      vmaDestroyImage(allocator.vma, resource.image, allocation);
-    }
-  };
   const ResourceRequirements requirements =
       requirements_of(allocator.device, resource, allocator.dedicated_queries);
   const std::uint32_t types = detail::placement_types(
       allocator.memory, usage, access, requirements.memory.memoryTypeBits);
   if (types == 0) {
-    destroy(nullptr);
     return unsuited(caller, usage);
   }
   // A device-mapped or staging buffer is mapped persistently, and its types
@@ -243,7 +268,6 @@ Result<Placed> place(const AllocatorView& allocator, const Resource& resource,
     vma_call =
         is_buffer ? "vmaAllocateMemoryForBuffer" : "vmaAllocateMemoryForImage";
   }
-  Placed placed;
   const detail::BudgetedAllocation made = detail::allocate_with_budget(
       allocator.memory, requirements.memory, types, mapped,
       requirements.dedicated || resource.exported != nullptr,
@@ -266,7 +290,6 @@ Result<Placed> place(const AllocatorView& allocator, const Resource& resource,
       },
       [&] { return allocator.owner.memory_stats(); });
   if (made.result != VK_SUCCESS) {
-    destroy(nullptr);
     if (made.over_budget) {
       return vk_error(made.result, std::string(caller) +
                                        ": past every candidate heap's budget");
@@ -279,18 +302,16 @@ Result<Placed> place(const AllocatorView& allocator, const Resource& resource,
                 : vmaBindImageMemory(allocator.vma, placed.allocation,
                                      resource.image);
   if (bound != VK_SUCCESS) {
-    destroy(placed.allocation);
     return vk_error(bound,
                     is_buffer ? "vmaBindBufferMemory" : "vmaBindImageMemory");
   }
   if (mapped && placed.info.pMappedData == nullptr) {
-    destroy(placed.allocation);
     return vk_error(VK_ERROR_MEMORY_MAP_FAILED,
                     std::string(caller) +
                         ": mapping requested, and VMA returned no mapped "
                         "pointer");
   }
-  return placed;
+  return {};
 }
 
 VkImageViewType view_type_for(VkImageType type, std::uint32_t layers,
@@ -374,7 +395,7 @@ Status check_image_desc(const ImageDesc& desc) {
 
 }  // namespace
 
-Status check_queue_family_count(std::uint32_t count, const char* caller) {
+Status check_queue_family_count(std::uint32_t count, const char* caller) try {
   if (count > BufferDesc::kMaxQueueFamilies) {
     return Status::invalid_argument(
         std::string(caller) + ": queue_family_count must be 0.." +
@@ -382,9 +403,13 @@ Status check_queue_family_count(std::uint32_t count, const char* caller) {
         std::to_string(count) + ")");
   }
   return {};
+} catch (...) {
+  return exception_status("check_queue_family_count",
+                          Status::Code::InvalidArgument);
 }
 
-Result<Allocator> Allocator::create(VkInstance instance, const Device& device) {
+Result<Allocator> Allocator::create(VkInstance instance,
+                                    const Device& device) try {
   if (instance == VK_NULL_HANDLE) {
     return Status::invalid_argument("Allocator::create: instance is null");
   }
@@ -434,13 +459,15 @@ Result<Allocator> Allocator::create(VkInstance instance, const Device& device) {
   Allocator allocator;
   allocator.impl_ = std::move(impl);
   return allocator;
+} catch (...) {
+  return exception_status("Allocator::create", Status::Code::InvalidArgument);
 }
 
 Allocator::~Allocator() = default;
 Allocator::Allocator(Allocator&& other) noexcept = default;
 Allocator& Allocator::operator=(Allocator&& other) noexcept = default;
 
-Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
+Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) try {
   if (impl_ == nullptr) {
     return Status::invalid_argument("create_buffer: allocator is moved-from");
   }
@@ -492,20 +519,26 @@ Result<Buffer> Allocator::create_buffer(const BufferDesc& desc) {
   VKC_VK_TRY(vkCreateBuffer(impl_->device, &buffer_info, nullptr, &buffer));
   Resource resource;
   resource.buffer = buffer;
-  VKC_ASSIGN(const Placed placed,
-             place(impl_->view(*this), resource, desc.memory, desc.host_access,
-                   "create_buffer"));
+  OwnedResource owned(impl_->view(*this), resource);
+  VKC_TRY(place(impl_->view(*this), owned, desc.memory, desc.host_access,
+                "create_buffer"));
+  const Placed& placed = owned.placed;
   // The deleter holds the Impl, which keeps the VmaAllocator alive for as
   // long as this buffer can free through it.
-  return Buffer(
+  Buffer result(
       buffer, desc.size, desc.usage, sharing.mode, placed.info.pMappedData,
       [impl = impl_, buffer, allocation = placed.allocation] {
         vmaDestroyBuffer(impl->allocator, buffer, allocation);
       },
       memory_info_of(impl_->allocator, placed.info.memoryType));
+  owned.release();
+  return result;
+} catch (...) {
+  return exception_status("Allocator::create_buffer",
+                          Status::Code::InvalidArgument);
 }
 
-Result<Image> Allocator::create_image(const ImageDesc& desc) {
+Result<Image> Allocator::create_image(const ImageDesc& desc) try {
   if (impl_ == nullptr) {
     return Status::invalid_argument("create_image: allocator is moved-from");
   }
@@ -539,10 +572,11 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
   VKC_VK_TRY(vkCreateImage(impl_->device, &image_info, nullptr, &image));
   Resource resource;
   resource.image = image;
+  OwnedResource owned(impl_->view(*this), resource);
   // The host access is ignored for device-only memory.
-  VKC_ASSIGN(const Placed placed,
-             place(impl_->view(*this), resource, MemoryUsage::DeviceOnly,
-                   HostAccess::SequentialWrite, "create_image"));
+  VKC_TRY(place(impl_->view(*this), owned, MemoryUsage::DeviceOnly,
+                HostAccess::SequentialWrite, "create_image"));
+  const Placed& placed = owned.placed;
   VmaAllocation allocation = placed.allocation;
 
   VkImageView view = VK_NULL_HANDLE;
@@ -558,9 +592,9 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
     const VkResult viewed =
         vkCreateImageView(impl_->device, &view_info, nullptr, &view);
     if (viewed != VK_SUCCESS) {
-      vmaDestroyImage(impl_->allocator, image, allocation);
       return vk_error(viewed, "vkCreateImageView");
     }
+    owned.view = view;
   }
 
   ImageInfo info;
@@ -579,19 +613,24 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) {
   info.sharing = sharing.mode;
   info.memory = memory_info_of(impl_->allocator, placed.info.memoryType);
   // The view goes first: it references the image.
-  return Image(info, [impl = impl_, view, image, allocation] {
+  Image result(info, [impl = impl_, view, image, allocation] {
     if (view != VK_NULL_HANDLE) {
       vkDestroyImageView(impl->device, view, nullptr);
     }
     vmaDestroyImage(impl->allocator, image, allocation);
   });
+  owned.release();
+  return result;
+} catch (...) {
+  return exception_status("Allocator::create_image",
+                          Status::Code::InvalidArgument);
 }
 
 Result<Buffer> Allocator::bind_exported(VkBuffer buffer, VkDeviceSize size,
                                         VkBufferUsageFlags usage,
                                         void* export_info,
                                         VkDeviceMemory* memory,
-                                        VkDeviceSize* memory_size) {
+                                        VkDeviceSize* memory_size) try {
   VkMemoryDedicatedAllocateInfo dedicated{};
   dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
   dedicated.pNext = export_info;
@@ -599,18 +638,24 @@ Result<Buffer> Allocator::bind_exported(VkBuffer buffer, VkDeviceSize size,
   Resource resource;
   resource.buffer = buffer;
   resource.exported = &dedicated;
+  OwnedResource owned(impl_->view(*this), resource);
   // The host access is ignored for device-only memory.
-  VKC_ASSIGN(const Placed placed,
-             place(impl_->view(*this), resource, MemoryUsage::DeviceOnly,
-                   HostAccess::SequentialWrite, "create_exported_buffer"));
-  *memory = placed.info.deviceMemory;
-  *memory_size = placed.info.size;
-  return Buffer(
+  VKC_TRY(place(impl_->view(*this), owned, MemoryUsage::DeviceOnly,
+                HostAccess::SequentialWrite, "create_exported_buffer"));
+  const Placed& placed = owned.placed;
+  Buffer result(
       buffer, size, usage, VK_SHARING_MODE_EXCLUSIVE, nullptr,
       [impl = impl_, buffer, allocation = placed.allocation] {
         vmaDestroyBuffer(impl->allocator, buffer, allocation);
       },
       memory_info_of(impl_->allocator, placed.info.memoryType));
+  *memory = placed.info.deviceMemory;
+  *memory_size = placed.info.size;
+  owned.release();
+  return result;
+} catch (...) {
+  return exception_status("Allocator::bind_exported",
+                          Status::Code::InvalidArgument);
 }
 
 MemoryStats Allocator::memory_stats() const {
