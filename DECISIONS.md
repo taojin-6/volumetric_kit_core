@@ -569,7 +569,7 @@ rules after review, the same day.
 | Kernel buffers, images, scratch (`device_storage_buffer`, `create_image`) | `DeviceOnly` | VRAM the host cannot map, never the BAR window | GPU-private storage where the device has it; else the one pool, unmapped |
 | Data the host writes and shaders read: uniforms, per-frame parameters, tables (`mapped_storage_buffer`) | `DeviceMapped` | VRAM through the BAR window (all of VRAM under Resizable BAR) | the one pool, mapped |
 | Uploads and readbacks (`CommandBatch`) | `Staging`, transfer usage only | system RAM: write-combined uploads, cached readbacks | the one pool |
-| Bytes moved every frame: a stage's input, the results it decides on (`HostRing`) | `DeviceMapped` where `DeviceMapped` + `Random` memory is cached; else `Staging` and a `DeviceOnly` mirror; either placed with the ring's host access | system RAM, write-combined for a write-only ring, else cached, and a mirror in VRAM, one GPU copy of each range a batch binds | the one pool, mapped and cached, bound in place |
+| Bytes moved every frame: a stage's input, the results it decides on (`HostRing`) | `DeviceMapped` where `DeviceMapped` + `Random` memory is cached; else `Staging` and a `DeviceOnly` mirror; either placed with the ring's host access | system RAM, write-combined for a write-only ring, else cached, and a mirror in VRAM, one GPU copy of each range a batch binds | the one pool, mapped and bound in place; cached, except that a write-only ring takes an uncached type where the pool has one |
 
 - **Three placements, no `Auto`.** `DeviceOnly` replaces `DeviceLocal`, and
   a buffer is device-only unless it says otherwise; `Auto`, which let VMA put
@@ -715,9 +715,9 @@ rules after review, the same day.
   never changes the shape. `Random`, the default, stays cached. A
   `SequentialWrite` ring's `Staging` takes write-combined system RAM where
   the host heap has an uncached type; in place, its `DeviceMapped` buffer
-  takes an uncached type only where one exists beside the cached one, which
-  unified memory's one pool does not. Resizable BAR gets no in-place rule. On
-  a discrete GPU with all of its VRAM in one uncached `DEVICE_LOCAL |
+  takes an uncached type where the pool has one beside the cached one, and
+  the cached one otherwise. Resizable BAR gets no in-place rule. On a
+  discrete GPU with all of its VRAM in one uncached `DEVICE_LOCAL |
   HOST_VISIBLE | HOST_COHERENT` type behind a PCIe Gen4 link, writing the
   frame through the BAR and binding it in place beat a cached slot's copy
   back to back, but lost once paced: the host's BAR writes stalled when the
