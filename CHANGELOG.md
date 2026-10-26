@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Fixed
+
+- Image `CommandBatch::acquire` and `CommandBatch::release` contain host
+  allocation failures during recording and diagnostic construction, return
+  `OutOfMemory`, and poison the batch so it cannot submit missing ownership
+  barriers. No migration is needed.
+
 ## [0.24.0] - 2026-10-26
 
 ### Added

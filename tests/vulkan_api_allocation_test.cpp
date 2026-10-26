@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <new>
 #include <optional>
@@ -20,6 +21,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
@@ -123,6 +125,120 @@ TEST(ApiAllocationTest, EmptySyncDiagnosticsReturnOutOfMemory) {
 }
 
 class DeviceAllocationTest : public test::VulkanDeviceTest {};
+
+class ImageTransferAllocationTest : public test::VulkanDeviceTest {
+ protected:
+  template <class Call>
+  void expect_failures(const Call& record, Status::Code expected) {
+    // Recording is host-only. Count every allocation, including diagnostics
+    // and saving the first refusal, without relying on string capacities.
+    CommandBatch counted(device(), allocator());
+    test::AllocationFailure counter(std::numeric_limits<std::size_t>::max());
+    const Status initial = record(counted);
+    const bool counting_failed = counter.stop();
+    ASSERT_FALSE(counting_failed);
+    ASSERT_EQ(initial.domain(), expected);
+    ASSERT_GT(counter.allocations(), 0U);
+    for (const bool persistent : {false, true}) {
+      SCOPED_TRACE(persistent);
+      for (const bool async : {false, true}) {
+        SCOPED_TRACE(async ? "async" : "blocking");
+        for (std::size_t allowed = 0; allowed < counter.allocations();
+             ++allowed) {
+          SCOPED_TRACE(allowed);
+          CommandBatch batch(device(), allocator());
+          const DeviceCounters before = device().counters();
+          Status refused;
+          bool escaped = false;
+          test::AllocationFailure failure(allowed, persistent);
+          try {
+            refused = record(batch);
+          } catch (...) {
+            escaped = true;
+          }
+          const bool failed = failure.stop();
+          EXPECT_TRUE(failed);
+          EXPECT_FALSE(escaped);
+          EXPECT_EQ(refused.domain(), Status::Code::OutOfMemory);
+          const Status submitted =
+              async ? batch.submit_async({}, {}).status() : batch.submit();
+          EXPECT_EQ(submitted.domain(), Status::Code::OutOfMemory);
+          EXPECT_EQ(device().counters().submits, before.submits);
+          const Image empty;
+          EXPECT_EQ(batch
+                        .acquire(empty, VK_QUEUE_FAMILY_EXTERNAL,
+                                 VK_IMAGE_LAYOUT_GENERAL)
+                        .domain(),
+                    Status::Code::OutOfMemory);
+          EXPECT_EQ(batch
+                        .release(empty, VK_QUEUE_FAMILY_EXTERNAL,
+                                 VK_IMAGE_LAYOUT_GENERAL)
+                        .domain(),
+                    Status::Code::OutOfMemory);
+        }
+      }
+    }
+  }
+};
+
+TEST_F(ImageTransferAllocationTest, RecordingFailuresPoisonTheBatch) {
+  for (const bool acquire : {false, true}) {
+    SCOPED_TRACE(acquire ? "acquire" : "release");
+    ImageDesc desc;
+    desc.extent = {4, 4};
+    desc.format = VK_FORMAT_R8_UNORM;
+    desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    auto made = allocator().create_image(desc);
+    ASSERT_TRUE(made.ok()) << made.status().message();
+    Image image = *std::move(made);
+    if (acquire) {
+      CommandBatch first(device(), allocator());
+      ASSERT_TRUE(
+          first
+              .release(image, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+              .ok());
+      ASSERT_TRUE(first.submit().ok());
+      image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+    }
+    expect_failures(
+        [&](CommandBatch& batch) {
+          return acquire ? batch.acquire(image, VK_QUEUE_FAMILY_EXTERNAL,
+                                         VK_IMAGE_LAYOUT_GENERAL)
+                         : batch.release(image, VK_QUEUE_FAMILY_EXTERNAL,
+                                         VK_IMAGE_LAYOUT_GENERAL);
+        },
+        Status::Code::Ok);
+  }
+}
+
+TEST_F(ImageTransferAllocationTest, DiagnosticFailuresPoisonTheBatch) {
+  ImageDesc desc;
+  desc.extent = {4, 4};
+  desc.format = VK_FORMAT_R8_UNORM;
+  desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+  auto made = allocator().create_image(desc);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const Image& image = *made;
+  const Image empty;
+  const auto family_count =
+      static_cast<std::uint32_t>(physical().queue_families().size());
+  for (const bool acquire : {false, true}) {
+    SCOPED_TRACE(acquire ? "acquire" : "release");
+    const auto invalid = [&](const Image& target, std::uint32_t family,
+                             VkImageLayout layout) {
+      expect_failures(
+          [&](CommandBatch& batch) {
+            return acquire ? batch.acquire(target, family, layout)
+                           : batch.release(target, family, layout);
+          },
+          Status::Code::InvalidArgument);
+    };
+    invalid(empty, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL);
+    invalid(image, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_UNDEFINED);
+    invalid(image, family_count, VK_IMAGE_LAYOUT_GENERAL);
+    invalid(image, device().queue_family(), VK_IMAGE_LAYOUT_GENERAL);
+  }
+}
 
 TEST_F(DeviceAllocationTest, AllocatorDiagnosticsContainAllocationFailure) {
   expect_diagnostic_failure(
