@@ -71,6 +71,7 @@ jobs:
       # Under the system's bash: 3.2 on macOS.
       - run: /bin/bash tools/runners/tests/test_runner_scripts.sh
       - run: /bin/bash tools/runners/tests/test_homebrew_key.sh
+      - run: python3 -B -m unittest discover -s tools/github -p 'test_*.py' -v
       # The action as a sibling uses it: "none" on Linux, and on macOS a key
       # from the runner's Homebrew.
       - id: brew
