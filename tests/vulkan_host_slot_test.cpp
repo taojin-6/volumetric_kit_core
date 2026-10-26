@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -27,6 +28,7 @@ void expect_empty(const HostSlot& slot) {
   EXPECT_FALSE(slot.valid());
   EXPECT_EQ(slot.data(), nullptr);
   EXPECT_EQ(slot.capacity(), 0U);
+  EXPECT_FALSE(slot.memory_info().has_value());
 }
 
 class HostSlotTest : public test::VulkanDeviceTest {};

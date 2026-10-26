@@ -19,10 +19,13 @@ namespace volumetric_kit::core::detail {
 // `host` is the slot's staging and `mirror` the device-only buffer the
 // kernels bind. `held` is set while a lease is out: HostRing::claim sets it,
 // and the lease's last copy clears it with a release store as it goes.
+// `write_only` is set by a HostAccess::SequentialWrite ring at create, before
+// any lease, and never changes: CommandBatch::output refuses such a slot.
 struct RingSlot {
   Buffer host;
   Buffer mirror;  // empty in place
   std::atomic<bool> held{false};
+  bool write_only = false;
 };
 
 // The word every whole word of an output's range holds before the batch

@@ -7,11 +7,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-25
+
+### Added
+
+- `HostRingDesc::host_access`: how the host touches a ring's slots,
+  `HostAccess::Random` by default. A `HostAccess::SequentialWrite` ring's
+  slots, which the host fills and never reads, take write-combined memory
+  where their shape's mapped memory has an uncached type -- system RAM
+  staging where the ring is copied. Whether a ring runs in place stays the
+  device's fact (`HostRing::in_place`).
+- `HostSlot::memory_info`: the memory type a slot's mapping took.
+
 ### Changed
 
+- `CommandBatch::output` refuses a slot of a `HostAccess::SequentialWrite`
+  ring (`InvalidArgument`) on every device, before the batch holds the slot
+  or poisons its range.
 - iOS builds target iOS 26.0: the configure lines in README.md and
   `cmake/vkc_ios.cmake`, and the iOS configure tests, pass
   `-DCMAKE_OSX_DEPLOYMENT_TARGET=26.0`.
+
+### Migration
+
+- None: bump the pin. A ring that does not set `host_access` keeps
+  `HostAccess::Random`, as before. A ring of inputs the host only writes may
+  set `HostAccess::SequentialWrite`; binding one of its slots as an output is
+  then refused.
 
 ## [0.21.0] - 2026-10-24
 

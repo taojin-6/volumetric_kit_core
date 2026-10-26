@@ -91,7 +91,7 @@ enum class HostAccess {
   /// Writes only, front to back, never reads: write-combined (uncached)
   /// memory where the placement has it, which streams uploads faster on a
   /// discrete GPU. Reading through @ref Buffer::mapped after choosing it is
-  /// undefined. The default.
+  /// undefined. The default for @ref BufferDesc.
   SequentialWrite,
 };
 

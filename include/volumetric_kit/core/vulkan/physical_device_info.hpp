@@ -118,9 +118,6 @@ class VKC_VULKAN_API PhysicalDeviceInfo {
   /// device-mapped memory.
   /// @return Whether a cached `DeviceMapped` type exists; when it does,
   ///         @ref device_mapped_memory is true too.
-  // TODO: the device-mapped heap's size, and whether it spans the device's
-  // memory (Resizable BAR), once measuring a host write straight into device
-  // memory against a ring's copy needs them.
   bool device_mapped_cached() const noexcept { return device_mapped_cached_; }
 
   /// @return The queue families, indexed by family.

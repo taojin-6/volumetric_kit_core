@@ -573,10 +573,13 @@ class VKC_VULKAN_API CommandBatch {
   /// gather.set.write_storage_buffer(0, verdict, 0, 64);
   /// VKC_TRY(batch.dispatch(gather, nullptr, 0, 1, max_groups));
   /// @endcode
-  /// @param slot    A slot from a @ref HostRing on this batch's device.
+  /// @param slot    A slot from a @ref HostRing on this batch's device whose
+  ///                @ref HostRingDesc::host_access is `HostAccess::Random`.
   /// @param offset  The range's first byte in the slot.
   /// @param bytes   Its length; non-zero.
-  /// @return As @ref input.
+  /// @return As @ref input; also @ref Status::Code::InvalidArgument for a
+  ///         slot of a `HostAccess::SequentialWrite` ring, on every device,
+  ///         refused before the batch holds the slot or poisons its range.
   Result<VkBuffer> output(const HostSlot& slot, VkDeviceSize offset,
                           VkDeviceSize bytes);
 
@@ -753,9 +756,10 @@ class VKC_VULKAN_API CommandBatch {
   // each tagged command, and counts its dispatches and barriers on the
   // device; the recording both submits run.
   void record(VkCommandBuffer cmd, GpuTiles* tiles) const;
-  // input()'s and output()'s checks, and the batch's hold on `slot`.
+  // input()'s and output()'s checks, and the batch's hold on `slot`; an
+  // `output` of a write-only ring's slot is refused.
   Status bind(const HostSlot& slot, VkDeviceSize offset, VkDeviceSize bytes,
-              const char* call);
+              bool output, const char* call);
 
   const Device* device_;
   Allocator* allocator_;
