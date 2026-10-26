@@ -134,6 +134,9 @@ TEST_F(DeviceAllocationTest, AllocatorDiagnosticsContainAllocationFailure) {
   expect_diagnostic_failure([&] {
     return create_exported_buffer(device(), allocator(), 0).status();
   });
+  expect_diagnostic_failure([&] {
+    return create_exported_image(device(), allocator(), {}).status();
+  });
   expect_diagnostic_failure([] {
     return check_queue_family_count(BufferDesc::kMaxQueueFamilies + 1, "test");
   });
@@ -211,7 +214,17 @@ TEST_F(DeviceAllocationTest, ImageOwnerFailureReleasesViewAndCanRetry) {
   }
 }
 
-TEST_F(DeviceAllocationTest, ExportOwnerFailureReleasesAllocationAndCanRetry) {
+// A device that exports memory where its driver can.
+class ExportAllocationTest : public DeviceAllocationTest {
+ protected:
+  DeviceRequirements requirements() const override {
+    DeviceRequirements r;
+    r.optional_extensions = {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME};
+    return r;
+  }
+};
+
+TEST_F(ExportAllocationTest, ExportOwnerFailureReleasesAllocationAndCanRetry) {
   auto initial = create_exported_buffer(device(), allocator(), 256);
   if (!initial.ok()) {
     ASSERT_EQ(initial.status().domain(), Status::Code::Unsupported);
@@ -236,6 +249,38 @@ TEST_F(DeviceAllocationTest, ExportOwnerFailureReleasesAllocationAndCanRetry) {
   auto retried = create_exported_buffer(device(), allocator(), 256);
   ASSERT_TRUE(retried.ok()) << retried.status().message();
   retried.value() = ExportedBuffer{};
+  EXPECT_EQ(live_bytes(allocator()), before);
+}
+
+TEST_F(ExportAllocationTest, ExportedImageOwnerFailureReleasesItAndCanRetry) {
+  ImageDesc desc;
+  desc.extent = {64, 32};
+  desc.format = VK_FORMAT_R8_UNORM;
+  desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  auto initial = create_exported_image(device(), allocator(), desc);
+  if (!initial.ok()) {
+    ASSERT_EQ(initial.status().domain(), Status::Code::Unsupported);
+    GTEST_SKIP() << "the device cannot export an R8 image";
+  }
+  // Its final core allocation is the image's deleter, as create_image's is;
+  // the descriptor is taken only after it.
+  test::record_allocations();
+  initial = create_exported_image(device(), allocator(), desc);
+  const test::AllocationSite site = test::finish_allocations();
+  ASSERT_TRUE(initial.ok()) << initial.status().message();
+  ASSERT_NE(site.caller, nullptr);
+  initial.value() = ExportedImage{};
+  const std::uint64_t before = live_bytes(allocator());
+  test::AllocationFailure failure(site);
+  const auto refused = create_exported_image(device(), allocator(), desc);
+  const bool failed = failure.stop();
+  ASSERT_TRUE(failed);
+  EXPECT_EQ(refused.status().domain(), Status::Code::OutOfMemory);
+  EXPECT_EQ(live_bytes(allocator()), before);
+  auto retried = create_exported_image(device(), allocator(), desc);
+  ASSERT_TRUE(retried.ok()) << retried.status().message();
+  EXPECT_NE(retried->image.view(), VK_NULL_HANDLE);
+  retried.value() = ExportedImage{};
   EXPECT_EQ(live_bytes(allocator()), before);
 }
 

@@ -348,7 +348,8 @@ class VKC_VULKAN_API CommandBatch {
   /// @brief Copy @p width x @p height texels of @p src, from its corner, into
   ///        @p dst at @p dst_offset, rows packed (`vkCmdCopyImageToBuffer`).
   ///
-  /// Reads mip 0, layer 0 (the first slice of a 3D image), in the layout
+  /// Reads mip 0, layer 0 (the first slice of a 3D image), in the layout it
+  /// is in here: the last @ref acquire's of it in this batch, or else the one
   /// @ref Image::layout records now, which the image's writer left it in.
   /// The handle and layout are taken here, so the image must stay alive, and
   /// in that layout, until @ref submit returns; the batch cannot see a later
@@ -407,12 +408,16 @@ class VKC_VULKAN_API CommandBatch {
   ///        transfer.
   ///
   /// Recorded after every command of the batch, whenever it is called, so a
-  /// command recorded after it still runs before the buffer leaves. Its
-  /// writes are made available to @p to, which takes the buffer over once
-  /// the work has completed, or after a timeline value @ref submit_async
-  /// sets: another family by its own @ref acquire, an API
-  /// outside Vulkan from `VK_QUEUE_FAMILY_EXTERNAL` -- CUDA writing the next
-  /// picture into an exported buffer, which a later batch acquires back.
+  /// command recorded after it still runs before the buffer leaves. It
+  /// leaves after every earlier use on the batch's queue too -- any work
+  /// since the batch that acquired it, draws included, which that batch's
+  /// last barrier lets follow it -- and all their writes are made available
+  /// to @p to,
+  /// which takes the buffer over once the work has completed, or after a
+  /// timeline value @ref submit_async sets: another family by its own
+  /// @ref acquire, an API outside Vulkan from `VK_QUEUE_FAMILY_EXTERNAL` --
+  /// CUDA writing the next picture into an exported buffer, which a later
+  /// batch acquires back.
   /// Nothing is recorded when there is nothing to transfer: when @p to is
   /// `VK_QUEUE_FAMILY_IGNORED` or this device's family, or when a
   /// `CONCURRENT` buffer goes to another Vulkan family (it is shared
@@ -430,6 +435,69 @@ class VKC_VULKAN_API CommandBatch {
   ///         a @p to that is none of those; or a poisoned batch's first
   ///         refusal.
   Status release(const Buffer& buffer, std::uint32_t to);
+
+  /// @brief Take @p image over from the queue family @p from, its contents
+  ///        moving to @p layout, before the commands recorded after this use
+  ///        it: the buffer @ref acquire for an image.
+  ///
+  /// The buffer form's rules hold. The contents move from the layout they
+  /// are in here: the last acquire's of the image in this batch, or else the
+  /// one @ref Image::layout records, which the releasing batch moved them to
+  /// (@ref release). The commands recorded after this, a @ref copy among
+  /// them, find them in @p layout; record it with @ref Image::set_layout once
+  /// the batch is submitted. An `EXCLUSIVE` image is transferred only from
+  /// and to `VK_QUEUE_FAMILY_EXTERNAL`: one another of the device's families
+  /// reads is made `CONCURRENT` (@ref ImageDesc::queue_families). Nothing is
+  /// recorded when there is nothing to transfer, and @p layout must then be
+  /// the layout the contents are in.
+  ///
+  /// @code
+  /// VKC_TRY(batch.acquire(luma, VK_QUEUE_FAMILY_EXTERNAL,
+  ///                       VK_IMAGE_LAYOUT_GENERAL));  // CUDA wrote it
+  /// VKC_TRY(batch.dispatch(convert, &push, sizeof(push), groups, max_groups));
+  /// @endcode
+  /// @param image   The image; it must stay alive until @ref submit returns.
+  /// @param from    As the buffer form's.
+  /// @param layout  The layout to move the contents to.
+  /// @return OK; @ref Status::Code::InvalidArgument for an empty @p image, a
+  ///         @p from the buffer form refuses, an `EXCLUSIVE` image from
+  ///         another of the device's families, an `UNDEFINED` or
+  ///         `PREINITIALIZED` @p layout, a change of layout with nothing to
+  ///         transfer, or a transfer of contents in `UNDEFINED`, which would
+  ///         be lost -- an image the importer writes first is handed over by
+  ///         @ref release first; or a poisoned batch's first refusal.
+  Status acquire(const Image& image, std::uint32_t from, VkImageLayout layout);
+
+  /// @brief Hand @p image over to the queue family @p to once the batch's
+  ///        commands are done, its contents moving to @p layout: the buffer
+  ///        @ref release for an image.
+  ///
+  /// The buffer form's rules hold, so the contents move once every use it
+  /// waits for is done, draws that sampled the image included. They move
+  /// from the layout they are in at the batch's end -- the
+  /// last acquire's of the image in this batch, or else the one
+  /// @ref Image::layout records, which may be `UNDEFINED`: an image's first
+  /// hand-over to an importer -- to @p layout, which @p to finds them in.
+  /// Record it with @ref Image::set_layout once the batch is submitted, so
+  /// the acquire that takes the image back moves the contents from it.
+  /// `EXCLUSIVE` and `CONCURRENT` images, and a batch with nothing to
+  /// transfer, as @ref acquire says.
+  ///
+  /// @code
+  /// VKC_TRY(batch.release(luma, VK_QUEUE_FAMILY_EXTERNAL,
+  ///                       VK_IMAGE_LAYOUT_GENERAL));  // CUDA's again
+  /// VKC_TRY(batch.submit());
+  /// luma.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+  /// @endcode
+  /// @param image   The image; it must stay alive until @ref submit returns.
+  /// @param to      As the buffer form's.
+  /// @param layout  The layout to move the contents to.
+  /// @return OK; @ref Status::Code::InvalidArgument for an empty @p image, a
+  ///         @p to the buffer form refuses, an `EXCLUSIVE` image to another of
+  ///         the device's families, an `UNDEFINED` or `PREINITIALIZED`
+  ///         @p layout, or a change of layout with nothing to transfer; or a
+  ///         poisoned batch's first refusal.
+  Status release(const Image& image, std::uint32_t to, VkImageLayout layout);
 
   /// @brief Record a 1-D dispatch of @p kernel over @p groups workgroups.
   ///
@@ -708,8 +776,13 @@ class VKC_VULKAN_API CommandBatch {
     std::vector<unsigned char> data;  // push constants, or an inline upload
     void* host_dst = nullptr;         // a readback's destination
     bool staged = false;              // a Copy from this batch's own staging
-    VkImage image = VK_NULL_HANDLE;   // an ImageCopy's source
+    // An ImageCopy's source, in its layout; or an image an Acquire or Release
+    // transfers, the layout it moves from (a Release's is settled when
+    // recorded) and to, and its aspects.
+    VkImage image = VK_NULL_HANDLE;
     VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout to_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageAspectFlags aspect = 0;
     std::uint32_t width = 0;   // an ImageCopy's texels a row
     std::uint32_t height = 0;  // and rows
     // Its tile: an index into keys_, taken when recorded, or untagged.
@@ -733,6 +806,21 @@ class VKC_VULKAN_API CommandBatch {
       std::vector<PendingBatch::Readback>* slices);
   // An acquire from `family`, or a release to it.
   Status transfer(Kind kind, const Buffer& buffer, std::uint32_t family);
+  Status transfer(Kind kind, const Image& image, std::uint32_t family,
+                  VkImageLayout layout);
+  // Whether a resource of `sharing` crossing between `family` and this
+  // batch's family is transferred, and the families its barrier then names,
+  // from and to. Refuses a family the device does not have.
+  struct Crossing {
+    bool transfer = false;
+    std::uint32_t from = VK_QUEUE_FAMILY_IGNORED;
+    std::uint32_t to = VK_QUEUE_FAMILY_IGNORED;
+  };
+  Result<Crossing> crossing(Kind kind, VkSharingMode sharing,
+                            std::uint32_t family, const char* caller) const;
+  // The layout `image` is in where the next command is recorded: the last
+  // acquire's of it so far, or else the one it records.
+  VkImageLayout layout_here(const Image& image) const;
   static Status check_dispatch(const ComputeKernel& kernel, const void* push,
                                std::uint32_t push_size);
   static Op dispatch_op(Kind kind, const ComputeKernel& kernel,

@@ -219,7 +219,8 @@ VKC_VULKAN_API Status check_queue_family_count(std::uint32_t count,
 /// no host accessor, so read one back by copying it into a staging buffer.
 /// Set `type` and `depth` for a 3D (volume) image, `array_layers` for an
 /// array, `cube` for a cubemap, `mip_levels` for a mip chain, `samples` for
-/// multisampling.
+/// multisampling. An image another API imports is made from one by
+/// @ref create_exported_image.
 ///
 /// @code
 /// // A 128^3 volume a kernel writes and a renderer samples.
@@ -363,12 +364,28 @@ class VKC_VULKAN_API Allocator {
   friend Result<ExportedBuffer> create_exported_buffer(const Device& device,
                                                        Allocator& allocator,
                                                        VkDeviceSize bytes);
+  friend Result<ExportedImage> create_exported_image(const Device& device,
+                                                     Allocator& allocator,
+                                                     const ImageDesc& desc);
 
   Allocator() = default;
 
-  // The device this allocates on, for create_exported_buffer to refuse a
-  // buffer of another; VK_NULL_HANDLE when moved-from.
+  // The device this allocates on, for the exported resources to refuse an
+  // allocator of another; VK_NULL_HANDLE when moved-from.
   VkDevice device_handle() const noexcept;
+
+  // What create_image refuses in `desc`, its messages naming `caller`; for
+  // create_exported_image to refuse before it asks the device about `desc`.
+  static Status check_image(const ImageDesc& desc, const char* caller);
+
+  // create_image after its checks: `desc`'s image, with `image_next`
+  // chained to its VkImageCreateInfo, placed as DeviceOnly is and within its
+  // heap's budget, and its view. With `export_info`, the memory is dedicated
+  // to it and made with `export_info` chained, and `memory` and
+  // `memory_size` receive the allocation, for the caller to export.
+  Result<Image> make_image(const ImageDesc& desc, const char* caller,
+                           const void* image_next, void* export_info,
+                           VkDeviceMemory* memory, VkDeviceSize* memory_size);
 
   // What create_exported_buffer needs of VMA, which this class's source alone
   // includes: `buffer` -- the caller's, destroyed here on a failure -- bound

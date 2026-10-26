@@ -430,8 +430,9 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
     return check(Status::invalid_argument(
         "CommandBatch::copy: the region is empty or past the image"));
   }
-  if (src.layout() != VK_IMAGE_LAYOUT_GENERAL &&
-      src.layout() != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+  const VkImageLayout layout = layout_here(src);
+  if (layout != VK_IMAGE_LAYOUT_GENERAL &&
+      layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
     return check(Status::invalid_argument(
         "CommandBatch::copy: the image is in a layout a copy cannot read"));
   }
@@ -457,7 +458,7 @@ Status CommandBatch::copy(const Image& src, std::uint32_t width,
   Op op;
   op.kind = Kind::ImageCopy;
   op.image = src.handle();
-  op.image_layout = src.layout();
+  op.image_layout = layout;
   op.width = width;
   op.height = height;
   op.dst = dst.handle();
@@ -476,37 +477,133 @@ Status CommandBatch::release(const Buffer& buffer, std::uint32_t to) {
   return transfer(Kind::Release, buffer, to);
 }
 
-Status CommandBatch::transfer(Kind kind, const Buffer& buffer,
-                              std::uint32_t family) {
-  const std::string caller =
-      kind == Kind::Acquire ? "CommandBatch::acquire" : "CommandBatch::release";
-  VKC_TRY(check(usable()));
-  if (!buffer.valid()) {
-    return check(Status::invalid_argument(caller + ": the buffer is empty"));
-  }
+Status CommandBatch::acquire(const Image& image, std::uint32_t from,
+                             VkImageLayout layout) {
+  return transfer(Kind::Acquire, image, from, layout);
+}
+
+Status CommandBatch::release(const Image& image, std::uint32_t to,
+                             VkImageLayout layout) {
+  return transfer(Kind::Release, image, to, layout);
+}
+
+Result<CommandBatch::Crossing> CommandBatch::crossing(
+    Kind kind, VkSharingMode sharing, std::uint32_t family,
+    const char* caller) const {
   const std::uint32_t own = device_->queue_family();
   const bool external = family == VK_QUEUE_FAMILY_EXTERNAL;
   if (!external && family != VK_QUEUE_FAMILY_IGNORED &&
       family >= device_->caps().queue_families().size()) {
-    return check(Status::invalid_argument(caller + ": queue family " +
-                                          std::to_string(family) +
-                                          " is not one of the device's"));
+    return Status::invalid_argument(std::string(caller) + ": queue family " +
+                                    std::to_string(family) +
+                                    " is not one of the device's");
   }
-  const bool concurrent = buffer.sharing_mode() == VK_SHARING_MODE_CONCURRENT;
+  const bool concurrent = sharing == VK_SHARING_MODE_CONCURRENT;
+  Crossing crossing;
   if (family == VK_QUEUE_FAMILY_IGNORED || family == own ||
       (concurrent && !external)) {
-    return {};
+    return crossing;
   }
-  // A CONCURRENT buffer moves between outside Vulkan and every family at
+  // A CONCURRENT resource moves between outside Vulkan and every family at
   // once, which Vulkan spells with this side's family ignored.
   const std::uint32_t ours = concurrent ? VK_QUEUE_FAMILY_IGNORED : own;
+  crossing.transfer = true;
+  crossing.from = kind == Kind::Acquire ? family : ours;
+  crossing.to = kind == Kind::Acquire ? ours : family;
+  return crossing;
+}
+
+Status CommandBatch::transfer(Kind kind, const Buffer& buffer,
+                              std::uint32_t family) {
+  const char* caller =
+      kind == Kind::Acquire ? "CommandBatch::acquire" : "CommandBatch::release";
+  VKC_TRY(check(usable()));
+  if (!buffer.valid()) {
+    return check(Status::invalid_argument(std::string(caller) +
+                                          ": the buffer is empty"));
+  }
+  Result<Crossing> crossed =
+      crossing(kind, buffer.sharing_mode(), family, caller);
+  if (!crossed.ok()) return check(crossed.status());
+  if (!crossed->transfer) return {};
   Op op;
   op.kind = kind;
   op.dst = buffer.handle();
-  op.value = kind == Kind::Acquire ? family : ours;
-  op.to_family = kind == Kind::Acquire ? ours : family;
+  op.value = crossed->from;
+  op.to_family = crossed->to;
   ops_.push_back(std::move(op));
   return {};
+}
+
+Status CommandBatch::transfer(Kind kind, const Image& image,
+                              std::uint32_t family, VkImageLayout layout) {
+  const std::string caller =
+      kind == Kind::Acquire ? "CommandBatch::acquire" : "CommandBatch::release";
+  VKC_TRY(check(usable()));
+  if (!image.valid()) {
+    return check(Status::invalid_argument(caller + ": the image is empty"));
+  }
+  // VUID-VkImageMemoryBarrier-newLayout-01198.
+  if (layout == VK_IMAGE_LAYOUT_UNDEFINED ||
+      layout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
+    return check(Status::invalid_argument(
+        caller +
+        ": an image's contents cannot move to an UNDEFINED or "
+        "PREINITIALIZED layout"));
+  }
+  Result<Crossing> crossed =
+      crossing(kind, image.sharing_mode(), family, caller.c_str());
+  if (!crossed.ok()) return check(crossed.status());
+  // The layout the contents are in here; a release's is settled when
+  // recorded, after every acquire of the batch (record).
+  const VkImageLayout here = layout_here(image);
+  if (!crossed->transfer) {
+    if (layout == here) return {};
+    return check(Status::invalid_argument(
+        caller + ": with nothing to transfer, the image stays in its layout"));
+  }
+  // Between two of the device's families both halves name the same change of
+  // layout, so the acquiring half would need the layout from before the
+  // release, which Image::layout no longer records; a CONCURRENT image needs
+  // no transfer there.
+  if (family != VK_QUEUE_FAMILY_EXTERNAL) {
+    return check(Status::invalid_argument(
+        caller +
+        ": an EXCLUSIVE image moves only between this family and "
+        "VK_QUEUE_FAMILY_EXTERNAL; share it CONCURRENT with the "
+        "device's other families"));
+  }
+  if (kind == Kind::Acquire && here == VK_IMAGE_LAYOUT_UNDEFINED) {
+    return check(Status::invalid_argument(
+        caller +
+        ": the image's contents are UNDEFINED, and would be lost; "
+        "release it to the importer before its first write"));
+  }
+  Op op;
+  op.kind = kind;
+  op.image = image.handle();
+  op.image_layout = here;
+  op.to_layout = layout;
+  // Every aspect the format has: a barrier on a combined depth/stencil image
+  // names both.
+  if (format_has_depth(image.format())) op.aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
+  if (format_has_stencil(image.format())) {
+    op.aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+  }
+  if (op.aspect == 0) op.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+  op.value = crossed->from;
+  op.to_family = crossed->to;
+  ops_.push_back(std::move(op));
+  return {};
+}
+
+VkImageLayout CommandBatch::layout_here(const Image& image) const {
+  for (auto it = ops_.rbegin(); it != ops_.rend(); ++it) {
+    if (it->kind == Kind::Acquire && it->image == image.handle()) {
+      return it->to_layout;
+    }
+  }
+  return image.layout();
 }
 
 Status CommandBatch::check_dispatch(const ComputeKernel& kernel,
@@ -730,8 +827,8 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
   const auto touches = [](const Op& op, VkBuffer buffer) {
     return buffer != VK_NULL_HANDLE && (op.src == buffer || op.dst == buffer);
   };
-  // An acquire is a barrier of its own, and orders what reads its buffer
-  // after it; a release, and a ring output's copy, are recorded after
+  // An acquire is a barrier of its own, and orders what uses its buffer or
+  // image after it; a release, and a ring output's copy, are recorded after
   // everything, past the last barrier.
   const auto transfers = [](const Op& op) {
     return op.kind == Kind::Acquire || op.kind == Kind::Release ||
@@ -748,7 +845,7 @@ bool CommandBatch::needs_barrier(std::size_t first, std::size_t i) const {
   // only that, so it joins the run too once nothing in the run writes its
   // source -- which, a run's commands writing only its buffer, is asked of
   // the joining copy alone. An image copy reads an image, which no command in
-  // a batch writes.
+  // a batch writes: an acquire's layout change is a barrier of its own.
   const auto plain = [](const Op& op) {
     return op.kind == Kind::Fill || op.kind == Kind::Update || op.staged ||
            (op.kind == Kind::Copy && op.src != op.dst) ||
@@ -783,6 +880,19 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
       detail::batch_writes(device_->queue_flags());
   const detail::BatchScope commands =
       detail::batch_commands(device_->queue_flags());
+  // A transfer's barrier: a buffer's, or an image's whose contents move from
+  // `from`.
+  const auto transfer_of = [](const Op& op, VkImageLayout from) {
+    detail::BatchTransfer transfer;
+    transfer.buffer = op.dst;
+    transfer.image = op.image;
+    transfer.aspect = op.aspect;
+    transfer.old_layout = from;
+    transfer.new_layout = op.to_layout;
+    transfer.from = op.value;
+    transfer.to = op.to_family;
+    return transfer;
+  };
 
   std::uint64_t dispatches = 0;
   std::uint64_t barriers = 0;
@@ -835,21 +945,10 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
                                &region);
         break;
       }
-      case Kind::Acquire: {
-        // The writer's release made its writes available, so this makes
-        // them visible to everything after it, and waits on nothing before.
-        VkBufferMemoryBarrier b{};
-        b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        b.dstAccessMask = commands.access;
-        b.srcQueueFamilyIndex = op.value;
-        b.dstQueueFamilyIndex = op.to_family;
-        b.buffer = op.dst;
-        b.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             commands.stages, 0, 0, nullptr, 1, &b, 0, nullptr);
+      case Kind::Acquire:
+        detail::batch_acquire(cmd, commands, transfer_of(op, op.image_layout));
         ++barriers;
         break;
-      }
       case Kind::Release:
       case Kind::Output:
         break;  // skipped above
@@ -912,20 +1011,18 @@ void CommandBatch::record(VkCommandBuffer cmd, GpuTiles* tiles) const {
   detail::batch_final_barrier(cmd, device_->queue_flags());
   ++barriers;
   // Each release last, so every command, whenever recorded, ran on the
-  // buffer first: it waits for them all and makes their writes available to
-  // the family the buffer goes to, whose acquire makes them visible.
+  // resource first. An image's contents move from the layout the batch
+  // leaves them in: its last acquire's, wherever that was recorded.
   for (const Op& op : ops_) {
     if (op.kind != Kind::Release) continue;
-    VkBufferMemoryBarrier b{};
-    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    b.srcAccessMask = writes.access;
-    b.srcQueueFamilyIndex = op.value;
-    b.dstQueueFamilyIndex = op.to_family;
-    b.buffer = op.dst;
-    b.size = VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(cmd, commands.stages,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 1,
-                         &b, 0, nullptr);
+    VkImageLayout from = op.image_layout;
+    for (const Op& acquired : ops_) {
+      if (op.image != VK_NULL_HANDLE && acquired.kind == Kind::Acquire &&
+          acquired.image == op.image) {
+        from = acquired.to_layout;
+      }
+    }
+    detail::batch_release(cmd, device_->queue_flags(), transfer_of(op, from));
     ++barriers;
   }
   if (tiles != nullptr) tiles->end(cmd);

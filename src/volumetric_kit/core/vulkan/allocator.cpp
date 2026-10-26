@@ -85,7 +85,7 @@ struct Allocator::Impl {
 namespace {
 
 // A resource to give memory: a buffer or an image (the other null) and, for
-// an exported buffer, the dedicated-allocation chain its memory is made with.
+// an exported one, the dedicated-allocation chain its memory is made with.
 // Not overloads on the two handle types, which are one integer type on a
 // 32-bit target.
 struct Resource {
@@ -272,9 +272,10 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
       allocator.memory, requirements.memory, types, mapped,
       requirements.dedicated || resource.exported != nullptr,
       [&](const VmaAllocationCreateInfo& info) {
-        // An exported buffer's memory is dedicated, as an importer of an
+        // An exported resource's memory is dedicated, as an importer of an
         // opaque descriptor maps the whole allocation as one resource. VMA
-        // names the buffer only for one it creates itself, so the chain does.
+        // names the resource only for one it creates itself, so the chain
+        // does.
         if (resource.exported != nullptr) {
           return vmaAllocateDedicatedMemory(allocator.vma, &requirements.memory,
                                             &info, resource.exported,
@@ -328,32 +329,27 @@ VkImageViewType view_type_for(VkImageType type, std::uint32_t layers,
   }
 }
 
-Status check_image_desc(const ImageDesc& desc) {
+Status check_image_desc(const ImageDesc& desc, const char* caller) {
+  const auto refuse = [caller](const char* why) {
+    return Status::invalid_argument(std::string(caller) + ": " + why);
+  };
   if (desc.extent.width == 0 || desc.extent.height == 0) {
-    return Status::invalid_argument("create_image: extent must be non-zero");
+    return refuse("extent must be non-zero");
   }
-  if (desc.usage == 0) {
-    return Status::invalid_argument("create_image: usage is zero");
-  }
-  if (desc.format == VK_FORMAT_UNDEFINED) {
-    return Status::invalid_argument("create_image: format is undefined");
-  }
+  if (desc.usage == 0) return refuse("usage is zero");
+  if (desc.format == VK_FORMAT_UNDEFINED) return refuse("format is undefined");
   if (desc.depth == 0 || desc.mip_levels == 0 || desc.array_layers == 0) {
-    return Status::invalid_argument(
-        "create_image: depth, mip_levels and array_layers must be non-zero");
+    return refuse("depth, mip_levels and array_layers must be non-zero");
   }
   if (desc.depth > 1 && desc.type != VK_IMAGE_TYPE_3D) {
-    return Status::invalid_argument(
-        "create_image: depth above 1 needs VK_IMAGE_TYPE_3D");
+    return refuse("depth above 1 needs VK_IMAGE_TYPE_3D");
   }
   // VUID-VkImageCreateInfo-imageType-00956.
   if (desc.type == VK_IMAGE_TYPE_1D && desc.extent.height != 1) {
-    return Status::invalid_argument(
-        "create_image: a 1D image has extent.height 1");
+    return refuse("a 1D image has extent.height 1");
   }
   if (desc.type == VK_IMAGE_TYPE_3D && desc.array_layers != 1) {
-    return Status::invalid_argument(
-        "create_image: a 3D image cannot be arrayed");
+    return refuse("a 3D image cannot be arrayed");
   }
   // VUID-VkImageCreateInfo-flags-00949, -imageType-00954, -samples-02257:
   // checked here, so a malformed cube reads as a domain error rather than an
@@ -361,17 +357,13 @@ Status check_image_desc(const ImageDesc& desc) {
   if (desc.cube && (desc.type != VK_IMAGE_TYPE_2D || desc.array_layers != 6 ||
                     desc.extent.width != desc.extent.height ||
                     desc.samples != VK_SAMPLE_COUNT_1_BIT)) {
-    return Status::invalid_argument(
-        "create_image: a cube is a single-sample, square 2D image of six "
-        "layers");
+    return refuse("a cube is a single-sample, square 2D image of six layers");
   }
   // VUID-VkImageCreateInfo-samples-02257 / -02258.
   if (desc.samples != VK_SAMPLE_COUNT_1_BIT &&
       (desc.type != VK_IMAGE_TYPE_2D ||
        desc.tiling != VK_IMAGE_TILING_OPTIMAL || desc.mip_levels != 1)) {
-    return Status::invalid_argument(
-        "create_image: a multisampled image is 2D, optimal-tiling and "
-        "single-mip");
+    return refuse("a multisampled image is 2D, optimal-tiling and single-mip");
   }
   // VUID-VkImageViewCreateInfo-image-04441 allows a view for nearly every
   // usage but the transfers -- video, shading-rate and density-map usages
@@ -380,15 +372,15 @@ Status check_image_desc(const ImageDesc& desc) {
   constexpr VkImageUsageFlags kTransferOnly =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   if (desc.with_view && (desc.usage & ~kTransferOnly) == 0) {
-    return Status::invalid_argument(
-        "create_image: a view needs a usage beyond transfer; clear with_view "
-        "for a transfer-only image");
+    return refuse(
+        "a view needs a usage beyond transfer; clear with_view for a "
+        "transfer-only image");
   }
   if (desc.with_view && format_needs_ycbcr_conversion(desc.format)) {
-    return Status::invalid_argument(
-        "create_image: a multi-planar or 4:2:2 format's view needs a sampler "
-        "Y'CbCr conversion, which the default view cannot carry; clear "
-        "with_view and make the view with one");
+    return refuse(
+        "a multi-planar or 4:2:2 format's view needs a sampler Y'CbCr "
+        "conversion, which the default view cannot carry; clear with_view and "
+        "make the view with one");
   }
   return {};
 }
@@ -542,16 +534,32 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) try {
   if (impl_ == nullptr) {
     return Status::invalid_argument("create_image: allocator is moved-from");
   }
-  VKC_TRY(check_image_desc(desc));
+  VKC_TRY(check_image_desc(desc, "create_image"));
+  return make_image(desc, "create_image", nullptr, nullptr, nullptr, nullptr);
+} catch (...) {
+  return exception_status("Allocator::create_image",
+                          Status::Code::InvalidArgument);
+}
+
+Status Allocator::check_image(const ImageDesc& desc, const char* caller) {
+  return check_image_desc(desc, caller);
+}
+
+// What it throws, its callers catch: each names itself in the status.
+Result<Image> Allocator::make_image(const ImageDesc& desc, const char* caller,
+                                    const void* image_next, void* export_info,
+                                    VkDeviceMemory* memory,
+                                    VkDeviceSize* memory_size) {
   VKC_ASSIGN(const Sharing sharing,
              sharing_for(desc.queue_families, desc.queue_family_count,
-                         impl_->queue_family_count, "create_image"));
+                         impl_->queue_family_count, caller));
 
   // Zeroed, then every field set below -- samples included, which has no
   // zero enumerator.
   // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
   VkImageCreateInfo image_info{};
   image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.pNext = image_next;
   if (desc.cube) image_info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   image_info.imageType = desc.type;
   image_info.format = desc.format;
@@ -572,10 +580,17 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) try {
   VKC_VK_TRY(vkCreateImage(impl_->device, &image_info, nullptr, &image));
   Resource resource;
   resource.image = image;
+  VkMemoryDedicatedAllocateInfo dedicated{};
+  if (export_info != nullptr) {
+    dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+    dedicated.pNext = export_info;
+    dedicated.image = image;
+    resource.exported = &dedicated;
+  }
   OwnedResource owned(impl_->view(*this), resource);
   // The host access is ignored for device-only memory.
   VKC_TRY(place(impl_->view(*this), owned, MemoryUsage::DeviceOnly,
-                HostAccess::SequentialWrite, "create_image"));
+                HostAccess::SequentialWrite, caller));
   const Placed& placed = owned.placed;
   VmaAllocation allocation = placed.allocation;
 
@@ -619,11 +634,12 @@ Result<Image> Allocator::create_image(const ImageDesc& desc) try {
     }
     vmaDestroyImage(impl->allocator, image, allocation);
   });
+  if (export_info != nullptr) {
+    *memory = placed.info.deviceMemory;
+    *memory_size = placed.info.size;
+  }
   owned.release();
   return result;
-} catch (...) {
-  return exception_status("Allocator::create_image",
-                          Status::Code::InvalidArgument);
 }
 
 Result<Buffer> Allocator::bind_exported(VkBuffer buffer, VkDeviceSize size,

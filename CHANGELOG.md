@@ -7,6 +7,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-26
+
+### Added
+
+- `create_exported_image` and `ExportedImage` (`vulkan/external_memory.hpp`):
+  a single-plane 2D image with optimal tiling, made from an `ImageDesc` as
+  `Allocator::create_image` makes it, on dedicated memory placed as an
+  exported buffer's, and an opaque file descriptor for another API on the
+  same GPU to import -- one plane of a hardware decoder's picture, which CUDA
+  writes and shaders sample where it is. `Unsupported` where the device does
+  not export memory, or cannot export an image of that format, usage and
+  extent.
+- `CommandBatch::acquire` and `CommandBatch::release` for an `Image`, with
+  the layout its contents move to: the queue-family transfer from and to
+  `VK_QUEUE_FAMILY_EXTERNAL`, recorded where the buffer forms record theirs.
+  An `EXCLUSIVE` image is transferred only from and to outside Vulkan.
+
+### Changed
+
+- `CommandBatch::copy` reads an image in the layout an earlier `acquire` of
+  the same batch moved it to, and otherwise in the one `Image::layout`
+  records, as before.
+- `CommandBatch::release` also waits for every earlier use on the batch's
+  queue, graphics stages included, and makes their writes available: a draw
+  since the acquiring batch that read the buffer or sampled the image
+  finishes before the release, and before an image's change of layout.
+
+### Migration
+
+- None: bump the pin.
+
 ## [0.23.0] - 2026-10-26
 
 ### Fixed
