@@ -91,8 +91,9 @@ endforeach()
 add_executable(vkc_base_result_allocation_test base_result_allocation_test.cpp
                                                allocation_failure.cpp)
 target_link_libraries(
-  vkc_base_result_allocation_test PRIVATE volumetric_kit::core_base
-                                          volumetric_kit::core_test_main)
+  vkc_base_result_allocation_test
+  PRIVATE volumetric_kit::core_base volumetric_kit::core_test_main
+          ${CMAKE_DL_LIBS})
 vkc_target_warnings(vkc_base_result_allocation_test)
 _vkc_discover_cpu_tests(vkc_base_result_allocation_test 60)
 
@@ -213,7 +214,8 @@ if(VKC_WITH_VULKAN)
                    vulkan_host_ring_allocation_test.cpp allocation_failure.cpp)
     target_link_libraries(
       vkc_vulkan_host_ring_allocation_test
-      PRIVATE volumetric_kit::core_test_support volumetric_kit::core_test_main)
+      PRIVATE volumetric_kit::core_test_support volumetric_kit::core_test_main
+              ${CMAKE_DL_LIBS})
     vkc_target_warnings(vkc_vulkan_host_ring_allocation_test)
     _vkc_discover_device_tests(vkc_vulkan_host_ring_allocation_test)
 

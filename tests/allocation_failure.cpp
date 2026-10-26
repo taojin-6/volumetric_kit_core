@@ -7,6 +7,7 @@
 
 #include "allocation_failure.hpp"
 
+#include <dlfcn.h>
 #include <cstddef>
 #include <cstdlib>
 #include <limits>
@@ -19,6 +20,10 @@ thread_local bool persistent_failure = false;
 thread_local bool triggered = false;
 thread_local std::size_t remaining = 0;
 thread_local std::size_t attempts = 0;
+thread_local bool recording = false;
+thread_local const void* recorded_module = nullptr;
+thread_local volumetric_kit::core::test::AllocationSite last_allocation;
+thread_local volumetric_kit::core::test::AllocationSite target_allocation;
 
 void fail_if_armed() {
   if (!armed) return;
@@ -55,6 +60,21 @@ void* allocate_aligned(std::size_t size, std::align_val_t alignment) {
 
 namespace volumetric_kit::core::test {
 
+void record_allocations() noexcept {
+  Dl_info own{};
+  recorded_module =
+      dladdr(reinterpret_cast<const void*>(&record_allocations), &own) != 0
+          ? own.dli_fbase
+          : nullptr;
+  last_allocation = {};
+  recording = true;
+}
+
+AllocationSite finish_allocations() noexcept {
+  recording = false;
+  return last_allocation;
+}
+
 AllocationFailure::AllocationFailure(std::size_t allowed,
                                      bool persistent) noexcept {
   remaining = allowed;
@@ -62,6 +82,14 @@ AllocationFailure::AllocationFailure(std::size_t allowed,
   triggered = false;
   attempts = 0;
   armed = true;
+  target_allocation = {};
+}
+
+AllocationFailure::AllocationFailure(AllocationSite site) noexcept {
+  armed = false;
+  triggered = false;
+  attempts = 0;
+  target_allocation = site;
 }
 
 AllocationFailure::~AllocationFailure() { stop(); }
@@ -69,6 +97,7 @@ AllocationFailure::~AllocationFailure() { stop(); }
 bool AllocationFailure::stop() noexcept {
   if (!stopped_) {
     armed = false;
+    target_allocation = {};
     triggered_ = triggered;
     allocations_ = attempts;
     stopped_ = true;
@@ -81,7 +110,23 @@ bool AllocationFailure::stop() noexcept {
 // The standard library declares these replaceable functions with reserved
 // parameter names; application definitions use ordinary portable names.
 // NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
-void* operator new(std::size_t size) { return allocate(size); }
+void* operator new(std::size_t size) {
+  const void* caller = __builtin_return_address(0);
+  if (recording && recorded_module != nullptr) {
+    Dl_info source{};
+    if (dladdr(caller, &source) != 0 && source.dli_fbase == recorded_module) {
+      last_allocation = {size, caller};
+    }
+  }
+  if (target_allocation.caller != nullptr &&
+      target_allocation.caller == caller && target_allocation.size == size) {
+    target_allocation = {};
+    triggered = true;
+    ++attempts;
+    throw std::bad_alloc();
+  }
+  return allocate(size);
+}
 void* operator new[](std::size_t size) { return allocate(size); }
 void* operator new(std::size_t size, std::align_val_t alignment) {
   return allocate_aligned(size, alignment);

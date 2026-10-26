@@ -22,6 +22,7 @@
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
+#include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/sync.hpp"
@@ -122,6 +123,121 @@ TEST(ApiAllocationTest, EmptySyncDiagnosticsReturnOutOfMemory) {
 }
 
 class DeviceAllocationTest : public test::VulkanDeviceTest {};
+
+TEST_F(DeviceAllocationTest, AllocatorDiagnosticsContainAllocationFailure) {
+  expect_diagnostic_failure(
+      [&] { return Allocator::create(VK_NULL_HANDLE, device()).status(); });
+  expect_diagnostic_failure(
+      [&] { return allocator().create_buffer({}).status(); });
+  expect_diagnostic_failure(
+      [&] { return allocator().create_image({}).status(); });
+  expect_diagnostic_failure([&] {
+    return create_exported_buffer(device(), allocator(), 0).status();
+  });
+  expect_diagnostic_failure([] {
+    return check_queue_family_count(BufferDesc::kMaxQueueFamilies + 1, "test");
+  });
+}
+
+TEST_F(DeviceAllocationTest, AllocatorOwnerFailureCanRetry) {
+  // The implementation's shared owner is prepared before VMA or Vulkan is
+  // called. Exhausting the host here must leave no partial allocator behind.
+  test::AllocationFailure failure(0, true);
+  const auto refused = Allocator::create(instance().handle(), device());
+  const bool failed = failure.stop();
+  ASSERT_TRUE(failed);
+  EXPECT_EQ(refused.status().domain(), Status::Code::OutOfMemory);
+  EXPECT_TRUE(Allocator::create(instance().handle(), device()).ok());
+}
+
+std::uint64_t live_bytes(const Allocator& allocator) {
+  const MemoryStats stats = allocator.memory_stats();
+  std::uint64_t bytes = 0;
+  for (std::uint32_t h = 0; h < stats.heap_count; ++h) {
+    bytes += stats.heaps[h].allocation_bytes;
+  }
+  return bytes;
+}
+
+TEST_F(DeviceAllocationTest, BufferOwnerFailureReleasesAllocationAndCanRetry) {
+  BufferDesc desc;
+  desc.size = 256;
+  desc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  test::record_allocations();
+  auto initial = allocator().create_buffer(desc);
+  const test::AllocationSite site = test::finish_allocations();
+  ASSERT_TRUE(initial.ok()) << initial.status().message();
+  ASSERT_NE(site.caller, nullptr);
+  initial.value() = Buffer{};
+  const std::uint64_t before = live_bytes(allocator());
+  test::AllocationFailure failure(site);
+  const auto refused = allocator().create_buffer(desc);
+  const bool failed = failure.stop();
+  ASSERT_TRUE(failed);
+  EXPECT_EQ(refused.status().domain(), Status::Code::OutOfMemory);
+  EXPECT_EQ(live_bytes(allocator()), before);
+  auto retried = allocator().create_buffer(desc);
+  ASSERT_TRUE(retried.ok()) << retried.status().message();
+  EXPECT_GT(live_bytes(allocator()), before);
+  retried.value() = Buffer{};
+  EXPECT_EQ(live_bytes(allocator()), before);
+}
+
+TEST_F(DeviceAllocationTest, ImageOwnerFailureReleasesViewAndCanRetry) {
+  ImageDesc desc;
+  desc.extent = {4, 4};
+  desc.format = VK_FORMAT_R8G8B8A8_UNORM;
+  desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+  for (const bool with_view : {true, false}) {
+    desc.with_view = with_view;
+    test::record_allocations();
+    auto initial = allocator().create_image(desc);
+    const test::AllocationSite site = test::finish_allocations();
+    ASSERT_TRUE(initial.ok()) << initial.status().message();
+    ASSERT_NE(site.caller, nullptr);
+    initial.value() = Image{};
+    const std::uint64_t before = live_bytes(allocator());
+    test::AllocationFailure failure(site);
+    const auto refused = allocator().create_image(desc);
+    const bool failed = failure.stop();
+    ASSERT_TRUE(failed);
+    EXPECT_EQ(refused.status().domain(), Status::Code::OutOfMemory);
+    EXPECT_EQ(live_bytes(allocator()), before);
+    auto retried = allocator().create_image(desc);
+    ASSERT_TRUE(retried.ok()) << retried.status().message();
+    EXPECT_EQ(retried->view() != VK_NULL_HANDLE, with_view);
+    retried.value() = Image{};
+    EXPECT_EQ(live_bytes(allocator()), before);
+  }
+}
+
+TEST_F(DeviceAllocationTest, ExportOwnerFailureReleasesAllocationAndCanRetry) {
+  auto initial = create_exported_buffer(device(), allocator(), 256);
+  if (!initial.ok()) {
+    ASSERT_EQ(initial.status().domain(), Status::Code::Unsupported);
+    GTEST_SKIP() << "the device cannot export a storage buffer";
+  }
+  // The platform export itself uses no host-new storage in this library.
+  // Its final core allocation is bind_exported's deleter, as for a buffer;
+  // allocations inside the driver's export call are excluded by module.
+  test::record_allocations();
+  initial = create_exported_buffer(device(), allocator(), 256);
+  const test::AllocationSite site = test::finish_allocations();
+  ASSERT_TRUE(initial.ok()) << initial.status().message();
+  ASSERT_NE(site.caller, nullptr);
+  initial.value() = ExportedBuffer{};
+  const std::uint64_t before = live_bytes(allocator());
+  test::AllocationFailure failure(site);
+  const auto refused = create_exported_buffer(device(), allocator(), 256);
+  const bool failed = failure.stop();
+  ASSERT_TRUE(failed);
+  EXPECT_EQ(refused.status().domain(), Status::Code::OutOfMemory);
+  EXPECT_EQ(live_bytes(allocator()), before);
+  auto retried = create_exported_buffer(device(), allocator(), 256);
+  ASSERT_TRUE(retried.ok()) << retried.status().message();
+  retried.value() = ExportedBuffer{};
+  EXPECT_EQ(live_bytes(allocator()), before);
+}
 
 TEST_F(DeviceAllocationTest, DeviceValidationDiagnosticsReturnOutOfMemory) {
   auto made = Device::create(instance(), physical(), {});

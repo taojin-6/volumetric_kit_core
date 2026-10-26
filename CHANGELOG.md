@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Fixed
 
+- Allocator buffer, image and exported-buffer creation retains every partial
+  Vulkan/VMA resource until its returned owner's deleter is constructed.
+  Host allocation failure returns `OutOfMemory`, frees partial resources and
+  leaves the allocator usable for retry.
 - Synchronization and device submission APIs contain host allocation failures,
   including validation diagnostics and user recording callbacks. A failed
   recording returns its command for reuse without submitting partial work.
