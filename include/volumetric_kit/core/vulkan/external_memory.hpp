@@ -6,9 +6,9 @@
 /// @file external_memory.hpp
 /// @brief Device memory another API on the same GPU writes into -- CUDA
 ///        writing a hardware decoder's picture, which the kernels then read
-///        in place -- the descriptor that hands it across, and the
-///        memory-type search for a resource bound outside the
-///        @ref Allocator.
+///        or sample in place -- as a buffer or an image, the descriptor that
+///        hands it across, and the memory-type search for a resource bound
+///        outside the @ref Allocator.
 
 #include <cstdint>
 #include <optional>
@@ -17,12 +17,14 @@
 #include "volumetric_kit/core/base/unique_fd.hpp"  // IWYU pragma: export
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/export.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::core {
 
 class Allocator;
 class Device;
+struct ImageDesc;
 
 /// @brief A buffer on memory of its own, and a file descriptor for that
 ///        memory, for another API to import.
@@ -51,6 +53,44 @@ struct ExportedBuffer {
   /// is released only to an import that takes it.
   UniqueFd fd;
   /// The memory's size, which an importer is told; at least the buffer's.
+  VkDeviceSize memory_size = 0;
+};
+
+/// @brief An image on memory of its own, and a file descriptor for that
+///        memory, for another API to import.
+///
+/// The memory is dedicated to the image, which starts at its offset 0, so an
+/// importer is told so -- CUDA by `CUDA_EXTERNAL_MEMORY_DEDICATED` -- and
+/// maps it whole as the image: CUDA as an array of the image's format and
+/// extent, one level.
+///
+/// @code
+/// VKC_ASSIGN(ExportedImage luma,
+///            create_exported_image(device, allocator, desc));  // R8_UNORM
+/// CUDA_EXTERNAL_MEMORY_HANDLE_DESC handle{};
+/// handle.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+/// handle.handle.fd = luma.fd.get();
+/// handle.size = luma.memory_size;
+/// handle.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
+/// if (cuImportExternalMemory(&memory, &handle) == CUDA_SUCCESS) {
+///   luma.fd.release();  // CUDA owns it now
+/// }
+/// CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC array{};
+/// array.offset = 0;
+/// array.arrayDesc = {luma.image.width(), luma.image.height(), 0,
+///                    CU_AD_FORMAT_UNSIGNED_INT8, 1, 0};
+/// array.numLevels = 1;
+/// cuExternalMemoryGetMappedMipmappedArray(&levels, memory, &array);
+/// @endcode
+struct ExportedImage {
+  /// A device-local 2D image with optimal tiling, on dedicated memory it
+  /// frees with itself, and its default view unless the description cleared
+  /// it. Its contents start undefined (`VK_IMAGE_LAYOUT_UNDEFINED`).
+  Image image;
+  /// An opaque file descriptor for the memory, owned as
+  /// @ref ExportedBuffer::fd is.
+  UniqueFd fd;
+  /// The memory's size, which an importer is told; at least the image's.
   VkDeviceSize memory_size = 0;
 };
 
@@ -137,5 +177,63 @@ VKC_VULKAN_API std::optional<std::uint32_t> find_memory_type(
 ///         its budget).
 VKC_VULKAN_API Result<ExportedBuffer> create_exported_buffer(
     const Device& device, Allocator& allocator, VkDeviceSize bytes);
+
+/// @brief Make a single-plane 2D image that another API on the same GPU
+///        imports and writes, for shaders to sample where it is: one plane of
+///        a hardware decoder's picture, say, with no copy into an image of
+///        Vulkan's own.
+///
+/// @p desc is made as @ref Allocator::create_image makes it -- its view and
+/// its queue families included -- on memory placed, budgeted and dedicated
+/// as @ref create_exported_buffer's is. A picture of several planes is an
+/// image per plane. Host bookkeeping failures return `OutOfMemory` and free
+/// any partial image, view and allocation, leaving @p allocator usable for
+/// retry.
+///
+/// The image crosses between the APIs as an exported buffer does, its layout
+/// with it. Before the importer's first write a batch hands the image over
+/// (@ref CommandBatch::release to `VK_QUEUE_FAMILY_EXTERNAL`, in the layout
+/// the importer expects: `GENERAL` for CUDA). After each write a batch takes
+/// it back before reading it, and hands it over again after.
+///
+/// @code
+/// ImageDesc desc;
+/// desc.extent = {width, height};
+/// desc.format = VK_FORMAT_R8_UNORM;
+/// desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+/// VKC_ASSIGN(ExportedImage luma,
+///            create_exported_image(device, allocator, desc));
+/// CommandBatch first(device, allocator);
+/// VKC_TRY(first.release(luma.image, VK_QUEUE_FAMILY_EXTERNAL,
+///                       VK_IMAGE_LAYOUT_GENERAL));
+/// VKC_TRY(first.submit());
+/// luma.image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+/// // ... each picture: CUDA writes it, and its stream is synchronized ...
+/// CommandBatch batch(device, allocator);
+/// VKC_TRY(batch.acquire(luma.image, VK_QUEUE_FAMILY_EXTERNAL,
+///                       VK_IMAGE_LAYOUT_GENERAL));
+/// VKC_TRY(batch.dispatch(convert, &push, sizeof(push), groups, max_groups));
+/// VKC_TRY(batch.release(luma.image, VK_QUEUE_FAMILY_EXTERNAL,
+///                       VK_IMAGE_LAYOUT_GENERAL));
+/// VKC_TRY(batch.submit());  // CUDA may write the next picture now
+/// @endcode
+/// @param device     A device that exports memory, as
+///                   @ref create_exported_buffer's.
+/// @param allocator  An allocator over @p device; the image frees its memory
+///                   through it.
+/// @param desc       The image: 2D, one mip, one layer, one sample, optimal
+///                   tiling, and a single-plane format, which is neither
+///                   multi-planar nor 4:2:2.
+/// @return The image and its descriptor; @ref Status::Code::Unsupported
+///         where @p device does not export memory or cannot export an image
+///         of this format, usage and extent, or no device-only memory type
+///         suits the image; @ref Status::Code::InvalidArgument for a
+///         moved-from @p allocator or one made for another device, a @p desc
+///         that @ref Allocator::create_image refuses, or one that is not the
+///         image above; or a backend @ref Status
+///         (`VK_ERROR_OUT_OF_DEVICE_MEMORY` when the heap is full or past
+///         its budget).
+VKC_VULKAN_API Result<ExportedImage> create_exported_image(
+    const Device& device, Allocator& allocator, const ImageDesc& desc);
 
 }  // namespace volumetric_kit::core

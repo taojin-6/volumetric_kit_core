@@ -683,6 +683,33 @@ rules after review, the same day.
   `DeviceOnly` mask, so a resource limited to a discrete GPU's BAR window
   gets no type rather than the window. Opaque descriptors only: the
   family's CUDA interop is Linux.
+- **An exported image is one plane, on memory of its own** (core 0.24.0).
+  `create_exported_image` makes a 2D, optimal-tiling image of one mip, layer
+  and sample from an `ImageDesc` -- format, extent, usage, view and queue
+  families as `create_image` takes them -- on memory dedicated to it, placed
+  and budgeted as an exported buffer's, so an importer maps the whole
+  allocation as the image (CUDA as an array of its format and extent). A
+  decoder's picture is an image per plane (`R8` luma, `R8G8` chroma): a
+  shader samples each with no sampler Y'CbCr conversion, and the core needs
+  no multi-planar format, plane views or `MUTABLE` flag.
+  The importer writes in place, so a picture takes no buffer-to-image copy.
+- **Its layout crosses with it.** `CommandBatch::acquire` and `release` take
+  an image and the layout its contents move to. A release to
+  `VK_QUEUE_FAMILY_EXTERNAL` moves them to the layout the importer takes --
+  `GENERAL` for CUDA -- which the caller then records with
+  `Image::set_layout`; the acquire that takes the image back moves them from
+  it to the layout the batch's commands use, which a later copy in the same
+  batch, and a release recorded anywhere in it, start from. An `EXCLUSIVE`
+  image crosses only to and from outside Vulkan: between two of the device's
+  families both halves name the same change of layout, from the one before
+  the release, which one `Image::layout` cannot give the acquiring side once
+  the release has been recorded; a `CONCURRENT` image needs no transfer
+  there. An acquire of contents in `UNDEFINED` is refused, as they would be
+  lost: an image the importer writes first is released to it first. A
+  release waits for every stage the final barrier lets follow a batch, the
+  graphics stages included: its change of layout is a write, which every
+  read of the image on the same queue since the acquire, a draw's included,
+  must precede, and only the barrier's own scope orders the two.
 - **`PhysicalDeviceInfo::unified_memory`** tells the architectures apart:
   every heap is device-local, so every type is (the spec sets
   `DEVICE_LOCAL` on a type exactly when its heap has it). An APU whose driver

@@ -21,9 +21,9 @@ buffers zero-copy on one shared device.
 > creates or adopts, the VMA allocator with its buffers and images,
 > descriptors, synchronization, compute kernels, `CommandBatch` (waited on, or
 > ordered by timeline semaphores and waited on later), the shader build
-> functions, GPU timers, buffers exported for CUDA to write, and the shared
-> device a compute library and a renderer both adopt. Camera models and
-> sensors are not core tiers: they stay in recon and calib
+> functions, GPU timers, buffers and images exported for CUDA to write, and
+> the shared device a compute library and a renderer both adopt. Camera
+> models and sensors are not core tiers: they stay in recon and calib
 > ([DECISIONS.md](DECISIONS.md#tiers)).
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and

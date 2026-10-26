@@ -249,7 +249,9 @@ if(VKC_WITH_VULKAN)
     shaders/fill.comp
     shaders/ring.comp
     shaders/batch_visibility.vert
-    shaders/batch_visibility.frag)
+    shaders/batch_visibility.frag
+    shaders/batch_sample.vert
+    shaders/batch_sample.frag)
   foreach(_vkc_test vulkan_compute vulkan_command_batch vulkan_host_ring
                     vulkan_timer testing_vulkan_fixture)
     target_link_libraries(vkc_${_vkc_test}_test PRIVATE vkc_test_shaders)

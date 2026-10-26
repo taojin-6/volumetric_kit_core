@@ -27,6 +27,8 @@
 #include <gtest/gtest.h>
 
 #include "add_comp.spv.hpp"
+#include "batch_sample_frag.spv.hpp"
+#include "batch_sample_vert.spv.hpp"
 #include "batch_visibility_frag.spv.hpp"
 #include "batch_visibility_vert.spv.hpp"
 #include "command_batch_barriers.hpp"
@@ -235,6 +237,9 @@ TEST(BatchBarriers, TransferOnlyScopesNeedNoShaderOrDrawSupport) {
   EXPECT_EQ(commands.access,
             VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
   EXPECT_EQ(consumers.access, commands.access | VK_ACCESS_HOST_READ_BIT);
+  const detail::BatchScope users = detail::batch_users(VK_QUEUE_TRANSFER_BIT);
+  EXPECT_EQ(users.stages, VK_PIPELINE_STAGE_TRANSFER_BIT);
+  EXPECT_EQ(users.access, VK_ACCESS_TRANSFER_WRITE_BIT);
 }
 
 TEST(BatchBarriers, GraphicsAndComputeScopesFollowTheirQueueCapabilities) {
@@ -250,6 +255,16 @@ TEST(BatchBarriers, GraphicsAndComputeScopesFollowTheirQueueCapabilities) {
             0U);
   EXPECT_NE(graphics_consumers.stages & VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0U);
   EXPECT_NE(graphics_consumers.access & VK_ACCESS_UNIFORM_READ_BIT, 0U);
+  // A release waits for every stage the final barrier lets follow a batch
+  // except the host's, the graphics stages among them, and makes only their
+  // writes available.
+  const detail::BatchScope graphics_users =
+      detail::batch_users(VK_QUEUE_GRAPHICS_BIT);
+  EXPECT_EQ(graphics_users.stages,
+            graphics_consumers.stages &
+                ~VkPipelineStageFlags{VK_PIPELINE_STAGE_HOST_BIT});
+  EXPECT_NE(graphics_users.access & VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0U);
+  EXPECT_EQ(graphics_users.access & VK_ACCESS_SHADER_READ_BIT, 0U);
   const detail::BatchScope compute_consumers =
       detail::batch_consumers(VK_QUEUE_COMPUTE_BIT);
   EXPECT_EQ(compute_consumers.stages & (VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
@@ -260,13 +275,14 @@ TEST(BatchBarriers, GraphicsAndComputeScopesFollowTheirQueueCapabilities) {
 }
 
 // Exercises the final dependency against actual graphics-stage descriptor
-// reads. The barrier mode records the batch's final barrier immediately
-// before a draw: waiting on a fence between submissions retires validation's
-// access history, so testing only the public blocking submit would miss this
-// hazard. The other mode also checks the complete public upload-to-render
+// reads, and a release against the draws before it that sampled the image it
+// hands over. The barrier mode records the batches' barriers in one
+// submission with the draw: waiting on a fence between submissions retires
+// validation's access history, so testing only the public blocking submit
+// would miss these hazards. The other mode also checks the complete public
 // path.
 //
-// TODO: neither mode proves CommandBatch::record emits that barrier, which
+// TODO: neither mode proves CommandBatch::record emits those barriers, which
 // only a private recorder can show in one submission with a draw. Cover it
 // once the batch can record into a caller's command buffer, rather than
 // opening a friend backdoor (AGENTS.md).
@@ -309,7 +325,7 @@ class BatchGraphicsTest : public test::VulkanDeviceTest,
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
     VKC_ASSIGN(DescriptorPool pool,
                DescriptorPool::create(device().handle(), sizes, 2, 1));
-    VKC_ASSIGN(DescriptorSet set, pool.allocate(layout.handle()));
+    VKC_ASSIGN(const DescriptorSet set, pool.allocate(layout.handle()));
     for (std::uint32_t i = 0; i < inputs.size(); ++i) {
       if (i % 2 == 0) {
         set.write_uniform_buffer(i, inputs[i].handle(), 0, inputs[i].size());
@@ -317,25 +333,144 @@ class BatchGraphicsTest : public test::VulkanDeviceTest,
         set.write_storage_buffer(i, inputs[i].handle(), 0, inputs[i].size());
       }
     }
-    std::vector<std::uint32_t> vertex_code(
-        vkc_test_batch_visibility_vert_spv_size / sizeof(std::uint32_t));
-    std::vector<std::uint32_t> fragment_code(
-        vkc_test_batch_visibility_frag_spv_size / sizeof(std::uint32_t));
-    std::memcpy(vertex_code.data(), vkc_test_batch_visibility_vert_spv,
-                vkc_test_batch_visibility_vert_spv_size);
-    std::memcpy(fragment_code.data(), vkc_test_batch_visibility_frag_spv,
-                vkc_test_batch_visibility_frag_spv_size);
     VKC_ASSIGN(const ShaderModule vertex,
-               ShaderModule::create(device().handle(), vertex_code.data(),
-                                    vkc_test_batch_visibility_vert_spv_size));
+               shader(vkc_test_batch_visibility_vert_spv,
+                      vkc_test_batch_visibility_vert_spv_size));
     VKC_ASSIGN(const ShaderModule fragment,
-               ShaderModule::create(device().handle(), fragment_code.data(),
-                                    vkc_test_batch_visibility_frag_spv_size));
-    VkDescriptorSetLayout raw_layout = layout.handle();
+               shader(vkc_test_batch_visibility_frag_spv,
+                      vkc_test_batch_visibility_frag_spv_size));
+    if (public_batch) {
+      CommandBatch batch(device(), allocator());
+      for (std::uint32_t i = 0; i < inputs.size(); ++i) {
+        VKC_TRY(batch.upload(inputs[i], 0, &kValues[i], sizeof(kValues[i])));
+      }
+      VKC_TRY(batch.submit());
+    }
+    return draw(
+        vertex, fragment, layout.handle(), set.handle(),
+        [&](VkCommandBuffer cmd) {
+          if (public_batch) return;
+          for (std::uint32_t i = 0; i < inputs.size(); ++i) {
+            vkCmdUpdateBuffer(cmd, inputs[i].handle(), 0, sizeof(kValues[i]),
+                              &kValues[i]);
+          }
+          detail::batch_final_barrier(cmd, device().queue_flags());
+        },
+        [](VkCommandBuffer /*cmd*/) {}, pixel);
+  }
+
+  // An image written outside Vulkan, acquired into SHADER_READ_ONLY_OPTIMAL,
+  // sampled by a draw, then released back in GENERAL. In the barrier mode
+  // the release's layout change shares the draw's submission, so it must
+  // wait for the fragment shader's read.
+  Status render_acquired_image(bool public_batch,
+                               std::array<std::uint8_t, 4>& pixel) {
+    constexpr std::array<std::uint8_t, 4> kTexel{11, 22, 33, 44};
+    constexpr VkImageLayout kSampled = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    constexpr std::uint32_t kExternal = VK_QUEUE_FAMILY_EXTERNAL;
+    ImageDesc desc;
+    desc.extent = {1, 1};
+    desc.format = VK_FORMAT_R8G8B8A8_UNORM;
+    desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VKC_ASSIGN(Image source, allocator().create_image(desc));
+    VKC_TRY(test::write_image(device(), allocator(), source, kTexel.data(),
+                              kTexel.size(), VK_IMAGE_LAYOUT_GENERAL));
+    {
+      CommandBatch out(device(), allocator());
+      VKC_TRY(out.release(source, kExternal, VK_IMAGE_LAYOUT_GENERAL));
+      VKC_TRY(out.submit());
+    }
+    source.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+    if (public_batch) {
+      CommandBatch in(device(), allocator());
+      VKC_TRY(in.acquire(source, kExternal, kSampled));
+      VKC_TRY(in.submit());
+      source.set_layout(kSampled);
+    }
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    VkSampler raw_sampler = VK_NULL_HANDLE;
+    VKC_VK_TRY(vkCreateSampler(device().handle(), &sampler_info, nullptr,
+                               &raw_sampler));
+    const UniqueHandle<VkSampler, vkDestroySampler> sampler(device().handle(),
+                                                            raw_sampler);
+    VkDescriptorSetLayoutBinding binding{};
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VKC_ASSIGN(const DescriptorSetLayout layout,
+               DescriptorSetLayout::create(device().handle(), &binding, 1));
+    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                    1};
+    VKC_ASSIGN(DescriptorPool pool,
+               DescriptorPool::create(device().handle(), &size, 1, 1));
+    VKC_ASSIGN(const DescriptorSet set, pool.allocate(layout.handle()));
+    set.write_combined_image_sampler(0, source.view(), sampler.get(), kSampled);
+    VKC_ASSIGN(const ShaderModule vertex,
+               shader(vkc_test_batch_sample_vert_spv,
+                      vkc_test_batch_sample_vert_spv_size));
+    VKC_ASSIGN(const ShaderModule fragment,
+               shader(vkc_test_batch_sample_frag_spv,
+                      vkc_test_batch_sample_frag_spv_size));
+    // One half of the image's transfer, as CommandBatch::record emits it.
+    const auto half = [&](std::uint32_t from, std::uint32_t to,
+                          VkImageLayout old_layout, VkImageLayout new_layout) {
+      detail::BatchTransfer transfer;
+      transfer.image = source.handle();
+      transfer.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+      transfer.old_layout = old_layout;
+      transfer.new_layout = new_layout;
+      transfer.from = from;
+      transfer.to = to;
+      return transfer;
+    };
+    const VkQueueFlags queues = device().queue_flags();
+    const std::uint32_t own = device().queue_family();
+    VKC_TRY(draw(
+        vertex, fragment, layout.handle(), set.handle(),
+        [&](VkCommandBuffer cmd) {
+          if (public_batch) return;
+          // A batch of one acquire.
+          detail::batch_acquire(
+              cmd, detail::batch_commands(queues),
+              half(kExternal, own, VK_IMAGE_LAYOUT_GENERAL, kSampled));
+          detail::batch_final_barrier(cmd, queues);
+        },
+        [&](VkCommandBuffer cmd) {
+          if (public_batch) return;
+          // A later batch of one release.
+          detail::batch_final_barrier(cmd, queues);
+          detail::batch_release(
+              cmd, queues,
+              half(own, kExternal, kSampled, VK_IMAGE_LAYOUT_GENERAL));
+        },
+        pixel));
+    if (public_batch) {
+      CommandBatch out(device(), allocator());
+      VKC_TRY(out.release(source, kExternal, VK_IMAGE_LAYOUT_GENERAL));
+      VKC_TRY(out.submit());
+    }
+    return {};
+  }
+
+  // A module of embedded SPIR-V, copied out as words.
+  Result<ShaderModule> shader(const unsigned char* spv, std::size_t size) {
+    std::vector<std::uint32_t> code(size / sizeof(std::uint32_t));
+    std::memcpy(code.data(), spv, size);
+    return ShaderModule::create(device().handle(), code.data(), size);
+  }
+
+  // One draw over a 1x1 RGBA8 target, which is read back into `pixel`, with
+  // `before` recorded ahead of it and `after` behind, in one submission.
+  template <typename Before, typename After>
+  Status draw(const ShaderModule& vertex, const ShaderModule& fragment,
+              VkDescriptorSetLayout set_layout, VkDescriptorSet set,
+              const Before& before, const After& after,
+              std::array<std::uint8_t, 4>& pixel) {
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.setLayoutCount = 1;
-    layout_info.pSetLayouts = &raw_layout;
+    layout_info.pSetLayouts = &set_layout;
     VkPipelineLayout raw_pipeline_layout = VK_NULL_HANDLE;
     VKC_VK_TRY(vkCreatePipelineLayout(device().handle(), &layout_info, nullptr,
                                       &raw_pipeline_layout));
@@ -349,20 +484,13 @@ class BatchGraphicsTest : public test::VulkanDeviceTest,
     image_desc.format = VK_FORMAT_R8G8B8A8_UNORM;
     image_desc.usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    VKC_ASSIGN(Image target, allocator().create_image(image_desc));
+    VKC_ASSIGN(const Image target, allocator().create_image(image_desc));
     BufferDesc readback_desc;
     readback_desc.size = pixel.size();
     readback_desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     readback_desc.memory = MemoryUsage::Staging;
     readback_desc.host_access = HostAccess::Random;
-    VKC_ASSIGN(Buffer readback, allocator().create_buffer(readback_desc));
-    if (public_batch) {
-      CommandBatch batch(device(), allocator());
-      for (std::uint32_t i = 0; i < inputs.size(); ++i) {
-        VKC_TRY(batch.upload(inputs[i], 0, &kValues[i], sizeof(kValues[i])));
-      }
-      VKC_TRY(batch.submit());
-    }
+    VKC_ASSIGN(const Buffer readback, allocator().create_buffer(readback_desc));
     VKC_TRY(device().submit_single_time([&](VkCommandBuffer cmd) {
       VkImageMemoryBarrier transition{};
       transition.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -376,13 +504,7 @@ class BatchGraphicsTest : public test::VulkanDeviceTest,
       vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
                            nullptr, 0, nullptr, 1, &transition);
-      if (!public_batch) {
-        for (std::uint32_t i = 0; i < inputs.size(); ++i) {
-          vkCmdUpdateBuffer(cmd, inputs[i].handle(), 0, sizeof(kValues[i]),
-                            &kValues[i]);
-        }
-        detail::batch_final_barrier(cmd, device().queue_flags());
-      }
+      before(cmd);
       VkRenderingAttachmentInfo color{};
       color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
       color.imageView = target.view();
@@ -397,11 +519,11 @@ class BatchGraphicsTest : public test::VulkanDeviceTest,
       rendering.pColorAttachments = &color;
       vkCmdBeginRendering(cmd, &rendering);
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.get());
-      const auto raw_set = set.handle();
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              raw_pipeline_layout, 0, 1, &raw_set, 0, nullptr);
+                              raw_pipeline_layout, 0, 1, &set, 0, nullptr);
       vkCmdDraw(cmd, 3, 1, 0, 0);
       vkCmdEndRendering(cmd);
+      after(cmd);
       transition.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
       transition.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
       transition.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -495,6 +617,13 @@ TEST_P(BatchGraphicsTest, UploadsAreVisibleToGraphicsDescriptors) {
   const Status rendered = render_uploaded_descriptors(GetParam(), pixel);
   ASSERT_TRUE(rendered.ok()) << rendered.message();
   EXPECT_EQ(pixel, (std::array<std::uint8_t, 4>{17, 34, 68, 102}));
+}
+
+TEST_P(BatchGraphicsTest, ReleasesAnImageAfterTheDrawsThatSampledIt) {
+  std::array<std::uint8_t, 4> pixel{};
+  const Status rendered = render_acquired_image(GetParam(), pixel);
+  ASSERT_TRUE(rendered.ok()) << rendered.message();
+  EXPECT_EQ(pixel, (std::array<std::uint8_t, 4>{11, 22, 33, 44}));
 }
 
 INSTANTIATE_TEST_SUITE_P(FinalBarrierAndPublicBatch, BatchGraphicsTest,
@@ -1098,6 +1227,246 @@ TEST_F(BatchComputeTest, ReleasesABufferAfterEverythingThatUsesIt) {
       refused([&](CommandBatch& c) { return c.release(Buffer(), own); }));
   EXPECT_TRUE(
       refused([&](CommandBatch& c) { return c.release(a_, family_count); }));
+}
+
+// --- image transfers ---------------------------------------------------------
+
+TEST_F(BatchTest, HandsAnImageOutAndTakesItBackInItsLayouts) {
+  // To outside Vulkan and back, as an exported image crosses. A release
+  // moves the contents to the layout the importer takes, after every command
+  // of its batch, a copy recorded before it among them. An acquire moves
+  // them on to the layout the commands after it use: a copy reads them in
+  // it, and a release in the same batch moves them on from it, recorded
+  // before the acquire or after. For an EXCLUSIVE image and a CONCURRENT
+  // one, the layer silent throughout.
+  std::vector<std::uint8_t> pixels(std::size_t{6} * 4);
+  for (std::size_t i = 0; i < pixels.size(); ++i) {
+    pixels[i] = static_cast<std::uint8_t>((9 * i) + 1);
+  }
+  constexpr VkImageUsageFlags kUsage =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  const auto crosses = [&](Image& image, bool release_first) {
+    std::vector<std::uint8_t> got(pixels.size(), 0);
+    CommandBatch out(device(), allocator());
+    if (!(out.copy(image, 6, 4, a_, 0).ok() &&
+          out.release(image, VK_QUEUE_FAMILY_EXTERNAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+              .ok() &&
+          out.readback(a_, 0, got.size(), got.data()).ok() &&
+          out.submit().ok() && got == pixels)) {
+      return false;
+    }
+    image.set_layout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    std::fill(got.begin(), got.end(), std::uint8_t{0});
+    CommandBatch back(device(), allocator());
+    const auto hand_back = [&] {
+      return back
+          .release(image, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+          .ok();
+    };
+    if (!((!release_first || hand_back()) &&
+          back.acquire(image, VK_QUEUE_FAMILY_EXTERNAL,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+              .ok() &&
+          back.copy(image, 6, 4, a_, 0).ok() &&
+          back.readback(a_, 0, got.size(), got.data()).ok() &&
+          (release_first || hand_back()) && back.submit().ok() &&
+          got == pixels)) {
+      return false;
+    }
+    image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+    return true;
+  };
+  // Each from this device, as the importer has it after the round.
+  for (const bool release_first : {false, true}) {
+    Image image = make_image(VK_FORMAT_R8_UNORM, 6, 4, pixels, kUsage);
+    ASSERT_TRUE(image.valid());
+    EXPECT_TRUE(crosses(image, release_first));
+  }
+
+  const std::uint32_t own = device().queue_family();
+  if (physical().queue_families().size() > 1) {
+    const std::uint32_t other = own == 0 ? 1 : 0;
+    const std::uint32_t both[2] = {own, other};
+    ImageDesc desc;
+    desc.extent = {6, 4};
+    desc.format = VK_FORMAT_R8_UNORM;
+    desc.usage = kUsage | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    desc.with_view = false;
+    desc.queue_families = both;
+    desc.queue_family_count = 2;
+    Result<Image> made = allocator().create_image(desc);
+    ASSERT_TRUE(made.ok()) << made.status().message();
+    Image shared = *std::move(made);
+    ASSERT_EQ(shared.sharing_mode(), VK_SHARING_MODE_CONCURRENT);
+    ASSERT_TRUE(test::write_image(device(), allocator(), shared, pixels.data(),
+                                  pixels.size(), VK_IMAGE_LAYOUT_GENERAL)
+                    .ok());
+    EXPECT_TRUE(crosses(shared, false));
+    // Shared with the other family already: nothing to transfer, so nothing
+    // recorded, in its own layout only.
+    CommandBatch batch(device(), allocator());
+    EXPECT_TRUE(batch.acquire(shared, other, VK_IMAGE_LAYOUT_GENERAL).ok());
+    EXPECT_TRUE(batch.release(shared, other, VK_IMAGE_LAYOUT_GENERAL).ok());
+    EXPECT_TRUE(batch.submit().ok());
+    EXPECT_TRUE(refused([&](CommandBatch& c) {
+      return c.acquire(shared, other, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    }));
+  }
+}
+
+TEST_F(BatchTest, RecordsAnImageTransferOnlyWhereThereIsOne) {
+  // From this device's family or from none, in the layout the image is in,
+  // nothing is recorded, and a batch of only that submits nothing; from
+  // outside Vulkan, the acquire and the final barrier.
+  const Image image =
+      make_image(VK_FORMAT_R8_UNORM, 4, 4, std::vector<std::uint8_t>(16, 3));
+  ASSERT_TRUE(image.valid());
+  const std::uint32_t own = device().queue_family();
+  const DeviceCounters before = device().counters();
+  for (const std::uint32_t from : {own, VK_QUEUE_FAMILY_IGNORED}) {
+    CommandBatch batch(device(), allocator());
+    ASSERT_TRUE(batch.acquire(image, from, VK_IMAGE_LAYOUT_GENERAL).ok());
+    ASSERT_TRUE(batch.release(image, from, VK_IMAGE_LAYOUT_GENERAL).ok());
+    ASSERT_TRUE(batch.submit().ok());
+  }
+  EXPECT_EQ(device().counters().barriers, before.barriers);
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(
+      batch.acquire(image, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+          .ok());
+  ASSERT_TRUE(batch.submit().ok());
+  EXPECT_EQ(device().counters().barriers - before.barriers, 2U);
+}
+
+TEST_F(BatchTest, HandsOverAFreshImageBeforeItsFirstWrite) {
+  // An image an importer writes first starts UNDEFINED: a release hands it
+  // over from there, and an acquire, whose contents would be lost, is
+  // refused.
+  ImageDesc desc;
+  desc.extent = {4, 4};
+  desc.format = VK_FORMAT_R8G8_UNORM;
+  desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  Result<Image> made = allocator().create_image(desc);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  Image fresh = *std::move(made);
+  ASSERT_EQ(fresh.layout(), VK_IMAGE_LAYOUT_UNDEFINED);
+  EXPECT_TRUE(refused([&](CommandBatch& c) {
+    return c.acquire(fresh, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL);
+  }));
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(
+      batch.release(fresh, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+          .ok());
+  ASSERT_TRUE(batch.submit().ok());
+  fresh.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+  CommandBatch back(device(), allocator());
+  ASSERT_TRUE(
+      back.acquire(fresh, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+          .ok());
+  ASSERT_TRUE(back.submit().ok());
+}
+
+TEST_F(BatchTest, TransfersEveryAspectOfADepthImage) {
+  // A transfer's barrier names every aspect of the format, depth alone or
+  // depth and stencil, which the validation layer checks. Every device
+  // attaches D16 and one of the two combined formats.
+  int depth_only = 0;
+  int combined = 0;
+  for (const VkFormat format :
+       {VK_FORMAT_D16_UNORM, VK_FORMAT_D24_UNORM_S8_UINT,
+        VK_FORMAT_D32_SFLOAT_S8_UINT}) {
+    SCOPED_TRACE(format);
+    VkFormatProperties props{};
+    vkGetPhysicalDeviceFormatProperties(physical().handle(), format, &props);
+    if ((props.optimalTilingFeatures &
+         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) == 0) {
+      continue;
+    }
+    ImageDesc desc;
+    desc.extent = {4, 4};
+    desc.format = format;
+    desc.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    desc.with_view = false;
+    Result<Image> made = allocator().create_image(desc);
+    ASSERT_TRUE(made.ok()) << made.status().message();
+    Image image = *std::move(made);
+    CommandBatch out(device(), allocator());
+    ASSERT_TRUE(
+        out.release(image, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+            .ok());
+    ASSERT_TRUE(out.submit().ok());
+    image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+    CommandBatch back(device(), allocator());
+    ASSERT_TRUE(back.acquire(image, VK_QUEUE_FAMILY_EXTERNAL,
+                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+                    .ok());
+    ASSERT_TRUE(
+        back.release(image, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+            .ok());
+    ASSERT_TRUE(back.submit().ok());
+    if (format == VK_FORMAT_D16_UNORM) {
+      ++depth_only;
+    } else {
+      ++combined;
+    }
+  }
+  EXPECT_EQ(depth_only, 1);
+  EXPECT_GT(combined, 0);
+}
+
+TEST_F(BatchTest, RefusesImageTransfersItCannotMake) {
+  const Image image =
+      make_image(VK_FORMAT_R8_UNORM, 4, 4, std::vector<std::uint8_t>(16, 0),
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  ASSERT_TRUE(image.valid());
+  const std::uint32_t own = device().queue_family();
+  const auto family_count =
+      static_cast<std::uint32_t>(physical().queue_families().size());
+  constexpr std::uint32_t kExternal = VK_QUEUE_FAMILY_EXTERNAL;
+  constexpr VkImageLayout kGeneral = VK_IMAGE_LAYOUT_GENERAL;
+  // An empty image, and a family the device does not have.
+  EXPECT_TRUE(refused(
+      [&](CommandBatch& c) { return c.acquire(Image(), own, kGeneral); }));
+  EXPECT_TRUE(refused(
+      [&](CommandBatch& c) { return c.release(Image(), own, kGeneral); }));
+  EXPECT_TRUE(refused([&](CommandBatch& c) {
+    return c.acquire(image, family_count, kGeneral);
+  }));
+  EXPECT_TRUE(refused([&](CommandBatch& c) {
+    return c.release(image, family_count, kGeneral);
+  }));
+  // No layout to move to.
+  for (const VkImageLayout none :
+       {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PREINITIALIZED}) {
+    EXPECT_TRUE(refused(
+        [&](CommandBatch& c) { return c.acquire(image, kExternal, none); }));
+    EXPECT_TRUE(refused(
+        [&](CommandBatch& c) { return c.release(image, kExternal, none); }));
+  }
+  // A change of layout with nothing to transfer.
+  EXPECT_TRUE(refused([&](CommandBatch& c) {
+    return c.acquire(image, VK_QUEUE_FAMILY_IGNORED,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  }));
+  EXPECT_TRUE(refused([&](CommandBatch& c) {
+    return c.release(image, own, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  }));
+  // An EXCLUSIVE image between two of the device's families.
+  if (family_count > 1) {
+    const std::uint32_t other = own == 0 ? 1 : 0;
+    EXPECT_TRUE(refused(
+        [&](CommandBatch& c) { return c.acquire(image, other, kGeneral); }));
+    EXPECT_TRUE(refused(
+        [&](CommandBatch& c) { return c.release(image, other, kGeneral); }));
+  }
+  // A copy reads the image in the layout an acquire before it left it in.
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(
+      batch.acquire(image, kExternal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+          .ok());
+  EXPECT_TRUE(is_invalid(batch.copy(image, 4, 4, a_, 0)));
+  EXPECT_TRUE(is_invalid(batch.submit()));
 }
 
 // --- image copies ------------------------------------------------------------
