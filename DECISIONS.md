@@ -1356,3 +1356,77 @@ separate device and host memory, which hosted lavapipe does not exercise.
 - **Lint, sanitizers and the required gate stay hosted.** Sanitizers retain
   lavapipe and validation; moving the build legs adds physical GPU coverage
   without removing that independent check.
+
+## 2026-10-27 — The Orbbec profiles default to H.265 colour at 3840x2160 and 25 fps
+
+`Source`'s colour defaults move from 1280x720 at 30 fps to 3840x2160 at
+25 fps (core 0.25.0); the codec stays H.265 and depth 640x576. recon's frame
+prep keeps each camera's colour at the camera's own size, and the textures
+are drawn from it, so the largest colour mode gives the finest texture. The
+struct is the one home of every Orbbec profile's modes: FuseOrbbec and
+RigViewer take them, and CalibRig's block keeps only its MJPEG colour. The
+rig's cameras stream 3840x2160 colour at 25, 15 and 5 fps only, and depth at
+the colour's rate, so the whole rig runs at 25 Hz: 40 ms per set. A scenario
+that states another mode still gets it.
+
+**The colour codec follows the purpose** (the owner, 2026-10-27): H.265 for
+reconstruction, MJPEG for calibration captures.
+
+- **H.265 for FuseOrbbec and RigViewer.** At 3840x2160 and 25 fps a camera
+  sends about 21 Mbit/s of H.265 against 185 of MJPEG (recon's 2026-09-28
+  H.265 entry), and recon decodes it on NVDEC or VideoToolbox, leaving the
+  picture on the device (its 2026-10-06 decoder entry). recon decodes JPEG
+  on hardware only, so a GPU without a hardware JPEG decoder cannot
+  reconstruct from MJPEG at all. Decoded as BT.601 full range, H.265 gives
+  the camera's JPEG colour (per-channel gains of 0.996 to 0.999 on a still
+  view at 1280x720), and the two modes' profiles (intrinsics, distortion,
+  depth extrinsic) agree byte for byte, so poses calibrated on MJPEG
+  captures are taken for H.265 frames; the measurements below check that
+  the two modes' images sit on the same pixels. A profile that fits each
+  camera's colour response for reconstruction fits on H.265 for the same
+  reason: it must fit the decode that reconstruction sees.
+- **MJPEG for CalibRig's captures.** A JPEG frame is self-contained, which an
+  H.265 frame is not, and a capture saves each camera's own JPEG (the
+  2026-10-11 entry's 0.11.0 amendment). At 3840x2160 and 25 fps the JPEG
+  spends about 0.9 bit per pixel against H.265's 0.1, which the camera fixes
+  (the SDK sets a JPEG quality but no H.265 rate), so a capture keeps the
+  least distorted image a board is detected in.
+- MJPEG stays selectable on FuseOrbbec and RigViewer for diagnostics, such
+  as `diagnostics.dump_sets`, which requires it.
+
+**Measured on the rig at these defaults** (four cameras at 3840x2160 H.265
+and 25 fps with depth, fusion and the geometry stream on, 180 s a run;
+another process held 7.4 GB of the GPU's memory and stayed idle):
+
+| | exposure automatic | exposure locked |
+| --- | --- | --- |
+| published sets per second | 24.99 | 24.97 |
+| sets missing a camera | 8.6 % | 7.2 % |
+| arrival to published, p95 / max | 32.4 / 68.5 ms | 19.9 / 64.1 ms |
+| fusion's GPU memory at peak | 2.7 GB | 2.8 GB |
+| hardware decoder use, mean | 19 % | 20 % |
+| network receive | 707 Mbit/s | 704 Mbit/s |
+
+- The runs are camera-limited: at p95 a set takes 0.42 ms of frame
+  preparation, 2.0 ms of integration and 1.8 ms of encoding on the device.
+- Lost frames and latency vary from run to run (a camera lost 12 to 54
+  frames a run), so a comparison against these numbers needs a noise
+  allowance.
+- A camera's H.265 and MJPEG images sit on the same pixels: over a 3x3 grid
+  of image regions the largest shift is 0.09 px between 60-frame means and
+  0.15 px between single frames, against a 0.2 px allowance.
+- The camera sends an H.265 key frame every 25 frames (1 s), so a frame lost
+  before decoding costs that camera's colour until the next key.
+
+**What 25 Hz changes for the consumers.**
+
+- A scenario that states `intra_period` 30 gets a key every 1.2 s instead of
+  every 1 s; one that wants 1 s states 25. A live viewer does not wait for a
+  key: FuseOrbbec's serve makes the next set a key when a viewer joins,
+  40 ms away instead of 33.
+- Dynamic fusion reaches `max_weight` 1.2 times later in seconds. At 1 m
+  from one camera, where an observation weighs 1, the default 20 spans
+  0.8 s instead of 0.67 s.
+- A camera's stored sync settings record the rate of the last stream it ran.
+  recon's sync check (`sync_differences`) compares no rate, so a camera last
+  run at 30 fps opens at 25 with no refusal.
