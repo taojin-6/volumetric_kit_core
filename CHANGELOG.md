@@ -7,6 +7,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-27
+
+### Added
+
+- `Application::CalibColor`, calib_color's headless fit of each camera's
+  colour response (CONFIG.md): operation `calibrate`, a live Orbbec rig from
+  the required `source.sync_config` and `source.calibration`, at the Orbbec
+  profiles' modes with colour only `hevc`; `run.frames` sets, 50 by default;
+  the required `output.path` is the directory each run's results directory
+  is created in. It is the last enumerator.
+- `config::Source::color_exposure` and `color_gain`
+  (`source.color_exposure`, `source.color_gain`): the manual exposure and
+  gain CalibColor sets every colour camera to, required and positive there;
+  every other profile refuses them.
+
+### Migration
+
+- No scenario changes. A `switch` over `Application` gains the `CalibColor`
+  case, and code that bounds the enumerators by `Player` bounds them by
+  `CalibColor`.
+
 ## [0.25.0] - 2026-10-27
 
 ### Changed
