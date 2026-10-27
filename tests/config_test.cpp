@@ -578,18 +578,19 @@ TEST(Config, CalibRigNeedsItsRigAndSessionRootAndRefusesWhatItDoesNotUse) {
            "operation: is not supported by this application");
 }
 
-// A CalibColor scenario's source: a rig's sync file, its calibration, and
-// these fields; the exposure and gain are left to the caller.
-std::string calib_color_source(const std::string& fields) {
-  return R"({"version":1,"source":{"sync_config":"rig.json","calibration":"rig_calibration.json",)" +
-         fields + R"(},"output":{"path":"results"}})";
+// A CalibColor scenario with no exposure or gain: a rig's sync file and
+// calibration and these further source fields, a results root, and these
+// further sections; each addition leads with a comma.
+std::string calib_color_without_controls(const std::string& source,
+                                         const std::string& sections = "") {
+  return R"({"version":1,"source":{"sync_config":"rig.json","calibration":"rig_calibration.json")" +
+         source + R"(},"output":{"path":"results"})" + sections + "}";
 }
-// A CalibColor scenario at a stated exposure and gain, with these further
-// source fields and these further sections; each addition leads with a comma.
+// The same at a stated exposure and gain.
 std::string calib_color(const std::string& source = "",
                         const std::string& sections = "") {
-  return R"({"version":1,"source":{"sync_config":"rig.json","calibration":"rig_calibration.json","color_exposure":200,"color_gain":32)" +
-         source + R"(},"output":{"path":"results"})" + sections + "}";
+  return calib_color_without_controls(
+      R"(,"color_exposure":200,"color_gain":32)" + source, sections);
 }
 
 TEST(Config, CalibColorFitsItsRigAtAStatedExposureOnH265) {
@@ -664,9 +665,9 @@ TEST(Config, CalibColorNeedsItsRigCalibrationControlsAndResultsRoot) {
             output + "}",
         "output.path: is required");
   }
-  refused(calib_color_source(R"("color_gain":32)"),
+  refused(calib_color_without_controls(R"(,"color_gain":32)"),
           "source.color_exposure: is required");
-  refused(calib_color_source(R"("color_exposure":200)"),
+  refused(calib_color_without_controls(R"(,"color_exposure":200)"),
           "source.color_gain: is required");
   // A manual exposure and gain: positive integers.
   for (const auto& [value, reason] :
@@ -678,11 +679,11 @@ TEST(Config, CalibColorNeedsItsRigCalibrationControlsAndResultsRoot) {
         std::pair{R"("200")", "expected an integer"},
         std::pair{"true", "expected an integer"},
         std::pair{"null", "expected an integer"}}) {
-    refused(calib_color_source(std::string(R"("color_exposure":)") + value +
-                               R"(,"color_gain":32)"),
+    refused(calib_color_without_controls(std::string(R"(,"color_exposure":)") +
+                                         value + R"(,"color_gain":32)"),
             std::string("source.color_exposure: ") + reason);
-    refused(calib_color_source(R"("color_exposure":200,"color_gain":)" +
-                               std::string(value)),
+    refused(calib_color_without_controls(
+                R"(,"color_exposure":200,"color_gain":)" + std::string(value)),
             std::string("source.color_gain: ") + reason);
   }
 
