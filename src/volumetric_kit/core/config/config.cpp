@@ -416,14 +416,15 @@ bool supports(std::string_view field, App app) {
   if (field == "output")
     return is_codec(app) || is_rig_calibration(app) ||
            is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender,
-                           App::GfxModel});
+                           App::GfxModel, App::RigViewer});
   if (field == "output.path")
     return is_rig_calibration(app) ||
            is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender});
   if (field == "output.prefix") return is_codec(app);
   if (field_in(field, {"output.csv", "output.stream"})) return takes_codec(app);
   if (field == "output.serve") return app == App::FuseOrbbec;
-  if (field == "output.screenshot") return app == App::GfxModel;
+  if (field == "output.screenshot")
+    return app == App::GfxModel || app == App::RigViewer;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
            is_one_of(app, {App::CodecMesh, App::Player, App::CalibColor});
@@ -718,6 +719,12 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     if (has(state, "window.overlay"))
       fail("window.overlay", "is not used when output.screenshot is requested");
   }
+  // rig_viewer numbers its offscreen frames from this name and writes each as
+  // the bytes it reads back, behind a BMP header.
+  if (app == App::RigViewer && !c.output.screenshot.empty() &&
+      std::filesystem::path(c.output.screenshot).extension() != ".bmp")
+    fail("output.screenshot",
+         "must end in .bmp: rig_viewer writes its frames as BMP");
   if (app == App::CalibProjectPoint) {
     positive(c.calibration.image_width, "calibration.image_width");
     positive(c.calibration.image_height, "calibration.image_height");

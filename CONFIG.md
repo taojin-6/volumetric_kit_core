@@ -87,7 +87,7 @@ does not override the requested operation or source discriminator.
 | `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 3840x2160 HEVC, depth 640x576, 25 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
-| `RigViewer` | `view` | `live`, `orbbec`; sync config required | colour 3840x2160 HEVC, depth 640x576, 25 fps; voxel 0.01 m, dynamic fusion, 1280x720 window, overlay, unlit shading, unlimited frames/sets |
+| `RigViewer` | `view` | `live`, `orbbec`; sync config required | colour 3840x2160 HEVC, depth 640x576, 25 fps; voxel 0.01 m, dynamic fusion, 1280x720 window, overlay, unlit shading, unlimited frames/sets; no offscreen frames saved |
 | `GfxTriangle` | `view` | omitted | 800x600, validation, unlimited frames |
 | `GfxImGui`, `GfxImage` | `view` | omitted | 1024x720, validation, unlimited frames |
 | `GfxModel` | `view` | omitted for built-in cube; `model` with optional path | 1024x720, validation, unlimited frames; screenshot selects headless rendering |
@@ -160,9 +160,9 @@ unknown extension object.
   `texture`. Gfx examples accept no render section.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
-  core 0.6.0; `screenshot` for GfxModel; `serve` for FuseOrbbec. An empty
-  string disables each optional output; fusion/export operations require a
-  nonempty `path`.
+  core 0.6.0; `screenshot` for GfxModel and RigViewer; `serve` for
+  FuseOrbbec. An empty string disables each optional output; fusion/export
+  operations require a nonempty `path`.
   `path`, `csv` and `stream` must differ once resolved, and none may be
   `source.sync_config` or `source.calibration` (core 0.13.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
@@ -211,6 +211,13 @@ unknown extension object.
   fused Classic throughout frees only blocks that never held an observed
   voxel, which the mesher and the codec use nothing from.
   Other profiles reject it.
+- `RigViewer` accepts `output.screenshot` (core 0.27.0), its only output.
+  Where no display exists, rig_viewer draws offscreen and saves frames
+  numbered `<stem>_<n>.bmp` from that name, each the bytes it reads back
+  behind a BMP header, so the name must end in `.bmp`. Empty, the default,
+  saves none, and a run in a window saves none. Unlike GfxModel's, it does
+  not select headless rendering, and `run` and `window.overlay` stay
+  accepted beside it.
 - `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
   `source.sync_config` names the rig, of any number of cameras, and `driver`
   is `orbbec`; `color_codec`, the colour and depth sizes and `fps` are the

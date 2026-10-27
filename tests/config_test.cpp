@@ -1087,6 +1087,14 @@ std::string with_sections(App app, const std::string& sections) {
   if (app == App::Player) source = R"(,"source":{"path":"rig.vrst"})";
   return R"({"version":1)" + source + sections + "}";
 }
+// The profiles that take an output section: each refuses an output it does
+// not write by the field's name, and every other profile the section.
+bool takes_output(App app) {
+  return app == App::FuseReplica || app == App::CodecReplica ||
+         app == App::CodecMesh || app == App::FuseOrbbec ||
+         app == App::FuseRender || app == App::RigViewer ||
+         app == App::GfxModel || app == App::CalibRig || app == App::CalibColor;
+}
 
 TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
   // Off by default, with the codec applications' codec defaults.
@@ -1206,14 +1214,12 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
       continue;
     rejected(with_sections(app, R"(,"codec":{})"), app,
              "codec: is not used by this application");
-    const bool writes = app == App::FuseReplica || app == App::FuseRender ||
-                        app == App::GfxModel || app == App::CalibRig ||
-                        app == App::CalibColor;
     for (const char* key : {"csv", "stream"}) {
       rejected(with_sections(
                    app, std::string(R"(,"output":{")") + key + R"(":"out"})"),
                app,
-               (writes ? std::string("output.") + key : std::string("output")) +
+               (takes_output(app) ? std::string("output.") + key
+                                  : std::string("output")) +
                    ": is not used by this application");
     }
   }
@@ -1270,17 +1276,79 @@ TEST(Config, OnlyFuseOrbbecServesItsCodedFramesLive) {
   // outputs refuse the output section.
   for (const auto app : every_profile()) {
     if (app == App::FuseOrbbec) continue;
-    const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
-                         app == App::CodecMesh || app == App::FuseRender ||
-                         app == App::GfxModel || app == App::CalibRig ||
-                         app == App::CalibColor;
     for (const char* port : {"0", "47801"}) {
       rejected(with_sections(
                    app, std::string(R"(,"output":{"serve":)") + port + "}"),
                app,
-               (outputs ? "output.serve" : "output") +
+               (takes_output(app) ? "output.serve" : "output") +
                    std::string(": is not used by this application"));
     }
+  }
+}
+
+TEST(Config, RigViewerNumbersItsOffscreenFramesFromABmpName) {
+  // No frames are saved by default, or with an empty name.
+  for (const char* output :
+       {"", R"(,"output":{})", R"(,"output":{"screenshot":""})"}) {
+    const auto plain = scenario(with_sections(App::RigViewer, output),
+                                App::RigViewer, "/scenario");
+    ASSERT_TRUE(plain) << plain.status().message();
+    EXPECT_TRUE(plain->output.screenshot.empty());
+  }
+  // The name is resolved against the scenario's directory, as every path is.
+  for (const auto& [name, resolved] :
+       {std::pair{"frames/rig.bmp", "/scenario/frames/rig.bmp"},
+        std::pair{"./runs/../frames/rig.bmp", "/scenario/frames/rig.bmp"},
+        std::pair{"/data/frames/rig.bmp", "/data/frames/rig.bmp"}}) {
+    const auto saved =
+        scenario(with_sections(App::RigViewer,
+                               std::string(R"(,"output":{"screenshot":")") +
+                                   name + R"("})"),
+                 App::RigViewer, "/scenario");
+    ASSERT_TRUE(saved) << saved.status().message();
+    EXPECT_EQ(saved->output.screenshot, resolved);
+  }
+  // It does not select headless rendering, as GfxModel's does: the run limits
+  // and the overlay stay.
+  const auto bounded = scenario(
+      with_sections(
+          App::RigViewer,
+          R"(,"window":{"overlay":false},"run":{"frames":10,"sets":3000},"output":{"screenshot":"rig.bmp"})"),
+      App::RigViewer, "/scenario");
+  ASSERT_TRUE(bounded) << bounded.status().message();
+  EXPECT_EQ(bounded->output.screenshot, "/scenario/rig.bmp");
+  EXPECT_EQ(bounded->run.frames, 10);
+  EXPECT_EQ(bounded->run.sets, 3000);
+  EXPECT_FALSE(bounded->window.overlay);
+
+  // Its frames are BMP files: any other name, a directory included, is
+  // refused.
+  for (const char* name : {"rig.png", "rig.BMP", "rig", "rig.bmp.png",
+                           "frames/", "frames/.", "frames.bmp/"}) {
+    rejected(with_sections(
+                 App::RigViewer,
+                 std::string(R"(,"output":{"screenshot":")") + name + R"("})"),
+             App::RigViewer, "output.screenshot: must end in .bmp");
+  }
+  // It is RigViewer's only output.
+  for (const char* member :
+       {R"("path":"rig.ply")", R"("prefix":"runs/rig")", R"("csv":"rig.csv")",
+        R"("stream":"rig.vrst")", R"("serve":0)"}) {
+    const std::string_view text(member);
+    const std::string key(text.substr(1, text.find('"', 1) - 1));
+    rejected(with_sections(App::RigViewer,
+                           std::string(R"(,"output":{)") + member + "}"),
+             App::RigViewer,
+             "output." + key + ": is not used by this application");
+  }
+
+  // Only GfxModel and RigViewer take a screenshot; those without outputs
+  // refuse the output section.
+  for (const auto app : every_profile()) {
+    if (app == App::GfxModel || app == App::RigViewer) continue;
+    rejected(with_sections(app, R"(,"output":{"screenshot":"rig.bmp"})"), app,
+             (takes_output(app) ? "output.screenshot" : "output") +
+                 std::string(": is not used by this application"));
   }
 }
 
