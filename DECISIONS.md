@@ -1412,8 +1412,9 @@ another process held 7.4 GB of the GPU's memory and stayed idle):
 - Lost frames and latency vary from run to run (a camera lost 12 to 54
   frames a run), so a comparison against these numbers needs a noise
   allowance.
-- A camera's H.265 and MJPEG images sit on the same pixels: the largest
-  shift over a 3x3 grid of tiles is 0.022 px.
+- A camera's H.265 and MJPEG images sit on the same pixels: over a 3x3 grid
+  of image regions the largest shift is 0.09 px between 60-frame means and
+  0.15 px between single frames, against a 0.2 px allowance.
 - The camera sends an H.265 key frame every 25 frames (1 s), so a frame lost
   before decoding costs that camera's colour until the next key.
 
