@@ -85,10 +85,10 @@ does not override the requested operation or source discriminator.
 | `FuseReplica` | `fuse` | `dataset`, `replica`; path required | voxel 0.02 m, frames 2^30, mesh every 50, output `fuse_room0.ply` |
 | `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
-| `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 1280x720 HEVC, depth 640x576, 30 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
+| `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 3840x2160 HEVC, depth 640x576, 25 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
-| `RigViewer` | `view` | `live`, `orbbec`; sync config required | voxel 0.01 m, dynamic fusion, 1280x720, overlay, unlit shading, unlimited frames/sets |
+| `RigViewer` | `view` | `live`, `orbbec`; sync config required | colour 3840x2160 HEVC, depth 640x576, 25 fps; voxel 0.01 m, dynamic fusion, 1280x720 window, overlay, unlit shading, unlimited frames/sets |
 | `GfxTriangle` | `view` | omitted | 800x600, validation, unlimited frames |
 | `GfxImGui`, `GfxImage` | `view` | omitted | 1024x720, validation, unlimited frames |
 | `GfxModel` | `view` | omitted for built-in cube; `model` with optional path | 1024x720, validation, unlimited frames; screenshot selects headless rendering |
@@ -108,7 +108,9 @@ unknown extension object.
 
 - Dataset fields: `path`, `camera_parameters`, `preload`.
 - Live Orbbec fields: `serial`, `sync_config`, `calibration`, `apply_sync`,
-  `color_codec` (`hevc`/`mjpeg`), colour/depth widths and heights, `fps`.
+  `color_codec` (`hevc`/`mjpeg`), colour/depth widths and heights, `fps`;
+  every Orbbec profile defaults to `hevc` 3840x2160 colour, 640x576 depth and
+  25 fps (core 0.25.0), CalibRig to `mjpeg` colour.
   Only `FuseOrbbec` accepts `host_clock`. Serial and sync-config selection are
   exclusive; applying sync requires a sync config; host-clock mode forbids one.
   Width/height overrides are pairs. Scanner accepts only `kind`/`driver`.

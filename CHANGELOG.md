@@ -7,12 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Changed
+
+- `config::Source` defaults to H.265 colour at 3840x2160 and 25 fps, with
+  640x576 depth (was 1280x720 at 30 fps): FuseOrbbec and RigViewer resolve
+  to it. CalibRig resolves as before, to MJPEG colour at 3840x2160, 640x576
+  depth and 25 fps, and still refuses `hevc` (DECISIONS.md, the 2026-10-27
+  entry).
+
 ### Fixed
 
 - Image `CommandBatch::acquire` and `CommandBatch::release` contain host
   allocation failures during recording and diagnostic construction, return
   `OutOfMemory`, and poison the batch so it cannot submit missing ownership
   barriers. No migration is needed.
+
+### Migration
+
+- A scenario that relied on the 1280x720 or 30 fps default states
+  `color_width`, `color_height` or `fps`. A consumer that checks the
+  FuseOrbbec or RigViewer defaults expects 3840x2160 at 25 fps.
 
 ## [0.24.0] - 2026-10-26
 

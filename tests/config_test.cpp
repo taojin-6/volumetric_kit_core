@@ -114,11 +114,18 @@ TEST(Config, ApplicationDefaultsPreserveExistingBehavior) {
   EXPECT_EQ(config::Source{}.metres_per_unit, 0.);
   const auto live = scenario(R"({"version":1})", App::FuseOrbbec, "/scenario");
   ASSERT_TRUE(live) << live.status().message();
-  EXPECT_EQ(live->source.color_codec, ColorCodec::Hevc);
-  EXPECT_EQ(live->source.color_width, 1280U);
-  EXPECT_EQ(live->source.depth_width, 640U);
-  EXPECT_EQ(live->source.depth_height, 576U);
-  EXPECT_EQ(live->source.fps, 30U);
+  // The live fusing profiles' camera modes: H.265 colour at 3840x2160, depth
+  // at 640x576, 25 fps.
+  const auto expect_4k25 = [](const config::Source& source) {
+    EXPECT_EQ(source.color_codec, ColorCodec::Hevc);
+    EXPECT_EQ(source.color_width, 3840U);
+    EXPECT_EQ(source.color_height, 2160U);
+    EXPECT_EQ(source.depth_width, 640U);
+    EXPECT_EQ(source.depth_height, 576U);
+    EXPECT_EQ(source.fps, 25U);
+  };
+  expect_4k25(live->source);
+  expect_4k25(config::Source{});
   EXPECT_EQ(live->run.frames, 300);
   EXPECT_EQ(live->fusion.min_depth_m, 0.25F);
   EXPECT_EQ(live->fusion.max_depth_m, 5.F);
@@ -127,6 +134,10 @@ TEST(Config, ApplicationDefaultsPreserveExistingBehavior) {
       scenario(R"({"version":1,"source":{"sync_config":"sync.json"}})",
                App::RigViewer, "/scenario");
   ASSERT_TRUE(rig) << rig.status().message();
+  expect_4k25(rig->source);
+  // The window is not the colour mode.
+  EXPECT_EQ(rig->window.width, 1280);
+  EXPECT_EQ(rig->window.height, 720);
   EXPECT_EQ(rig->fusion.voxel_size_m, 0.01F);
   EXPECT_EQ(rig->run.frames, 0);
   EXPECT_TRUE(rig->fusion.dynamic);
@@ -569,21 +580,22 @@ TEST(Config, CalibRigNeedsItsRigAndSessionRootAndRefusesWhatItDoesNotUse) {
 
 TEST(Config, EachProfileKeepsItsOwnOrbbecSourceFields) {
   // RigViewer opens its rig from a sync file, may write the sync roles and
-  // load poses, and states its modes.
+  // load poses, and states modes other than the defaults.
   const auto rig = scenario(
-      R"({"version":1,"source":{"sync_config":"rig.json","calibration":"poses.json","apply_sync":true,"color_codec":"hevc","color_width":3840,"color_height":2160,"depth_width":320,"depth_height":288,"fps":15}})",
+      R"({"version":1,"source":{"sync_config":"rig.json","calibration":"poses.json","apply_sync":true,"color_codec":"hevc","color_width":1280,"color_height":720,"depth_width":320,"depth_height":288,"fps":30}})",
       App::RigViewer, "/scenario");
   ASSERT_TRUE(rig) << rig.status().message();
   EXPECT_EQ(rig->source.sync_config, "/scenario/rig.json");
   EXPECT_EQ(rig->source.calibration, "/scenario/poses.json");
   EXPECT_TRUE(rig->source.apply_sync);
   EXPECT_EQ(rig->source.color_codec, ColorCodec::Hevc);
-  EXPECT_EQ(rig->source.color_width, 3840U);
-  EXPECT_EQ(rig->source.color_height, 2160U);
+  EXPECT_EQ(rig->source.color_width, 1280U);
+  EXPECT_EQ(rig->source.color_height, 720U);
   EXPECT_EQ(rig->source.depth_width, 320U);
   EXPECT_EQ(rig->source.depth_height, 288U);
-  EXPECT_EQ(rig->source.fps, 15U);
-  // FuseOrbbec may open one camera by serial, on the host clock.
+  EXPECT_EQ(rig->source.fps, 30U);
+  // FuseOrbbec may open one camera by serial, on the host clock. A mode it
+  // does not state keeps its default.
   const auto one = scenario(
       R"({"version":1,"source":{"serial":"CL2A141000N","calibration":"poses.json","host_clock":true,"color_codec":"mjpeg","fps":5}})",
       App::FuseOrbbec, "/scenario");
@@ -592,7 +604,21 @@ TEST(Config, EachProfileKeepsItsOwnOrbbecSourceFields) {
   EXPECT_EQ(one->source.calibration, "/scenario/poses.json");
   EXPECT_TRUE(one->source.host_clock);
   EXPECT_EQ(one->source.color_codec, ColorCodec::Mjpeg);
+  EXPECT_EQ(one->source.color_width, 3840U);
+  EXPECT_EQ(one->source.color_height, 2160U);
+  EXPECT_EQ(one->source.depth_width, 640U);
+  EXPECT_EQ(one->source.depth_height, 576U);
   EXPECT_EQ(one->source.fps, 5U);
+  const auto sized = scenario(
+      R"({"version":1,"source":{"color_width":1920,"color_height":1080,"depth_width":320,"depth_height":288,"fps":15}})",
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(sized) << sized.status().message();
+  EXPECT_EQ(sized->source.color_codec, ColorCodec::Hevc);
+  EXPECT_EQ(sized->source.color_width, 1920U);
+  EXPECT_EQ(sized->source.color_height, 1080U);
+  EXPECT_EQ(sized->source.depth_width, 320U);
+  EXPECT_EQ(sized->source.depth_height, 288U);
+  EXPECT_EQ(sized->source.fps, 15U);
   // Scanner takes only the kind and driver, and CalibProjectPoint no fusion.
   for (const char* field :
        {R"("sync_config":"rig.json")", R"("calibration":"poses.json")",

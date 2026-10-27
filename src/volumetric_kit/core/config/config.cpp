@@ -829,12 +829,9 @@ Config defaults_impl(Application application) {
     c.operation = Operation::Calibrate;
     c.source.kind = SourceKind::Live;
     c.source.driver = "orbbec";
+    // A capture saves each camera's JPEG; the sizes and rate are every Orbbec
+    // profile's.
     c.source.color_codec = ColorCodec::Mjpeg;
-    c.source.color_width = 3840;
-    c.source.color_height = 2160;
-    c.source.depth_width = 640;
-    c.source.depth_height = 576;
-    c.source.fps = 25;
   }
   if (application == App::Player) {
     c.operation = Operation::View;
