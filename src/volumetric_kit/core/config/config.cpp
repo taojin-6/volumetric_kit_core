@@ -61,8 +61,8 @@ bool is_codec(App app) {
 // The profiles that code frames: the codec applications, and FuseOrbbec, which
 // can code each fused set.
 bool takes_codec(App app) { return is_codec(app) || app == App::FuseOrbbec; }
-// The Orbbec profiles that can fuse. Not every live profile: CalibRig and
-// Scanner are live too.
+// The Orbbec profiles that can fuse. Not every live profile: CalibRig,
+// CalibColor and Scanner are live too.
 bool is_live_fusion(App app) {
   return is_one_of(app, {App::FuseOrbbec, App::RigViewer});
 }
