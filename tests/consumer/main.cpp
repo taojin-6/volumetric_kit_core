@@ -108,6 +108,14 @@ vkc::Status run() {
       fit.run.frames != 50 || fit.output.path != "/scenario/results")
     return vkc::Status::invalid_argument("calib_color settings were not read");
   VKC_ASSIGN(
+      const auto viewer,
+      vkc::config::parse(
+          R"({"version":1,"operation":"view","source":{"kind":"live","sync_config":"rig.json"},"run":{"sets":3000},"output":{"screenshot":"frames/rig.bmp"}})",
+          vkc::config::Application::RigViewer, "/scenario"));
+  if (viewer.output.screenshot != "/scenario/frames/rig.bmp" ||
+      viewer.run.sets != 3000)
+    return vkc::Status::invalid_argument("rig_viewer frames were not read");
+  VKC_ASSIGN(
       const auto live,
       vkc::config::parse(
           R"({"version":1,"operation":"view","source":{"kind":"stream","host":"lab","port":5000},"run":{"frames":3}})",
