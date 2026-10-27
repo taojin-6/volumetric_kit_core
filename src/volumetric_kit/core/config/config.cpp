@@ -61,14 +61,20 @@ bool is_codec(App app) {
 // The profiles that code frames: the codec applications, and FuseOrbbec, which
 // can code each fused set.
 bool takes_codec(App app) { return is_codec(app) || app == App::FuseOrbbec; }
-// The Orbbec profiles that can fuse. Not every live profile: CalibRig and
-// Scanner are live too.
+// The Orbbec profiles that can fuse. Not every live profile: CalibRig,
+// CalibColor and Scanner are live too.
 bool is_live_fusion(App app) {
   return is_one_of(app, {App::FuseOrbbec, App::RigViewer});
 }
-// The Orbbec profiles: those that can fuse, and CalibRig, which opens a rig
-// from its sync file alone.
-bool is_orbbec(App app) { return is_live_fusion(app) || app == App::CalibRig; }
+// The calibration profiles that open a rig from its sync file: CalibRig's live
+// view and capture, and CalibColor's colour fit.
+bool is_rig_calibration(App app) {
+  return is_one_of(app, {App::CalibRig, App::CalibColor});
+}
+// The Orbbec profiles: those that can fuse, and the rig calibrations.
+bool is_orbbec(App app) {
+  return is_live_fusion(app) || is_rig_calibration(app);
+}
 struct ParseState {
   std::vector<std::string> fields;
   std::string up_axis;
@@ -207,6 +213,8 @@ void read_source(const Json& json, Config& c, ParseState& state) {
   NUM(depth_width);
   NUM(depth_height);
   NUM(fps);
+  NUM(color_exposure);
+  NUM(color_gain);
   NUM(height_m);
   NUM(metres_per_unit);
   NUM(shell_voxels);
@@ -334,22 +342,25 @@ bool supports(std::string_view field, App app) {
     return is_dataset(app);
   if (field_in(field, {"source.driver"}))
     return is_orbbec(app) || app == App::Scanner;
-  if (field_in(field,
-               {"source.serial", "source.calibration", "source.apply_sync"}))
+  if (field_in(field, {"source.serial", "source.apply_sync"}))
     return is_live_fusion(app);
+  if (field == "source.calibration")
+    return is_live_fusion(app) || app == App::CalibColor;
   if (field_in(field,
                {"source.sync_config", "source.color_codec",
                 "source.color_width", "source.color_height",
                 "source.depth_width", "source.depth_height", "source.fps"}))
     return is_orbbec(app);
+  if (field_in(field, {"source.color_exposure", "source.color_gain"}))
+    return app == App::CalibColor;
   if (field == "source.host_clock") return app == App::FuseOrbbec;
   if (field_in(field, {"source.height_m", "source.metres_per_unit",
                        "source.up_axis", "source.up_vector", "source.sdf_mode",
                        "source.shell_voxels", "source.allow_holes"}))
     return app == App::CodecMesh;
   if (field == "fusion" || field == "fusion.voxel_size_m")
-    return !is_gfx(app) && !is_one_of(app, {App::CalibProjectPoint,
-                                            App::CalibRig, App::Player});
+    return !is_gfx(app) && !is_rig_calibration(app) &&
+           !is_one_of(app, {App::CalibProjectPoint, App::Player});
   if (field == "fusion.truncation_m")
     return is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::RigViewer,
                                               App::Scanner, App::CodecMesh});
@@ -403,19 +414,19 @@ bool supports(std::string_view field, App app) {
   if (field == "render.show_sources" || field == "render.texture_stats")
     return app == App::RigViewer;
   if (field == "output")
-    return is_codec(app) ||
+    return is_codec(app) || is_rig_calibration(app) ||
            is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender,
-                           App::GfxModel, App::CalibRig});
+                           App::GfxModel});
   if (field == "output.path")
-    return is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender,
-                           App::CalibRig});
+    return is_rig_calibration(app) ||
+           is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender});
   if (field == "output.prefix") return is_codec(app);
   if (field_in(field, {"output.csv", "output.stream"})) return takes_codec(app);
   if (field == "output.serve") return app == App::FuseOrbbec;
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
-           is_one_of(app, {App::CodecMesh, App::Player});
+           is_one_of(app, {App::CodecMesh, App::Player, App::CalibColor});
   if (field == "run.sets") return app == App::RigViewer;
   if (field == "run.first") return app == App::CodecMesh;
   if (field == "calibration") return app == App::CalibProjectPoint;
@@ -482,12 +493,14 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
              is_dataset(app) || app == App::CodecMesh);
   path_check(c.source.camera_parameters, "source.camera_parameters");
   path_check(c.source.sync_config, "source.sync_config",
-             is_one_of(app, {App::RigViewer, App::CalibRig}));
-  path_check(c.source.calibration, "source.calibration");
+             app == App::RigViewer || is_rig_calibration(app));
+  path_check(c.source.calibration, "source.calibration",
+             app == App::CalibColor);
   path_check(c.output.path, "output.path",
              c.operation != Operation::Stream &&
-                 is_one_of(app, {App::FuseReplica, App::FuseOrbbec,
-                                 App::FuseRender, App::CalibRig}));
+                 (is_rig_calibration(app) ||
+                  is_one_of(app, {App::FuseReplica, App::FuseOrbbec,
+                                  App::FuseRender})));
   path_check(c.output.prefix, "output.prefix");
   path_check(c.output.screenshot, "output.screenshot");
   path_check(c.output.csv, "output.csv");
@@ -540,6 +553,20 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     if (app == App::CalibRig && c.source.color_codec != ColorCodec::Mjpeg)
       fail("source.color_codec",
            "must be mjpeg: a capture saves the camera's JPEG");
+    if (app == App::CalibColor) {
+      // Reconstruction decodes H.265, and a colour fit fits what it decodes.
+      if (c.source.color_codec != ColorCodec::Hevc)
+        fail("source.color_codec",
+             "must be hevc: the fit sees the colour reconstruction decodes");
+      // A manual exposure and gain depend on the rig's lighting: neither has
+      // a default.
+      for (const auto& [value, name] :
+           {std::pair{c.source.color_exposure, "source.color_exposure"},
+            std::pair{c.source.color_gain, "source.color_gain"}}) {
+        if (!has(state, name)) fail(name, "is required");
+        positive(value, name);
+      }
+    }
   }
   if (app == App::Scanner && c.source.driver != "arkit")
     fail("source.driver", "only arkit is supported");
@@ -651,7 +678,8 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (c.render.shading == Shading::Normals &&
       (app == App::FuseViewer || app == App::FuseRender))
     fail("render.shading", "normals is only supported by rig_viewer");
-  if ((is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::CodecMesh})) &&
+  if ((is_dataset(app) ||
+       is_one_of(app, {App::FuseOrbbec, App::CodecMesh, App::CalibColor})) &&
       c.run.frames < 1)
     fail("run.frames", "must be positive");
   nonnegative(c.run.first, "run.first");
@@ -771,7 +799,7 @@ void resolve(Config& c, App app, std::string_view directory,
 
 namespace {
 Config defaults_impl(Application application) {
-  if (static_cast<int>(application) < 0 || application > App::Player)
+  if (static_cast<int>(application) < 0 || application > App::CalibColor)
     fail("application", "unknown application");
   Config c;
   if (is_dataset(application)) {
@@ -825,14 +853,16 @@ Config defaults_impl(Application application) {
     c.source.kind = SourceKind::None;
     c.operation = Operation::Project;
   }
-  if (application == App::CalibRig) {
+  if (is_rig_calibration(application)) {
     c.operation = Operation::Calibrate;
     c.source.kind = SourceKind::Live;
     c.source.driver = "orbbec";
-    // A capture saves each camera's JPEG; the sizes and rate are every Orbbec
-    // profile's.
-    c.source.color_codec = ColorCodec::Mjpeg;
   }
+  // A capture saves each camera's JPEG; the sizes and rate are every Orbbec
+  // profile's.
+  if (application == App::CalibRig) c.source.color_codec = ColorCodec::Mjpeg;
+  // Two seconds of sets at the default rate.
+  if (application == App::CalibColor) c.run.frames = 50;
   if (application == App::Player) {
     c.operation = Operation::View;
     c.source.kind = SourceKind::Stream;

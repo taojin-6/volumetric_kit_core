@@ -99,6 +99,15 @@ vkc::Status run() {
       rig.source.color_width != 3840 || rig.output.path != "/scenario/sessions")
     return vkc::Status::invalid_argument("calib_rig settings were not read");
   VKC_ASSIGN(
+      const auto fit,
+      vkc::config::parse(
+          R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json","calibration":"rig_calibration.json","color_exposure":200,"color_gain":32},"output":{"path":"results"}})",
+          vkc::config::Application::CalibColor, "/scenario"));
+  if (fit.source.color_codec != vkc::config::ColorCodec::Hevc ||
+      fit.source.color_exposure != 200 || fit.source.color_gain != 32 ||
+      fit.run.frames != 50 || fit.output.path != "/scenario/results")
+    return vkc::Status::invalid_argument("calib_color settings were not read");
+  VKC_ASSIGN(
       const auto live,
       vkc::config::parse(
           R"({"version":1,"operation":"view","source":{"kind":"stream","host":"lab","port":5000},"run":{"frames":3}})",
