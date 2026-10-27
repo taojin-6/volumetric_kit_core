@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-27
+
 ### Changed
 
 - `config::Source` defaults to H.265 colour at 3840x2160 and 25 fps, with
