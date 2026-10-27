@@ -1360,13 +1360,14 @@ separate device and host memory, which hosted lavapipe does not exercise.
 ## 2026-10-27 — The Orbbec profiles default to H.265 colour at 3840x2160 and 25 fps
 
 `Source`'s colour defaults move from 1280x720 at 30 fps to 3840x2160 at
-25 fps (core 0.25.0); the codec stays H.265 and depth 640x576. The struct is
-the one home of every Orbbec profile's modes: FuseOrbbec and RigViewer take
-them, and CalibRig's block keeps only its MJPEG colour. The rig's cameras
-stream 3840x2160 colour at 25, 15 and 5 fps only, and depth at the colour's
-rate, so the whole rig runs at 25 Hz: 40 ms per set. A scenario that states
-another mode still gets it, and nothing defaults to 1280x720 or 30 fps any
-longer.
+25 fps (core 0.25.0); the codec stays H.265 and depth 640x576. recon's frame
+prep keeps each camera's colour at the camera's own size, and the textures
+are drawn from it, so the largest colour mode gives the finest texture. The
+struct is the one home of every Orbbec profile's modes: FuseOrbbec and
+RigViewer take them, and CalibRig's block keeps only its MJPEG colour. The
+rig's cameras stream 3840x2160 colour at 25, 15 and 5 fps only, and depth at
+the colour's rate, so the whole rig runs at 25 Hz: 40 ms per set. A scenario
+that states another mode still gets it.
 
 **The colour codec follows the purpose** (the owner, 2026-10-27): H.265 for
 reconstruction, MJPEG for calibration captures.
@@ -1393,14 +1394,14 @@ reconstruction, MJPEG for calibration captures.
 - MJPEG stays selectable on FuseOrbbec and RigViewer for diagnostics, such
   as `diagnostics.dump_sets`, which requires it.
 
-G0 numbers: to be added before merge
+**Measured on the rig at these defaults:** to be added before merge.
 
 **What 25 Hz changes for the consumers.**
 
-- At `intra_period` 30 a coded stream's keys come every 1.2 s instead of
-  every 1 s; a scenario that wants 1 s states 25. A live viewer does not
-  wait for them: FuseOrbbec's serve makes the next set a key when a viewer
-  joins, 40 ms away instead of 33.
+- A scenario that states `intra_period` 30 gets a key every 1.2 s instead of
+  every 1 s; one that wants 1 s states 25. A live viewer does not wait for a
+  key: FuseOrbbec's serve makes the next set a key when a viewer joins,
+  40 ms away instead of 33.
 - Dynamic fusion reaches `max_weight` 1.2 times later in seconds. At 1 m
   from one camera, where an observation weighs 1, the default 20 spans
   0.8 s instead of 0.67 s.

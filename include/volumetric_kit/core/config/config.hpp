@@ -65,8 +65,7 @@ struct Source {
   bool preload = false;
   bool apply_sync = false;
   bool host_clock = false;
-  /// Every Orbbec profile's camera modes: H.265 colour at 3840x2160, depth at
-  /// 640x576, 25 fps. CalibRig takes MJPEG colour instead.
+  /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG.
   ColorCodec color_codec = ColorCodec::Hevc;
   std::uint32_t color_width = 3840;
   std::uint32_t color_height = 2160;

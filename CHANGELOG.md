@@ -27,8 +27,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 ### Migration
 
 - A scenario that relied on the 1280x720 or 30 fps default states
-  `color_width`, `color_height` or `fps`. A consumer that checks the
-  FuseOrbbec or RigViewer defaults expects 3840x2160 at 25 fps.
+  `color_width`, `color_height` or `fps`. One that states only `fps` 30 now
+  asks for 3840x2160 colour at 30 fps, which the camera does not offer, so it
+  states a colour size too. A consumer that checks the FuseOrbbec or
+  RigViewer defaults expects 3840x2160 at 25 fps.
 
 ## [0.24.0] - 2026-10-26
 

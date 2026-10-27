@@ -55,7 +55,6 @@ scenarios:
     "kind": "live",
     "driver": "orbbec",
     "sync_config": "rig-sync.json",
-    "color_codec": "mjpeg",
     "color_width": 3840,
     "color_height": 2160,
     "depth_width": 640,
@@ -108,9 +107,7 @@ unknown extension object.
 
 - Dataset fields: `path`, `camera_parameters`, `preload`.
 - Live Orbbec fields: `serial`, `sync_config`, `calibration`, `apply_sync`,
-  `color_codec` (`hevc`/`mjpeg`), colour/depth widths and heights, `fps`;
-  every Orbbec profile defaults to `hevc` 3840x2160 colour, 640x576 depth and
-  25 fps (core 0.25.0), CalibRig to `mjpeg` colour.
+  `color_codec` (`hevc`/`mjpeg`), colour/depth widths and heights, `fps`.
   Only `FuseOrbbec` accepts `host_clock`. Serial and sync-config selection are
   exclusive; applying sync requires a sync config; host-clock mode forbids one.
   Width/height overrides are pairs. Scanner accepts only `kind`/`driver`.
