@@ -32,7 +32,8 @@ enum class Application {
   Scanner,
   CalibProjectPoint,
   CalibRig,
-  Player
+  Player,
+  CalibColor
 };
 /// @brief The work requested by a scenario.
 enum class Operation { Fuse, Stream, Codec, View, Project, Calibrate };
@@ -65,13 +66,19 @@ struct Source {
   bool preload = false;
   bool apply_sync = false;
   bool host_clock = false;
-  /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG.
+  /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG only,
+  /// CalibColor's H.265 only.
   ColorCodec color_codec = ColorCodec::Hevc;
   std::uint32_t color_width = 3840;
   std::uint32_t color_height = 2160;
   std::uint32_t depth_width = 640;
   std::uint32_t depth_height = 576;
   std::uint32_t fps = 25;
+  /// CalibColor: the manual exposure, in the camera's units, and the gain
+  /// every colour camera is set to (auto exposure off, auto white balance
+  /// on). Required and positive there; no other profile takes them.
+  std::uint32_t color_exposure = 0;
+  std::uint32_t color_gain = 0;
   /// CodecMesh scale: exactly one of `height_m` (a height the consumer scales
   /// the input to) and `metres_per_unit` (the input's declared unit) is
   /// positive; the other stays 0.
@@ -152,12 +159,13 @@ struct Render {
   bool texture_stats = false;
 };
 /// @brief Output paths, and FuseOrbbec's serving port. An empty string
-/// disables each optional output; fusion/export applications and CalibRig
-/// require a nonempty path.
+/// disables each optional output; fusion/export applications, CalibRig and
+/// CalibColor require a nonempty path.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Output {
   /// A fusion or export program's file; for CalibRig, the directory each
-  /// session's own directory is created in.
+  /// session's own directory is created in; for CalibColor, the directory
+  /// each run's own results directory is created in.
   std::string path;
   std::string prefix;
   std::string screenshot;
@@ -173,7 +181,8 @@ struct Output {
 /// @brief Run limits; a negative frame limit means unlimited where supported.
 /// For CodecMesh, `frames` is instead an exact count of numbered meshes from
 /// number `first`, where a dataset's is a limit that stops at its last frame.
-/// FuseOrbbec's counts camera frames, each set adding one per camera it holds.
+/// FuseOrbbec's counts camera frames, each set adding one per camera it holds;
+/// CalibColor's counts sets.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Run {
   int frames = -1;

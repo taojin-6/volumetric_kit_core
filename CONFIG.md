@@ -95,6 +95,7 @@ does not override the requested operation or source discriminator.
 | `CalibProjectPoint` | `project` | omitted | 1280x720, intrinsics [1000,1000,640,360], Brown distortion [-0.28,0.10,0.001,-0.0005,0], point [0.1,-0.2,2] |
 | `CalibRig` | `calibrate` | `live`, `orbbec`; sync config and `output.path` required | MJPEG colour 3840x2160, depth 640x576, 25 fps, 1280x720 window |
 | `Player` | `view` | `stream`; one of `path` and `host` required | 1280x720, unlimited frames |
+| `CalibColor` | `calibrate` | `live`, `orbbec`; sync config, calibration, `color_exposure`, `color_gain` and `output.path` required | colour 3840x2160 HEVC, depth 640x576, 25 fps, 50 sets; no window |
 
 The `Config` structs in
 [`config.hpp`](include/volumetric_kit/core/config/config.hpp) describe the
@@ -108,7 +109,8 @@ unknown extension object.
 - Dataset fields: `path`, `camera_parameters`, `preload`.
 - Live Orbbec fields: `serial`, `sync_config`, `calibration`, `apply_sync`,
   `color_codec` (`hevc`/`mjpeg`), colour/depth widths and heights, `fps`.
-  Only `FuseOrbbec` accepts `host_clock`. Serial and sync-config selection are
+  Only `FuseOrbbec` accepts `host_clock`, and only `CalibColor`
+  `color_exposure` and `color_gain`. Serial and sync-config selection are
   exclusive; applying sync requires a sync config; host-clock mode forbids one.
   Width/height overrides are pairs. Scanner accepts only `kind`/`driver`.
 - Mesh fields: `path`; exactly one of `height_m` (a height the consumer
@@ -164,8 +166,9 @@ unknown extension object.
   `path`, `csv` and `stream` must differ once resolved, and none may be
   `source.sync_config` or `source.calibration` (core 0.13.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
-  for CodecMesh. Dataset/FuseOrbbec limits are positive, and FuseOrbbec's
-  counts camera frames, each set adding one per camera it holds; RigViewer
+  for CodecMesh. Dataset/FuseOrbbec/CalibColor limits are positive;
+  FuseOrbbec's counts camera frames, each set adding one per camera it holds,
+  and CalibColor's counts sets; RigViewer
   uses zero for unlimited; gfx uses -1 for unlimited and permits zero frames;
   Player plays until its window closes unless `frames` gives a positive
   count of presents of a stream frame. CodecMesh's `frames` is instead an
@@ -220,6 +223,19 @@ unknown extension object.
   controls and marks are the overlay. It refuses every other field and
   section, `fusion` included: its capture-rule and detection thresholds are
   calib's own, and the board is edited in the app.
+- `CalibColor` (core 0.26.0) is calib_color's headless fit of each camera's
+  colour response. It opens the rig of its required `source.sync_config`,
+  posed by its required `source.calibration`, at the Orbbec profiles' modes,
+  and fits `run.frames` sets (50 by default, 2 s at 25 fps). Colour must be
+  `hevc`, since the fit must see the colour reconstruction decodes
+  (DECISIONS.md, the 2026-10-27 entry). Its required `color_exposure` and
+  `color_gain` are the manual exposure, in the camera's units, and gain every
+  colour camera is set to, with auto exposure off and auto white balance on.
+  They have no default, since they depend on the rig's lighting; core checks
+  that they are positive integers, and the consumer checks each camera's
+  range when it opens. Its required `output.path` is the directory each run's
+  own results directory is created in. It refuses every other field and
+  section, `window` included: it opens no window.
 
 ## Validation and compatibility
 

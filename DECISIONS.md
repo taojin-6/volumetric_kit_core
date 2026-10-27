@@ -1382,9 +1382,11 @@ reconstruction, MJPEG for calibration captures.
   view at 1280x720), and the two modes' profiles (intrinsics, distortion,
   depth extrinsic) agree byte for byte, so poses calibrated on MJPEG
   captures are taken for H.265 frames; the measurements below check that
-  the two modes' images sit on the same pixels. A profile that fits each
-  camera's colour response for reconstruction fits on H.265 for the same
-  reason: it must fit the decode that reconstruction sees.
+  the two modes' images sit on the same pixels. CalibColor (core 0.26.0),
+  which fits each camera's colour response for reconstruction, accepts only
+  H.265 for the same reason: it must fit the decode that reconstruction sees.
+  A profile may narrow a shared key to one value (the 2026-10-11 entry's
+  0.11.0 amendment), as CalibRig narrows it to MJPEG.
 - **MJPEG for CalibRig's captures.** A JPEG frame is self-contained, which an
   H.265 frame is not, and a capture saves each camera's own JPEG (the
   2026-10-11 entry's 0.11.0 amendment). At 3840x2160 and 25 fps the JPEG

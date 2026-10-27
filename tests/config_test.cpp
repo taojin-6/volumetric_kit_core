@@ -34,7 +34,7 @@ Result<Config> scenario(std::string_view text, App app,
       operation = "fuse";
     if (app == App::CodecReplica || app == App::CodecMesh) operation = "codec";
     if (app == App::CalibProjectPoint) operation = "project";
-    if (app == App::CalibRig) operation = "calibrate";
+    if (app == App::CalibRig || app == App::CalibColor) operation = "calibrate";
     if (text.find("\"operation\"") == std::string_view::npos)
       document.insert(1, std::string(R"("operation":")") + operation + "\"" +
                              (text.size() > 2 ? "," : ""));
@@ -43,7 +43,7 @@ Result<Config> scenario(std::string_view text, App app,
         app == App::FuseRender || app == App::FuseViewer)
       kind = "dataset";
     if (app == App::FuseOrbbec || app == App::RigViewer ||
-        app == App::Scanner || app == App::CalibRig)
+        app == App::Scanner || app == App::CalibRig || app == App::CalibColor)
       kind = "live";
     if (app == App::CodecMesh) kind = "mesh";
     if (app == App::GfxModel) kind = "model";
@@ -559,7 +559,7 @@ TEST(Config, CalibRigNeedsItsRigAndSessionRootAndRefusesWhatItDoesNotUse) {
         std::string("output.") + key + ": is not used by this application");
   }
 
-  // Calibrate is CalibRig's operation, and only its.
+  // Calibrate is the rig calibrations' operation, and only theirs.
   for (const char* operation : {"view", "stream", "fuse", "project", "codec"}) {
     refused(
         std::string(R"({"version":1,"operation":")") + operation +
@@ -576,6 +576,197 @@ TEST(Config, CalibRigNeedsItsRigAndSessionRootAndRefusesWhatItDoesNotUse) {
            "operation: is not supported by this application");
   rejected(R"({"version":1,"operation":"calibrate"})", App::GfxImage,
            "operation: is not supported by this application");
+}
+
+// A CalibColor scenario's source: a rig's sync file, its calibration, and
+// these fields; the exposure and gain are left to the caller.
+std::string calib_color_source(const std::string& fields) {
+  return R"({"version":1,"source":{"sync_config":"rig.json","calibration":"rig_calibration.json",)" +
+         fields + R"(},"output":{"path":"results"}})";
+}
+// A CalibColor scenario at a stated exposure and gain, with these further
+// source fields and these further sections; each addition leads with a comma.
+std::string calib_color(const std::string& source = "",
+                        const std::string& sections = "") {
+  return R"({"version":1,"source":{"sync_config":"rig.json","calibration":"rig_calibration.json","color_exposure":200,"color_gain":32)" +
+         source + R"(},"output":{"path":"results"})" + sections + "}";
+}
+
+TEST(Config, CalibColorFitsItsRigAtAStatedExposureOnH265) {
+  const auto fit = scenario(calib_color(), App::CalibColor, "/scenario");
+  ASSERT_TRUE(fit) << fit.status().message();
+  EXPECT_EQ(fit->operation, Operation::Calibrate);
+  EXPECT_EQ(fit->source.kind, SourceKind::Live);
+  EXPECT_EQ(fit->source.driver, "orbbec");
+  EXPECT_EQ(fit->source.sync_config, "/scenario/rig.json");
+  EXPECT_EQ(fit->source.calibration, "/scenario/rig_calibration.json");
+  // The Orbbec profiles' modes: H.265 colour at 3840x2160, depth at 640x576,
+  // 25 fps.
+  EXPECT_EQ(fit->source.color_codec, ColorCodec::Hevc);
+  EXPECT_EQ(fit->source.color_width, 3840U);
+  EXPECT_EQ(fit->source.color_height, 2160U);
+  EXPECT_EQ(fit->source.depth_width, 640U);
+  EXPECT_EQ(fit->source.depth_height, 576U);
+  EXPECT_EQ(fit->source.fps, 25U);
+  EXPECT_EQ(fit->source.color_exposure, 200U);
+  EXPECT_EQ(fit->source.color_gain, 32U);
+  // Two seconds of sets, written under the results root.
+  EXPECT_EQ(fit->run.frames, 50);
+  EXPECT_EQ(fit->output.path, "/scenario/results");
+  // The rig is the sync file's, of any number of cameras.
+  EXPECT_TRUE(fit->source.serial.empty());
+  EXPECT_FALSE(fit->source.apply_sync);
+  // No other profile has an exposure or gain to set.
+  EXPECT_EQ(Source{}.color_exposure, 0U);
+  EXPECT_EQ(Source{}.color_gain, 0U);
+
+  // Stated modes, controls and count; the camera checks the controls' range
+  // when it opens.
+  const auto stated = scenario(
+      R"({"version":1,"operation":"calibrate","source":{"kind":"live","driver":"orbbec","sync_config":"/rigs/two.json","calibration":"../calib/./rig.json","color_codec":"hevc","color_width":1920,"color_height":1080,"depth_width":320,"depth_height":288,"fps":15,"color_exposure":1,"color_gain":4294967295},"run":{"frames":1},"output":{"path":"/data/results/../fits"}})",
+      App::CalibColor, "/scenario/config");
+  ASSERT_TRUE(stated) << stated.status().message();
+  EXPECT_EQ(stated->source.sync_config, "/rigs/two.json");
+  EXPECT_EQ(stated->source.calibration, "/scenario/calib/rig.json");
+  EXPECT_EQ(stated->source.color_codec, ColorCodec::Hevc);
+  EXPECT_EQ(stated->source.color_width, 1920U);
+  EXPECT_EQ(stated->source.color_height, 1080U);
+  EXPECT_EQ(stated->source.depth_width, 320U);
+  EXPECT_EQ(stated->source.depth_height, 288U);
+  EXPECT_EQ(stated->source.fps, 15U);
+  EXPECT_EQ(stated->source.color_exposure, 1U);
+  EXPECT_EQ(stated->source.color_gain, 4294967295U);
+  EXPECT_EQ(stated->run.frames, 1);
+  EXPECT_EQ(stated->output.path, "/data/fits");
+}
+
+TEST(Config, CalibColorNeedsItsRigCalibrationControlsAndResultsRoot) {
+  const auto refused = [](const std::string& text, const std::string& reason) {
+    rejected(text, App::CalibColor, reason);
+  };
+  // The rig, its calibration, the controls and the results root have no
+  // default.
+  refused(R"({"version":1})", "source: is required");
+  refused(
+      R"({"version":1,"source":{"calibration":"c.json","color_exposure":200,"color_gain":32},"output":{"path":"r"}})",
+      "source.sync_config: is required");
+  refused(
+      R"({"version":1,"source":{"sync_config":"rig.json","color_exposure":200,"color_gain":32},"output":{"path":"r"}})",
+      "source.calibration: is required");
+  refused(
+      R"({"version":1,"source":{"sync_config":"rig.json","calibration":"","color_exposure":200,"color_gain":32},"output":{"path":"r"}})",
+      "source.calibration: must not be empty");
+  for (const char* output :
+       {"", R"(,"output":{})", R"(,"output":{"path":""})"}) {
+    refused(
+        std::string(
+            R"({"version":1,"source":{"sync_config":"rig.json","calibration":"c.json","color_exposure":200,"color_gain":32})") +
+            output + "}",
+        "output.path: is required");
+  }
+  refused(calib_color_source(R"("color_gain":32)"),
+          "source.color_exposure: is required");
+  refused(calib_color_source(R"("color_exposure":200)"),
+          "source.color_gain: is required");
+  // A manual exposure and gain: positive integers.
+  for (const auto& [value, reason] :
+       {std::pair{"0", "must be finite and positive"},
+        std::pair{"-1", "integer is out of range"},
+        std::pair{"4294967296", "integer is out of range"},
+        std::pair{"1.5", "expected an integer"},
+        std::pair{"200.0", "expected an integer"},
+        std::pair{R"("200")", "expected an integer"},
+        std::pair{"true", "expected an integer"},
+        std::pair{"null", "expected an integer"}}) {
+    refused(calib_color_source(std::string(R"("color_exposure":)") + value +
+                               R"(,"color_gain":32)"),
+            std::string("source.color_exposure: ") + reason);
+    refused(calib_color_source(R"("color_exposure":200,"color_gain":)" +
+                               std::string(value)),
+            std::string("source.color_gain: ") + reason);
+  }
+
+  // The fit sees the colour reconstruction decodes, so colour crosses the
+  // wire as H.265.
+  refused(calib_color(R"(,"color_codec":"mjpeg")"),
+          "source.color_codec: must be hevc: the fit sees the colour "
+          "reconstruction decodes");
+  refused(calib_color(R"(,"color_codec":"h264")"),
+          "source.color_codec: unknown choice 'h264'");
+  refused(calib_color(R"(,"driver":"arkit")"),
+          "source.driver: only orbbec is supported");
+  // The live profiles' mode rules hold.
+  refused(calib_color(R"(,"color_height":2160)"),
+          "source: color_width and color_height must be provided together");
+  refused(calib_color(R"(,"depth_width":0,"depth_height":576)"),
+          "source.depth_width: must be finite and positive");
+  refused(calib_color(R"(,"fps":0)"),
+          "source.fps: must be finite and positive");
+  // A positive count of sets.
+  for (const char* frames : {"0", "-1"}) {
+    refused(calib_color("", std::string(R"(,"run":{"frames":)") + frames + "}"),
+            "run.frames: must be positive");
+  }
+  refused(calib_color("", R"(,"run":{"frames":2.5})"),
+          "run.frames: expected an integer");
+  for (const char* key : {"sets", "first"}) {
+    refused(calib_color("", std::string(R"(,"run":{")") + key + R"(":1})"),
+            std::string("run.") + key + ": is not used by this application");
+  }
+  // A run never overwrites the rig files it reads.
+  for (const auto& [path, source] :
+       {std::pair{"./rig.json", "sync_config"},
+        std::pair{"/scenario/rig_calibration.json", "calibration"}}) {
+    refused(
+        std::string(
+            R"({"version":1,"source":{"sync_config":"rig.json","calibration":"rig_calibration.json","color_exposure":200,"color_gain":32},"output":{"path":")") +
+            path + R"("}})",
+        std::string("output.path: must differ from source.") + source);
+  }
+
+  // Source fields of the other profiles: one camera by serial, writing the
+  // sync roles, host clocks, datasets, meshes and streams.
+  for (const char* field :
+       {R"("serial":"CL2A141000N")", R"("apply_sync":false)",
+        R"("host_clock":false)", R"("path":"scene")", R"("format":"replica")",
+        R"("camera_parameters":"cam.json")", R"("preload":false)",
+        R"("height_m":1.7)", R"("metres_per_unit":1)", R"("up_axis":"y")",
+        R"("up_vector":[0,1,0])", R"("sdf_mode":"signed")",
+        R"("shell_voxels":1.5)", R"("allow_holes":false)", R"("host":"lab")",
+        R"("port":0)"}) {
+    const std::string_view text(field);
+    const std::string key(text.substr(1, text.find('"', 1) - 1));
+    refused(calib_color(std::string(",") + field),
+            "source." + key + ": is not used by this application");
+  }
+  // Sections it has no use for, even empty: it opens no window.
+  for (const char* section :
+       {"fusion", "codec", "window", "render", "calibration", "diagnostics"}) {
+    refused(calib_color("", std::string(",\"") + section + "\":{}"),
+            std::string(section) + ": is not used by this application");
+  }
+  // Its one output is the results root.
+  for (const char* member :
+       {R"("prefix":"out")", R"("csv":"out")", R"("stream":"out")",
+        R"("screenshot":"out")", R"("serve":0)"}) {
+    const std::string_view text(member);
+    const std::string key(text.substr(1, text.find('"', 1) - 1));
+    refused(
+        std::string(
+            R"({"version":1,"source":{"sync_config":"rig.json","calibration":"c.json","color_exposure":200,"color_gain":32},"output":{"path":"r",)") +
+            member + "}}",
+        "output." + key + ": is not used by this application");
+  }
+
+  // Calibrate, from a live source.
+  for (const char* operation : {"view", "stream", "fuse", "project", "codec"}) {
+    refused(std::string(R"({"operation":")") + operation + R"(",)" +
+                calib_color().substr(1),
+            "operation: is not supported by this application");
+  }
+  refused(
+      R"({"version":1,"source":{"kind":"dataset","sync_config":"rig.json","calibration":"c.json","color_exposure":200,"color_gain":32},"output":{"path":"r"}})",
+      "source.kind: is not supported by this application");
 }
 
 TEST(Config, EachProfileKeepsItsOwnOrbbecSourceFields) {
@@ -872,13 +1063,14 @@ TEST(Config, UpdateSizeIsAnyCountWhereThereArePFrames) {
 // Every profile, so that one added later is held to each rule too.
 std::vector<App> every_profile() {
   std::vector<App> apps;
-  for (int app = 0; app <= static_cast<int>(App::Player); ++app)
+  for (int app = 0; app <= static_cast<int>(App::CalibColor); ++app)
     apps.push_back(static_cast<App>(app));
   return apps;
 }
 // A scenario for `app` with the source it requires, if any, and these
-// sections; each addition leads with a comma. CalibRig's required output.path
-// is left out: a refusal names an unsupported field first.
+// sections; each addition leads with a comma. CalibRig's and CalibColor's
+// required output.path is left out: a refusal names an unsupported field
+// first.
 std::string with_sections(App app, const std::string& sections) {
   std::string source;
   if (app == App::FuseReplica || app == App::CodecReplica ||
@@ -888,6 +1080,9 @@ std::string with_sections(App app, const std::string& sections) {
     source = R"(,"source":{"path":"mesh.ply","height_m":2,"up_axis":"y"})";
   if (app == App::RigViewer || app == App::CalibRig)
     source = R"(,"source":{"sync_config":"rig.json"})";
+  if (app == App::CalibColor)
+    source =
+        R"(,"source":{"sync_config":"rig.json","calibration":"c.json","color_exposure":200,"color_gain":32})";
   if (app == App::Player) source = R"(,"source":{"path":"rig.vrst"})";
   return R"({"version":1)" + source + sections + "}";
 }
@@ -1011,7 +1206,8 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
     rejected(with_sections(app, R"(,"codec":{})"), app,
              "codec: is not used by this application");
     const bool writes = app == App::FuseReplica || app == App::FuseRender ||
-                        app == App::GfxModel || app == App::CalibRig;
+                        app == App::GfxModel || app == App::CalibRig ||
+                        app == App::CalibColor;
     for (const char* key : {"csv", "stream"}) {
       rejected(with_sections(
                    app, std::string(R"(,"output":{")") + key + R"(":"out"})"),
@@ -1075,7 +1271,8 @@ TEST(Config, OnlyFuseOrbbecServesItsCodedFramesLive) {
     if (app == App::FuseOrbbec) continue;
     const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
                          app == App::CodecMesh || app == App::FuseRender ||
-                         app == App::GfxModel || app == App::CalibRig;
+                         app == App::GfxModel || app == App::CalibRig ||
+                         app == App::CalibColor;
     for (const char* port : {"0", "47801"}) {
       rejected(with_sections(
                    app, std::string(R"(,"output":{"serve":)") + port + "}"),
@@ -1266,6 +1463,20 @@ TEST(Config, PlayerNeedsOneStreamAndRefusesWhatItDoesNotUse) {
   }
 }
 
+TEST(Config, OnlyCalibColorSetsTheColourCamerasExposureAndGain) {
+  // Every other profile refuses both, even at 0.
+  for (const auto app : every_profile()) {
+    if (app == App::CalibColor) continue;
+    for (const char* field : {R"("color_exposure":200)", R"("color_gain":32)",
+                              R"("color_exposure":0)", R"("color_gain":0)"}) {
+      const std::string_view text(field);
+      const std::string key(text.substr(1, text.find('"', 1) - 1));
+      rejected(std::string(R"({"version":1,"source":{)") + field + "}}", app,
+               "source." + key + ": is not used by this application");
+    }
+  }
+}
+
 TEST(Config, NoOutputOverwritesTheRigFilesARunReads) {
   // Each of FuseOrbbec's outputs against its sync file and calibration, in two
   // spellings of one path.
@@ -1289,10 +1500,9 @@ TEST(Config, NoOutputOverwritesTheRigFilesARunReads) {
 
 TEST(Config, OnlyTheLiveFusingProfilesDefaultToDynamic) {
   for (const auto app : every_profile()) {
+    const bool calibrates = app == App::CalibRig || app == App::CalibColor;
     const auto parsed = scenario(
-        with_sections(app,
-                      app == App::CalibRig ? R"(,"output":{"path":"s"})" : ""),
-        app);
+        with_sections(app, calibrates ? R"(,"output":{"path":"s"})" : ""), app);
     ASSERT_TRUE(parsed) << parsed.status().message();
     EXPECT_EQ(parsed->fusion.dynamic,
               app == App::FuseOrbbec || app == App::RigViewer)
@@ -1347,7 +1557,7 @@ TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
     const bool fuses = app != App::GfxTriangle && app != App::GfxImGui &&
                        app != App::GfxModel && app != App::GfxImage &&
                        app != App::CalibProjectPoint && app != App::CalibRig &&
-                       app != App::Player;
+                       app != App::Player && app != App::CalibColor;
     rejected(with_sections(app, R"(,"fusion":{"free_after":30})"), app,
              (fuses ? "fusion.free_after" : "fusion") +
                  std::string(": is not used by this application"));
