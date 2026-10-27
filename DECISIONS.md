@@ -1394,7 +1394,28 @@ reconstruction, MJPEG for calibration captures.
 - MJPEG stays selectable on FuseOrbbec and RigViewer for diagnostics, such
   as `diagnostics.dump_sets`, which requires it.
 
-**Measured on the rig at these defaults:** to be added before merge.
+**Measured on the rig at these defaults** (four cameras at 3840x2160 H.265
+and 25 fps with depth, fusion and the geometry stream on, 180 s a run;
+another process held 7.4 GB of the GPU's memory and stayed idle):
+
+| | exposure automatic | exposure locked |
+| --- | --- | --- |
+| published sets per second | 24.99 | 24.97 |
+| sets missing a camera | 8.6 % | 7.2 % |
+| arrival to published, p95 / max | 32.4 / 68.5 ms | 19.9 / 64.1 ms |
+| fusion's GPU memory at peak | 2.7 GB | 2.8 GB |
+| hardware decoder use, mean | 19 % | 20 % |
+| network receive | 707 Mbit/s | 704 Mbit/s |
+
+- The runs are camera-limited: at p95 a set takes 0.42 ms of frame
+  preparation, 2.0 ms of integration and 1.8 ms of encoding on the device.
+- Lost frames and latency vary from run to run (a camera lost 12 to 54
+  frames a run), so a comparison against these numbers needs a noise
+  allowance.
+- A camera's H.265 and MJPEG images sit on the same pixels: the largest
+  shift over a 3x3 grid of tiles is 0.022 px.
+- The camera sends an H.265 key frame every 25 frames (1 s), so a frame lost
+  before decoding costs that camera's colour until the next key.
 
 **What 25 Hz changes for the consumers.**
 
