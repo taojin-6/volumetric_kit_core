@@ -109,7 +109,7 @@ unknown extension object.
 - Dataset fields: `path`, `camera_parameters`, `preload`.
 - Live Orbbec fields: `serial`, `sync_config`, `calibration`, `apply_sync`,
   `color_codec` (`hevc`/`mjpeg`), colour/depth widths and heights, `fps`.
-  Only `FuseOrbbec` accepts `host_clock`, and only `CalibColor`
+  Only `FuseOrbbec` accepts `host_clock`, and only `CalibColor` accepts
   `color_exposure` and `color_gain`. Serial and sync-config selection are
   exclusive; applying sync requires a sync config; host-clock mode forbids one.
   Width/height overrides are pairs. Scanner accepts only `kind`/`driver`.
@@ -168,13 +168,12 @@ unknown extension object.
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec/CalibColor limits are positive;
   FuseOrbbec's counts camera frames, each set adding one per camera it holds,
-  and CalibColor's counts sets; RigViewer
-  uses zero for unlimited; gfx uses -1 for unlimited and permits zero frames;
-  Player plays until its window closes unless `frames` gives a positive
-  count of presents of a stream frame. CodecMesh's `frames` is instead an
-  exact count, at least 1, of numbered meshes from number `first`, which is
-  nonnegative; the last number, `first + frames - 1`, must not exceed
-  INT32_MAX. Scanner has no run limits.
+  and CalibColor's counts sets; RigViewer uses zero for unlimited; gfx uses
+  -1 for unlimited and permits zero frames; Player plays until its window
+  closes unless `frames` gives a positive count of presents of a stream
+  frame. CodecMesh's `frames` is instead an exact count, at least 1, of
+  numbered meshes from number `first`, which is nonnegative; the last number,
+  `first + frames - 1`, must not exceed INT32_MAX. Scanner has no run limits.
 - Calibration projection fields: `image_width`, `image_height`,
   `intrinsics` (fx,fy,cx,cy), `distortion` (k1,k2,p1,p2,k3), `point` (x,y,z).
   Focal lengths/dimensions and the point's z must be positive, all values
