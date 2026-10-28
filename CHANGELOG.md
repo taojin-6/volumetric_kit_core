@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-28
+
+### Added
+
+- `vulkan/fwd.hpp`: forward declarations of `Allocator`, `Buffer`,
+  `CommandBatch`, `Device`, `GpuStageScope`, `Image` and `StorageInput` in
+  the core's namespace, for a header that names them only by pointer or
+  reference and so includes no Vulkan.
+
+### Migration
+
+- Nothing to change beyond the pin. A sibling that forward-declares these
+  classes itself (recon's `core/fwd.hpp`) includes this header instead.
+
 ## [0.26.0] - 2026-10-27
 
 ### Added
