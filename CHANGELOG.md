@@ -7,6 +7,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-28
+
+### Added
+
+- `vkc_export_glsl(<target> PREFIX <include-prefix> FILES <file>...)`
+  (`cmake/vkc_shaders.cmake`): copies GLSL that other projects' shaders
+  include to `<include-prefix>/<file name>` under an include root of the
+  target's own in the build tree, which holds those files alone (one no
+  longer exported leaves it at the next configure), and records the root in
+  the target's `VKC_SHADER_INCLUDE_DIRS`. An absolute prefix, and an include
+  path that another call already exports, are refused.
+- `INCLUDE_TARGETS <target>...` on `vkc_compile_shaders` and
+  `vkc_embed_shaders`: the roots those targets exported become include roots
+  after `INCLUDE_DIRS`. A target that exported no GLSL is refused.
+- `vkc_require_sibling(<umbrella-target> <min-version> [TARGETS
+  <target>...])` (`cmake/vkc_require_sibling.cmake`, defined with
+  `vkc_require_core`): refuses a sibling without the umbrella, one whose
+  umbrella's `VKC_PACKAGE_VERSION` is missing or older than the floor, and
+  one without a listed target, naming the first-declared pin and
+  `FETCHCONTENT_SOURCE_DIR_<NAME>` (DECISIONS.md, the 2026-10-28 entries).
+
+### Changed
+
+- Pins are commit SHAs, and no version is tagged: the README pins
+  `GIT_TAG <sha>`, and this file drops its links to tags that never existed.
+  `vkc_require_core` refuses the same cases with the same messages.
+
+### Migration
+
+- Nothing to change beyond the pin. A sibling that exports GLSL by hand
+  (recon's `VR_SHADER_INCLUDE_DIR`) can move to `vkc_export_glsl`, and its
+  consumers to `INCLUDE_TARGETS`. A sibling that others require sets
+  `VKC_PACKAGE_VERSION` on its umbrella target to its `project(VERSION)`.
+
 ## [0.26.0] - 2026-10-27
 
 ### Added
@@ -1210,7 +1244,3 @@ section's entries replace (DECISIONS.md, "Where memory lives"):
     `QueuePlan::kTwoQueuesOneFamily`, `kTwoFamilies`, `kSharedQueue` →
     `TwoQueuesOneFamily`, `TwoFamilies`, `SharedQueue`. `release_surface()`,
     `wait_idle()` and `summary()` keep their names (recon gains the last two).
-
-[Unreleased]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/taojin-6/volumetric_kit_core/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/taojin-6/volumetric_kit_core/releases/tag/v0.1.0

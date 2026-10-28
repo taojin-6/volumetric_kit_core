@@ -1,0 +1,14 @@
+#version 450
+
+// The consumer's kernel: includes scale.glsl by the path it is exported as,
+// which resolves only under the root INCLUDE_TARGETS adds. Never dispatched.
+
+#extension GL_GOOGLE_include_directive : require
+
+#include "vkc_test/shaders/scale.glsl"
+
+layout(local_size_x = 1) in;
+
+layout(std430, set = 0, binding = 0) buffer Values { float values[]; };
+
+void main() { values[0] = vkc_test_scale(values[0]); }

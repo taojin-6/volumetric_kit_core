@@ -961,7 +961,7 @@ built outside CMake, such as an Xcode framework target, is beyond that check.
 
 ### Consumers pin, and an application declares the core first
 
-Siblings pin a tag or commit SHA of this repository, never `main`. An
+Siblings pin a commit SHA of this repository, never `main`. An
 application that fetches several siblings (`ios`) declares
 `volumetric_kit_core` first, so FetchContent resolves one copy for all of
 them. A public API change here lands with a CHANGELOG entry that says how to
@@ -972,9 +972,8 @@ migrate.
   `vkc_core_version` all take it. Before 1.0, a PR that changes the public API
   or ABI bumps the minor version (`0.1.0` → `0.2.0`), and one that changes only
   behaviour a sibling relies on bumps the patch. The PR moves the CHANGELOG's
-  `[Unreleased]` entries under the new version, and its merge commit is tagged
-  `v<version>`. A version then names one API, whether a sibling pins the tag or
-  the SHA.
+  `[Unreleased]` entries under the new version, so a version names one API.
+  No tag marks it (amended 2026-10-28, below).
 - **Each sibling requires the oldest core it builds with**, and the tiers it
   uses, by calling `vkc_require_core(<version> [VULKAN] [CONFIG])` after
   `FetchContent_MakeAvailable`. Its pin yields to an application's, so the
@@ -1432,3 +1431,59 @@ another process held 7.4 GB of the GPU's memory and stayed idle):
 - A camera's stored sync settings record the rate of the last stream it ran.
   recon's sync check (`sync_differences`) compares no rate, so a camera last
   run at 30 fps opens at 25 with no refusal.
+
+## 2026-10-28 — Pins are SHAs, floors read `project(VERSION)`, and no tags; one floor check for every sibling
+
+Amends "Consumers pin, and an application declares the core first", which
+tagged each version's merge commit `v<version>`. That was never done: the
+core went from 0.1.0 to 0.26.0 with no tag and no release, every sibling
+pins a SHA, and nothing reads a tag. A floor reads the version the code
+carries, which `project(VERSION)` sets.
+
+- **Pins are SHAs.** A pin names the one commit a build takes, and its
+  version is whatever that commit's `project(VERSION)` says.
+- **Each sibling's floor goes through the core, with
+  `vkc_require_sibling(<umbrella> <min-version> [TARGETS <target>...])`**
+  (core 0.27.0). recon is splitting into packages that build on each other,
+  and an application's first declaration of a package wins over every later
+  one, so each needs the floor check the core has. A copy of
+  `vkc_require_core` per repository would be one more copy of one rule.
+  - **The version rides the umbrella target**, as `VKC_PACKAGE_VERSION`: the
+    umbrella exists in every build of a package, whatever its options, and a
+    target reaches every directory of the build where a variable does not.
+  - **The package's name follows from its umbrella**: the umbrella
+    `volumetric_kit::<name>` belongs to `volumetric_kit_<name>` (AGENTS.md,
+    naming), so a refusal names the pin to move and its
+    `FETCHCONTENT_SOURCE_DIR_<NAME>`, as the core's does.
+  - **A listed target that is missing is refused** as a tier the core lacks
+    is: options yield to the first declaration as pins do, so a sibling built
+    without the target fails at configure, not in the compile.
+- **`vkc_require_core` keeps reading `core_base`'s `VKC_CORE_VERSION`** and
+  shares the version check and its message with `vkc_require_sibling`.
+  recon's and calib's tests stamp an older version on `core_base`, and
+  calib's stand-in core has no umbrella.
+
+## 2026-10-28 — Exported GLSL through the core's shader build
+
+A package exports the GLSL other projects' shaders include with
+`vkc_export_glsl(<target> PREFIX <include-prefix> FILES <file>...)`, and a
+consumer's shaders reach it with `INCLUDE_TARGETS` on `vkc_compile_shaders`
+and `vkc_embed_shaders` (core 0.27.0). It generalises the export recon
+built for `pinhole.glsl` (its 2026-10-16 entry, "A shared GLSL pinhole"),
+which its coming packages need between each other.
+
+- **The root holds the exported files alone**, a copy in the build tree, so
+  a consumer's kernel cannot include a package's internal GLSL, such as a
+  layout the package keeps private. A file the package stops exporting
+  leaves the root at the next configure, once its directory is done, so a
+  stale copy cannot keep a kernel compiling until a clean build.
+- **The copy is made at configure** (`configure_file`), which CMake redoes
+  when a source changes, and the kernels that include it then recompile
+  through their depfiles. A build-time copy would need a dependency from each
+  consumer's shader rule on another package's target.
+- **The root rides the target**, in `VKC_SHADER_INCLUDE_DIRS`, as recon's
+  `VR_SHADER_INCLUDE_DIR` did, so it reaches a project that fetches the
+  package. `INCLUDE_TARGETS` reads it at the call, so the exporting target
+  is defined first, as a dependency already is.
+- **An include path has one exporter in a build**: a second is refused, as
+  a second symbol is, since the first root on the include path would win.
