@@ -89,3 +89,4 @@ jobs:
           ./build-consumer/vkc_consumer
           ./build-consumer/vkc_consumer_gpu_test
           ./build-consumer/vkc_consumer_policy_test
+          ./build-consumer/vkc_consumer_check_test

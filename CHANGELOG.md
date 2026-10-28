@@ -7,6 +7,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-28
+
+### Added
+
+- Test support for a test that is a `main()` of its own, as recon's are,
+  moved here from recon's `tests/` so that its siblings share one copy:
+  - `volumetric_kit::core_test_base`, needing no Vulkan: `CHECK` and
+    `VKC_TEST_SANITIZED` (`testing/test_check.hpp`), and `test::Scratch`
+    and `test::read_bytes` (`testing/scratch_dir.hpp`).
+  - `volumetric_kit::core_test_allocation_failure`, needing no Vulkan:
+    `test::allocation_failure`, which measures the calling thread's
+    allocations and fails one, through a replacement `operator new` in the
+    binary that links it (`testing/test_allocation_failure.hpp`).
+  - In `volumetric_kit::core_test_policy`: `test::run_on_gpu`, which runs a
+    test on a device that meets the given `DeviceRequirements` under the
+    environment's policy, `test::GpuContext` and `test::other_queue_family`
+    (`testing/gpu_test.hpp`); and `test::Gpu`,
+    `test::upload_device_buffer`, `test::read_back` and `test::write_back`
+    (`testing/buffer_readback.hpp`).
+
+### Changed
+
+- `VKC_BUILD_TEST_SUPPORT` without `VKC_WITH_VULKAN` builds the Vulkan-free
+  support (`core_test_main`, `core_test_base`,
+  `core_test_allocation_failure`) instead of failing the configure.
+
+### Migration
+
+- recon's tests include `volumetric_kit/core/testing/<header>` in place of
+  their own copies, under `volumetric_kit::core::test` in place of
+  `vr_test`, and pass their requirements to `run_on_gpu`:
+  `run_on_gpu(vr::device_requirements(), gpu_main)`. `VR_TEST_SANITIZED`
+  is `VKC_TEST_SANITIZED`, and the allocation state's type is
+  `AllocationFailureState`. The decoder helpers (`no_decoder`,
+  `no_jpeg_decoder`, `bare_device`) stay in recon.
+
 ## [0.26.0] - 2026-10-27
 
 ### Added

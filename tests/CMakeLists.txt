@@ -97,6 +97,24 @@ target_link_libraries(
 vkc_target_warnings(vkc_base_result_allocation_test)
 _vkc_discover_cpu_tests(vkc_base_result_allocation_test 60)
 
+# core_test_base and core_test_allocation_failure (support/), in tests that are
+# main()s of their own: CHECK (test_check.hpp), the scratch directory
+# (scratch_dir.hpp), and the allocation failure (test_allocation_failure.hpp),
+# whose replacement operator new is this binary's alone. Pure CPU.
+find_package(Threads REQUIRED)
+foreach(_vkc_test testing_test_check testing_scratch_dir
+                  testing_allocation_failure)
+  add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
+  target_link_libraries(vkc_${_vkc_test}_test
+                        PRIVATE volumetric_kit::core_test_base)
+  vkc_target_warnings(vkc_${_vkc_test}_test)
+  add_test(NAME vkc_${_vkc_test}_test COMMAND vkc_${_vkc_test}_test)
+  set_tests_properties(vkc_${_vkc_test}_test PROPERTIES TIMEOUT 60)
+endforeach()
+target_link_libraries(
+  vkc_testing_allocation_failure_test
+  PRIVATE volumetric_kit::core_test_allocation_failure Threads::Threads)
+
 # core_test_main (support/test_main.cpp), the main every test here links: on
 # Linux a death test's child dumps no core. Elsewhere it changes nothing.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -268,6 +286,19 @@ if(VKC_WITH_VULKAN)
   # The skip code is test::kSkipExitCode.
   set_tests_properties(vkc_testing_vulkan_policy_test
                        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # core_test_policy's run_on_gpu and buffer readback (gpu_test.hpp,
+  # buffer_readback.hpp), in tests that are main()s of their own, as above.
+  foreach(_vkc_test testing_gpu_test_harness testing_buffer_readback)
+    add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
+    target_link_libraries(
+      vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_test_policy
+                                    volumetric_kit::core_test_base)
+    vkc_target_warnings(vkc_${_vkc_test}_test)
+    add_test(NAME vkc_${_vkc_test}_test COMMAND vkc_${_vkc_test}_test)
+    set_tests_properties(vkc_${_vkc_test}_test PROPERTIES SKIP_RETURN_CODE 77
+                                                          TIMEOUT 120)
+  endforeach()
 endif()
 
 # The Vulkan-header floor (vulkan.hpp): compile vulkan_header_floor.cpp, which
@@ -347,6 +378,15 @@ if(VKC_WITH_VULKAN)
   set_tests_properties(
     vkc_testing_skips_without_a_device
     PROPERTIES PASS_REGULAR_EXPRESSION "${_vkc_skipped} Probe.GetsADevice")
+
+  # run_on_gpu (gpu_test.hpp) without a driver: the test asserts that it skips
+  # without running the test, and fails under VKC_REQUIRE_VULKAN_DEVICE.
+  add_test(
+    NAME vkc_testing_gpu_test_without_a_device
+    COMMAND "${CMAKE_COMMAND}" -E env ${_vkc_without_driver}
+            "$<TARGET_FILE:vkc_testing_gpu_test_harness_test>" --no-device)
+  set_tests_properties(vkc_testing_gpu_test_without_a_device PROPERTIES TIMEOUT
+                                                                        120)
 
   add_test(
     NAME vkc_testing_requires_the_layer

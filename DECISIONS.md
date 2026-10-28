@@ -910,6 +910,14 @@ without it; and a `"vulkan"` error fails the running test.
   (77, CTest's `SKIP_RETURN_CODE`). `core_test_support`'s GoogleTest fixtures
   are built on it, and link the consumer's `GTest::gtest` only where it
   exists, so a sibling without googletest still generates its build.
+- **A `main()` test's helpers live here too** (2026-10-28): `run_on_gpu`
+  with the test's own requirements, buffer readback, `CHECK`, the scratch
+  directory and the allocation failure, moved from recon's tests, since
+  recon splits into sensor, grid and recon, whose tests all use them and
+  which share only the core. The Vulkan-free ones build without the vulkan
+  tier, for a camera-only build. `CHECK` keeps the name its tests spell
+  rather than a `VKC_` one: `VKC_CHECK` is the base tier's fail-fast check,
+  and test code alone includes it.
 - **One instance and device per process**, as gfx's fixture already shared
   them (gfx DECISIONS.md, "GPU tests share a device per process", for the
   driver costs and limits behind it): one instance per validation level, one
