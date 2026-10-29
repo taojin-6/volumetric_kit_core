@@ -134,17 +134,17 @@ in the process.
 
 ## Use it in your project
 
-Pin a release tag or a commit SHA -- never `main` -- so every consumer builds
-the same core, and require the oldest version your project builds with. The
-core installs nothing: a project builds it from the commit it pins
-(DECISIONS.md, "Consumers pin, and an application declares the core first").
+Pin a commit SHA -- never `main` -- so every consumer builds the same core,
+and require the oldest version your project builds with. The core installs
+nothing: a project builds it from the commit it pins (DECISIONS.md, "Consumers
+pin, and an application declares the core first").
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
   volumetric_kit_core
   GIT_REPOSITORY https://github.com/taojin-6/volumetric_kit_core.git
-  GIT_TAG <tag-or-sha>)
+  GIT_TAG <sha>)
 FetchContent_MakeAvailable(volumetric_kit_core)
 vkc_require_core(0.1.0)
 
@@ -166,6 +166,24 @@ vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp
 # your sources: #include "integrate_comp.spv.hpp" -> your_integrate_comp_spv[]
 ```
 
+A package whose GLSL other projects' shaders include exports it with
+`vkc_export_glsl`, and their shaders reach it through `INCLUDE_TARGETS`:
+
+```cmake
+vkc_export_glsl(your_library PREFIX your/shaders FILES shaders/common.glsl)
+# a consumer, whose kernel.comp has #include "your/shaders/common.glsl":
+vkc_embed_shaders(their_target SYMBOL_PREFIX their_
+                  INCLUDE_TARGETS your::library SHADERS shaders/kernel.comp)
+```
+
+A sibling's own floor works as the core's: the sibling sets
+`VKC_PACKAGE_VERSION` on its umbrella target (`volumetric_kit::<name>`) to its
+`project(VERSION)`, and a project that adds it calls
+`vkc_require_sibling(volumetric_kit::<name> <min-version> [TARGETS <target>...])`
+after `FetchContent_MakeAvailable`, which refuses an older sibling, or one
+without the umbrella or a listed target
+(`cmake/vkc_require_sibling.cmake`).
+
 A consumer that links the core into a shared library or framework builds the
 core shared too (`BUILD_SHARED_LIBS=ON`): the log handler is process-global,
 and each binary linking a static core gets its own (DECISIONS.md, "One
@@ -180,7 +198,7 @@ initial `Submitted` spelling is an alias with the same stricter behavior;
 ordinary core submissions keep `Any` and may wait for future values. Binary
 waits and other queue dependencies remain the submitter's responsibility.
 
-A sibling's Vulkan tests apply the variables above through the core's test
+A sibling's tests apply the variables above through the core's test
 support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
 `FetchContent_MakeAvailable`.
 
@@ -199,9 +217,20 @@ support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
 - A test that is a `main()` of its own links
   `volumetric_kit::core_test_policy`, which needs no googletest, and returns
   `test::kSkipExitCode` (77) to skip: register that as its `SKIP_RETURN_CODE`
-  (`volumetric_kit/core/testing/vulkan_policy.hpp`). Its cross-family cases
-  make a `test::TwoFamilyDevice`
+  (`volumetric_kit/core/testing/vulkan_policy.hpp`). `test::run_on_gpu`
+  runs it on a device that meets its requirements
+  (`volumetric_kit/core/testing/gpu_test.hpp`), and `test::read_back` reads
+  its buffers (`volumetric_kit/core/testing/buffer_readback.hpp`). Its
+  cross-family cases make a `test::TwoFamilyDevice`
   (`volumetric_kit/core/testing/two_family_device.hpp`).
+- A test that is a `main()` of its own, with or without the vulkan tier,
+  links `volumetric_kit::core_test_base` for `CHECK`
+  (`volumetric_kit/core/testing/test_check.hpp`) and a scratch directory
+  (`volumetric_kit/core/testing/scratch_dir.hpp`), and one that fails an
+  allocation on purpose links `volumetric_kit::core_test_allocation_failure`
+  (`volumetric_kit/core/testing/test_allocation_failure.hpp`). Without the
+  vulkan tier, `VKC_BUILD_TEST_SUPPORT` builds only these and
+  `core_test_main`.
 - Either kind fills an image from host texels with `test::write_image`
   (`volumetric_kit/core/testing/write_image.hpp`).
 

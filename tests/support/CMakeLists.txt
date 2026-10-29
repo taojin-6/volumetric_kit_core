@@ -10,17 +10,37 @@ target_link_libraries(core_test_main
                       PUBLIC $<TARGET_NAME_IF_EXISTS:GTest::gtest>)
 vkc_target_warnings(core_test_main)
 
+# For a test that is a main() of its own, needing no test framework and no
+# Vulkan. core_test_base: CHECK and a scratch directory (test_check.hpp,
+# scratch_dir.hpp). core_test_allocation_failure: replaces the binary's global
+# operator new and delete to measure a thread's allocations and fail one
+# (test_allocation_failure.hpp), so only a test that does so links it.
+add_library(core_test_base INTERFACE)
+add_library(volumetric_kit::core_test_base ALIAS core_test_base)
+target_include_directories(core_test_base
+                           INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(core_test_base INTERFACE volumetric_kit::core_base)
+
+add_library(core_test_allocation_failure STATIC EXCLUDE_FROM_ALL
+            test_allocation_failure.cpp)
+add_library(volumetric_kit::core_test_allocation_failure ALIAS
+            core_test_allocation_failure)
+target_include_directories(core_test_allocation_failure
+                           PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+vkc_target_warnings(core_test_allocation_failure)
+
 if(NOT VKC_WITH_VULKAN)
   return()
 endif()
 
-# core_test_policy: the environment's policy, the two-family device and the
-# image write, needing no test framework (vulkan_policy.hpp,
-# two_family_device.hpp, write_image.hpp). core_test_support: the GoogleTest
-# fixtures on them (vulkan_fixture.hpp), linking the consumer's GTest::gtest,
-# which a consumer without googletest need not provide. Each is built only for a
-# target that links it, and static, so the shared instances and devices are the
-# test binary's own.
+# core_test_policy: the environment's policy, the two-family device, the image
+# write, and a main() test's device and buffer readback, needing no test
+# framework (vulkan_policy.hpp, two_family_device.hpp, write_image.hpp,
+# gpu_test.hpp, buffer_readback.hpp). core_test_support: the GoogleTest fixtures
+# on them (vulkan_fixture.hpp), linking the consumer's GTest::gtest, which a
+# consumer without googletest need not provide. Each is built only for a target
+# that links it, and static, so the shared instances and devices are the test
+# binary's own.
 add_library(core_test_policy STATIC EXCLUDE_FROM_ALL
             vulkan_policy.cpp two_family_device.cpp write_image.cpp)
 add_library(volumetric_kit::core_test_policy ALIAS core_test_policy)

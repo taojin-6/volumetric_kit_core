@@ -3,10 +3,11 @@
 
 # A stand-in for a sibling repo: adds volumetric_kit_core from a checkout as
 # FetchContent does (-DVKC_SOURCE_DIR=<checkout>), builds a library that links
-# it PUBLIC, as in every sibling, and GPU tests on the core's test support. The
-# core is not the top-level project, so its tests and -Werror must stay off.
-# -DVKC_CONSUMER_GTEST=OFF stands in for a sibling without googletest, and
-# -DVKC_CONSUMER_REQUIRE (or -DVKC_CONSUMER_REQUIRE_VULKAN=ON or
+# it PUBLIC, as in every sibling, and tests on the core's test support: GPU
+# tests, and one on its Vulkan-free part, which a core without the vulkan tier
+# still has. The core is not the top-level project, so its tests and -Werror
+# must stay off. -DVKC_CONSUMER_GTEST=OFF stands in for a sibling without
+# googletest, and -DVKC_CONSUMER_REQUIRE (or -DVKC_CONSUMER_REQUIRE_VULKAN=ON or
 # -DVKC_CONSUMER_REQUIRE_CONFIG=ON) for one needing a newer core (or a tier).
 cmake_minimum_required(VERSION 3.21)
 project(vkc_consumer LANGUAGES CXX)
@@ -14,15 +15,14 @@ project(vkc_consumer LANGUAGES CXX)
 option(VKC_CONSUMER_GTEST "Provide googletest, and a GPU test on the fixtures"
        ON)
 set(VKC_CONSUMER_REQUIRE
-    "0.27.0"
+    "0.29.0"
     CACHE STRING "The oldest volumetric_kit_core this consumer builds with")
 option(VKC_CONSUMER_REQUIRE_CONFIG "Require the config tier" OFF)
 option(VKC_CONSUMER_REQUIRE_VULKAN "Require the core's vulkan tier" OFF)
 
-# A sibling with GPU tests asks for the core's test support before adding it.
-if(VKC_WITH_VULKAN)
-  set(VKC_BUILD_TEST_SUPPORT ON)
-endif()
+# A sibling with tests asks for the core's test support before adding it;
+# without the vulkan tier it gets the Vulkan-free part.
+set(VKC_BUILD_TEST_SUPPORT ON)
 add_subdirectory("${VKC_SOURCE_DIR}" volumetric_kit_core)
 foreach(_option VKC_BUILD_TESTS VKC_WARNINGS_AS_ERRORS)
   if(${_option})
@@ -66,6 +66,13 @@ if(TARGET volumetric_kit::core_vulkan)
   endif()
   vkc_embed_shaders(vkc_consumer SYMBOL_PREFIX vkc_consumer_ SHADERS smoke.comp)
 endif()
+
+# A test that is a main() of its own on the Vulkan-free support, with or without
+# the vulkan tier: CHECK, a scratch directory and the allocation failure.
+add_executable(vkc_consumer_check_test check_test.cpp)
+target_link_libraries(
+  vkc_consumer_check_test PRIVATE volumetric_kit::core_test_base
+                                  volumetric_kit::core_test_allocation_failure)
 
 # GPU tests on the core's test support: a main() of its own on the policy alone,
 # and a GoogleTest one on the fixtures and the core's test main, linking the
