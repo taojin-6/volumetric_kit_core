@@ -1,0 +1,9 @@
+# Triggers set through an anchor cannot be read, so the file fails.
+name: unreadable
+on: &triggers
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build

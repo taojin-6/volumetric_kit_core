@@ -1,0 +1,23 @@
+# A block map whose events' settings, a job and a step name refused events
+# without being triggers.
+name: map
+'on':
+  push:
+    branches: [main]
+  # schedule:
+  #   - cron: '0 0 * * *'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      schedule:
+        description: |
+          Not a trigger: on: schedule, workflow_run
+        type: string
+  workflow_call:
+
+jobs:
+  schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: issue_comment
+        run: 'echo "on: pull_request_target"'

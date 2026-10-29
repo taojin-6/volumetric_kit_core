@@ -79,13 +79,65 @@ stub nvidia-ctk 'exit 0'
 stub xcode-select 'echo /Applications/Xcode.app/Contents/Developer'
 stub xcodebuild 'echo Xcode'
 stub brew 'exit 0'
+# gh mints tokens, and answers a GET with $STUB_API/repo<rest of the path>,
+# the path past repos/<owner>/<repo>, its query dropped and each / an _,
+# through jq in place of its own --jq; a path with no file is not found.
 stub gh '
-echo "gh $*" >>"$CALLS"
+{ printf "gh %s" "$*" | tr "\n" " "; echo; } >>"$CALLS"
 case "$*" in
-  "auth status") [ -z "${STUB_GH_UNAUTHED:-}" ] ;;
-  *registration-token*) echo REGTOKEN ;;
-  *remove-token*) echo RMTOKEN ;;
-esac'
+  "auth status") [ -z "${STUB_GH_UNAUTHED:-}" ]; exit ;;
+  *registration-token*) echo REGTOKEN; exit ;;
+  *remove-token*) echo RMTOKEN; exit ;;
+esac
+shift
+path="" filter=.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --jq) filter="$2"; shift ;;
+    --paginate) ;;
+    *) path="${1%%\?*}" ;;
+  esac
+  shift
+done
+f="$STUB_API/repo$(echo "$path" | sed "s|^repos/[^/]*/[^/]*||" | tr / _)"
+[ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+jq -r "$filter" "$f"'
+command -v jq >/dev/null 2>&1 || {
+  echo "these tests need jq, which stands in for gh's --jq" >&2
+  exit 1
+}
+
+# api SETTINGS: what the stub's GitHub says of every repository. "public": the
+# owner's (ID 22780239), with one active policy over every workflow that lets
+# only the owner trigger them, and approval of every outside contributor's
+# run. "private": private, with fork pull requests' workflows off. A case
+# edits the files after this.
+export STUB_API="$tmp/api"
+owner_actor='{"id": 22780239, "type": "User"}'
+all_workflows='{"workflow_path": {"include": ["~ALL"], "exclude": []}}'
+# policy ID ENFORCEMENT ACTORS [CONDITIONS]: a policy as GitHub returns one by
+# ID, whose one rule lets ACTORS, a JSON list's items, trigger the workflows
+# CONDITIONS (default every one) select.
+policy() {
+  printf '{"id": %s, "name": "Policy %s", "enforcement": "%s", "conditions": %s, "rules": [{"type": "restrict_actions_actors", "parameters": {"allowed_actors": [%s]}}]}\n' \
+    "$1" "$1" "$2" "${4:-$all_workflows}" "$3"
+}
+api() {
+  rm -rf "$STUB_API"
+  mkdir -p "$STUB_API"
+  if [ "$1" = private ]; then
+    echo '{"private": true, "owner": {"id": 22780239, "login": "taojin-6"}}' >"$STUB_API/repo"
+    echo '{"run_workflows_from_fork_pull_requests": false}' \
+      >"$STUB_API/repo_actions_permissions_fork-pr-workflows-private-repos"
+    return
+  fi
+  echo '{"private": false, "owner": {"id": 22780239, "login": "taojin-6"}}' >"$STUB_API/repo"
+  echo '{"total_count": 1, "policies": [{"id": 7054}]}' >"$STUB_API/repo_actions_policies"
+  policy 7054 active "$owner_actor" >"$STUB_API/repo_actions_policies_7054"
+  echo '{"approval_policy": "all_external_contributors"}' \
+    >"$STUB_API/repo_actions_permissions_fork-pr-contributor-approval"
+}
+api public
 
 # launchd. A daemon (system/LABEL) keeps its state in the runner directory its
 # plist names: .loaded once bootstrapped, .running while it runs; only root
@@ -549,6 +601,122 @@ CMAKE_BUILD_PARALLEL_LEVEL=$threads"
   expect "it names the new runner after a free number, not a working runner's ($os)" \
     "$(calls "^config ci-runners/volumetric_kit_recon/runner-2 .* --name $host-recon-2 ") $(calls '^config ')" "1 1"
 done
+
+# --- Who can trigger the workflows -------------------------------------------
+
+# Before it registers a runner, setup reads who can trigger the repository's
+# workflows, and unless only the owner can, it refuses, saying what to set and
+# how, before it registers anything, mints a token or fetches the runner. A
+# public repository needs an active policy over every workflow that lets only
+# the owner trigger them, none that lets another actor, and approval of every
+# outside contributor's run; a private one, fork pull requests' workflows off.
+# The checks are the same on every system.
+export STUB_OS=Linux os=Linux
+# gate NAME WANT [TEXT...]: setup of recon's runners, with the stub's GitHub
+# as the caller left it, registers them (WANT ok), or is refused before
+# anything (WANT refused) with every fixed string TEXT in its output.
+gate() {
+  local name="$1" want="$2" status=0 got text
+  shift 2
+  fresh_home
+  cache_tarball
+  setup recon || status=$?
+  if [ "$status" -eq 0 ] && [ "$(calls '^config ')" -eq 6 ]; then
+    got=ok
+  elif [ "$status" -eq 1 ] && [ "$(calls '^(config|curl) |registration-token')" -eq 0 ]; then
+    got=refused
+    for text; do grep -qF -e "$text" "$tmp/out" || got="refused, without '$text'"; done
+  else
+    got="status $status, $(calls '^config ') registered"
+  fi
+  expect "$name" "$got" "$want"
+  [ "$got" = "$want" ] || sed 's/^/     | /' "$tmp/out"
+}
+policies() { # policies [ID...]: the repository's policies, by ID
+  local ids=""
+  [ $# -eq 0 ] || ids="$(printf '{"id": %s}, ' "$@")"
+  printf '{"total_count": %s, "policies": [%s]}\n' "$#" "${ids%, }" >"$STUB_API/repo_actions_policies"
+}
+repo=taojin-6/volumetric_kit_recon
+add_policy="gh api -X POST repos/$repo/actions/policies --input - <<<'{\"name\": \"Only the owner can trigger workflows\", \"enforcement\": \"active\", \"rules\": [{\"type\": \"restrict_actions_actors\", \"parameters\": {\"allowed_actors\": [{\"id\": 22780239, \"type\": \"User\"}]}}]}'"
+no_policy="No active Actions policy over every workflow lets only taojin-6 trigger them"
+other_actor='{"id": 1, "type": "User"}'
+
+api public
+gate "a public repository whose one policy lets only its owner trigger every workflow, approving every outside contributor's run, gets runners" ok
+expect "setup reads the repository, its policies, each by ID, and the approval of fork pull requests' runs" \
+  "$(calls "^gh api repos/$repo --jq ") $(calls "^gh api --paginate repos/$repo/actions/policies\?per_page=100 --jq ") $(calls "^gh api repos/$repo/actions/policies/7054 --jq ") $(calls "^gh api repos/$repo/actions/permissions/fork-pr-contributor-approval --jq ")" \
+  "1 1 1 1"
+policies
+gate "a public repository with no policy is refused, with the command that adds the owner-only one" refused \
+  "is public, and a fork's pull request runs its own" "so no runner is registered until only the owner can send a job to" \
+  "$no_policy" "policies: none" "$add_policy"
+policies 7054
+policy 7054 active "$owner_actor, $other_actor" >"$STUB_API/repo_actions_policies_7054"
+gate "a public repository whose policy lets another account trigger workflows too is refused, naming the policy and where to change it" refused \
+  'policy 7054 "Policy 7054" lets actors other than the owner trigger workflows' \
+  "https://github.com/$repo/settings/actions/rules/7054" "$no_policy" "$add_policy"
+policy 7054 active '{"id": 5, "type": "RepositoryRole"}' >"$STUB_API/repo_actions_policies_7054"
+gate "so is one whose policy lets a role trigger them" refused \
+  'policy 7054 "Policy 7054" lets actors other than the owner trigger workflows'
+policies 7054 9001
+policy 7054 active "$owner_actor" >"$STUB_API/repo_actions_policies_7054"
+policy 9001 active "$other_actor" >"$STUB_API/repo_actions_policies_9001"
+gate "so is one with an owner-only policy and another, active, letting another account" refused \
+  'policy 9001 "Policy 9001" lets actors other than the owner trigger workflows'
+policy 9001 disabled "$other_actor" >"$STUB_API/repo_actions_policies_9001"
+gate "a policy letting other accounts that is not active is no obstacle" ok
+policy 9001 active "" >"$STUB_API/repo_actions_policies_9001"
+policy 7054 active "" >"$STUB_API/repo_actions_policies_7054"
+gate "a policy whose rule names no actor does not count" refused \
+  "$no_policy" 'policy 7054 "Policy 7054" names no actor'
+policies 7054
+policy 7054 evaluate "$owner_actor" >"$STUB_API/repo_actions_policies_7054"
+gate "an owner-only policy that is only evaluated, not enforced, does not count" refused \
+  "$no_policy" 'policy 7054 "Policy 7054" is not active (enforcement: evaluate)'
+for conditions in \
+  '{"workflow_path": {"include": ["~ALL"], "exclude": [".github/workflows/ci.yml"]}}' \
+  '{"workflow_path": {"include": [".github/workflows/ci.yml"], "exclude": []}}' \
+  '{"workflow_path": {"include": ["~ALL"], "exclude": []}, "ref_name": {"include": ["refs/heads/main"], "exclude": []}}' \
+  '{}'; do
+  policy 7054 active "$owner_actor" "$conditions" >"$STUB_API/repo_actions_policies_7054"
+  gate "an owner-only policy over some workflows only does not count: $conditions" refused \
+    "$no_policy" 'policy 7054 "Policy 7054" does not cover every workflow'
+done
+api public
+echo '{"private": false, "owner": {"id": 7, "login": "someone-else"}}' >"$STUB_API/repo"
+gate "a policy counts only if its actor is the repository's owner" refused \
+  "No active Actions policy over every workflow lets only someone-else trigger them" \
+  'policy 7054 "Policy 7054" lets actors other than the owner trigger workflows' \
+  '"allowed_actors": [{"id": 7, "type": "User"}]'
+for approval in first_time_contributors first_time_contributors_new_to_github; do
+  api public
+  echo "{\"approval_policy\": \"$approval\"}" >"$STUB_API/repo_actions_permissions_fork-pr-contributor-approval"
+  gate "a public repository that approves fewer runs than every outside contributor's is refused, with the command that fixes it ($approval)" refused \
+    "wait for approval only from $approval" \
+    "gh api -X PUT repos/$repo/actions/permissions/fork-pr-contributor-approval -f approval_policy=all_external_contributors"
+done
+policies
+gate "every gate missing is named in one refusal" refused "$no_policy" "wait for approval only from first_time_contributors_new_to_github"
+api public
+rm "$STUB_API/repo_actions_policies"
+gate "a policy list gh cannot read refuses" refused "gh could not read repos/$repo/actions/policies?per_page=100"
+api public
+STUB_GH_UNAUTHED=1 gate "without gh authed, registering is refused, asking for no token" refused \
+  "registering needs gh, authed (gh auth login, or GH_TOKEN set)"
+
+api private
+gate "a private repository whose fork pull requests' workflows are off gets runners" ok
+echo '{"run_workflows_from_fork_pull_requests": true}' \
+  >"$STUB_API/repo_actions_permissions_fork-pr-workflows-private-repos"
+gate "a private repository that runs fork pull requests' workflows is refused, with the command that turns them off" refused \
+  "is private but runs fork pull requests' workflows" \
+  "gh api -X PUT repos/$repo/actions/permissions/fork-pr-workflows-private-repos -F run_workflows_from_fork_pull_requests=false"
+rm "$STUB_API/repo_actions_permissions_fork-pr-workflows-private-repos"
+gate "a private repository whose fork setting cannot be read gets runners, saying so" ok
+expect "it says it could not read the setting" \
+  "$(grep -c "^Could not read whether $repo runs fork pull requests' workflows; it is private, so going on\.\$" "$tmp/out")" 1
+api public
 
 # --- A Mac set up before: LaunchAgents ---------------------------------------
 

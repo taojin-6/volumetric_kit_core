@@ -7,6 +7,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- `.github/actions/check-workflow-triggers` and
+  `tools/github/check_workflow_triggers.py`: fail CI, naming the file and
+  line, on a workflow triggered by `pull_request_target`, `workflow_run`,
+  `issue_comment`, `pull_request_review_comment`, `discussion`,
+  `discussion_comment` or `schedule`. A sibling's lint job uses the action at
+  its core pin's SHA
+  ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
+
+### Changed
+
+- `tools/runners/setup-runners.sh` registers no runner of a public
+  repository unless an active Actions policy over every workflow lets only
+  its owner trigger them, none lets another actor, and every outside
+  contributor's run waits for approval; nor of a private one that runs fork
+  pull requests' workflows. Registering needs `gh` authed, which reads these;
+  a registration token is no longer pasted in. The refusal names the command
+  that sets what is missing
+  ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
+
 ## [0.29.0] - 2026-10-28
 
 ### Added

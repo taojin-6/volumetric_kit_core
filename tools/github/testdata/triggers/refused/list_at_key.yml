@@ -1,0 +1,9 @@
+name: list at key
+on:
+- push
+- workflow_run
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build

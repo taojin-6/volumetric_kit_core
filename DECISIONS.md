@@ -1046,6 +1046,11 @@ workflow stops only a fork that leaves it in.
 - **The runner tooling has one copy, here,** parametrized by repository, so a
   fix reaches every repository's runners.
 
+**Amended 2026-10-28: setup checks these gates, and a collaborator is no
+longer added to the rule** of a repository with runners: setup refuses one
+whose policy lets another actor in (the 2026-10-28 entry, "Setup checks who
+can trigger CI").
+
 ### A brew upgrade needs no cache clearing
 
 The Mac runners build on the Mac's Homebrew, which only the owner changes, by
@@ -1498,3 +1503,50 @@ which its coming packages need between each other.
   is defined first, as a dependency already is.
 - **An include path has one exporter in a build**: a second is refused, as
   a second symbol is, since the first root on the include path would win.
+
+## 2026-10-28 — Setup checks who can trigger CI; no outsider's trigger, and pinned images
+
+The two GitHub settings that keep a stranger's code off the runners, the
+owner-only Actions policy and approval of every outside contributor's run
+("Only the owner triggers CI"), were remembered, not checked: a repository
+given runners before its policy, or a policy later widened, would have
+exposed every host the family's runners share. Now the tooling checks them,
+and CI checks the triggers that bypass a pull request.
+
+- **`setup-runners.sh` refuses to register a runner** of a public
+  repository unless an active policy over every workflow lets only the
+  repository's owner trigger them, no active policy lets another actor
+  trigger any, and every outside contributor's run waits for approval. It
+  reads these with `gh`, so registering needs `gh` authed: the token is no
+  longer pasted in. A private repository, which strangers cannot fork, must
+  not run fork pull requests' workflows, where that setting is readable. The
+  refusal names what is missing and the command that sets it
+  ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
+- **A policy that lets in anyone but the owner is refused,** a collaborator
+  included, even beside an owner-only one: whether GitHub lets a run through
+  when any policy allows its actor or only when all do is not documented. A
+  collaborator's change gets CI as a fork's does, pushed here by the owner
+  once read.
+- **Checked when it matters, not watched:** a re-run that registers no
+  runner reads nothing, so refreshing a host needs no `gh`, and a setting
+  changed after registration goes unseen until the next registration.
+- **No workflow takes an outsider's trigger.**
+  `.github/actions/check-workflow-triggers` fails CI on
+  `pull_request_target` and `workflow_run`, which run a repository's own
+  workflow with its secrets and a token that can write on what a fork sent;
+  on `issue_comment`, `pull_request_review_comment`, `discussion` and
+  `discussion_comment`, which anyone can trigger; and on `schedule`: the
+  owner triggers every run, and bumps pins by hand. It parses `on:` with
+  Python's standard library, in every YAML form, and fails on one it cannot
+  read; a YAML module is not on every runner, and reads `on` as `true`. The
+  core's lint job runs it; siblings use it by commit, as the homebrew-key
+  action.
+- **A checkout keeps no token** (`persist-credentials: false`) in every job,
+  since none pushes.
+- **Job containers are pinned by digest,** the tag in a comment, so a new
+  image arrives only with a commit, which the owner makes by hand, as with
+  the actions' SHAs.
+- **Not covered:** whether the policy refuses a real fork's pull request, or
+  the owner's approval or re-run of one, is still untested ("Only the owner
+  triggers CI"); and a job that does run on a runner can still reach what the
+  host's account can.
