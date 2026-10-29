@@ -128,7 +128,8 @@ endif()
 # vulkan: the VkResult helpers, the format helpers (vulkan_format, and
 # vulkan_format_reference against Vulkan-Utility-Libraries, skipped where its
 # headers are not installed), UniqueHandle, DeviceRequirements, the queue-family
-# reduction and the memory-type masks need no device; the device tests run on
+# reduction, the memory-type masks and the forward declarations (vulkan_fwd,
+# checked as it compiles) need no device; the device tests run on
 # core_test_support's fixtures (support/), which skip without a device and fail
 # on a validation error as the environment asks.
 if(VKC_WITH_VULKAN)
@@ -153,6 +154,7 @@ if(VKC_WITH_VULKAN)
     vulkan_requirements
     vulkan_queue_families
     vulkan_memory_types
+    vulkan_fwd
     vulkan_device
     vulkan_allocator
     vulkan_allocation_budget
@@ -184,6 +186,10 @@ if(VKC_WITH_VULKAN)
       _vkc_discover_cpu_tests(vkc_${_vkc_test}_test 120)
     endif()
   endforeach()
+
+  # A forward declaration whose class key differs from the definition's fails
+  # vulkan_fwd, with or without VKC_WARNINGS_AS_ERRORS.
+  target_compile_options(vkc_vulkan_fwd_test PRIVATE -Werror=mismatched-tags)
 
   # The queue-family reduction, the memory-type masks, the queue-plan choice,
   # the clock pairing and a ring output's poison word are internal to
