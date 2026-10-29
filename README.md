@@ -198,7 +198,7 @@ initial `Submitted` spelling is an alias with the same stricter behavior;
 ordinary core submissions keep `Any` and may wait for future values. Binary
 waits and other queue dependencies remain the submitter's responsibility.
 
-A sibling's Vulkan tests apply the variables above through the core's test
+A sibling's tests apply the variables above through the core's test
 support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
 `FetchContent_MakeAvailable`.
 
@@ -217,9 +217,20 @@ support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
 - A test that is a `main()` of its own links
   `volumetric_kit::core_test_policy`, which needs no googletest, and returns
   `test::kSkipExitCode` (77) to skip: register that as its `SKIP_RETURN_CODE`
-  (`volumetric_kit/core/testing/vulkan_policy.hpp`). Its cross-family cases
-  make a `test::TwoFamilyDevice`
+  (`volumetric_kit/core/testing/vulkan_policy.hpp`). `test::run_on_gpu`
+  runs it on a device that meets its requirements
+  (`volumetric_kit/core/testing/gpu_test.hpp`), and `test::read_back` reads
+  its buffers (`volumetric_kit/core/testing/buffer_readback.hpp`). Its
+  cross-family cases make a `test::TwoFamilyDevice`
   (`volumetric_kit/core/testing/two_family_device.hpp`).
+- A test that is a `main()` of its own, with or without the vulkan tier,
+  links `volumetric_kit::core_test_base` for `CHECK`
+  (`volumetric_kit/core/testing/test_check.hpp`) and a scratch directory
+  (`volumetric_kit/core/testing/scratch_dir.hpp`), and one that fails an
+  allocation on purpose links `volumetric_kit::core_test_allocation_failure`
+  (`volumetric_kit/core/testing/test_allocation_failure.hpp`). Without the
+  vulkan tier, `VKC_BUILD_TEST_SUPPORT` builds only these and
+  `core_test_main`.
 - Either kind fills an image from host texels with `test::write_image`
   (`volumetric_kit/core/testing/write_image.hpp`).
 
