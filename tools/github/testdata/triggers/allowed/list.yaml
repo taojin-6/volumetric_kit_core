@@ -1,0 +1,8 @@
+# A flow list, in a .yaml file.
+name: list
+on: [push, "pull_request"] # not pull_request_target
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build

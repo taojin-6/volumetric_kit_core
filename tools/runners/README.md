@@ -21,8 +21,8 @@ several carries a set for each. Any other repository is named in full, as
 `owner/repo`: `setup-runners.sh example-owner/example-repo` gives it runners
 with the family's labels and services, in `~/ci-runners/example-repo`. The
 scripts lower-case the name, as GitHub ignores its case, so every spelling
-finds the same runners. Give it the owner-only Actions policy (below) before
-it has runners.
+finds the same runners. Setup refuses one until only its owner can trigger
+its workflows ([below](#who-can-trigger-ci)).
 
 ## Who can trigger CI
 
@@ -44,15 +44,62 @@ fork's change CI, a maintainer first reads its whole diff, above all
 repository and opens a pull request from there. Approving or re-running a
 fork's run counts the same: once the owner triggers it, it may run.
 
-The policy, as created on each repository. Add a new collaborator's user ID
-to `allowed_actors` on every repository, or their runs are refused too:
+The policy each family repository has, public or private, and the
+approval every outside contributor's run waits for, which a public one sets.
+A collaborator's runs are refused too, and a policy that lets their account
+in would let their workflow edits reach the runners as the owner's own:
 
 ```sh
 gh api -X POST repos/taojin-6/<repo>/actions/policies --input - <<'EOF'
 {"name": "Only the owner can trigger workflows", "enforcement": "active",
+ "conditions": {"workflow_path": {"include": ["~ALL"], "exclude": []}},
  "rules": [{"type": "restrict_actions_actors",
             "parameters": {"allowed_actors": [{"id": 22780239, "type": "User"}]}}]}
 EOF
+gh api -X PUT repos/taojin-6/<repo>/actions/permissions/fork-pr-contributor-approval \
+  -f approval_policy=all_external_contributors
+```
+
+**Setup checks them** with `gh` before it registers a runner. Any repository
+needs an active policy over every workflow that lets only its owner trigger
+them, and no active policy that lets another actor trigger any. A public one
+also needs approval of every outside contributor's run. A private one, which
+has no such approval setting, must not run fork pull requests' workflows,
+where GitHub lets setup read that setting. Otherwise setup registers nothing
+and names what is missing, with the command that sets it:
+
+```text
+error: taojin-6/volumetric_kit_gfx is public, and a fork's pull request runs its own
+workflow files, so no runner is registered until only the owner can send a job to
+them (README.md, "Who can trigger CI"):
+- No active Actions policy over every workflow lets only taojin-6 trigger them.
+  Its policies:
+    policy 7054 "Only the owner can trigger workflows" is not active (enforcement: evaluate)
+  Add the owner-only policy, then re-run:
+    gh api -X POST repos/taojin-6/volumetric_kit_gfx/actions/policies --input - <<<'{"name": ...}'
+```
+
+A re-run that registers no runner reads none of this, and nothing watches the
+settings once a repository has runners. So to make a repository with runners
+public, tear its runners down on every host first, set its policy and
+approval, then set them up again.
+
+**No workflow takes an outsider's trigger.** `pull_request_target` and
+`workflow_run` run a repository's own workflow, with its secrets and a token
+that can write, on what a fork sent; anyone can trigger `issue_comment`,
+`pull_request_review_comment`, `discussion` and `discussion_comment`; and no
+family job runs on a `schedule`. The action
+`.github/actions/check-workflow-triggers` fails on any of them in the
+`.github/workflows/` checked out, naming the file and line, whichever form of
+YAML its `on:` takes, and on an `on:` it cannot read. The core's lint job runs
+it; a sibling's uses it at the full SHA of the core commit it pins, after a
+checkout that keeps no token:
+
+```yaml
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  with:
+    persist-credentials: false
+- uses: taojin-6/volumetric_kit_core/.github/actions/check-workflow-triggers@<full SHA of the core pin>
 ```
 
 ## A dedicated account
@@ -67,8 +114,8 @@ bash tools/runners/teardown-runners.sh --user ci recon
 
 - The runners live in the account's `~/ci-runners/<repo>`. Their files are
   written, registered and deregistered as the account, through `sudo -u`,
-  and their services run as it. The `gh` login that mints the tokens stays
-  the invoking user's; the account needs none.
+  and their services run as it. The `gh` login that checks the settings and
+  mints the tokens stays the invoking user's; the account needs none.
 - The invoking user's home must be closed to the account: mode 700 on a
   Mac, where every user is in the `staff` group that a home's mode 750 lets
   in.
@@ -186,10 +233,11 @@ driver ignores a path that does not exist.
   its name, so `gfx`'s older runners keep theirs (`<host>-<i>`).
 - A re-run keeps registered runners, in either layout, and registers new
   ones only until the repository has 6 (Linux) or 2 (Mac) on the host, so it
-  needs no token. For a new runner it mints the token with `gh` when that is
-  authed, and otherwise asks for one from the repository's Settings ->
-  Actions -> Runners -> New self-hosted runner. It installs the runner's
-  latest release, reusing a cached tarball only if the archive is whole.
+  needs no token. A new runner needs `gh`, authed (`gh auth login`, or
+  `GH_TOKEN` set), which checks who can trigger the repository's workflows
+  ([Who can trigger CI](#who-can-trigger-ci)) and mints the token. It
+  installs the runner's latest release, reusing a cached tarball only if the
+  archive is whole.
 - Each runner is a service, installed if it is not and started if it is not
   running: a systemd unit on Linux, through the runner's `svc.sh`, and on a
   Mac a LaunchDaemon in `/Library/LaunchDaemons` that `KeepAlive` restarts if

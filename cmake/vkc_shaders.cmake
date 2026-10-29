@@ -3,12 +3,14 @@
 
 # GLSL -> SPIR-V at build time, and SPIR-V embedded in a target as a header: the
 # family's one copy of what recon (vr_shaders / vr_embed), gfx (vg_shaders /
-# vg_embed) and ios (through recon's) carried. Defined by the core's own
-# CMakeLists when the vulkan tier is built, so a project that fetches the core
-# can call them.
+# vg_embed) and ios (through recon's) carried. With them, GLSL a package exports
+# for other projects' shaders (recon's VR_SHADER_INCLUDE_DIR root). Defined by
+# the core's own CMakeLists when the vulkan tier is built, so a project that
+# fetches the core can call them.
 #
 # vkc_compile_shaders(<target> [OUTPUT_DIR <dir>] [TARGET_ENV <env>]
-# [INCLUDE_DIRS <dir>...] [SPIRV_VAL_ARGS <arg>...] SHADERS <file>...)
+# [INCLUDE_DIRS <dir>...] [INCLUDE_TARGETS <target>...] [SPIRV_VAL_ARGS
+# <arg>...] SHADERS <file>...)
 #
 # Compiles each shader to <dir>/<name>.spv (fill.comp -> fill.comp.spv), and
 # makes <target> depend on the results, so building it recompiles a stale shader
@@ -21,6 +23,9 @@
 # * INCLUDE_DIRS: #include roots. recon passes its src/, so a shader spelt
 #   "volumetric_kit/recon/core/shaders/color_common.glsl" reads like the C++
 #   header path it sits beside.
+# * INCLUDE_TARGETS: targets whose exported GLSL (vkc_export_glsl, below) the
+#   shaders include. The include roots each one records follow INCLUDE_DIRS;
+#   each must have exported its GLSL before this call.
 # * SPIRV_VAL_ARGS: extra spirv-val flags, e.g. --scalar-block-layout for
 #   shaders that read structs through scalar block layout.
 #
@@ -32,8 +37,9 @@
 # shader that fails validation fails every build until fixed: the generators
 # delete (Make) or rerun (Ninja, Xcode) a command that failed.
 function(vkc_compile_shaders target)
-  cmake_parse_arguments(ARG "" "OUTPUT_DIR;TARGET_ENV"
-                        "INCLUDE_DIRS;SPIRV_VAL_ARGS;SHADERS" ${ARGN})
+  cmake_parse_arguments(
+    ARG "" "OUTPUT_DIR;TARGET_ENV"
+    "INCLUDE_DIRS;INCLUDE_TARGETS;SPIRV_VAL_ARGS;SHADERS" ${ARGN})
   if(NOT ARG_SHADERS)
     message(FATAL_ERROR "vkc_compile_shaders(${target}): no SHADERS given")
   endif()
@@ -47,6 +53,8 @@ function(vkc_compile_shaders target)
     "${ARG_TARGET_ENV}"
     INCLUDE_DIRS
     ${ARG_INCLUDE_DIRS}
+    INCLUDE_TARGETS
+    ${ARG_INCLUDE_TARGETS}
     SPIRV_VAL_ARGS
     ${ARG_SPIRV_VAL_ARGS}
     SHADERS
@@ -65,7 +73,8 @@ function(vkc_compile_shaders target)
 endfunction()
 
 # vkc_embed_shaders(<target> SYMBOL_PREFIX <prefix> [TARGET_ENV <env>]
-# [INCLUDE_DIRS <dir>...] [SPIRV_VAL_ARGS <arg>...] SHADERS <file>...)
+# [INCLUDE_DIRS <dir>...] [INCLUDE_TARGETS <target>...] [SPIRV_VAL_ARGS
+# <arg>...] SHADERS <file>...)
 #
 # Compiles each shader (as vkc_compile_shaders, whose options it takes) and
 # embeds the SPIR-V in <target> as a header on a PRIVATE, never-installed
@@ -88,8 +97,9 @@ endfunction()
 # under one name would share one of the two shaders. A symbol another call in
 # the build already emits is refused, so each library takes a prefix of its own.
 function(vkc_embed_shaders target)
-  cmake_parse_arguments(ARG "" "SYMBOL_PREFIX;TARGET_ENV"
-                        "INCLUDE_DIRS;SPIRV_VAL_ARGS;SHADERS" ${ARGN})
+  cmake_parse_arguments(
+    ARG "" "SYMBOL_PREFIX;TARGET_ENV"
+    "INCLUDE_DIRS;INCLUDE_TARGETS;SPIRV_VAL_ARGS;SHADERS" ${ARGN})
   if(NOT ARG_SHADERS)
     message(FATAL_ERROR "vkc_embed_shaders(${target}): no SHADERS given")
   endif()
@@ -112,6 +122,8 @@ function(vkc_embed_shaders target)
     "${ARG_TARGET_ENV}"
     INCLUDE_DIRS
     ${ARG_INCLUDE_DIRS}
+    INCLUDE_TARGETS
+    ${ARG_INCLUDE_TARGETS}
     SPIRV_VAL_ARGS
     ${ARG_SPIRV_VAL_ARGS}
     SHADERS
@@ -172,18 +184,112 @@ function(vkc_embed_shaders target)
   endif()
 endfunction()
 
+# vkc_export_glsl(<target> PREFIX <include-prefix> FILES <file>...)
+#
+# Exports GLSL for other projects' shaders to #include as "<include-prefix>/
+# <file name>", with a relative <include-prefix> that stays inside the root:
+# copies each file under an include root of <target>'s own in the build tree,
+# and records the root in <target>'s VKC_SHADER_INCLUDE_DIRS, which
+# INCLUDE_TARGETS (above) reads. The root holds the exported files alone, so a
+# shader built against it cannot include the package's internal GLSL: once the
+# calling directory is configured, a file an earlier configure exported and this
+# one did not is deleted. A copy is remade when its source changes:
+# configure_file re-runs CMake for it. An include path another call in the build
+# already exports is refused.
+function(vkc_export_glsl target)
+  cmake_parse_arguments(ARG "" "PREFIX" "FILES" ${ARGN})
+  # A prefix that climbs out ("..", "a/../..") would copy beyond the root.
+  cmake_path(SET _prefix NORMALIZE "${ARG_PREFIX}")
+  if(NOT ARG_PREFIX
+     OR IS_ABSOLUTE "${ARG_PREFIX}"
+     OR _prefix MATCHES "^\\.\\.(/|$)"
+     OR NOT ARG_FILES
+     OR ARG_UNPARSED_ARGUMENTS)
+    message(
+      FATAL_ERROR
+        "vkc_export_glsl(${target}): use vkc_export_glsl("
+        "<target> PREFIX <include-prefix> FILES <file>...), "
+        "with a relative <include-prefix> that stays inside the root")
+  endif()
+  set(_root "${CMAKE_CURRENT_BINARY_DIR}/${target}_glsl")
+  foreach(_file IN LISTS ARG_FILES)
+    get_filename_component(_name "${_file}" NAME)
+    cmake_path(SET _include NORMALIZE "${ARG_PREFIX}/${_name}")
+    get_property(_owner GLOBAL PROPERTY "_vkc_glsl_export:${_include}")
+    if(_owner)
+      message(
+        FATAL_ERROR
+          "vkc_export_glsl(${target}): '${_include}' is already exported by "
+          "vkc_export_glsl(${_owner}); give each file a name or PREFIX of its "
+          "own")
+    endif()
+    set_property(GLOBAL PROPERTY "_vkc_glsl_export:${_include}" "${target}")
+    set_property(GLOBAL APPEND PROPERTY "_vkc_glsl_root:${_root}" "${_include}")
+    configure_file("${_file}" "${_root}/${_include}" COPYONLY)
+  endforeach()
+  get_property(
+    _roots
+    TARGET ${target}
+    PROPERTY VKC_SHADER_INCLUDE_DIRS)
+  if(NOT _root IN_LIST _roots)
+    set_property(
+      TARGET ${target}
+      APPEND
+      PROPERTY VKC_SHADER_INCLUDE_DIRS "${_root}")
+    # The root's value now: a deferred call's arguments are read when it runs.
+    cmake_language(
+      EVAL CODE "cmake_language(DEFER CALL _vkc_prune_glsl_root [[${_root}]])")
+  endif()
+endfunction()
+
+# _vkc_prune_glsl_root(<root>)
+#
+# Internal to vkc_export_glsl, deferred to the end of the directory that exports
+# to <root>: deletes each file there that no call of this configure exported.
+# The files it keeps keep their times, so the shaders that include them are not
+# rebuilt.
+function(_vkc_prune_glsl_root root)
+  get_property(_exported GLOBAL PROPERTY "_vkc_glsl_root:${root}")
+  file(
+    GLOB_RECURSE _held
+    LIST_DIRECTORIES false
+    RELATIVE "${root}"
+    "${root}/*")
+  foreach(_file IN LISTS _held)
+    if(NOT _file IN_LIST _exported)
+      file(REMOVE "${root}/${_file}")
+    endif()
+  endforeach()
+endfunction()
+
 # _vkc_add_shader_commands(<out_var> <caller> <output_dir> <target_env>
-# [INCLUDE_DIRS <dir>...] [SPIRV_VAL_ARGS <arg>...] SHADERS <file>...)
+# [INCLUDE_DIRS <dir>...] [INCLUDE_TARGETS <target>...] [SPIRV_VAL_ARGS
+# <arg>...] SHADERS <file>...)
 #
 # Internal to the two above: adds the command that compiles, and validates, each
 # shader to <output_dir>/<name>.spv, and sets <out_var> to the outputs, for the
 # caller to hang on one custom target of its own. <caller> names it in errors;
 # an empty <target_env> takes the default.
 function(_vkc_add_shader_commands out_var caller output_dir target_env)
-  cmake_parse_arguments(ARG "" "" "INCLUDE_DIRS;SPIRV_VAL_ARGS;SHADERS" ${ARGN})
+  cmake_parse_arguments(
+    ARG "" "" "INCLUDE_DIRS;INCLUDE_TARGETS;SPIRV_VAL_ARGS;SHADERS" ${ARGN})
   if(NOT target_env)
     set(target_env vulkan1.2)
   endif()
+  foreach(_target IN LISTS ARG_INCLUDE_TARGETS)
+    if(NOT TARGET "${_target}")
+      message(FATAL_ERROR "${caller}: INCLUDE_TARGETS names ${_target}, "
+                          "which is not a target")
+    endif()
+    get_target_property(_roots ${_target} VKC_SHADER_INCLUDE_DIRS)
+    if(NOT _roots)
+      message(
+        FATAL_ERROR
+          "${caller}: INCLUDE_TARGETS names ${_target}, which exports no GLSL: "
+          "call vkc_export_glsl(${_target} ...) first")
+    endif()
+    list(APPEND ARG_INCLUDE_DIRS ${_roots})
+  endforeach()
 
   if(Vulkan_GLSLC_EXECUTABLE)
     set(_compiler "${Vulkan_GLSLC_EXECUTABLE}")

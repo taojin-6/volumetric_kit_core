@@ -45,8 +45,9 @@ not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 - CMake: `FetchContent_MakeAvailable(volumetric_kit_core)`; targets
   `volumetric_kit::core_base`, `…_vulkan`; umbrella `volumetric_kit::core`;
   functions `vkc_*` (`vkc_require_core`, `vkc_embed_shaders`).
-- Test support: `volumetric_kit::core_test_policy`, `…_test_support` and
-  `…_test_main` in `tests/support/`, headers `volumetric_kit/core/testing/…`,
+- Test support: `volumetric_kit::core_test_policy`, `…_test_support`,
+  `…_test_main`, `…_test_base` and `…_test_allocation_failure` in
+  `tests/support/`, headers `volumetric_kit/core/testing/…`,
   namespace `volumetric_kit::core::test` (README.md, "Use it in your
   project").
 - Macros/export: `VKC_*` (e.g. `VKC_TRY`, `VKC_CHECK`, `VKC_BASE_API`). Never

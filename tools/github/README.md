@@ -1,4 +1,25 @@
-# Required CI check policy
+# GitHub tools
+
+Checks of a repository's GitHub settings and workflows, in Python's standard
+library and the GitHub CLI. Run their host-only tests with:
+
+```sh
+python3 -m unittest discover -s tools/github -p 'test_*.py' -v
+```
+
+## Workflow triggers
+
+`check_workflow_triggers.py <directory>` reads every `*.yml` and `*.yaml`
+workflow in the directory and fails, naming the file and line, on a trigger
+an outsider can cause or a schedule
+([tools/runners/README.md](../runners/README.md#who-can-trigger-ci) says
+which and why). It reads `on:` as a name, a list or a map, in block or flow
+style, and fails on one it cannot read, such as an anchor. Exit 0 means no
+refused trigger, 1 a refused or unreadable one, or no workflow to read.
+`.github/actions/check-workflow-triggers` runs it on the repository checked
+out; in GitHub Actions each refusal is an error annotation on its line.
+
+## Required CI check policy
 
 The `required` job aggregates CI results. A green job is a merge gate only
 when branch protection requires it, including for repository administrators.
@@ -35,8 +56,3 @@ error, never treated as an empty policy. Private-repository protection depends
 on the account's GitHub plan.
 
 API behavior: [GitHub branch protection documentation](https://docs.github.com/en/rest/branches/branch-protection).
-Run the host-only tests with:
-
-```sh
-python3 -m unittest discover -s tools/github -p 'test_*.py' -v
-```

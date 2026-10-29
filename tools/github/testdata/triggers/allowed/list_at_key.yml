@@ -1,0 +1,10 @@
+# A block list as deep as its key, which YAML allows.
+name: list at key
+on:
+- push
+- 'pull_request'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build

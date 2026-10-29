@@ -97,6 +97,24 @@ target_link_libraries(
 vkc_target_warnings(vkc_base_result_allocation_test)
 _vkc_discover_cpu_tests(vkc_base_result_allocation_test 60)
 
+# core_test_base and core_test_allocation_failure (support/), in tests that are
+# main()s of their own: CHECK (test_check.hpp), the scratch directory
+# (scratch_dir.hpp), and the allocation failure (test_allocation_failure.hpp),
+# whose replacement operator new is this binary's alone. Pure CPU.
+find_package(Threads REQUIRED)
+foreach(_vkc_test testing_test_check testing_scratch_dir
+                  testing_allocation_failure)
+  add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
+  target_link_libraries(vkc_${_vkc_test}_test
+                        PRIVATE volumetric_kit::core_test_base)
+  vkc_target_warnings(vkc_${_vkc_test}_test)
+  add_test(NAME vkc_${_vkc_test}_test COMMAND vkc_${_vkc_test}_test)
+  set_tests_properties(vkc_${_vkc_test}_test PROPERTIES TIMEOUT 60)
+endforeach()
+target_link_libraries(
+  vkc_testing_allocation_failure_test
+  PRIVATE volumetric_kit::core_test_allocation_failure Threads::Threads)
+
 # core_test_main (support/test_main.cpp), the main every test here links: on
 # Linux a death test's child dumps no core. Elsewhere it changes nothing.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -110,7 +128,8 @@ endif()
 # vulkan: the VkResult helpers, the format helpers (vulkan_format, and
 # vulkan_format_reference against Vulkan-Utility-Libraries, skipped where its
 # headers are not installed), UniqueHandle, DeviceRequirements, the queue-family
-# reduction and the memory-type masks need no device; the device tests run on
+# reduction, the memory-type masks and the forward declarations (vulkan_fwd,
+# checked as it compiles) need no device; the device tests run on
 # core_test_support's fixtures (support/), which skip without a device and fail
 # on a validation error as the environment asks.
 if(VKC_WITH_VULKAN)
@@ -135,6 +154,7 @@ if(VKC_WITH_VULKAN)
     vulkan_requirements
     vulkan_queue_families
     vulkan_memory_types
+    vulkan_fwd
     vulkan_device
     vulkan_allocator
     vulkan_allocation_budget
@@ -166,6 +186,10 @@ if(VKC_WITH_VULKAN)
       _vkc_discover_cpu_tests(vkc_${_vkc_test}_test 120)
     endif()
   endforeach()
+
+  # A forward declaration whose class key differs from the definition's fails
+  # vulkan_fwd, with or without VKC_WARNINGS_AS_ERRORS.
+  target_compile_options(vkc_vulkan_fwd_test PRIVATE -Werror=mismatched-tags)
 
   # The queue-family reduction, the memory-type masks, the queue-plan choice,
   # the clock pairing and a ring output's poison word are internal to
@@ -268,6 +292,19 @@ if(VKC_WITH_VULKAN)
   # The skip code is test::kSkipExitCode.
   set_tests_properties(vkc_testing_vulkan_policy_test
                        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # core_test_policy's run_on_gpu and buffer readback (gpu_test.hpp,
+  # buffer_readback.hpp), in tests that are main()s of their own, as above.
+  foreach(_vkc_test testing_gpu_test_harness testing_buffer_readback)
+    add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
+    target_link_libraries(
+      vkc_${_vkc_test}_test PRIVATE volumetric_kit::core_test_policy
+                                    volumetric_kit::core_test_base)
+    vkc_target_warnings(vkc_${_vkc_test}_test)
+    add_test(NAME vkc_${_vkc_test}_test COMMAND vkc_${_vkc_test}_test)
+    set_tests_properties(vkc_${_vkc_test}_test PROPERTIES SKIP_RETURN_CODE 77
+                                                          TIMEOUT 120)
+  endforeach()
 endif()
 
 # The Vulkan-header floor (vulkan.hpp): compile vulkan_header_floor.cpp, which
@@ -347,6 +384,15 @@ if(VKC_WITH_VULKAN)
   set_tests_properties(
     vkc_testing_skips_without_a_device
     PROPERTIES PASS_REGULAR_EXPRESSION "${_vkc_skipped} Probe.GetsADevice")
+
+  # run_on_gpu (gpu_test.hpp) without a driver: the test asserts that it skips
+  # without running the test, and fails under VKC_REQUIRE_VULKAN_DEVICE.
+  add_test(
+    NAME vkc_testing_gpu_test_without_a_device
+    COMMAND "${CMAKE_COMMAND}" -E env ${_vkc_without_driver}
+            "$<TARGET_FILE:vkc_testing_gpu_test_harness_test>" --no-device)
+  set_tests_properties(vkc_testing_gpu_test_without_a_device PROPERTIES TIMEOUT
+                                                                        120)
 
   add_test(
     NAME vkc_testing_requires_the_layer
@@ -560,6 +606,102 @@ if(VKC_WITH_VULKAN)
                                                    "${_vkc_clash}")
     endif()
   endforeach()
+
+  # vkc_export_glsl and INCLUDE_TARGETS (cmake/vkc_shaders.cmake), as a package
+  # exports GLSL and a consumer's kernel includes it (glsl_export/): the
+  # configure finds the export root holding the exported file alone, and the
+  # build compiles the kernel through it, embedded and not. A file the last
+  # configure exported and this one does not leaves the root (dropped_1, then
+  # dropped_2 in the same build directory). INCLUDE_TARGETS naming a target that
+  # exports no GLSL or no target at all, a second export of one include path,
+  # and a prefix that is absolute or climbs out of the root must fail the
+  # configure.
+  _vkc_message_regex(
+    _vkc_glsl_usage
+    "vkc_export_glsl(vkc_glsl_exporter): use vkc_export_glsl(<target> PREFIX <include-prefix> FILES <file>...), with a relative <include-prefix> that stays inside the root"
+  )
+  foreach(
+    _vkc_case
+    export
+    unexported
+    not_target
+    again
+    absolute
+    escaping
+    dropped_1
+    dropped_2)
+    set(_vkc_name vkc_export_glsl_${_vkc_case})
+    set(_vkc_dir "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}")
+    set(_vkc_args)
+    set(_vkc_pass)
+    if(_vkc_case STREQUAL "unexported")
+      set(_vkc_args -DVKC_GLSL_INCLUDE=vkc_glsl_unexported)
+      _vkc_message_regex(
+        _vkc_pass
+        "vkc_embed_shaders(vkc_glsl_consumer): INCLUDE_TARGETS names vkc_glsl_unexported, which exports no GLSL"
+      )
+    elseif(_vkc_case STREQUAL "not_target")
+      set(_vkc_args -DVKC_GLSL_INCLUDE=vkc_glsl::missing)
+      _vkc_message_regex(
+        _vkc_pass
+        "vkc_embed_shaders(vkc_glsl_consumer): INCLUDE_TARGETS names vkc_glsl::missing, which is not a target"
+      )
+    elseif(_vkc_case STREQUAL "again")
+      set(_vkc_args -DVKC_GLSL_EXPORT_AGAIN=ON)
+      _vkc_message_regex(
+        _vkc_pass
+        "'vkc_test/shaders/scale.glsl' is already exported by vkc_export_glsl(vkc_glsl_exporter)"
+      )
+    elseif(_vkc_case STREQUAL "absolute")
+      set(_vkc_args -DVKC_GLSL_PREFIX=/vkc_test/shaders)
+      set(_vkc_pass "${_vkc_glsl_usage}")
+    elseif(_vkc_case STREQUAL "escaping")
+      set(_vkc_args -DVKC_GLSL_PREFIX=../vkc_test)
+      set(_vkc_pass "${_vkc_glsl_usage}")
+    elseif(_vkc_case STREQUAL "dropped_1")
+      set(_vkc_dir "${CMAKE_CURRENT_BINARY_DIR}/vkc_export_glsl_dropped")
+      set(_vkc_args -DVKC_GLSL_EXPORT_INTERNAL=ON)
+    elseif(_vkc_case STREQUAL "dropped_2")
+      set(_vkc_dir "${CMAKE_CURRENT_BINARY_DIR}/vkc_export_glsl_dropped")
+      set(_vkc_args -DVKC_GLSL_EXPORT_INTERNAL=OFF)
+    endif()
+    add_test(
+      NAME ${_vkc_name}
+      COMMAND
+        "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/glsl_export" -B
+        "${_vkc_dir}" -G "${CMAKE_GENERATOR}"
+        "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" ${_vkc_args})
+    set_tests_properties(${_vkc_name} PROPERTIES LABELS cmake)
+    if(_vkc_pass)
+      set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                                   "${_vkc_pass}")
+    endif()
+  endforeach()
+  set_tests_properties(vkc_export_glsl_export PROPERTIES FIXTURES_SETUP
+                                                         vkc_export_glsl)
+  set_tests_properties(vkc_export_glsl_dropped_1
+                       PROPERTIES FIXTURES_SETUP vkc_export_glsl_dropped)
+  set_tests_properties(vkc_export_glsl_dropped_2
+                       PROPERTIES FIXTURES_REQUIRED vkc_export_glsl_dropped)
+  add_test(NAME vkc_export_glsl_build
+           COMMAND "${CMAKE_COMMAND}" --build
+                   "${CMAKE_CURRENT_BINARY_DIR}/vkc_export_glsl_export")
+  set_tests_properties(
+    vkc_export_glsl_build PROPERTIES FIXTURES_REQUIRED vkc_export_glsl LABELS
+                                     cmake)
+  # A copy of glsl_export/ built, reconfigured and built again with no shader
+  # recompiled, then built after an edit to the exported scale.glsl, which must
+  # change the compiled kernel (glsl_export_rebuild.cmake).
+  add_test(
+    NAME vkc_export_glsl_rebuild
+    COMMAND
+      "${CMAKE_COMMAND}" "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+      "-DVKC_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/vkc_export_glsl_rebuild"
+      "-DVKC_GENERATOR=${CMAKE_GENERATOR}"
+      "-DVKC_CXX_COMPILER=${CMAKE_CXX_COMPILER}" -P
+      "${CMAKE_CURRENT_SOURCE_DIR}/glsl_export_rebuild.cmake")
+  set_tests_properties(vkc_export_glsl_rebuild PROPERTIES LABELS cmake)
 
   # Flipping VKC_WITH_VULKAN in a build directory reconfigures, either way:
   # whether the test support is built follows the tier and the tests, not a
@@ -781,10 +923,62 @@ foreach(_vkc_require ${PROJECT_VERSION} ${_vkc_too_new} vulkan config)
                                                "${_vkc_pass}" LABELS cmake)
 endforeach()
 
+# vkc_require_sibling (cmake/vkc_require_sibling.cmake), on a stand-in sibling
+# at 0.3.0 (require_sibling/): requiring 0.3.0 and its second target must
+# configure; requiring 0.4.0, an umbrella the build lacks, a target the sibling
+# lacks, or any version of a sibling whose umbrella carries none must fail,
+# naming what was found and the fix. Configure only.
+_vkc_message_regex(
+  _vkc_floor "needs volumetric_kit_sibling 0.4.0 or newer, but the sibling at")
+set(_vkc_fix
+    "pin v0.4.0 or newer in the build's first FetchContent_Declare(volumetric_kit_sibling), which FetchContent keeps over every later one, or point FETCHCONTENT_SOURCE_DIR_VOLUMETRIC_KIT_SIBLING at a checkout that new."
+)
+foreach(_vkc_case accepts old unversioned no_umbrella no_target)
+  set(_vkc_name vkc_require_sibling_${_vkc_case})
+  if(_vkc_case STREQUAL "accepts")
+    set(_vkc_args)
+    set(_vkc_pass "vkc_require_sibling accepted volumetric_kit_sibling")
+  elseif(_vkc_case STREQUAL "old")
+    set(_vkc_args -DVKC_REQUIRE_MIN=0.4.0)
+    _vkc_message_regex(_vkc_tail "is 0.3.0: ${_vkc_fix}")
+    set(_vkc_pass "${_vkc_floor}.+${_vkc_tail}")
+  elseif(_vkc_case STREQUAL "unversioned")
+    set(_vkc_args -DVKC_SIBLING_UNVERSIONED=ON -DVKC_REQUIRE_MIN=0.4.0)
+    _vkc_message_regex(_vkc_tail "is unversioned: ${_vkc_fix}")
+    set(_vkc_pass "${_vkc_floor}.+${_vkc_tail}")
+  elseif(_vkc_case STREQUAL "no_umbrella")
+    set(_vkc_args -DVKC_REQUIRE_UMBRELLA=volumetric_kit::grid)
+    _vkc_message_regex(
+      _vkc_pass
+      "no volumetric_kit::grid here; call it after FetchContent_MakeAvailable(volumetric_kit_grid)"
+    )
+  else()
+    set(_vkc_args -DVKC_REQUIRE_TARGETS=volumetric_kit::sibling_extra)
+    _vkc_message_regex(
+      _vkc_head "needs volumetric_kit::sibling_extra, which the sibling at")
+    _vkc_message_regex(
+      _vkc_tail
+      "was built without: set the option that builds it before the build's first FetchContent_MakeAvailable(volumetric_kit_sibling)."
+    )
+    set(_vkc_pass "${_vkc_head}.+${_vkc_tail}")
+  endif()
+  add_test(
+    NAME ${_vkc_name}
+    COMMAND
+      "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/require_sibling" -B
+      "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" ${_vkc_args})
+  set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                               "${_vkc_pass}" LABELS cmake)
+endforeach()
+set_tests_properties(vkc_require_sibling_accepts
+                     PROPERTIES FAIL_REGULAR_EXPRESSION "CMake Error")
+
 # The same functions misused, or called before the core is added, must say so.
+# Arguments after <message> are -D options for the script's scope.
 function(_vkc_call_test name call message)
   add_test(NAME ${name}
-           COMMAND "${CMAKE_COMMAND}" "-DVKC_CALL=${call}" -P
+           COMMAND "${CMAKE_COMMAND}" "-DVKC_CALL=${call}" ${ARGN} -P
                    "${CMAKE_CURRENT_SOURCE_DIR}/require_core_call.cmake")
   _vkc_message_regex(_regex "${message}")
   set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${_regex}"
@@ -803,6 +997,18 @@ _vkc_call_test(
   "vkc_core_version(_v MAJOR): use vkc_core_version(<out> [MAJOR_MINOR])")
 _vkc_call_test(vkc_core_version_before_core "vkc_core_version(_v)"
                "vkc_core_version(_v): no volumetric_kit::core_base here")
+_vkc_call_test(
+  vkc_require_sibling_usage
+  "vkc_require_sibling(volumetric_kit::grid 0.1.0 TOOLS)"
+  "vkc_require_sibling(volumetric_kit::grid 0.1.0 TOOLS): use vkc_require_sibling(<umbrella-target> <min-version> [TARGETS <target>...])"
+)
+# With an ARGV1 in the calling scope, as a caller's own second argument is,
+# which the call must not take for its own.
+_vkc_call_test(
+  vkc_require_sibling_no_version
+  "vkc_require_sibling(volumetric_kit::grid)"
+  "vkc_require_sibling(volumetric_kit::grid): use vkc_require_sibling(<umbrella-target> <min-version> [TARGETS <target>...])"
+  -DARGV1=0.1.0)
 
 # Beyond these configure tests, CI builds and runs consumer/ on the core as a
 # subproject, as the sibling repos consume this one.

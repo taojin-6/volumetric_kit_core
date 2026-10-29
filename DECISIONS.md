@@ -910,6 +910,14 @@ without it; and a `"vulkan"` error fails the running test.
   (77, CTest's `SKIP_RETURN_CODE`). `core_test_support`'s GoogleTest fixtures
   are built on it, and link the consumer's `GTest::gtest` only where it
   exists, so a sibling without googletest still generates its build.
+- **A `main()` test's helpers live here too** (2026-10-28): `run_on_gpu`
+  with the test's own requirements, buffer readback, `CHECK`, the scratch
+  directory and the allocation failure, moved from recon's tests, since
+  recon splits into sensor, grid and recon, whose tests all use them and
+  which share only the core. The Vulkan-free ones build without the vulkan
+  tier, for a camera-only build. `CHECK` keeps the name its tests spell
+  rather than a `VKC_` one: `VKC_CHECK` is the base tier's fail-fast check,
+  and test code alone includes it.
 - **One instance and device per process**, as gfx's fixture already shared
   them (gfx DECISIONS.md, "GPU tests share a device per process", for the
   driver costs and limits behind it): one instance per validation level, one
@@ -961,7 +969,7 @@ built outside CMake, such as an Xcode framework target, is beyond that check.
 
 ### Consumers pin, and an application declares the core first
 
-Siblings pin a tag or commit SHA of this repository, never `main`. An
+Siblings pin a commit SHA of this repository, never `main`. An
 application that fetches several siblings (`ios`) declares
 `volumetric_kit_core` first, so FetchContent resolves one copy for all of
 them. A public API change here lands with a CHANGELOG entry that says how to
@@ -972,9 +980,8 @@ migrate.
   `vkc_core_version` all take it. Before 1.0, a PR that changes the public API
   or ABI bumps the minor version (`0.1.0` → `0.2.0`), and one that changes only
   behaviour a sibling relies on bumps the patch. The PR moves the CHANGELOG's
-  `[Unreleased]` entries under the new version, and its merge commit is tagged
-  `v<version>`. A version then names one API, whether a sibling pins the tag or
-  the SHA.
+  `[Unreleased]` entries under the new version, so a version names one API.
+  No tag marks it (amended 2026-10-28, below).
 - **Each sibling requires the oldest core it builds with**, and the tiers it
   uses, by calling `vkc_require_core(<version> [VULKAN] [CONFIG])` after
   `FetchContent_MakeAvailable`. Its pin yields to an application's, so the
@@ -1038,6 +1045,11 @@ workflow stops only a fork that leaves it in.
   the command.
 - **The runner tooling has one copy, here,** parametrized by repository, so a
   fix reaches every repository's runners.
+
+**Amended 2026-10-28: setup checks these gates, and a collaborator is no
+longer added to the rule** of any repository with runners, public or
+private: setup refuses one whose policy lets another actor in (the
+2026-10-28 entry, "Setup checks who can trigger CI").
 
 ### A brew upgrade needs no cache clearing
 
@@ -1432,3 +1444,118 @@ another process held 7.4 GB of the GPU's memory and stayed idle):
 - A camera's stored sync settings record the rate of the last stream it ran.
   recon's sync check (`sync_differences`) compares no rate, so a camera last
   run at 30 fps opens at 25 with no refusal.
+
+## 2026-10-28 — Pins are SHAs, floors read `project(VERSION)`, and no tags; one floor check for every sibling
+
+Amends "Consumers pin, and an application declares the core first", which
+tagged each version's merge commit `v<version>`. That was never done: the
+core went from 0.1.0 to 0.26.0 with no tag and no release, every sibling
+pins a SHA, and nothing reads a tag. A floor reads the version the code
+carries, which `project(VERSION)` sets.
+
+- **Pins are SHAs.** A pin names the one commit a build takes, and its
+  version is whatever that commit's `project(VERSION)` says. The floor's
+  refusal, "pin v<version> or newer", names a version, not a tag: a commit
+  whose `project(VERSION)` is that or newer. Its text stays as it was, which
+  the siblings' tests pin.
+- **Each sibling's floor goes through the core, with
+  `vkc_require_sibling(<umbrella> <min-version> [TARGETS <target>...])`**
+  (core 0.27.0). recon is splitting into packages that build on each other,
+  and an application's first declaration of a package wins over every later
+  one, so each needs the floor check the core has. A copy of
+  `vkc_require_core` per repository would be one more copy of one rule.
+  - **The version rides the umbrella target**, as `VKC_PACKAGE_VERSION`: the
+    umbrella exists in every build of a package, whatever its options, and a
+    target reaches every directory of the build where a variable does not.
+  - **The package's name follows from its umbrella**: the umbrella
+    `volumetric_kit::<name>` belongs to `volumetric_kit_<name>` (AGENTS.md,
+    naming), so a refusal names the pin to move and its
+    `FETCHCONTENT_SOURCE_DIR_<NAME>`, as the core's does.
+  - **A listed target that is missing is refused** as a tier the core lacks
+    is: options yield to the first declaration as pins do, so a sibling built
+    without the target fails at configure, not in the compile.
+- **`vkc_require_core` keeps reading `core_base`'s `VKC_CORE_VERSION`** and
+  shares the version check and its message with `vkc_require_sibling`.
+  recon's and calib's tests stamp an older version on `core_base`, and
+  calib's stand-in core has no umbrella.
+
+## 2026-10-28 — Exported GLSL through the core's shader build
+
+A package exports the GLSL other projects' shaders include with
+`vkc_export_glsl(<target> PREFIX <include-prefix> FILES <file>...)`, and a
+consumer's shaders reach it with `INCLUDE_TARGETS` on `vkc_compile_shaders`
+and `vkc_embed_shaders` (core 0.27.0). It generalises the export recon
+built for `pinhole.glsl` (its 2026-10-16 entry, "A shared GLSL pinhole"),
+which its coming packages need between each other.
+
+- **The root holds the exported files alone**, a copy in the build tree, so
+  a consumer's kernel cannot include a package's internal GLSL, such as a
+  layout the package keeps private. A file the package stops exporting
+  leaves the root at the next configure, once its directory is done, so a
+  stale copy cannot keep a kernel compiling until a clean build.
+- **The copy is made at configure** (`configure_file`), which CMake redoes
+  when a source changes, and the kernels that include it then recompile
+  through their depfiles. A build-time copy would need a dependency from each
+  consumer's shader rule on another package's target.
+- **The root rides the target**, in `VKC_SHADER_INCLUDE_DIRS`, as recon's
+  `VR_SHADER_INCLUDE_DIR` did, so it reaches a project that fetches the
+  package. `INCLUDE_TARGETS` reads it at the call, so the exporting target
+  is defined first, as a dependency already is.
+- **An include path has one exporter in a build**: a second is refused, as
+  a second symbol is, since the first root on the include path would win.
+
+## 2026-10-28 — Setup checks who can trigger CI; no outsider's trigger, and pinned images
+
+The two GitHub settings that keep a stranger's code off the runners, the
+owner-only Actions policy and approval of every outside contributor's run
+("Only the owner triggers CI"), were remembered, not checked: a repository
+given runners before its policy, or a policy later widened, would have
+exposed every host the family's runners share. Now the tooling checks them,
+and CI checks the triggers that bypass a pull request.
+
+- **`setup-runners.sh` refuses to register a runner** of any repository
+  unless an active policy over every workflow lets only the repository's
+  owner trigger them, and no active policy lets another actor trigger any. A
+  public one also needs every outside contributor's run to wait for
+  approval. A private one needs the same policies: strangers cannot fork it,
+  but a collaborator's push runs its own workflow files on hosts other
+  repositories' runners share. It has no approval setting, and must not run
+  fork pull requests' workflows, where that setting is readable. Setup reads
+  these with `gh`, so registering needs `gh` authed: the token is no longer
+  pasted in. The refusal names what is missing and the command that sets
+  it, whose policy names every workflow explicitly, so that it passes the
+  check ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
+- **A policy that lets in anyone but the owner is refused,** a collaborator
+  included, even beside an owner-only one: whether GitHub lets a run through
+  when any policy allows its actor or only when all do is not documented. A
+  collaborator's change gets CI as a fork's does, pushed here by the owner
+  once read.
+- **"Every workflow" is read as written:** a policy's workflow condition
+  must include `~ALL`, or nothing, which GitHub reads as every workflow, and
+  exclude nothing. A policy with no workflow condition does not count: setup
+  cannot tell what it covers.
+- **Checked when it matters, not watched:** a re-run that registers no
+  runner reads nothing, so refreshing a host needs no `gh`, and a setting
+  changed after registration goes unseen until the next registration. A
+  repository with runners that is made public has them torn down first, and
+  set up again once its approval is set.
+- **No workflow takes an outsider's trigger.**
+  `.github/actions/check-workflow-triggers` fails CI on
+  `pull_request_target` and `workflow_run`, which run a repository's own
+  workflow with its secrets and a token that can write on what a fork sent;
+  on `issue_comment`, `pull_request_review_comment`, `discussion` and
+  `discussion_comment`, which anyone can trigger; and on `schedule`: the
+  owner triggers every run, and bumps pins by hand. It parses `on:` with
+  Python's standard library, in every YAML form, and fails on one it cannot
+  read; a YAML module is not on every runner, and reads `on` as `true`. The
+  core's lint job runs it; siblings use it by commit, as the homebrew-key
+  action.
+- **A checkout keeps no token** (`persist-credentials: false`) in every job,
+  since none pushes.
+- **Job containers are pinned by digest,** the tag in a comment, so a new
+  image arrives only with a commit, which the owner makes by hand, as with
+  the actions' SHAs.
+- **Not covered:** whether the policy refuses a real fork's pull request, or
+  the owner's approval or re-run of one, is still untested ("Only the owner
+  triggers CI"); and a job that does run on a runner can still reach what the
+  host's account can.

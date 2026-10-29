@@ -1,0 +1,11 @@
+name: flow map
+on: {
+  push: {branches: [main]},
+  'discussion_comment': {types: [created]},
+  "workflow_run":{"workflows": ["ci"]}
+}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build

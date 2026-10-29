@@ -15,6 +15,11 @@
 # vkc_core_version(<out> [MAJOR_MINOR])
 #
 # Sets <out> to the core's version, or with MAJOR_MINOR to its MAJOR.MINOR.
+#
+# The version check and its refusal are vkc_require_sibling's, a sibling's
+# floor. vkc_require_core keeps reading core_base, which the siblings' tests
+# stamp with an older version, and its own refusals for a missing tier.
+include("${CMAKE_CURRENT_LIST_DIR}/vkc_require_sibling.cmake")
 
 # Sets <out> to the version volumetric_kit::core_base carries, or fails the
 # configure in <caller> without the core.
@@ -61,17 +66,10 @@ function(vkc_require_core)
   set(_first
       "the build's first FetchContent_MakeAvailable(volumetric_kit_core)")
 
+  _vkc_require_floor(volumetric_kit_core "${_origin}" "${_found}"
+                     "${min_version}")
   set(_refusal)
-  if(_found VERSION_LESS min_version)
-    string(
-      CONCAT
-        _refusal
-        "${PROJECT_NAME} needs volumetric_kit_core ${min_version} or newer, but "
-        "${_origin} is ${_found}: pin v${min_version} or newer in the build's "
-        "first FetchContent_Declare(volumetric_kit_core), which FetchContent "
-        "keeps over every later one, or point "
-        "FETCHCONTENT_SOURCE_DIR_VOLUMETRIC_KIT_CORE at a checkout that new.")
-  elseif(_arg_VULKAN AND NOT TARGET volumetric_kit::core_vulkan)
+  if(_arg_VULKAN AND NOT TARGET volumetric_kit::core_vulkan)
     string(
       CONCAT _refusal "${PROJECT_NAME} needs volumetric_kit_core's vulkan "
              "tier, which ${_origin} was built without: set "
