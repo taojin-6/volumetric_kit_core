@@ -16,17 +16,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   include to `<include-prefix>/<file name>` under an include root of the
   target's own in the build tree, which holds those files alone (one no
   longer exported leaves it at the next configure), and records the root in
-  the target's `VKC_SHADER_INCLUDE_DIRS`. An absolute prefix, and an include
-  path that another call already exports, are refused.
+  the target's `VKC_SHADER_INCLUDE_DIRS`. A prefix that is absolute or climbs
+  out of the root (`..`), and an include path that another call already
+  exports, are refused.
 - `INCLUDE_TARGETS <target>...` on `vkc_compile_shaders` and
   `vkc_embed_shaders`: the roots those targets exported become include roots
-  after `INCLUDE_DIRS`. A target that exported no GLSL is refused.
+  after `INCLUDE_DIRS`. A name that is no target, and a target that exported
+  no GLSL, are refused.
 - `vkc_require_sibling(<umbrella-target> <min-version> [TARGETS
   <target>...])` (`cmake/vkc_require_sibling.cmake`, defined with
   `vkc_require_core`): refuses a sibling without the umbrella, one whose
   umbrella's `VKC_PACKAGE_VERSION` is missing or older than the floor, and
-  one without a listed target, naming the first-declared pin and
-  `FETCHCONTENT_SOURCE_DIR_<NAME>` (DECISIONS.md, the 2026-10-28 entries).
+  one without a listed target. The version refusal names the first-declared
+  pin and `FETCHCONTENT_SOURCE_DIR_<NAME>` (DECISIONS.md, the 2026-10-28
+  entries).
 
 ### Changed
 

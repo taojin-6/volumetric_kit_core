@@ -567,9 +567,23 @@ if(VKC_WITH_VULKAN)
   # build compiles the kernel through it, embedded and not. A file the last
   # configure exported and this one does not leaves the root (dropped_1, then
   # dropped_2 in the same build directory). INCLUDE_TARGETS naming a target that
-  # exports no GLSL, a second export of one include path, and an absolute prefix
-  # must fail the configure.
-  foreach(_vkc_case export unexported again absolute dropped_1 dropped_2)
+  # exports no GLSL or no target at all, a second export of one include path,
+  # and a prefix that is absolute or climbs out of the root must fail the
+  # configure.
+  _vkc_message_regex(
+    _vkc_glsl_usage
+    "vkc_export_glsl(vkc_glsl_exporter): use vkc_export_glsl(<target> PREFIX <include-prefix> FILES <file>...), with a relative <include-prefix> that stays inside the root"
+  )
+  foreach(
+    _vkc_case
+    export
+    unexported
+    not_target
+    again
+    absolute
+    escaping
+    dropped_1
+    dropped_2)
     set(_vkc_name vkc_export_glsl_${_vkc_case})
     set(_vkc_dir "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}")
     set(_vkc_args)
@@ -580,6 +594,12 @@ if(VKC_WITH_VULKAN)
         _vkc_pass
         "vkc_embed_shaders(vkc_glsl_consumer): INCLUDE_TARGETS names vkc_glsl_unexported, which exports no GLSL"
       )
+    elseif(_vkc_case STREQUAL "not_target")
+      set(_vkc_args -DVKC_GLSL_INCLUDE=vkc_glsl::missing)
+      _vkc_message_regex(
+        _vkc_pass
+        "vkc_embed_shaders(vkc_glsl_consumer): INCLUDE_TARGETS names vkc_glsl::missing, which is not a target"
+      )
     elseif(_vkc_case STREQUAL "again")
       set(_vkc_args -DVKC_GLSL_EXPORT_AGAIN=ON)
       _vkc_message_regex(
@@ -588,10 +608,10 @@ if(VKC_WITH_VULKAN)
       )
     elseif(_vkc_case STREQUAL "absolute")
       set(_vkc_args -DVKC_GLSL_PREFIX=/vkc_test/shaders)
-      _vkc_message_regex(
-        _vkc_pass
-        "vkc_export_glsl(vkc_glsl_exporter): use vkc_export_glsl(<target> PREFIX <include-prefix> FILES <file>...), with a relative <include-prefix>"
-      )
+      set(_vkc_pass "${_vkc_glsl_usage}")
+    elseif(_vkc_case STREQUAL "escaping")
+      set(_vkc_args -DVKC_GLSL_PREFIX=../vkc_test)
+      set(_vkc_pass "${_vkc_glsl_usage}")
     elseif(_vkc_case STREQUAL "dropped_1")
       set(_vkc_dir "${CMAKE_CURRENT_BINARY_DIR}/vkc_export_glsl_dropped")
       set(_vkc_args -DVKC_GLSL_EXPORT_INTERNAL=ON)
@@ -624,6 +644,18 @@ if(VKC_WITH_VULKAN)
   set_tests_properties(
     vkc_export_glsl_build PROPERTIES FIXTURES_REQUIRED vkc_export_glsl LABELS
                                      cmake)
+  # A copy of glsl_export/ built, reconfigured and built again with no shader
+  # recompiled, then built after an edit to the exported scale.glsl, which must
+  # change the compiled kernel (glsl_export_rebuild.cmake).
+  add_test(
+    NAME vkc_export_glsl_rebuild
+    COMMAND
+      "${CMAKE_COMMAND}" "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+      "-DVKC_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/vkc_export_glsl_rebuild"
+      "-DVKC_GENERATOR=${CMAKE_GENERATOR}"
+      "-DVKC_CXX_COMPILER=${CMAKE_CXX_COMPILER}" -P
+      "${CMAKE_CURRENT_SOURCE_DIR}/glsl_export_rebuild.cmake")
+  set_tests_properties(vkc_export_glsl_rebuild PROPERTIES LABELS cmake)
 
   # Flipping VKC_WITH_VULKAN in a build directory reconfigures, either way:
   # whether the test support is built follows the tier and the tests, not a

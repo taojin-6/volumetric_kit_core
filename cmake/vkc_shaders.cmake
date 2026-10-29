@@ -187,25 +187,29 @@ endfunction()
 # vkc_export_glsl(<target> PREFIX <include-prefix> FILES <file>...)
 #
 # Exports GLSL for other projects' shaders to #include as "<include-prefix>/
-# <file name>", with a relative <include-prefix>: copies each file under an
-# include root of <target>'s own in the build tree, and records the root in
-# <target>'s VKC_SHADER_INCLUDE_DIRS, which INCLUDE_TARGETS (above) reads. The
-# root holds the exported files alone, so a shader built against it cannot
-# include the package's internal GLSL: once the calling directory is configured,
-# a file an earlier configure exported and this one did not is deleted. A copy
-# is remade when its source changes: configure_file re-runs CMake for it. An
-# include path another call in the build already exports is refused.
+# <file name>", with a relative <include-prefix> that stays inside the root:
+# copies each file under an include root of <target>'s own in the build tree,
+# and records the root in <target>'s VKC_SHADER_INCLUDE_DIRS, which
+# INCLUDE_TARGETS (above) reads. The root holds the exported files alone, so a
+# shader built against it cannot include the package's internal GLSL: once the
+# calling directory is configured, a file an earlier configure exported and this
+# one did not is deleted. A copy is remade when its source changes:
+# configure_file re-runs CMake for it. An include path another call in the build
+# already exports is refused.
 function(vkc_export_glsl target)
   cmake_parse_arguments(ARG "" "PREFIX" "FILES" ${ARGN})
+  # A prefix that climbs out ("..", "a/../..") would copy beyond the root.
+  cmake_path(SET _prefix NORMALIZE "${ARG_PREFIX}")
   if(NOT ARG_PREFIX
      OR IS_ABSOLUTE "${ARG_PREFIX}"
+     OR _prefix MATCHES "^\\.\\.(/|$)"
      OR NOT ARG_FILES
      OR ARG_UNPARSED_ARGUMENTS)
     message(
       FATAL_ERROR
         "vkc_export_glsl(${target}): use vkc_export_glsl("
         "<target> PREFIX <include-prefix> FILES <file>...), "
-        "with a relative <include-prefix>")
+        "with a relative <include-prefix> that stays inside the root")
   endif()
   set(_root "${CMAKE_CURRENT_BINARY_DIR}/${target}_glsl")
   foreach(_file IN LISTS ARG_FILES)
@@ -273,6 +277,10 @@ function(_vkc_add_shader_commands out_var caller output_dir target_env)
     set(target_env vulkan1.2)
   endif()
   foreach(_target IN LISTS ARG_INCLUDE_TARGETS)
+    if(NOT TARGET "${_target}")
+      message(FATAL_ERROR "${caller}: INCLUDE_TARGETS names ${_target}, "
+                          "which is not a target")
+    endif()
     get_target_property(_roots ${_target} VKC_SHADER_INCLUDE_DIRS)
     if(NOT _roots)
       message(

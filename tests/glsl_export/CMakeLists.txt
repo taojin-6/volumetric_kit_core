@@ -5,12 +5,14 @@
 # shaders/scale.glsl but not shaders/internal.glsl beside it (vkc_export_glsl),
 # and a consumer's kernel, shaders/scaled.comp, includes the export through
 # INCLUDE_TARGETS, embedded and compiled. The configure checks that the export
-# root holds what it exported alone, and vkc_export_glsl_build builds both.
+# root holds what it exported alone, and vkc_export_glsl_build builds both
+# (vkc_export_glsl_rebuild, ../glsl_export_rebuild.cmake, builds a copy again).
 # -DVKC_GLSL_EXPORT_INTERNAL=ON exports internal.glsl too, in a second call, so
 # a configure without it after one with it drops it from the root. These must
-# fail the configure: -DVKC_GLSL_INCLUDE=vkc_glsl_unexported, naming a target
-# that exports nothing; -DVKC_GLSL_EXPORT_AGAIN=ON, exporting scale.glsl's
-# include path from a second target; and an absolute -DVKC_GLSL_PREFIX.
+# fail the configure: a -DVKC_GLSL_INCLUDE naming a target that exports nothing
+# (vkc_glsl_unexported) or no target at all; -DVKC_GLSL_EXPORT_AGAIN=ON,
+# exporting scale.glsl's include path from a second target; and a
+# -DVKC_GLSL_PREFIX that is absolute or climbs out of the root.
 cmake_minimum_required(VERSION 3.21)
 project(vkc_glsl_export LANGUAGES CXX)
 
