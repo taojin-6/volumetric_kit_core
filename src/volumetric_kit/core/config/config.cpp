@@ -75,6 +75,11 @@ bool is_rig_calibration(App app) {
 bool is_orbbec(App app) {
   return is_live_fusion(app) || is_rig_calibration(app);
 }
+// The profiles that open a camera at stated sizes and rate: the Orbbec
+// profiles, and FuseRealsense, which fuses a RealSense camera's own depth.
+bool takes_camera_modes(App app) {
+  return is_orbbec(app) || app == App::FuseRealsense;
+}
 struct ParseState {
   std::vector<std::string> fields;
   std::string up_axis;
@@ -341,16 +346,18 @@ bool supports(std::string_view field, App app) {
                {"source.format", "source.camera_parameters", "source.preload"}))
     return is_dataset(app);
   if (field_in(field, {"source.driver"}))
-    return is_orbbec(app) || app == App::Scanner;
-  if (field_in(field, {"source.serial", "source.apply_sync"}))
-    return is_live_fusion(app);
+    return takes_camera_modes(app) || app == App::Scanner;
+  if (field == "source.serial")
+    return is_live_fusion(app) || app == App::FuseRealsense;
+  if (field == "source.apply_sync") return is_live_fusion(app);
   if (field == "source.calibration")
     return is_live_fusion(app) || app == App::CalibColor;
-  if (field_in(field,
-               {"source.sync_config", "source.color_codec",
-                "source.color_width", "source.color_height",
-                "source.depth_width", "source.depth_height", "source.fps"}))
+  if (field_in(field, {"source.sync_config", "source.color_codec"}))
     return is_orbbec(app);
+  if (field_in(field,
+               {"source.color_width", "source.color_height",
+                "source.depth_width", "source.depth_height", "source.fps"}))
+    return takes_camera_modes(app);
   if (field_in(field, {"source.color_exposure", "source.color_gain"}))
     return app == App::CalibColor;
   if (field == "source.host_clock") return app == App::FuseOrbbec;
@@ -362,11 +369,14 @@ bool supports(std::string_view field, App app) {
     return !is_gfx(app) && !is_rig_calibration(app) &&
            !is_one_of(app, {App::CalibProjectPoint, App::Player});
   if (field == "fusion.truncation_m")
-    return is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::RigViewer,
-                                              App::Scanner, App::CodecMesh});
+    return is_dataset(app) ||
+           is_one_of(app, {App::FuseOrbbec, App::FuseRealsense, App::RigViewer,
+                           App::Scanner, App::CodecMesh});
   if (field_in(field, {"fusion.min_depth_m", "fusion.max_depth_m",
                        "fusion.max_weight"}))
-    return is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::RigViewer});
+    return is_dataset(app) ||
+           is_one_of(app,
+                     {App::FuseOrbbec, App::FuseRealsense, App::RigViewer});
   if (field_in(field, {"fusion.stride", "fusion.mesh_every",
                        "fusion.dirty_every", "fusion.device_extract"}))
     return app == App::FuseReplica;
@@ -376,10 +386,12 @@ bool supports(std::string_view field, App app) {
     return app == App::Scanner;
   if (field == "fusion.share_vertices")
     return is_one_of(app, {App::FuseReplica, App::FuseRender, App::FuseViewer});
-  if (field == "fusion.dynamic") return is_dataset(app) || is_live_fusion(app);
+  if (field == "fusion.dynamic")
+    return is_dataset(app) || is_live_fusion(app) || app == App::FuseRealsense;
   if (field_in(field, {"fusion.depth_within_color", "fusion.hold_ms"}))
     return app == App::RigViewer;
-  if (field == "fusion.free_after") return is_live_fusion(app);
+  if (field == "fusion.free_after")
+    return is_live_fusion(app) || app == App::FuseRealsense;
   if (field == "fusion.occlusion_m")
     return app == App::RigViewer || app == App::Scanner;
   if (field == "fusion.remesh_every")
@@ -415,11 +427,12 @@ bool supports(std::string_view field, App app) {
     return app == App::RigViewer;
   if (field == "output")
     return is_codec(app) || is_rig_calibration(app) ||
-           is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender,
-                           App::GfxModel});
+           is_one_of(app, {App::FuseReplica, App::FuseOrbbec,
+                           App::FuseRealsense, App::FuseRender, App::GfxModel});
   if (field == "output.path")
     return is_rig_calibration(app) ||
-           is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender});
+           is_one_of(app, {App::FuseReplica, App::FuseOrbbec,
+                           App::FuseRealsense, App::FuseRender});
   if (field == "output.prefix") return is_codec(app);
   if (field_in(field, {"output.csv", "output.stream"})) return takes_codec(app);
   if (field_in(field, {"output.serve", "output.max_viewers"}))
@@ -427,7 +440,8 @@ bool supports(std::string_view field, App app) {
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
-           is_one_of(app, {App::CodecMesh, App::Player, App::CalibColor});
+           is_one_of(app, {App::CodecMesh, App::Player, App::CalibColor,
+                           App::FuseRealsense});
   if (field == "run.sets") return app == App::RigViewer;
   if (field == "run.first") return app == App::CodecMesh;
   if (field == "calibration") return app == App::CalibProjectPoint;
@@ -504,7 +518,7 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
              c.operation != Operation::Stream &&
                  (is_rig_calibration(app) ||
                   is_one_of(app, {App::FuseReplica, App::FuseOrbbec,
-                                  App::FuseRender})));
+                                  App::FuseRealsense, App::FuseRender})));
   path_check(c.output.prefix, "output.prefix");
   path_check(c.output.screenshot, "output.screenshot");
   path_check(c.output.csv, "output.csv");
@@ -531,9 +545,13 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   }
   if (is_dataset(app) && c.source.format != "replica")
     fail("source.format", "only replica is supported");
-  if (is_orbbec(app)) {
-    if (c.source.driver != "orbbec")
-      fail("source.driver", "only orbbec is supported");
+  // FuseRealsense refuses the Orbbec fields below as unused, so it reaches
+  // only the driver's and the modes' checks.
+  if (takes_camera_modes(app)) {
+    const std::string driver =
+        app == App::FuseRealsense ? "realsense" : "orbbec";
+    if (c.source.driver != driver)
+      fail("source.driver", "only " + driver + " is supported");
     if (!c.source.serial.empty() && !c.source.sync_config.empty())
       fail("source.serial", "cannot be combined with source.sync_config");
     if (c.source.apply_sync && c.source.sync_config.empty())
@@ -682,8 +700,8 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (c.render.shading == Shading::Normals &&
       (app == App::FuseViewer || app == App::FuseRender))
     fail("render.shading", "normals is only supported by rig_viewer");
-  if ((is_dataset(app) ||
-       is_one_of(app, {App::FuseOrbbec, App::CodecMesh, App::CalibColor})) &&
+  if ((is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::FuseRealsense,
+                                          App::CodecMesh, App::CalibColor})) &&
       c.run.frames < 1)
     fail("run.frames", "must be positive");
   nonnegative(c.run.first, "run.first");
@@ -803,7 +821,7 @@ void resolve(Config& c, App app, std::string_view directory,
 
 namespace {
 Config defaults_impl(Application application) {
-  if (static_cast<int>(application) < 0 || application > App::CalibColor)
+  if (static_cast<int>(application) < 0 || application > App::FuseRealsense)
     fail("application", "unknown application");
   Config c;
   if (is_dataset(application)) {
@@ -871,6 +889,23 @@ Config defaults_impl(Application application) {
     c.operation = Operation::View;
     c.source.kind = SourceKind::Stream;
   }
+  // One camera's own depth: the live profiles' depth range, Dynamic fusion
+  // and run length, at its widest colour and depth modes at 30 fps.
+  if (application == App::FuseRealsense) {
+    c.operation = Operation::Fuse;
+    c.source.kind = SourceKind::Live;
+    c.source.driver = "realsense";
+    c.source.color_width = 1280;
+    c.source.color_height = 800;
+    c.source.depth_width = 1280;
+    c.source.depth_height = 720;
+    c.source.fps = 30;
+    c.fusion.min_depth_m = 0.25F;
+    c.fusion.max_depth_m = 5.F;
+    c.fusion.dynamic = true;
+    c.run.frames = 300;
+    c.output.path = "fuse_realsense.ply";
+  }
   return c;
 }
 
@@ -910,7 +945,7 @@ Result<Config> parse(std::string_view text, Application application,
               {"project", Operation::Project},
               {"calibrate", Operation::Calibrate}});
     if (!json.contains("source") &&
-        (is_dataset(application) || is_orbbec(application) ||
+        (is_dataset(application) || takes_camera_modes(application) ||
          is_one_of(application, {App::CodecMesh, App::Scanner, App::Player})))
       fail("source", "is required");
     if (const auto* v = r.take("source")) read_source(*v, c, state);

@@ -33,7 +33,8 @@ enum class Application {
   CalibProjectPoint,
   CalibRig,
   Player,
-  CalibColor
+  CalibColor,
+  FuseRealsense
 };
 /// @brief The work requested by a scenario.
 enum class Operation { Fuse, Stream, Codec, View, Project, Calibrate };
@@ -67,7 +68,8 @@ struct Source {
   bool apply_sync = false;
   bool host_clock = false;
   /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG only,
-  /// CalibColor's H.265 only.
+  /// CalibColor's H.265 only. FuseRealsense takes the sizes and rate, not
+  /// the codec, and resolves colour 1280x800, depth 1280x720 at 30 fps.
   ColorCodec color_codec = ColorCodec::Hevc;
   std::uint32_t color_width = 3840;
   std::uint32_t color_height = 2160;
@@ -113,8 +115,8 @@ struct Fusion {
   int fuse_every = 1;
   bool share_vertices = false;
   bool device_extract = false;
-  /// Dynamic integration if true, else Classic; FuseOrbbec and RigViewer
-  /// resolve true.
+  /// Dynamic integration if true, else Classic; FuseOrbbec, FuseRealsense
+  /// and RigViewer resolve true.
   bool dynamic = false;
   bool depth_within_color = true;
   float occlusion_m = 0.05F;
@@ -184,8 +186,8 @@ struct Output {
 /// @brief Run limits; a negative frame limit means unlimited where supported.
 /// For CodecMesh, `frames` is instead an exact count of numbered meshes from
 /// number `first`, where a dataset's is a limit that stops at its last frame.
-/// FuseOrbbec's counts camera frames, each set adding one per camera it holds;
-/// CalibColor's counts sets.
+/// FuseOrbbec's counts camera frames, each set adding one per camera it holds,
+/// and FuseRealsense's its one camera's; CalibColor's counts sets.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Run {
   int frames = -1;

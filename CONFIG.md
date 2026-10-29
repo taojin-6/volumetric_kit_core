@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.30.0 CONFIG)
+vkc_require_core(0.31.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -85,6 +85,7 @@ does not override the requested operation or source discriminator.
 | `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
 | `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 3840x2160 HEVC, depth 640x576, 25 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
+| `FuseRealsense` | `fuse` | `live`, `realsense` | colour 1280x800, depth 1280x720, 30 fps, 300 frames; dynamic fusion, fusion output `fuse_realsense.ply` |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
 | `RigViewer` | `view` | `live`, `orbbec`; sync config required | colour 3840x2160 HEVC, depth 640x576, 25 fps; voxel 0.01 m, dynamic fusion, 1280x720 window, overlay, unlit shading, unlimited frames/sets |
@@ -113,6 +114,11 @@ unknown extension object.
   `color_exposure` and `color_gain`. Serial and sync-config selection are
   exclusive; applying sync requires a sync config; host-clock mode forbids one.
   Width/height overrides are pairs. Scanner accepts only `kind`/`driver`.
+- Live RealSense fields (core 0.31.0, `FuseRealsense`): `driver`
+  `realsense`, `serial` (empty: the only camera attached), the colour/depth
+  widths and heights, as pairs, and `fps`. The camera's own depth with its
+  colour, one camera: none of the Orbbec rig's fields, the codec and its
+  outputs, or diagnostics.
 - Mesh fields: `path`; exactly one of `height_m` (a height the consumer
   scales the input to) and `metres_per_unit` (the input's declared unit, core
   0.7.0), finite and positive; either `up_axis` (`x`, `y`, `z`, optionally
@@ -131,10 +137,10 @@ unknown extension object.
   is the sender's default (grid's `networking::kDefaultPort`). A `host`
   containing `:` is refused, as the port is its own field.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
-  `max_depth_m`, `max_weight`. Every dataset profile, FuseOrbbec and RigViewer
-  accept the boolean `dynamic` (core 0.6.0): Dynamic integration when true,
-  Classic when false; FuseOrbbec (core 0.15.0) and RigViewer default to true,
-  the others to false. Other application-specific extraction/dynamic fields
+  `max_depth_m`, `max_weight`. Every dataset profile, FuseOrbbec,
+  FuseRealsense and RigViewer accept the boolean `dynamic` (core 0.6.0):
+  Dynamic integration when true, Classic when false; FuseOrbbec (core
+  0.15.0), FuseRealsense and RigViewer default to true, the others to false. Other application-specific extraction/dynamic fields
   are accepted only by their actual consumers.
   CodecMesh accepts voxel size and, from core 0.7.0, truncation.
 - Codec fields: `coefficient_count`, `quantization_scale`,
@@ -166,9 +172,9 @@ unknown extension object.
   `path`, `csv` and `stream` must differ once resolved, and none may be
   `source.sync_config` or `source.calibration` (core 0.13.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
-  for CodecMesh. Dataset/FuseOrbbec/CalibColor limits are positive;
-  FuseOrbbec's counts camera frames, each set adding one per camera it holds,
-  and CalibColor's counts sets; RigViewer uses zero for unlimited; gfx uses
+  for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/CalibColor limits are
+  positive; FuseOrbbec's counts camera frames, each set adding one per camera
+  it holds, FuseRealsense's its one camera's, and CalibColor's counts sets; RigViewer uses zero for unlimited; gfx uses
   -1 for unlimited and permits zero frames; Player plays until its window
   closes unless `frames` gives a positive count of presents of a stream
   frame. CodecMesh's `frames` is instead an exact count, at least 1, of
@@ -205,8 +211,9 @@ unknown extension object.
   authentication. FuseOrbbec takes the codec fields the codec profiles
   share, with their defaults and checks. A `codec` section without any of
   the three outputs is refused, since nothing would be coded.
-- `FuseOrbbec` (core 0.14.0) and `RigViewer` accept `fusion.free_after`, a
-  nonnegative integer, default 30. Every that many fused sets, the consumer
+- `FuseOrbbec` (core 0.14.0), `FuseRealsense` and `RigViewer` accept
+  `fusion.free_after`, a nonnegative integer, default 30. Every that many
+  fused sets, the consumer
   runs recon's `VoxelBlockGrid::free_stale_blocks`, which frees each grid
   block that none of those sets asked to allocate and in which neither this
   pass nor the one before found an observed voxel; 0 never frees. Dynamic
@@ -262,9 +269,9 @@ silently ignored by an application that does not consume it. In particular:
 Recon's existing truncation sentinel is preserved: absent or nonpositive
 truncation resolves to four times the chosen voxel size. Scanner's explicit
 truncation must be positive and its default stays 0.03 m. Depth defaults are
-0.1–8 m for datasets and 0.25–5 m for FuseOrbbec and RigViewer. Core checks
-the block-of-eight size, truncation ratio and bucket-index bounds before
-library construction.
+0.1–8 m for datasets and 0.25–5 m for FuseOrbbec, FuseRealsense and
+RigViewer. Core checks the block-of-eight size, truncation ratio and
+bucket-index bounds before library construction.
 
 `parse` and `load` return resolved settings for consumption. Field-presence
 tracking, defaults and validation remain private to decoding; there is no

@@ -30,7 +30,8 @@ Result<Config> scenario(std::string_view text, App app,
   if (!text.empty() && text.front() == '{') {
     const char* operation = "view";
     if (app == App::FuseReplica || app == App::FuseOrbbec ||
-        app == App::FuseRender || app == App::FuseViewer || app == App::Scanner)
+        app == App::FuseRealsense || app == App::FuseRender ||
+        app == App::FuseViewer || app == App::Scanner)
       operation = "fuse";
     if (app == App::CodecReplica || app == App::CodecMesh) operation = "codec";
     if (app == App::CalibProjectPoint) operation = "project";
@@ -42,8 +43,9 @@ Result<Config> scenario(std::string_view text, App app,
     if (app == App::FuseReplica || app == App::CodecReplica ||
         app == App::FuseRender || app == App::FuseViewer)
       kind = "dataset";
-    if (app == App::FuseOrbbec || app == App::RigViewer ||
-        app == App::Scanner || app == App::CalibRig || app == App::CalibColor)
+    if (app == App::FuseOrbbec || app == App::FuseRealsense ||
+        app == App::RigViewer || app == App::Scanner || app == App::CalibRig ||
+        app == App::CalibColor)
       kind = "live";
     if (app == App::CodecMesh) kind = "mesh";
     if (app == App::GfxModel) kind = "model";
@@ -53,8 +55,8 @@ Result<Config> scenario(std::string_view text, App app,
         document.find("\"kind\"") == std::string::npos)
       document.insert(source + 10, std::string(R"("kind":")") + kind + "\",");
     if (document.find("\"source\"") == std::string::npos &&
-        (app == App::FuseOrbbec || app == App::RigViewer ||
-         app == App::Scanner))
+        (app == App::FuseOrbbec || app == App::FuseRealsense ||
+         app == App::RigViewer || app == App::Scanner))
       document.insert(1, std::string(R"("source":{"kind":")") + kind + "\"},");
   }
   return parse(document, app, base);
@@ -825,6 +827,95 @@ TEST(Config, EachProfileKeepsItsOwnOrbbecSourceFields) {
            "fusion: is not used by this application");
 }
 
+TEST(Config, FuseRealsenseFusesOneCameraAtItsModesToAPly) {
+  const auto fuse =
+      scenario(R"({"version":1})", App::FuseRealsense, "/scenario");
+  ASSERT_TRUE(fuse) << fuse.status().message();
+  EXPECT_EQ(fuse->operation, Operation::Fuse);
+  EXPECT_EQ(fuse->source.kind, SourceKind::Live);
+  EXPECT_EQ(fuse->source.driver, "realsense");
+  EXPECT_TRUE(fuse->source.serial.empty());
+  EXPECT_EQ(fuse->source.color_width, 1280U);
+  EXPECT_EQ(fuse->source.color_height, 800U);
+  EXPECT_EQ(fuse->source.depth_width, 1280U);
+  EXPECT_EQ(fuse->source.depth_height, 720U);
+  EXPECT_EQ(fuse->source.fps, 30U);
+  EXPECT_EQ(fuse->fusion.voxel_size_m, 0.02F);
+  EXPECT_EQ(fuse->fusion.truncation_m, 0.08F);
+  EXPECT_EQ(fuse->fusion.min_depth_m, 0.25F);
+  EXPECT_EQ(fuse->fusion.max_depth_m, 5.F);
+  EXPECT_TRUE(fuse->fusion.dynamic);
+  EXPECT_EQ(fuse->fusion.free_after, 30);
+  EXPECT_EQ(fuse->run.frames, 300);
+  EXPECT_EQ(fuse->output.path, "/scenario/fuse_realsense.ply");
+  EXPECT_TRUE(fuse->output.stream.empty());
+  EXPECT_EQ(fuse->output.serve, 0U);
+
+  // Every field it takes, each away from its default.
+  const auto set = scenario(
+      R"({"version":1,"source":{"driver":"realsense","serial":"123456789012","color_width":640,"color_height":480,"depth_width":848,"depth_height":480,"fps":15},"fusion":{"voxel_size_m":0.01,"truncation_m":0.05,"min_depth_m":0.5,"max_depth_m":4,"max_weight":40,"dynamic":false,"free_after":0},"output":{"path":"out/room.ply"},"run":{"frames":900}})",
+      App::FuseRealsense, "/scenario");
+  ASSERT_TRUE(set) << set.status().message();
+  EXPECT_EQ(set->source.serial, "123456789012");
+  EXPECT_EQ(set->source.color_width, 640U);
+  EXPECT_EQ(set->source.color_height, 480U);
+  EXPECT_EQ(set->source.depth_width, 848U);
+  EXPECT_EQ(set->source.depth_height, 480U);
+  EXPECT_EQ(set->source.fps, 15U);
+  EXPECT_EQ(set->fusion.voxel_size_m, 0.01F);
+  EXPECT_EQ(set->fusion.truncation_m, 0.05F);
+  EXPECT_EQ(set->fusion.min_depth_m, 0.5F);
+  EXPECT_EQ(set->fusion.max_depth_m, 4.F);
+  EXPECT_EQ(set->fusion.max_weight, 40.F);
+  EXPECT_FALSE(set->fusion.dynamic);
+  EXPECT_EQ(set->fusion.free_after, 0);
+  EXPECT_EQ(set->output.path, "/scenario/out/room.ply");
+  EXPECT_EQ(set->run.frames, 900);
+
+  // Its driver alone, and FuseOrbbec's not it.
+  rejected(R"({"version":1,"source":{"driver":"orbbec"}})", App::FuseRealsense,
+           "source.driver: only realsense is supported");
+  rejected(R"({"version":1,"source":{"driver":"realsense"}})", App::FuseOrbbec,
+           "source.driver: only orbbec is supported");
+  rejected(R"({"version":1,"operation":"stream"})", App::FuseRealsense,
+           "operation: is not supported by this application");
+  // The Orbbec rig's fields, the codec and its outputs, and diagnostics are
+  // not its.
+  for (const char* field :
+       {R"("source":{"sync_config":"rig.json"})",
+        R"("source":{"apply_sync":true})",
+        R"("source":{"calibration":"poses.json"})",
+        R"("source":{"host_clock":true})",
+        R"("source":{"color_codec":"mjpeg"})",
+        R"("source":{"color_exposure":100})", R"("codec":{})",
+        R"("output":{"stream":"out.vrst"})", R"("output":{"csv":"out.csv"})",
+        R"("output":{"serve":9000})", R"("diagnostics":{"readback":true})",
+        R"("fusion":{"occlusion_m":0.1})", R"("window":{})"}) {
+    rejected(std::string(R"({"version":1,)") + field + "}", App::FuseRealsense,
+             "is not used by this application");
+  }
+  // Its modes and counts are checked as the Orbbec profiles' are.
+  rejected(R"({"version":1,"source":{"color_width":1280}})", App::FuseRealsense,
+           "source: color_width and color_height must be provided together");
+  rejected(R"({"version":1,"source":{"depth_width":0,"depth_height":720}})",
+           App::FuseRealsense,
+           "source.depth_width: must be finite and positive");
+  rejected(R"({"version":1,"source":{"fps":0}})", App::FuseRealsense,
+           "source.fps: must be finite and positive");
+  rejected(R"({"version":1,"run":{"frames":0}})", App::FuseRealsense,
+           "run.frames: must be positive");
+  rejected(R"({"version":1,"output":{"path":""}})", App::FuseRealsense,
+           "output.path: is required");
+  rejected(R"({"version":1,"fusion":{"min_depth_m":5,"max_depth_m":4}})",
+           App::FuseRealsense, "min_depth_m");
+  const auto unsourced = parse(R"({"version":1,"operation":"fuse"})",
+                               App::FuseRealsense, "/scenario");
+  ASSERT_FALSE(unsourced);
+  EXPECT_NE(unsourced.status().message().find("source: is required"),
+            std::string::npos)
+      << unsourced.status().message();
+}
+
 TEST(Config, LiveRelationsAndCountsAreCentral) {
   rejected(R"({"version":1,"source":{"serial":"A\u0000B"}})", App::FuseOrbbec,
            "source.serial: embedded NUL");
@@ -1064,7 +1155,7 @@ TEST(Config, UpdateSizeIsAnyCountWhereThereArePFrames) {
 // Every profile, so that one added later is held to each rule too.
 std::vector<App> every_profile() {
   std::vector<App> apps;
-  for (int app = 0; app <= static_cast<int>(App::CalibColor); ++app)
+  for (int app = 0; app <= static_cast<int>(App::FuseRealsense); ++app)
     apps.push_back(static_cast<App>(app));
   return apps;
 }
@@ -1208,7 +1299,7 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
              "codec: is not used by this application");
     const bool writes = app == App::FuseReplica || app == App::FuseRender ||
                         app == App::GfxModel || app == App::CalibRig ||
-                        app == App::CalibColor;
+                        app == App::CalibColor || app == App::FuseRealsense;
     for (const char* key : {"csv", "stream"}) {
       rejected(with_sections(
                    app, std::string(R"(,"output":{")") + key + R"(":"out"})"),
@@ -1273,7 +1364,7 @@ TEST(Config, OnlyFuseOrbbecServesItsCodedFramesLive) {
     const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
                          app == App::CodecMesh || app == App::FuseRender ||
                          app == App::GfxModel || app == App::CalibRig ||
-                         app == App::CalibColor;
+                         app == App::CalibColor || app == App::FuseRealsense;
     for (const char* port : {"0", "47801"}) {
       rejected(with_sections(
                    app, std::string(R"(,"output":{"serve":)") + port + "}"),
@@ -1342,7 +1433,7 @@ TEST(Config, FuseOrbbecLimitsTheViewersItServes) {
     const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
                          app == App::CodecMesh || app == App::FuseRender ||
                          app == App::GfxModel || app == App::CalibRig ||
-                         app == App::CalibColor;
+                         app == App::CalibColor || app == App::FuseRealsense;
     rejected(with_sections(app, R"(,"output":{"max_viewers":4})"), app,
              (outputs ? "output.max_viewers" : "output") +
                  std::string(": is not used by this application"));
@@ -1570,16 +1661,18 @@ TEST(Config, OnlyTheLiveFusingProfilesDefaultToDynamic) {
     const auto parsed = scenario(
         with_sections(app, calibrates ? R"(,"output":{"path":"s"})" : ""), app);
     ASSERT_TRUE(parsed) << parsed.status().message();
-    EXPECT_EQ(parsed->fusion.dynamic,
-              app == App::FuseOrbbec || app == App::RigViewer)
+    EXPECT_EQ(parsed->fusion.dynamic, app == App::FuseOrbbec ||
+                                          app == App::FuseRealsense ||
+                                          app == App::RigViewer)
         << static_cast<int>(app);
   }
 }
 
 TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
-  // FuseOrbbec takes RigViewer's key: every 30 sets by default, 0 for never.
+  // FuseOrbbec and FuseRealsense take RigViewer's key: every 30 sets by
+  // default, 0 for never.
   EXPECT_EQ(Fusion{}.free_after, 30);
-  for (const auto app : {App::FuseOrbbec, App::RigViewer}) {
+  for (const auto app : {App::FuseOrbbec, App::FuseRealsense, App::RigViewer}) {
     const auto omitted = scenario(with_sections(app, ""), app);
     ASSERT_TRUE(omitted) << omitted.status().message();
     EXPECT_EQ(omitted->fusion.free_after, 30);
@@ -1619,7 +1712,9 @@ TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
   // Every other profile refuses it, even at its default; those that do not
   // fuse refuse the fusion section.
   for (const auto app : every_profile()) {
-    if (app == App::FuseOrbbec || app == App::RigViewer) continue;
+    if (app == App::FuseOrbbec || app == App::FuseRealsense ||
+        app == App::RigViewer)
+      continue;
     const bool fuses = app != App::GfxTriangle && app != App::GfxImGui &&
                        app != App::GfxModel && app != App::GfxImage &&
                        app != App::CalibProjectPoint && app != App::CalibRig &&

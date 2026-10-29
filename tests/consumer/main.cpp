@@ -90,6 +90,18 @@ vkc::Status run() {
       sets.output.path != "/scenario/fuse_orbbec.ply")
     return vkc::Status::invalid_argument("fuse_orbbec coding was not read");
   VKC_ASSIGN(
+      const auto realsense,
+      vkc::config::parse(
+          R"({"version":1,"operation":"fuse","source":{"kind":"live","driver":"realsense","serial":"123"},"run":{"frames":900}})",
+          vkc::config::Application::FuseRealsense, "/scenario"));
+  if (!realsense.fusion.dynamic || realsense.source.serial != "123" ||
+      realsense.source.color_width != 1280 ||
+      realsense.source.depth_height != 720 || realsense.source.fps != 30 ||
+      realsense.run.frames != 900 ||
+      realsense.output.path != "/scenario/fuse_realsense.ply")
+    return vkc::Status::invalid_argument(
+        "fuse_realsense settings were not read");
+  VKC_ASSIGN(
       const auto rig,
       vkc::config::parse(
           R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json"},"output":{"path":"sessions"}})",
