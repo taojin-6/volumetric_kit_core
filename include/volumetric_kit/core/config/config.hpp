@@ -94,7 +94,7 @@ struct Source {
   /// Player: a live sender's host name or IPv4 address; empty plays `path`.
   std::string host;
   /// Player: the sender's port; 0, the default, is the sender's default
-  /// (recon's networking::kDefaultPort).
+  /// (grid's networking::kDefaultPort).
   std::uint16_t port = 0;
 };
 /// @brief Fusion and mesh extraction settings.

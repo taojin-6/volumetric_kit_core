@@ -36,9 +36,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Migration
 
-- A FuseOrbbec consumer (grid's `codec_outputs`, which recon's fuse_orbbec
-  uses) requires core 0.30.0 and passes `output.max_viewers` to the server.
-  Existing scenarios load unchanged and keep 4 viewers.
+- A FuseOrbbec consumer that serves passes `output.max_viewers` to its
+  server: grid's `codec_outputs`, which recon's fuse_orbbec uses, from grid
+  0.3.0. Until it does, a scenario's `max_viewers` loads and the server
+  still serves 4. Existing scenarios load unchanged and keep 4 viewers.
 
 ## [0.29.0] - 2026-10-28
 

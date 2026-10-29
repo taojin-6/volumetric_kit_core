@@ -489,9 +489,9 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (app == App::FuseOrbbec && has(state, "codec") && c.output.csv.empty() &&
       c.output.stream.empty() && c.output.serve == 0)
     fail("codec", "requires output.stream, output.csv or output.serve");
-  positive(c.output.max_viewers, "output.max_viewers");
   if (has(state, "output.max_viewers") && c.output.serve == 0)
     fail("output.max_viewers", "is not used when output.serve is 0");
+  positive(c.output.max_viewers, "output.max_viewers");
   path_check(c.source.serial, "source.serial");
   path_check(c.source.path, "source.path",
              is_dataset(app) || app == App::CodecMesh);

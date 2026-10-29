@@ -1317,9 +1317,9 @@ TEST(Config, FuseOrbbecLimitsTheViewersItServes) {
              "output.max_viewers: expected an integer");
   }
 
-  // Only beside a port, even at its default; streaming refuses the output
-  // section.
-  for (const char* viewers : {"4", "8"}) {
+  // Only beside a port, even at its default or at a count it would refuse;
+  // streaming refuses the output section.
+  for (const char* viewers : {"0", "4", "8"}) {
     rejected(std::string(R"({"version":1,"output":{"max_viewers":)") + viewers +
                  "}}",
              App::FuseOrbbec,

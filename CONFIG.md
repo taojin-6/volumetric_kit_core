@@ -128,7 +128,7 @@ unknown extension object.
 - Stream fields (core 0.17.0): exactly one of `path`, a stream file such as
   `output.stream` writes, and `host`, a live sender's name or IPv4 address.
   `port` goes with `host` only, an integer from 0 to 65535; 0, the default,
-  is the sender's default (recon's `networking::kDefaultPort`). A `host`
+  is the sender's default (grid's `networking::kDefaultPort`). A `host`
   containing `:` is refused, as the port is its own field.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
   `max_depth_m`, `max_weight`. Every dataset profile, FuseOrbbec and RigViewer
@@ -161,9 +161,8 @@ unknown extension object.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
   core 0.6.0; `screenshot` for GfxModel; `serve` and `max_viewers` (core
-  0.30.0) for FuseOrbbec. An empty
-  string disables each optional output; fusion/export operations require a
-  nonempty `path`.
+  0.30.0) for FuseOrbbec. An empty string disables each optional output;
+  fusion/export operations require a nonempty `path`.
   `path`, `csv` and `stream` must differ once resolved, and none may be
   `source.sync_config` or `source.calibration` (core 0.13.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
@@ -201,10 +200,11 @@ unknown extension object.
   `networking::StreamServer`); 0, the default, serves nothing.
   `max_viewers` (core 0.30.0), a positive integer, default 4, is how many
   viewers it serves at once, first come; a connection past them is closed.
-  It is refused unless `serve` is nonzero. It takes the
-  codec fields the codec profiles share, with their defaults and checks. A
-  `codec` section without any of the three outputs is refused, since nothing
-  would be coded.
+  It is refused unless `serve` is nonzero. No upper bound is checked: each
+  viewer costs the sender a thread and a socket, and the server takes no
+  authentication. FuseOrbbec takes the codec fields the codec profiles
+  share, with their defaults and checks. A `codec` section without any of
+  the three outputs is refused, since nothing would be coded.
 - `FuseOrbbec` (core 0.14.0) and `RigViewer` accept `fusion.free_after`, a
   nonnegative integer, default 30. Every that many fused sets, the consumer
   runs recon's `VoxelBlockGrid::free_stale_blocks`, which frees each grid
