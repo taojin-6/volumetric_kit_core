@@ -422,7 +422,8 @@ bool supports(std::string_view field, App app) {
            is_one_of(app, {App::FuseReplica, App::FuseOrbbec, App::FuseRender});
   if (field == "output.prefix") return is_codec(app);
   if (field_in(field, {"output.csv", "output.stream"})) return takes_codec(app);
-  if (field == "output.serve") return app == App::FuseOrbbec;
+  if (field_in(field, {"output.serve", "output.max_viewers"}))
+    return app == App::FuseOrbbec;
   if (field == "output.screenshot")
     return app == App::GfxModel || app == App::RigViewer;
   if (field == "run" || field == "run.frames")
@@ -489,6 +490,9 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (app == App::FuseOrbbec && has(state, "codec") && c.output.csv.empty() &&
       c.output.stream.empty() && c.output.serve == 0)
     fail("codec", "requires output.stream, output.csv or output.serve");
+  if (has(state, "output.max_viewers") && c.output.serve == 0)
+    fail("output.max_viewers", "is not used when output.serve is 0");
+  positive(c.output.max_viewers, "output.max_viewers");
   path_check(c.source.serial, "source.serial");
   path_check(c.source.path, "source.path",
              is_dataset(app) || app == App::CodecMesh);
@@ -937,6 +941,7 @@ Result<Config> parse(std::string_view text, Application application,
       q.string("csv", c.output.csv, true);
       q.string("stream", c.output.stream, true);
       q.number("serve", c.output.serve);
+      q.number("max_viewers", c.output.max_viewers);
       q.finish();
     }
     if (const auto* v = r.take("diagnostics")) {

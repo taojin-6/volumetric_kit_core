@@ -7,10 +7,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-29
+
+### Added
+
+- `Application::RigViewer` accepts the `output` section with
+  `output.screenshot` as its only output (CONFIG.md): the name rig_viewer
+  numbers its offscreen frames from, `<stem>_<n>.bmp`, where no display
+  exists. It must end in `.bmp`; empty, the default, saves no frames.
+  `output.path`, `prefix`, `csv`, `stream`, `serve` and `max_viewers` stay
+  refused, and every profile but GfxModel and RigViewer still refuses a
+  screenshot.
+
+### Migration
+
+- No scenario or code changes. A RigViewer consumer (recon: rig_viewer)
+  requires core 0.31.0 and honours `output.screenshot`, or refuses a
+  nonempty one.
+
 ## [0.30.0] - 2026-10-29
 
 ### Added
 
+- `config::Output::max_viewers` (`output.max_viewers`, default 4) for
+  `Application::FuseOrbbec`: how many viewers `output.serve` serves at once,
+  first come (CONFIG.md). Positive, and refused unless `output.serve` is
+  nonzero. Other profiles refuse it.
 - `.github/actions/check-workflow-triggers` and
   `tools/github/check_workflow_triggers.py`: fail CI, naming the file and
   line, on a workflow triggered by `pull_request_target`, `workflow_run`,
@@ -18,12 +40,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `discussion_comment` or `schedule`. A sibling's lint job uses the action at
   its core pin's SHA
   ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
-- `Application::RigViewer` accepts the `output` section with
-  `output.screenshot` as its only output (CONFIG.md): the name rig_viewer
-  numbers its offscreen frames from, `<stem>_<n>.bmp`, where no display
-  exists. It must end in `.bmp`; empty, the default, saves no frames.
-  `output.path`, `prefix`, `csv`, `stream` and `serve` stay refused, and
-  every profile but GfxModel and RigViewer still refuses a screenshot.
 
 ### Changed
 
@@ -38,9 +54,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Migration
 
-- No scenario or code changes. A RigViewer consumer (recon: rig_viewer)
-  requires core 0.30.0 and honours `output.screenshot`, or refuses a
-  nonempty one.
+- A FuseOrbbec consumer that serves passes `output.max_viewers` to its
+  server: grid's `codec_outputs`, which recon's fuse_orbbec uses, from grid
+  0.3.0. Until it does, a scenario's `max_viewers` loads and the server
+  still serves 4. Existing scenarios load unchanged and keep 4 viewers.
 
 ## [0.29.0] - 2026-10-28
 

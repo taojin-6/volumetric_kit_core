@@ -94,7 +94,7 @@ struct Source {
   /// Player: a live sender's host name or IPv4 address; empty plays `path`.
   std::string host;
   /// Player: the sender's port; 0, the default, is the sender's default
-  /// (recon's networking::kDefaultPort).
+  /// (grid's networking::kDefaultPort).
   std::uint16_t port = 0;
 };
 /// @brief Fusion and mesh extraction settings.
@@ -158,9 +158,9 @@ struct Render {
   bool show_sources = false;
   bool texture_stats = false;
 };
-/// @brief Output paths, and FuseOrbbec's serving port. An empty string
-/// disables each optional output; fusion/export applications, CalibRig and
-/// CalibColor require a nonempty path.
+/// @brief Output paths, and FuseOrbbec's serving port and viewer limit. An
+/// empty string disables each optional output; fusion/export applications,
+/// CalibRig and CalibColor require a nonempty path.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Output {
   /// A fusion or export program's file; for CalibRig, the directory each
@@ -177,9 +177,12 @@ struct Output {
   /// The codec's coded frames, in one stream file. Once resolved, a nonempty
   /// `path`, `csv` and `stream` are three different files.
   std::string stream;
-  /// FuseOrbbec's live serving port (recon's networking::StreamServer, on
+  /// FuseOrbbec's live serving port (grid's networking::StreamServer, on
   /// every interface); 0, the default, serves nothing.
   std::uint16_t serve = 0;
+  /// The viewers `serve` serves at once, first come; positive, and given
+  /// only with a nonzero `serve`.
+  std::uint32_t max_viewers = 4;
 };
 /// @brief Run limits; a negative frame limit means unlimited where supported.
 /// For CodecMesh, `frames` is instead an exact count of numbered meshes from

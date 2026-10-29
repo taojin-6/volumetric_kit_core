@@ -1286,6 +1286,67 @@ TEST(Config, OnlyFuseOrbbecServesItsCodedFramesLive) {
   }
 }
 
+TEST(Config, FuseOrbbecLimitsTheViewersItServes) {
+  // 4 by default, served or not.
+  EXPECT_EQ(Output{}.max_viewers, 4U);
+  const auto plain = scenario(R"({"version":1})", App::FuseOrbbec);
+  ASSERT_TRUE(plain) << plain.status().message();
+  EXPECT_EQ(plain->output.max_viewers, 4U);
+  const auto served = scenario(
+      R"({"version":1,"codec":{"intra_period":30},"output":{"serve":47801}})",
+      App::FuseOrbbec);
+  ASSERT_TRUE(served) << served.status().message();
+  EXPECT_EQ(served->output.max_viewers, 4U);
+  for (const unsigned viewers : {1U, 4U, 64U, 4294967295U}) {
+    const auto parsed = scenario(
+        R"({"version":1,"codec":{"intra_period":30},"output":{"serve":47801,"max_viewers":)" +
+            std::to_string(viewers) + "}}",
+        App::FuseOrbbec);
+    ASSERT_TRUE(parsed) << parsed.status().message();
+    EXPECT_EQ(parsed->output.serve, 47801U);
+    EXPECT_EQ(parsed->output.max_viewers, viewers);
+  }
+  const std::string serving =
+      R"({"version":1,"codec":{"intra_period":30},"output":{"serve":47801,"max_viewers":)";
+  rejected(serving + "0}}", App::FuseOrbbec,
+           "output.max_viewers: must be finite and positive");
+  for (const char* viewers : {"-1", "4294967296"}) {
+    rejected(serving + viewers + "}}", App::FuseOrbbec,
+             "output.max_viewers: integer is out of range");
+  }
+  for (const char* viewers : {"1.5", "4.0", R"("4")", "true", "null"}) {
+    rejected(serving + viewers + "}}", App::FuseOrbbec,
+             "output.max_viewers: expected an integer");
+  }
+
+  // Only beside a port, even at its default or at a count it would refuse;
+  // streaming refuses the output section.
+  for (const char* viewers : {"0", "4", "8"}) {
+    rejected(std::string(R"({"version":1,"output":{"max_viewers":)") + viewers +
+                 "}}",
+             App::FuseOrbbec,
+             "output.max_viewers: is not used when output.serve is 0");
+    rejected(std::string(R"({"version":1,"output":{"serve":0,"max_viewers":)") +
+                 viewers + "}}",
+             App::FuseOrbbec,
+             "output.max_viewers: is not used when output.serve is 0");
+    rejected(
+        std::string(
+            R"({"version":1,"operation":"stream","output":{"max_viewers":)") +
+            viewers + "}}",
+        App::FuseOrbbec, "output: is not used by operation stream");
+  }
+
+  // Every other profile refuses it; those without outputs refuse the output
+  // section.
+  for (const auto app : every_profile()) {
+    if (app == App::FuseOrbbec) continue;
+    rejected(with_sections(app, R"(,"output":{"max_viewers":4})"), app,
+             (takes_output(app) ? "output.max_viewers" : "output") +
+                 std::string(": is not used by this application"));
+  }
+}
+
 TEST(Config, RigViewerNumbersItsOffscreenFramesFromABmpName) {
   // No frames are saved by default, or with an empty name.
   for (const char* output :
