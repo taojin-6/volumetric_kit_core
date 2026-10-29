@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.29.0 CONFIG)
+vkc_require_core(0.30.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -160,7 +160,8 @@ unknown extension object.
   `texture`. Gfx examples accept no render section.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
-  core 0.6.0; `screenshot` for GfxModel; `serve` for FuseOrbbec. An empty
+  core 0.6.0; `screenshot` for GfxModel; `serve` and `max_viewers` (core
+  0.30.0) for FuseOrbbec. An empty
   string disables each optional output; fusion/export operations require a
   nonempty `path`.
   `path`, `csv` and `stream` must differ once resolved, and none may be
@@ -196,8 +197,11 @@ unknown extension object.
 - `FuseOrbbec` codes its fused sets, one frame per set, when `output.stream`
   or `output.csv` names a file (core 0.13.0) or `output.serve` a port (core
   0.16.0); it still writes the PLY at `output.path`. A nonzero `serve` serves
-  the coded frames live on that port, on every interface (recon's
-  `networking::StreamServer`); 0, the default, serves nothing. It takes the
+  the coded frames live on that port, on every interface (grid's
+  `networking::StreamServer`); 0, the default, serves nothing.
+  `max_viewers` (core 0.30.0), a positive integer, default 4, is how many
+  viewers it serves at once, first come; a connection past them is closed.
+  It is refused unless `serve` is nonzero. It takes the
   codec fields the codec profiles share, with their defaults and checks. A
   `codec` section without any of the three outputs is refused, since nothing
   would be coded.
