@@ -1441,7 +1441,10 @@ pins a SHA, and nothing reads a tag. A floor reads the version the code
 carries, which `project(VERSION)` sets.
 
 - **Pins are SHAs.** A pin names the one commit a build takes, and its
-  version is whatever that commit's `project(VERSION)` says.
+  version is whatever that commit's `project(VERSION)` says. The floor's
+  refusal, "pin v<version> or newer", names a version, not a tag: a commit
+  whose `project(VERSION)` is that or newer. Its text stays as it was, which
+  the siblings' tests pin.
 - **Each sibling's floor goes through the core, with
   `vkc_require_sibling(<umbrella> <min-version> [TARGETS <target>...])`**
   (core 0.27.0). recon is splitting into packages that build on each other,
