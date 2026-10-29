@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.21)
 # application declares the core first".
 project(
   volumetric_kit_core
-  VERSION 0.27.0
+  VERSION 0.28.0
   DESCRIPTION
     "Shared foundation for the volumetric_kit family: error handling and the Vulkan core"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_core"
@@ -52,9 +52,10 @@ include(vkc_warnings)
 include(vkc_sanitizers)
 include(vkc_clang_tidy)
 include(vkc_single_instance)
-# vkc_require_core / vkc_core_version, and with the vulkan tier
-# vkc_compile_shaders / vkc_embed_shaders: functions are global in CMake, so a
-# project that fetches the core can call them once it is added.
+# vkc_require_core / vkc_core_version / vkc_require_sibling, and with the vulkan
+# tier vkc_compile_shaders / vkc_embed_shaders / vkc_export_glsl: functions are
+# global in CMake, so a project that fetches the core can call them once it is
+# added.
 include(vkc_require_core)
 if(VKC_WITH_VULKAN)
   # Before anything finds Vulkan: an iOS build links MoltenVK statically.
