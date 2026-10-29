@@ -21,8 +21,8 @@ several carries a set for each. Any other repository is named in full, as
 `owner/repo`: `setup-runners.sh example-owner/example-repo` gives it runners
 with the family's labels and services, in `~/ci-runners/example-repo`. The
 scripts lower-case the name, as GitHub ignores its case, so every spelling
-finds the same runners. Setup refuses a public one until only its owner can
-trigger its workflows ([below](#who-can-trigger-ci)).
+finds the same runners. Setup refuses one until only its owner can trigger
+its workflows ([below](#who-can-trigger-ci)).
 
 ## Who can trigger CI
 
@@ -44,14 +44,15 @@ fork's change CI, a maintainer first reads its whole diff, above all
 repository and opens a pull request from there. Approving or re-running a
 fork's run counts the same: once the owner triggers it, it may run.
 
-The policy, as created on each repository, and the approval every outside
-contributor's run waits for. A collaborator's runs are refused too, and a
-policy that lets their account in would let their workflow edits reach the
-runners as the owner's own:
+The policy each family repository has, public or private, and the
+approval every outside contributor's run waits for, which a public one sets.
+A collaborator's runs are refused too, and a policy that lets their account
+in would let their workflow edits reach the runners as the owner's own:
 
 ```sh
 gh api -X POST repos/taojin-6/<repo>/actions/policies --input - <<'EOF'
 {"name": "Only the owner can trigger workflows", "enforcement": "active",
+ "conditions": {"workflow_path": {"include": ["~ALL"], "exclude": []}},
  "rules": [{"type": "restrict_actions_actors",
             "parameters": {"allowed_actors": [{"id": 22780239, "type": "User"}]}}]}
 EOF
@@ -59,13 +60,13 @@ gh api -X PUT repos/taojin-6/<repo>/actions/permissions/fork-pr-contributor-appr
   -f approval_policy=all_external_contributors
 ```
 
-**Setup checks them** with `gh` before it registers a runner. A public
-repository needs an active policy over every workflow that lets only its
-owner trigger them, no active policy that lets another actor trigger any, and
-approval of every outside contributor's run. A private one must not run fork
-pull requests' workflows, where GitHub lets setup read that setting.
-Otherwise setup registers nothing and names what is missing, with the
-command that sets it:
+**Setup checks them** with `gh` before it registers a runner. Any repository
+needs an active policy over every workflow that lets only its owner trigger
+them, and no active policy that lets another actor trigger any. A public one
+also needs approval of every outside contributor's run. A private one, which
+has no such approval setting, must not run fork pull requests' workflows,
+where GitHub lets setup read that setting. Otherwise setup registers nothing
+and names what is missing, with the command that sets it:
 
 ```text
 error: taojin-6/volumetric_kit_gfx is public, and a fork's pull request runs its own
@@ -79,7 +80,9 @@ them (README.md, "Who can trigger CI"):
 ```
 
 A re-run that registers no runner reads none of this, and nothing watches the
-settings once a repository has runners.
+settings once a repository has runners. So to make a repository with runners
+public, tear its runners down on every host first, set its policy and
+approval, then set them up again.
 
 **No workflow takes an outsider's trigger.** `pull_request_target` and
 `workflow_run` run a repository's own workflow, with its secrets and a token

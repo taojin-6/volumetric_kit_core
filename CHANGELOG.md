@@ -19,13 +19,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
-- `tools/runners/setup-runners.sh` registers no runner of a public
-  repository unless an active Actions policy over every workflow lets only
-  its owner trigger them, none lets another actor, and every outside
-  contributor's run waits for approval; nor of a private one that runs fork
-  pull requests' workflows. Registering needs `gh` authed, which reads these;
-  a registration token is no longer pasted in. The refusal names the command
-  that sets what is missing
+- `tools/runners/setup-runners.sh` registers no runner of a repository
+  unless an active Actions policy over every workflow lets only its owner
+  trigger them and none lets another actor; of a public one unless every
+  outside contributor's run also waits for approval; nor of a private one
+  that runs fork pull requests' workflows. Registering needs `gh` authed,
+  which reads these; a registration token is no longer pasted in. The
+  refusal names the command that sets what is missing
   ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
 
 ## [0.29.0] - 2026-10-28

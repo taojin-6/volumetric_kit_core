@@ -37,7 +37,9 @@ gh_get() {
 # account ID: "ok" when it is active, covers every workflow and lets only the
 # owner trigger them; "others" when it is active and lets any other actor
 # trigger one; "skip" otherwise. Each is followed by the policy and what was
-# found.
+# found. A condition covers every workflow when it includes "~ALL", or
+# includes nothing (GitHub: every workflow no exclusion matches), and
+# excludes nothing.
 # shellcheck disable=SC2016 # jq's own variables
 POLICY_JQ='[.rules[]? | select(.type == "restrict_actions_actors") | .parameters.allowed_actors // []] as $lists
   | (.conditions // {}) as $c
@@ -47,33 +49,26 @@ POLICY_JQ='[.rules[]? | select(.type == "restrict_actions_actors") | .parameters
     elif any($lists[][]; .type != "User" or .id != OWNER_ID) then "others \($p) lets actors other than the owner trigger workflows"
     elif any($lists[]; length == 0) then "skip \($p) names no actor"
     elif ($c | type) != "object" or ($c.workflow_path | type) != "object"
-      or any($c[]; type != "object" or (any(.include[]?; . == "~ALL") | not) or ([.exclude[]?] | length) > 0)
+      or any($c[]; type != "object" or (.include | type) != "array"
+        or ((.include | length) > 0 and (any(.include[]; . == "~ALL") | not)) or ([.exclude[]?] | length) > 0)
     then "skip \($p) does not cover every workflow"
     else "ok \($p)" end'
 
 # check_triggers: returns when no one but $REPO's owner can send a job to its
-# runners, and otherwise exits, saying what to set and how. A public
-# repository runs a fork's pull request's own workflow files, so it needs an
-# active Actions policy over every workflow that lets only the owner trigger
-# them, none that lets another actor trigger any, and approval of every
-# outside contributor's run (README.md, "Who can trigger CI"). A private one
-# must not run fork pull requests' workflows, when that setting is readable.
+# runners, and otherwise exits, saying what to set and how (README.md, "Who
+# can trigger CI"). Any repository needs an active Actions policy over every
+# workflow that lets only the owner trigger them, and none that lets another
+# actor trigger any: a collaborator's push, as a fork's pull request, runs
+# its own workflow files. A public one also needs approval of every outside
+# contributor's run. A private one, which has no such approval setting (GitHub
+# answers 422), must not run fork pull requests' workflows, when that is
+# readable.
 check_triggers() {
-  local info private owner_id owner ids id verdict ok=0 found="" problems="" approval forks
+  local info private owner_id owner ids id verdict ok=0 found="" problems="" approval forks why
   info="$(gh_get "repos/$REPO" '"\(.private) \(.owner.id) \(.owner.login)"')" || exit 1
   read -r private owner_id owner <<<"$info"
-  if [ "$private" = true ]; then
-    if forks="$(gh api "repos/$REPO/actions/permissions/fork-pr-workflows-private-repos" \
-      --jq .run_workflows_from_fork_pull_requests 2>/dev/null)"; then
-      [ "$forks" != true ] || die "$REPO is private but runs fork pull requests' workflows, which
-would reach these runners. Turn that off, then re-run:
-    gh api -X PUT repos/$REPO/actions/permissions/fork-pr-workflows-private-repos -F run_workflows_from_fork_pull_requests=false"
-    else
-      echo "Could not read whether $REPO runs fork pull requests' workflows; it is private, so going on."
-    fi
-    return 0
-  fi
-  [ "$private" = false ] && [[ $owner_id =~ ^[0-9]+$ ]] || die "unexpected answer from GitHub about $REPO: '$info'"
+  { [ "$private" = true ] || [ "$private" = false ]; } && [[ $owner_id =~ ^[0-9]+$ ]] ||
+    die "unexpected answer from GitHub about $REPO: '$info'"
 
   ids="$(gh_get "repos/$REPO/actions/policies?per_page=100" '.policies[].id' --paginate)" || exit 1
   for id in $ids; do
@@ -96,17 +91,31 @@ would reach these runners. Turn that off, then re-run:
 - No active Actions policy over every workflow lets only $owner trigger them.
   Its policies:${found:- none}
   Add the owner-only policy, then re-run:
-    gh api -X POST repos/$REPO/actions/policies --input - <<<'{\"name\": \"Only the owner can trigger workflows\", \"enforcement\": \"active\", \"rules\": [{\"type\": \"restrict_actions_actors\", \"parameters\": {\"allowed_actors\": [{\"id\": $owner_id, \"type\": \"User\"}]}}]}'"
+    gh api -X POST repos/$REPO/actions/policies --input - <<<'{\"name\": \"Only the owner can trigger workflows\", \"enforcement\": \"active\", \"conditions\": {\"workflow_path\": {\"include\": [\"~ALL\"], \"exclude\": []}}, \"rules\": [{\"type\": \"restrict_actions_actors\", \"parameters\": {\"allowed_actors\": [{\"id\": $owner_id, \"type\": \"User\"}]}}]}'"
   fi
 
-  approval="$(gh_get "repos/$REPO/actions/permissions/fork-pr-contributor-approval" .approval_policy)" || exit 1
-  if [ "$approval" != all_external_contributors ]; then
-    problems="$problems
+  if [ "$private" = true ]; then
+    why="is private, but a collaborator's push or fork's pull request runs its own"
+    if forks="$(gh api "repos/$REPO/actions/permissions/fork-pr-workflows-private-repos" \
+      --jq .run_workflows_from_fork_pull_requests 2>/dev/null)"; then
+      [ "$forks" != true ] || problems="$problems
+- It runs fork pull requests' workflows, which would reach these runners.
+  Turn that off, then re-run:
+    gh api -X PUT repos/$REPO/actions/permissions/fork-pr-workflows-private-repos -F run_workflows_from_fork_pull_requests=false"
+    else
+      echo "Could not read whether $REPO runs fork pull requests' workflows; it is private, so going on."
+    fi
+  else
+    why="is public, and a fork's pull request runs its own"
+    approval="$(gh_get "repos/$REPO/actions/permissions/fork-pr-contributor-approval" .approval_policy)" || exit 1
+    if [ "$approval" != all_external_contributors ]; then
+      problems="$problems
 - Fork pull requests' runs wait for approval only from $approval,
   not from every outside contributor. Require it for all of them, then re-run:
     gh api -X PUT repos/$REPO/actions/permissions/fork-pr-contributor-approval -f approval_policy=all_external_contributors"
+    fi
   fi
-  [ -z "$problems" ] || die "$REPO is public, and a fork's pull request runs its own
+  [ -z "$problems" ] || die "$REPO $why
 workflow files, so no runner is registered until only the owner can send a job to
 them (README.md, \"Who can trigger CI\"):$problems"
 }

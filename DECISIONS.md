@@ -1047,9 +1047,9 @@ workflow stops only a fork that leaves it in.
   fix reaches every repository's runners.
 
 **Amended 2026-10-28: setup checks these gates, and a collaborator is no
-longer added to the rule** of a repository with runners: setup refuses one
-whose policy lets another actor in (the 2026-10-28 entry, "Setup checks who
-can trigger CI").
+longer added to the rule** of any repository with runners, public or
+private: setup refuses one whose policy lets another actor in (the
+2026-10-28 entry, "Setup checks who can trigger CI").
 
 ### A brew upgrade needs no cache clearing
 
@@ -1513,23 +1513,32 @@ given runners before its policy, or a policy later widened, would have
 exposed every host the family's runners share. Now the tooling checks them,
 and CI checks the triggers that bypass a pull request.
 
-- **`setup-runners.sh` refuses to register a runner** of a public
-  repository unless an active policy over every workflow lets only the
-  repository's owner trigger them, no active policy lets another actor
-  trigger any, and every outside contributor's run waits for approval. It
-  reads these with `gh`, so registering needs `gh` authed: the token is no
-  longer pasted in. A private repository, which strangers cannot fork, must
-  not run fork pull requests' workflows, where that setting is readable. The
-  refusal names what is missing and the command that sets it
+- **`setup-runners.sh` refuses to register a runner** of any repository
+  unless an active policy over every workflow lets only the repository's
+  owner trigger them, and no active policy lets another actor trigger any. A
+  public one also needs every outside contributor's run to wait for
+  approval. A private one needs the same policies: strangers cannot fork it,
+  but a collaborator's push runs its own workflow files on the hosts the
+  public ones share. It has no approval setting, and must not run fork pull
+  requests' workflows, where that setting is readable. Setup reads these
+  with `gh`, so registering needs `gh` authed: the token is no longer pasted
+  in. The refusal names what is missing and the command that sets it, whose
+  policy names every workflow explicitly, so that it passes the check
   ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
 - **A policy that lets in anyone but the owner is refused,** a collaborator
   included, even beside an owner-only one: whether GitHub lets a run through
   when any policy allows its actor or only when all do is not documented. A
   collaborator's change gets CI as a fork's does, pushed here by the owner
   once read.
+- **"Every workflow" is read as written:** a policy's workflow condition
+  must include `~ALL`, or nothing, which GitHub reads as every workflow, and
+  exclude nothing. A policy with no workflow condition does not count: setup
+  cannot tell what it covers.
 - **Checked when it matters, not watched:** a re-run that registers no
   runner reads nothing, so refreshing a host needs no `gh`, and a setting
-  changed after registration goes unseen until the next registration.
+  changed after registration goes unseen until the next registration. A
+  repository with runners that is made public has them torn down first, and
+  set up again once its approval is set.
 - **No workflow takes an outsider's trigger.**
   `.github/actions/check-workflow-triggers` fails CI on
   `pull_request_target` and `workflow_run`, which run a repository's own
