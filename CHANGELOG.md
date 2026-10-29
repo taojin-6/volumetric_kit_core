@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-29
+
+### Added
+
+- `Application::RigViewer` accepts the `output` section with
+  `output.screenshot` as its only output (CONFIG.md): the name rig_viewer
+  numbers its offscreen frames from, `<stem>_<n>.bmp`, where no display
+  exists. It must end in `.bmp`; empty, the default, saves no frames.
+  `output.path`, `prefix`, `csv`, `stream`, `serve` and `max_viewers` stay
+  refused, and every profile but GfxModel and RigViewer still refuses a
+  screenshot.
+
+### Migration
+
+- No scenario or code changes. A RigViewer consumer (recon: rig_viewer)
+  requires core 0.31.0 and honours `output.screenshot`, or refuses a
+  nonempty one.
+
 ## [0.30.0] - 2026-10-29
 
 ### Added

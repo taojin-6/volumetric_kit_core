@@ -168,6 +168,9 @@ struct Output {
   /// each run's own results directory is created in.
   std::string path;
   std::string prefix;
+  /// GfxModel's headless picture. For RigViewer, the name its offscreen
+  /// frames are numbered from, `<stem>_<n>.bmp`; it must end in `.bmp`, and
+  /// a run in a window saves no frames.
   std::string screenshot;
   /// The codec's per-frame rows, as CSV.
   std::string csv;
