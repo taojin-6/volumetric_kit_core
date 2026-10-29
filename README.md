@@ -134,17 +134,17 @@ in the process.
 
 ## Use it in your project
 
-Pin a release tag or a commit SHA -- never `main` -- so every consumer builds
-the same core, and require the oldest version your project builds with. The
-core installs nothing: a project builds it from the commit it pins
-(DECISIONS.md, "Consumers pin, and an application declares the core first").
+Pin a commit SHA -- never `main` -- so every consumer builds the same core,
+and require the oldest version your project builds with. The core installs
+nothing: a project builds it from the commit it pins (DECISIONS.md, "Consumers
+pin, and an application declares the core first").
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
   volumetric_kit_core
   GIT_REPOSITORY https://github.com/taojin-6/volumetric_kit_core.git
-  GIT_TAG <tag-or-sha>)
+  GIT_TAG <sha>)
 FetchContent_MakeAvailable(volumetric_kit_core)
 vkc_require_core(0.1.0)
 
@@ -165,6 +165,24 @@ headers (`cmake/vkc_shaders.cmake` documents its options):
 vkc_embed_shaders(your_target SYMBOL_PREFIX your_ SHADERS shaders/integrate.comp)
 # your sources: #include "integrate_comp.spv.hpp" -> your_integrate_comp_spv[]
 ```
+
+A package whose GLSL other projects' shaders include exports it with
+`vkc_export_glsl`, and their shaders reach it through `INCLUDE_TARGETS`:
+
+```cmake
+vkc_export_glsl(your_library PREFIX your/shaders FILES shaders/common.glsl)
+# a consumer, whose kernel.comp has #include "your/shaders/common.glsl":
+vkc_embed_shaders(their_target SYMBOL_PREFIX their_
+                  INCLUDE_TARGETS your::library SHADERS shaders/kernel.comp)
+```
+
+A sibling's own floor works as the core's: the sibling sets
+`VKC_PACKAGE_VERSION` on its umbrella target (`volumetric_kit::<name>`) to its
+`project(VERSION)`, and a project that adds it calls
+`vkc_require_sibling(volumetric_kit::<name> <min-version> [TARGETS <target>...])`
+after `FetchContent_MakeAvailable`, which refuses an older sibling, or one
+without the umbrella or a listed target
+(`cmake/vkc_require_sibling.cmake`).
 
 A consumer that links the core into a shared library or framework builds the
 core shared too (`BUILD_SHARED_LIBS=ON`): the log handler is process-global,
