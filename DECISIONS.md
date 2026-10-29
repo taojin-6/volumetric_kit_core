@@ -1518,13 +1518,13 @@ and CI checks the triggers that bypass a pull request.
   owner trigger them, and no active policy lets another actor trigger any. A
   public one also needs every outside contributor's run to wait for
   approval. A private one needs the same policies: strangers cannot fork it,
-  but a collaborator's push runs its own workflow files on the hosts the
-  public ones share. It has no approval setting, and must not run fork pull
-  requests' workflows, where that setting is readable. Setup reads these
-  with `gh`, so registering needs `gh` authed: the token is no longer pasted
-  in. The refusal names what is missing and the command that sets it, whose
-  policy names every workflow explicitly, so that it passes the check
-  ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
+  but a collaborator's push runs its own workflow files on hosts other
+  repositories' runners share. It has no approval setting, and must not run
+  fork pull requests' workflows, where that setting is readable. Setup reads
+  these with `gh`, so registering needs `gh` authed: the token is no longer
+  pasted in. The refusal names what is missing and the command that sets
+  it, whose policy names every workflow explicitly, so that it passes the
+  check ([tools/runners/README.md](tools/runners/README.md#who-can-trigger-ci)).
 - **A policy that lets in anyone but the owner is refused,** a collaborator
   included, even beside an owner-only one: whether GitHub lets a run through
   when any policy allows its actor or only when all do is not documented. A
