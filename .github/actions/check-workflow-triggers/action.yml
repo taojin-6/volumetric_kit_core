@@ -1,0 +1,21 @@
+name: Check workflow triggers
+description: >-
+  Fails, naming the file and line, when a workflow of the repository checked
+  out in the workspace is triggered by an event an outsider can cause
+  (pull_request_target, workflow_run, issue_comment,
+  pull_request_review_comment, discussion, discussion_comment) or by a
+  schedule.
+
+# tools/github/check_workflow_triggers.py does the check with Python's standard
+# library alone; tools/runners/README.md ("Who can trigger CI") says why.
+# Siblings use this action by commit, after actions/checkout, which brings the
+# script at that commit with it. It needs python3, which GitHub-hosted runners
+# have.
+runs:
+  using: composite
+  steps:
+    - name: Check workflow triggers
+      shell: bash
+      run: |
+        python3 -I -B "$GITHUB_ACTION_PATH/../../../tools/github/check_workflow_triggers.py" \
+          .github/workflows

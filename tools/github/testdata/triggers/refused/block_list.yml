@@ -1,0 +1,10 @@
+name: block list
+on:
+  - push
+  # a comment between items
+  - "pull_request_review_comment" # quoted
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build

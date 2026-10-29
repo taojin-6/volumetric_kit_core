@@ -1,0 +1,7 @@
+name: flow map
+on: {push: {branches: [main]}, "workflow_dispatch": {}, merge_group: {types: [checks_requested]}}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
