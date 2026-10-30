@@ -114,9 +114,14 @@ enum class HostAccess {
 /// `lazy_bytes` says how much of them it is: the device commits it only as a
 /// render pass needs it, and a GPU that keeps such attachments on chip
 /// commits none. Subtract it for the memory the allocator certainly holds.
-/// The driver's `usage_bytes` counts what it commits; VMA adds its own
-/// allocations made since it last asked the driver, so a new lazily
-/// allocated image can appear there at full size until the next query.
+///
+/// The driver's `usage_bytes` counts what it commits. VMA asks for it again
+/// only every 30 allocations and frees -- `memory_stats()` does not ask --
+/// and in between adds the bytes it allocated since and subtracts those it
+/// freed, so the figure reads high while new memory is not yet committed and
+/// low once memory the driver never committed is freed. The allocator asks
+/// again right after it makes or frees lazily allocated memory, so neither
+/// comes from a transient attachment.
 ///
 /// @code
 /// const HeapStats& heap = allocator.memory_stats().heaps[0];
@@ -124,7 +129,7 @@ enum class HostAccess {
 ///     heap.budget_bytes > heap.usage_bytes
 ///         ? heap.budget_bytes - heap.usage_bytes : 0;
 /// report(headroom, heap.reserved_bytes - heap.lazy_bytes,
-///        heap.allocation_bytes);
+///        heap.allocation_bytes - heap.lazy_bytes);
 /// @endcode
 struct HeapStats {
   /// The heap's usage, which new allocations are admitted against. With
@@ -279,10 +284,13 @@ struct ImageDesc {
   /// a GPU that renders in on-chip memory it can be that memory alone, as
   /// Metal's memoryless storage is under MoltenVK. Elsewhere, and for every
   /// other usage, it is `DeviceOnly`; a buffer or a non-transient image never
-  /// takes lazily allocated memory. Its contents never outlive the render
-  /// pass that writes them -- on chip nothing holds them after it -- so
-  /// loading or storing them is meaningless: load `CLEAR` or `DONT_CARE`, store
-  /// `DONT_CARE`, and never suspend the pass to resume it later. Beside
+  /// takes lazily allocated memory. Lazily allocated, it is admitted against
+  /// its heap's budget at full size and, as memory of its own, refused at the
+  /// budget rather than cut from a block's free space; a driver's refusal is
+  /// returned, not retried in another type. Its contents never outlive the
+  /// render pass that writes them -- on chip nothing holds them after it --
+  /// so loading or storing them is meaningless: load `CLEAR` or `DONT_CARE`,
+  /// store `DONT_CARE`, and never suspend the pass to resume it later. Beside
   /// transient usage Vulkan allows only attachment usages
   /// (VUID-VkImageCreateInfo-usage-00963), so the image cannot be copied,
   /// sampled or written by a shader.

@@ -60,13 +60,23 @@ struct Scripted {
     needs.memoryTypeBits = 0x3;
   }
 
-  // Runs the policy over both types, recording each VMA call's parameters
-  // and answering them from `results` in turn.
+  std::uint32_t types = 0x3;  // the candidates, both types by default
+
+  // Makes type 1 lazily allocated, and the candidates that type alone, as a
+  // transient attachment's are on such a device.
+  void make_type_1_lazy() {
+    memory.memoryTypes[1].propertyFlags |=
+        VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+    types = 0x2;
+  }
+
+  // Runs the policy over the candidate types, recording each VMA call's
+  // parameters and answering them from `results` in turn.
   detail::BudgetedAllocation run(std::vector<VkResult> results,
                                  std::vector<VmaAllocationCreateInfo>& calls,
                                  bool dedicated_required = false) const {
     return detail::allocate_with_budget(
-        memory, needs, 0x3, /*mapped=*/false, dedicated_required,
+        memory, needs, types, /*mapped=*/false, dedicated_required,
         [&](const VmaAllocationCreateInfo& info) {
           calls.push_back(info);
           return calls.size() <= results.size() ? results[calls.size() - 1]
@@ -93,8 +103,9 @@ TEST(AllocationBudget, WithRoomVmaAllocatesUnrestricted) {
   EXPECT_EQ(calls[0].flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT, 0U);
 }
 
-// Memory a resource requires to itself -- a lazily allocated image's among
-// it -- is asked of VMA as dedicated, so VMA never makes a block of it.
+// Memory a resource requires to itself -- an exported one's, or one the
+// driver requires dedicated -- is asked of VMA as dedicated, so VMA never
+// makes a block of it.
 TEST(AllocationBudget, RequiredDedicatedMemoryIsMadeDedicated) {
   std::vector<VmaAllocationCreateInfo> calls;
   const detail::BudgetedAllocation made =
@@ -179,6 +190,29 @@ TEST(AllocationBudget, RequiredDedicatedMemoryIsNeverReused) {
   std::vector<VmaAllocationCreateInfo> calls;
   const detail::BudgetedAllocation refused =
       Scripted(950).run({}, calls, /*dedicated_required=*/true);
+  EXPECT_EQ(refused.result, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+  EXPECT_TRUE(refused.over_budget);
+  EXPECT_TRUE(calls.empty());
+}
+
+// Lazily allocated memory is its image's own whatever the caller asks: made
+// dedicated with budget room, and at the budget refused without a VMA call,
+// never cut from a block's free space.
+TEST(AllocationBudget, LazilyAllocatedMemoryIsAlwaysDedicated) {
+  Scripted lazy(0);
+  lazy.make_type_1_lazy();
+  std::vector<VmaAllocationCreateInfo> calls;
+  const detail::BudgetedAllocation made = lazy.run({VK_SUCCESS}, calls);
+  EXPECT_EQ(made.result, VK_SUCCESS);
+  ASSERT_EQ(calls.size(), 1U);
+  EXPECT_EQ(calls[0].memoryTypeBits, 0x2U);
+  EXPECT_NE(calls[0].flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT, 0U);
+  EXPECT_FALSE(never_allocates(calls[0]));
+
+  Scripted full(950);
+  full.make_type_1_lazy();
+  calls.clear();
+  const detail::BudgetedAllocation refused = full.run({}, calls);
   EXPECT_EQ(refused.result, VK_ERROR_OUT_OF_DEVICE_MEMORY);
   EXPECT_TRUE(refused.over_budget);
   EXPECT_TRUE(calls.empty());

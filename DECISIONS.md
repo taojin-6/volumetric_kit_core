@@ -1617,18 +1617,28 @@ requirements allow, where the device has it (core 0.35.0). This reverses
   never choose a lazily allocated type, whatever a resource's requirements
   allow; Vulkan binds one only to a transient image anyway.
 - **Each image's memory is its own**, as VMA's own lazily allocated usage
-  makes it, never a block VMA would size for resources to come. Admission
-  against the heap's budget is unchanged.
+  makes it, never a block VMA would size for resources to come. So it is
+  admitted against the heap's budget at full size and, as other memory a
+  resource requires to itself, refused at the budget, where a `DeviceOnly`
+  image could still take a block's free space; a driver's refusal of the
+  lazily allocated type is returned, not retried in another.
 - **Flagged, not hidden.** VMA counts the allocation at full size, as every
   allocation, so `reserved_bytes` and `allocation_bytes` keep their meaning
   and their consumers' checks (gfx counts a window's set by them).
   `HeapStats::lazy_bytes` says how much of them is lazily allocated: the
   most the device may commit, and nothing on chip; subtract it for the
-  memory the allocator certainly holds. `usage_bytes` stays the heap's: the
-  driver's figure where `VK_EXT_memory_budget` is enabled, which counts what
-  the driver commits, plus VMA's own allocations made since it last asked,
-  so a new transient image can appear there at full size until the next
-  query.
+  memory the allocator certainly holds.
+- **The driver is asked again around it.** `usage_bytes` stays the heap's:
+  the driver's figure where `VK_EXT_memory_budget` is enabled, which counts
+  what the driver commits. VMA 3.4 asks for it only every 30 allocations
+  and frees (`memory_stats()` does not ask), and in between adds the bytes
+  it allocated since and subtracts those it freed. So the figure reads high
+  while new memory is uncommitted and low once memory the driver never
+  committed is freed: on MoltenVK, freeing a 4K 4x set left it 271.6 MB
+  below the truth, and budget admission would have let that much more past
+  the budget. The allocator therefore asks again (`vmaSetCurrentFrameIndex`)
+  right after it makes or frees lazily allocated memory; other memory keeps
+  VMA's lag.
 - **Its contents last one pass.** Memoryless storage cannot be loaded or
   stored: MoltenVK turns a load into `DONT_CARE` and a store into a discard
   or a resolve, so a pass that resumes after suspending, or a later pass that

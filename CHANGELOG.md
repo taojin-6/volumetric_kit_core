@@ -9,6 +9,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [0.35.0] - 2026-10-30
 
+### Added
+
+- `HeapStats::lazy_bytes`: the part of `allocation_bytes` that is lazily
+  allocated, the most the device may commit for this allocator's transient
+  attachments. `reserved_bytes` and `allocation_bytes` still count every
+  allocation at its size.
+
 ### Changed
 
 - `Allocator::create_image` places an image whose usage includes
@@ -17,14 +24,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   one (MoltenVK: Metal's memoryless storage, which takes no memory); elsewhere
   it stays `DeviceOnly`. No other resource ever takes lazily allocated memory
   (DECISIONS.md, the 2026-10-30 entry). Such an image's contents last only
-  the render pass that writes them: never load or store them.
-
-### Added
-
-- `HeapStats::lazy_bytes`: the part of `allocation_bytes` that is lazily
-  allocated, the most the device may commit for this allocator's transient
-  attachments. `reserved_bytes` and `allocation_bytes` still count every
-  allocation at its size.
+  the render pass that writes them: never `LOAD` or `STORE` them. At the
+  budget it is refused, as memory of its own, rather than cut from a block.
+- `usage_bytes` is asked of the driver again right after the allocator makes
+  or frees lazily allocated memory, so a transient attachment never leaves
+  it high or low.
 
 ### Migration
 

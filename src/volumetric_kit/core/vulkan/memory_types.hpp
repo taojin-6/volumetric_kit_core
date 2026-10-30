@@ -191,6 +191,25 @@ inline std::uint32_t image_types(const VkPhysicalDeviceMemoryProperties& props,
                          HostAccess::SequentialWrite, allowed);
 }
 
+// A resource the Allocator gives memory: a buffer, an image it keeps, or an
+// image another API imports (create_exported_image).
+enum class ResourceKind { Buffer, Image, ExportedImage };
+
+// The types a resource of `kind` takes, given the types its memory
+// requirements allow (`allowed`): a kept image by its usage (image_types);
+// a buffer, and an exported image whatever its usage, by its placement
+// (`memory`, `access`), as an exported image's importer maps its memory. 0
+// when none suits.
+inline std::uint32_t resource_types(
+    const VkPhysicalDeviceMemoryProperties& props, ResourceKind kind,
+    MemoryUsage memory, HostAccess access, VkImageUsageFlags image_usage,
+    std::uint32_t allowed) {
+  if (kind == ResourceKind::Image) {
+    return image_types(props, image_usage, allowed);
+  }
+  return placement_types(props, memory, access, allowed);
+}
+
 // find_memory_type's search: the first type `type_bits` allows with every
 // flag of `required` and none of `excluded`. Device-local memory asked for
 // without HOST_VISIBLE is cut as DeviceOnly is, so it never takes a discrete

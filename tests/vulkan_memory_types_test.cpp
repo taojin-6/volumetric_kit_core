@@ -66,6 +66,13 @@ VkPhysicalDeviceMemoryProperties discrete_layout() {
                                               {2, kDL | kHV | kHC}});
 }
 
+// MoltenVK on Apple GPUs, as measured on a laptop and a phone: one unified
+// heap with private, shared and memoryless storage.
+VkPhysicalDeviceMemoryProperties moltenvk_layout() {
+  return layout({kLocalHeap},
+                {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
+}
+
 // Duplicate private types remain eligible without admitting the mapped window.
 TEST(MemoryTypes, DiscreteDuplicateTypesKeepDeviceOnlyOutOfTheBar) {
   const auto props = discrete_layout();
@@ -94,9 +101,7 @@ TEST(MemoryTypes, DiscreteReorderedTypesKeepDeviceOnlyOutOfTheBar) {
 // One unified heap with private, shared and memoryless
 // storage. Device-only is the private storage, never memoryless.
 TEST(MemoryTypes, UnifiedMemoryUsesPrivateStorageWhereAvailable) {
-  const auto props =
-      layout({kLocalHeap},
-             {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
+  const auto props = moltenvk_layout();
   EXPECT_EQ(detail::device_only_types(props), bits({0}));
   EXPECT_EQ(detail::device_local_types(props), bits({0, 1}));
   EXPECT_EQ(detail::device_mapped_types(props), bits({1}));  // shared storage
@@ -202,9 +207,7 @@ TEST(MemoryTypes, DeviceOnlyNeverFallsBackToTheBarWindow) {
 // On unified memory every device-local type is the one pool, so a resource
 // no private type suits -- such as a linear image -- takes the rest of it.
 TEST(MemoryTypes, DeviceOnlyTakesTheOnePoolOnUnifiedMemory) {
-  const auto unified =
-      layout({kLocalHeap},
-             {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
+  const auto unified = moltenvk_layout();
   EXPECT_EQ(placed(unified, MemoryUsage::DeviceOnly), bits({0}));
   EXPECT_EQ(placed(unified, MemoryUsage::DeviceOnly, bits({1, 2})), bits({1}));
   EXPECT_EQ(placed(unified, MemoryUsage::DeviceOnly, bits({2})), 0U);  // lazy
@@ -353,21 +356,15 @@ TEST(MemoryTypes, APlacementIsCutToWhatTheResourceAllows) {
 }
 
 // --- images, and transient attachments ---------------------------------------
-// On the layouts drivers report, as measured: MoltenVK on Apple GPUs (one
-// unified heap with private, shared and memoryless types, the same on a laptop
-// and a phone), a discrete GPU with five types and no lazily allocated memory,
-// and lavapipe's single type.
+// On the layouts drivers report, as measured: MoltenVK's (above), a discrete
+// GPU with five types and no lazily allocated memory, and lavapipe's single
+// type.
 
 constexpr VkImageUsageFlags kColor = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 constexpr VkImageUsageFlags kDepth =
     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 constexpr VkImageUsageFlags kTransient =
     VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
-
-VkPhysicalDeviceMemoryProperties moltenvk_layout() {
-  return layout({kLocalHeap},
-                {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
-}
 
 VkPhysicalDeviceMemoryProperties five_type_discrete_layout() {
   return layout({kLocalHeap, 0}, {{1, 0},
@@ -432,6 +429,27 @@ TEST(MemoryTypes, OnlyPlainLazilyAllocatedTypesServeTransientAttachments) {
       layout({kLocalHeap}, {{0, kDL}, {0, kDL | kLazy | kProtected}});
   EXPECT_EQ(detail::lazily_allocated_types(props), 0U);
   EXPECT_EQ(detail::image_types(props, kColor | kTransient, kAny), bits({0}));
+}
+
+// Only an image the allocator keeps is placed by its usage. A buffer is placed
+// by its MemoryUsage, and an exported image as DeviceOnly whatever its usage,
+// as its importer maps the memory: neither takes the memoryless type, even
+// asked with transient usage and allowed every type.
+TEST(MemoryTypes, OnlyAKeptImageIsPlacedByItsUsage) {
+  const auto props = moltenvk_layout();
+  const auto types = [&](detail::ResourceKind kind, VkImageUsageFlags usage,
+                         MemoryUsage memory = MemoryUsage::DeviceOnly) {
+    return detail::resource_types(props, kind, memory,
+                                  HostAccess::SequentialWrite, usage, kAny);
+  };
+  using detail::ResourceKind;
+  EXPECT_EQ(types(ResourceKind::Image, kColor | kTransient), bits({2}));
+  EXPECT_EQ(types(ResourceKind::Image, kColor), bits({0}));
+  EXPECT_EQ(types(ResourceKind::ExportedImage, kColor | kTransient), bits({0}));
+  EXPECT_EQ(types(ResourceKind::Buffer, kColor | kTransient), bits({0}));
+  EXPECT_EQ(types(ResourceKind::Buffer, 0, MemoryUsage::DeviceMapped),
+            bits({1}));
+  EXPECT_EQ(types(ResourceKind::Buffer, 0, MemoryUsage::Staging), bits({1}));
 }
 
 }  // namespace

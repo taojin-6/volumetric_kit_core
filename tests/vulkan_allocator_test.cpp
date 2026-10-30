@@ -728,9 +728,10 @@ class TransientAttachmentTest : public AllocatorTest {
   }
 
   Image attachment(VkFormat format, VkImageUsageFlags usage,
-                   VkSampleCountFlagBits samples) {
+                   VkSampleCountFlagBits samples,
+                   VkExtent2D extent = {kW, kH}) {
     ImageDesc desc;
-    desc.extent = {kW, kH};
+    desc.extent = extent;
     desc.format = format;
     desc.usage = usage;
     desc.samples = samples;
@@ -768,6 +769,85 @@ class TransientAttachmentTest : public AllocatorTest {
         << "type " << memory->type_index << " (flags 0x" << std::hex
         << memory->properties << ") is not lazily allocated";
     return true;
+  }
+
+  // A frame target's one pass: clears the 4x `color` and `depth`, stores
+  // neither, resolves the colour into the 1x `resolved`, and copies that into
+  // `readback` for the host.
+  Status clear_and_resolve(const Image& color, const Image& depth,
+                           const Image& resolved, const Buffer& readback,
+                           const VkClearColorValue& clear) {
+    return device().submit_single_time([&](VkCommandBuffer cmd) {
+      VkImageMemoryBarrier to_attachment[3]{};
+      for (VkImageMemoryBarrier& barrier : to_attachment) {
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      }
+      to_attachment[0].image = color.handle();
+      to_attachment[1].image = resolved.handle();
+      to_attachment[2].image = depth.handle();
+      to_attachment[2].dstAccessMask =
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+      to_attachment[2].newLayout =
+          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      to_attachment[2].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                               VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                               VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                           0, 0, nullptr, 0, nullptr, 3, to_attachment);
+
+      VkRenderingAttachmentInfo color_info{};
+      color_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+      color_info.imageView = color.view();
+      color_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      color_info.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+      color_info.resolveImageView = resolved.view();
+      color_info.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      color_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      color_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      color_info.clearValue.color = clear;
+      VkRenderingAttachmentInfo depth_info{};
+      depth_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+      depth_info.imageView = depth.view();
+      depth_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      depth_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      depth_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      depth_info.clearValue.depthStencil = {1.0F, 0};
+      VkRenderingInfo rendering{};
+      rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+      rendering.renderArea.extent = {resolved.extent().width,
+                                     resolved.extent().height};
+      rendering.layerCount = 1;
+      rendering.colorAttachmentCount = 1;
+      rendering.pColorAttachments = &color_info;
+      rendering.pDepthAttachment = &depth_info;
+      vkCmdBeginRendering(cmd, &rendering);
+      vkCmdEndRendering(cmd);
+
+      // The resolve wrote the 1x image at the colour output stage.
+      VkImageMemoryBarrier to_copy = to_attachment[1];
+      to_copy.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      to_copy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      to_copy.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      to_copy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                           nullptr, 1, &to_copy);
+      VkBufferImageCopy region{};
+      region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.imageExtent = resolved.extent();
+      vkCmdCopyImageToBuffer(cmd, resolved.handle(),
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             readback.handle(), 1, &region);
+      test::host_read_barrier(cmd);
+    });
   }
 };
 
@@ -871,76 +951,7 @@ TEST_F(TransientAttachmentTest, APassResolvesFromATransientSet) {
   // Exact in 8-bit UNORM: 51, 102, 204 and 255 of 255.
   const VkClearColorValue clear{{0.2F, 0.4F, 0.8F, 1.0F}};
 
-  const Status s = device().submit_single_time([&](VkCommandBuffer cmd) {
-    VkImageMemoryBarrier to_attachment[3]{};
-    for (VkImageMemoryBarrier& barrier : to_attachment) {
-      barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-      barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-      barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    }
-    to_attachment[0].image = color.handle();
-    to_attachment[1].image = resolved.handle();
-    to_attachment[2].image = depth.handle();
-    to_attachment[2].dstAccessMask =
-        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    to_attachment[2].newLayout =
-        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    to_attachment[2].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                         0, 0, nullptr, 0, nullptr, 3, to_attachment);
-
-    VkRenderingAttachmentInfo color_info{};
-    color_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    color_info.imageView = color.view();
-    color_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color_info.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color_info.resolveImageView = resolved.view();
-    color_info.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color_info.clearValue.color = clear;
-    VkRenderingAttachmentInfo depth_info{};
-    depth_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depth_info.imageView = depth.view();
-    depth_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth_info.clearValue.depthStencil = {1.0F, 0};
-    VkRenderingInfo rendering{};
-    rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    rendering.renderArea.extent = {kW, kH};
-    rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachments = &color_info;
-    rendering.pDepthAttachment = &depth_info;
-    vkCmdBeginRendering(cmd, &rendering);
-    vkCmdEndRendering(cmd);
-
-    // The resolve wrote the 1x image at the colour output stage.
-    VkImageMemoryBarrier to_copy = to_attachment[1];
-    to_copy.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    to_copy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    to_copy.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    to_copy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &to_copy);
-    VkBufferImageCopy region{};
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent = resolved.extent();
-    vkCmdCopyImageToBuffer(cmd, resolved.handle(),
-                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           readback.handle(), 1, &region);
-    test::host_read_barrier(cmd);
-  });
+  const Status s = clear_and_resolve(color, depth, resolved, readback, clear);
   ASSERT_TRUE(s.ok()) << s.message();
 
   const auto* got = static_cast<const std::uint8_t*>(readback.mapped());
@@ -953,6 +964,73 @@ TEST_F(TransientAttachmentTest, APassResolvesFromATransientSet) {
   EXPECT_EQ(wrong, 0U) << "of " << kBytes << " bytes; the first pixel is "
                        << int{got[0]} << "," << int{got[1]} << ","
                        << int{got[2]} << "," << int{got[3]};
+}
+
+// The heap's usage stays true across a transient set's life: once the set is
+// used in a pass and freed, it never reads below its figure from before the
+// set was made, and while the set lives in lazily allocated memory it never
+// counts the set at full size. VMA asks the driver by itself only every 30
+// allocations and frees, which a renderer's frames make while a window's set
+// lives (`churn`); the driver never counted the set, so freeing it would
+// otherwise take its whole size off the driver's figure.
+TEST_F(TransientAttachmentTest, UsageStaysTrueAcrossATransientSet) {
+  // 32 MiB of 4x colour and depth, beyond the driver's own fluctuations.
+  constexpr VkExtent2D kExtent{1024, 1024};
+  const auto churn = [&] {
+    for (int i = 0; i < 32; ++i) {
+      EXPECT_TRUE(make(256, kStorage, MemoryUsage::DeviceOnly).valid());
+    }
+  };
+  const Image resolved = attachment(
+      VK_FORMAT_R8G8B8A8_UNORM,
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+      VK_SAMPLE_COUNT_1_BIT, kExtent);
+  const Buffer readback =
+      make(VkDeviceSize{kExtent.width} * kExtent.height * 4, kTransfer,
+           MemoryUsage::Staging, HostAccess::Random);
+  ASSERT_TRUE(resolved.valid() && readback.valid());
+  churn();  // the driver's figure, freshly asked
+  const MemoryStats before = allocator().memory_stats();
+  {
+    const Image color =
+        attachment(VK_FORMAT_R8G8B8A8_UNORM,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | kTransient,
+                   VK_SAMPLE_COUNT_4_BIT, kExtent);
+    const Image depth =
+        attachment(VK_FORMAT_D32_SFLOAT,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | kTransient,
+                   VK_SAMPLE_COUNT_4_BIT, kExtent);
+    ASSERT_TRUE(color.valid() && depth.valid());
+    std::uint64_t lazy[VK_MAX_MEMORY_HEAPS]{};
+    for (const Image* image : {&color, &depth}) {
+      const std::optional<MemoryInfo>& memory = image->memory_info();
+      if (!memory.has_value()) {
+        FAIL() << "no memory info";
+      }
+      if ((memory->properties & kLazy) != 0) {
+        lazy[memory->heap_index] += requirements_of(*image).size;
+      }
+    }
+    if (device().extension_enabled(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+      const MemoryStats made = allocator().memory_stats();
+      for (std::uint32_t h = 0; h < made.heap_count; ++h) {
+        if (lazy[h] == 0) continue;
+        EXPECT_LT(made.heaps[h].usage_bytes,
+                  before.heaps[h].usage_bytes + lazy[h])
+            << "heap " << h << ": the set counted before a pass needs it";
+      }
+    }
+    churn();
+    const VkClearColorValue clear{{0.2F, 0.4F, 0.8F, 1.0F}};
+    const Status s = clear_and_resolve(color, depth, resolved, readback, clear);
+    ASSERT_TRUE(s.ok()) << s.message();
+  }
+  const MemoryStats freed = allocator().memory_stats();
+  ASSERT_EQ(freed.heap_count, before.heap_count);
+  for (std::uint32_t h = 0; h < freed.heap_count; ++h) {
+    EXPECT_GE(freed.heaps[h].usage_bytes, before.heaps[h].usage_bytes)
+        << "heap " << h << ": " << before.heaps[h].usage_bytes << " before";
+  }
 }
 
 }  // namespace

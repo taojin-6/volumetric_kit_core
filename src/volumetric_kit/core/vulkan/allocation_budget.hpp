@@ -64,9 +64,12 @@ struct BudgetedAllocation {
 //
 // At the budget no new memory is made, but a block's unused space already
 // counts against its heap, so a resource that fits in one still takes it, in
-// any candidate type. Memory a resource requires to itself -- an exported
-// resource's, a lazily allocated one's, or one the driver requires dedicated
-// -- is always made dedicated, and never reused.
+// any candidate type. Memory a resource requires to itself is always made
+// dedicated, and never reused, so at the budget it is refused: an exported
+// resource's or one the driver requires dedicated (`dedicated_required`), and
+// lazily allocated memory (any of `types`), which is its image's own, as
+// VMA's own lazily allocated usage makes it, never a block sized for
+// resources to come.
 template <typename Allocate, typename Budgets>
 BudgetedAllocation allocate_with_budget(
     const VkPhysicalDeviceMemoryProperties& memory,
@@ -76,9 +79,9 @@ BudgetedAllocation allocate_with_budget(
   info.usage = VMA_MEMORY_USAGE_UNKNOWN;
   info.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
   if (mapped) info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
-  if (dedicated_required) {
-    info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-  }
+  const bool dedicated =
+      dedicated_required || (types & lazily_allocated_types(memory)) != 0;
+  if (dedicated) info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 
   const std::uint32_t admitted =
       types_within_budget(memory, types, needs.size, budgets());
@@ -87,9 +90,7 @@ BudgetedAllocation allocate_with_budget(
     const VkResult made = allocate(info);
     if (made != VK_ERROR_OUT_OF_DEVICE_MEMORY) return {made, false};
   }
-  if (dedicated_required) {
-    return {VK_ERROR_OUT_OF_DEVICE_MEMORY, admitted == 0};
-  }
+  if (dedicated) return {VK_ERROR_OUT_OF_DEVICE_MEMORY, admitted == 0};
   info.memoryTypeBits = types;
   info.flags |= VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT;
   const VkResult reused = allocate(info);
