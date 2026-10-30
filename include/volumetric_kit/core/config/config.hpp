@@ -43,6 +43,10 @@ enum class Operation { Fuse, Stream, Codec, View, Project, Calibrate };
 enum class SourceKind { None, Dataset, Live, Mesh, Model, Stream };
 /// @brief Camera colour encoding.
 enum class ColorCodec { Hevc, Mjpeg };
+/// @brief Where FuseRealsense's depth comes from: the camera's own, or
+/// Fast-FoundationStereo (FFS) on its infrared pair, which its consumer runs
+/// on CUDA and TensorRT.
+enum class DepthSource { Camera, Ffs };
 /// @brief Mesh signed-distance interpretation.
 enum class SdfMode { Signed, Shell };
 /// @brief Quantization weight preset.
@@ -69,7 +73,9 @@ struct Source {
   bool host_clock = false;
   /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG only,
   /// CalibColor's H.265 only. FuseRealsense takes the sizes and rate, not
-  /// the codec, and resolves colour 1280x800, depth 1280x720 at 30 fps.
+  /// the codec, and resolves colour 1280x800 at 30 fps; its depth size is
+  /// the depth it fuses: the camera's depth mode, 1280x720, or with FFS the
+  /// rectified size the model runs at, 960x544.
   ColorCodec color_codec = ColorCodec::Hevc;
   std::uint32_t color_width = 3840;
   std::uint32_t color_height = 2160;
@@ -81,6 +87,17 @@ struct Source {
   /// on). Required and positive there; no other profile takes them.
   std::uint32_t color_exposure = 0;
   std::uint32_t color_gain = 0;
+  /// FuseRealsense: the depth it fuses (`camera` or `ffs`).
+  DepthSource depth = DepthSource::Camera;
+  /// FuseRealsense: the infrared projector. It resolves on for the camera's
+  /// depth, whose matcher needs its dots on blank surfaces, and off for FFS,
+  /// which they hinder, unless given.
+  bool emitter = true;
+  /// FuseRealsense with FFS (required there, refused otherwise): the FFS
+  /// ONNX model, at the depth size, and the directory its built TensorRT
+  /// plans are kept in.
+  std::string ffs_model;
+  std::string ffs_plan_cache;
   /// CodecMesh scale: exactly one of `height_m` (a height the consumer scales
   /// the input to) and `metres_per_unit` (the input's declared unit) is
   /// positive; the other stays 0.

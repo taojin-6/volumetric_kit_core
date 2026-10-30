@@ -102,6 +102,18 @@ vkc::Status run() {
     return vkc::Status::invalid_argument(
         "fuse_realsense settings were not read");
   VKC_ASSIGN(
+      const auto stereo,
+      vkc::config::parse(
+          R"({"version":1,"operation":"fuse","source":{"kind":"live","depth":"ffs","ffs_model":"ffs.onnx","ffs_plan_cache":"plans"}})",
+          vkc::config::Application::FuseRealsense, "/scenario"));
+  if (stereo.source.depth != vkc::config::DepthSource::Ffs ||
+      stereo.source.emitter || stereo.source.depth_width != 960 ||
+      stereo.source.depth_height != 544 ||
+      stereo.source.ffs_model != "/scenario/ffs.onnx" ||
+      stereo.source.ffs_plan_cache != "/scenario/plans")
+    return vkc::Status::invalid_argument(
+        "fuse_realsense's FFS depth was not read");
+  VKC_ASSIGN(
       const auto rig,
       vkc::config::parse(
           R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json"},"output":{"path":"sessions"}})",

@@ -7,6 +7,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-10-29
+
+### Added
+
+- `FuseRealsense` chooses its depth (CONFIG.md, "RealSense depth"):
+  `source.depth` `camera` (the default, as 0.31.0) or `ffs`,
+  Fast-FoundationStereo on the camera's infrared pair, with
+  `source.ffs_model` and `source.ffs_plan_cache`, both config-relative and
+  required with `ffs`, refused with `camera`. `source.emitter`, the infrared
+  projector, resolves on for `camera` and off for `ffs` unless given. With
+  `ffs`, the depth size is the rectified size FFS runs at, 960x544 unless
+  given. No output may be `source.ffs_model`. New
+  `config::DepthSource`; `Source` gains `depth`, `emitter`, `ffs_model` and
+  `ffs_plan_cache`.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged, with
+  the camera's depth and the projector on. A consumer that runs FFS reads
+  `source.depth` and the new fields, and refuses `ffs` in a build that
+  cannot run it.
+
 ## [0.32.0] - 2026-10-29
 
 ### Removed
