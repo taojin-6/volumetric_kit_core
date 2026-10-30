@@ -585,8 +585,9 @@ rules after review, the same day.
   rest of the pool on unified memory and is
   refused (`Unsupported`) otherwise, as the rest of a discrete GPU's
   device-local memory is the BAR window. Images take only this, so a driver
-  may compress and tile them, except a transient attachment where the device
-  has lazily allocated memory (2026-10-30, below).
+  may compress and tile them.
+  The one exception is a transient attachment on a device with lazily
+  allocated memory (2026-10-30, below).
 - **`DeviceMapped`** takes device-local, host-coherent types only: the BAR
   window on a discrete GPU, the one pool on unified memory. A device without
   one refuses it (`Unsupported`; `PhysicalDeviceInfo::device_mapped_memory`
@@ -1597,7 +1598,7 @@ gfx renders every window at 4x MSAA through one shared colour and depth set
 made with `TRANSIENT_ATTACHMENT` usage, cleared and resolved in the pass and
 never stored. Placed `DeviceOnly`, as every image was, that set takes real
 memory: 32 bytes a pixel, about 66 MB at 1920x1080 and 265 MB at 3840x2160.
-On a GPU that keeps attachments in tile memory it need take none, so the
+On a GPU that keeps attachments in on-chip memory it need take none, so the
 allocator now gives a transient attachment the lazily allocated memory its
 requirements allow, where the device has it (core 0.35.0). This reverses
 "Special memory stays out" (above) for that memory and that use alone.
@@ -1621,7 +1622,7 @@ requirements allow, where the device has it (core 0.35.0). This reverses
 - **Reported apart.** VMA counts the allocation at full size among the
   allocator's blocks. `memory_stats()` takes it out of `reserved_bytes` and
   `allocation_bytes` and reports it as `HeapStats::lazy_bytes`: the most the
-  device may commit, and nothing in tile memory. `usage_bytes` stays the
+  device may commit, and nothing on chip. `usage_bytes` stays the
   heap's: the driver's figure where `VK_EXT_memory_budget` is enabled, which
   counts what the driver commits, plus VMA's own allocations made since it
   last asked, so a new transient image can appear there at full size until

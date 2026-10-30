@@ -935,16 +935,16 @@ TEST_F(TransientAttachmentTest, APassResolvesFromATransientSet) {
   });
   ASSERT_TRUE(s.ok()) << s.message();
 
-  const auto* texels = static_cast<const std::uint8_t*>(readback.mapped());
+  const auto* got = static_cast<const std::uint8_t*>(readback.mapped());
   const std::uint8_t want[4] = {51, 102, 204, 255};
   std::uint32_t wrong = 0;
   for (VkDeviceSize i = 0; i < kBytes; ++i) {
-    const int diff = int{texels[i]} - int{want[i % 4]};
+    const int diff = int{got[i]} - int{want[i % 4]};
     if (diff < -1 || diff > 1) ++wrong;
   }
-  EXPECT_EQ(wrong, 0U) << "of " << kBytes << " bytes, first texel "
-                       << int{texels[0]} << "," << int{texels[1]} << ","
-                       << int{texels[2]} << "," << int{texels[3]};
+  EXPECT_EQ(wrong, 0U) << "of " << kBytes << " bytes; the first pixel is "
+                       << int{got[0]} << "," << int{got[1]} << ","
+                       << int{got[2]} << "," << int{got[3]};
 }
 
 }  // namespace

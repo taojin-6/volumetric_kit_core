@@ -111,7 +111,7 @@ enum class HostAccess {
 /// Lazily allocated memory -- a transient attachment's
 /// (@ref ImageDesc::usage) -- is counted in `lazy_bytes` alone, never in
 /// `reserved_bytes` or `allocation_bytes`: the device commits it only as a
-/// render pass needs it, and a GPU that keeps such attachments in tile memory
+/// render pass needs it, and a GPU that keeps such attachments on chip
 /// commits none. The driver's `usage_bytes` counts what it commits; VMA adds
 /// its own allocations made since it last asked the driver, so a new lazily
 /// allocated image can appear there at full size until the next query.
@@ -140,7 +140,7 @@ struct HeapStats {
   std::uint64_t allocation_bytes = 0;
   /// Bytes of this allocator's lazily allocated memory, outside
   /// @ref reserved_bytes: the most the device may commit for its transient
-  /// attachments, none of it on a GPU that keeps them in tile memory.
+  /// attachments, none of it on a GPU that keeps them on chip.
   std::uint64_t lazy_bytes = 0;
 };
 
@@ -249,7 +249,7 @@ VKC_VULKAN_API Status check_queue_family_count(std::uint32_t count,
 /// VKC_ASSIGN(Image volume, allocator.create_image(desc));
 ///
 /// // A 4x colour attachment a render pass resolves into a 1x target: no
-/// // memory at all on a GPU that keeps it in tile memory.
+/// // memory at all on a GPU that keeps it on chip.
 /// ImageDesc msaa;
 /// msaa.extent = target.extent;
 /// msaa.format = target.format;
@@ -271,13 +271,13 @@ struct ImageDesc {
   /// contents live within one render pass, such as a multisampled colour or
   /// depth target the pass resolves or discards -- the image takes a lazily
   /// allocated memory type its requirements allow, on memory dedicated to it
-  /// (@ref HeapStats::lazy_bytes counts it), wherever the device has one; on
-  /// tile-based GPUs such memory is tile memory, and Metal's memoryless
-  /// storage under MoltenVK. Elsewhere, and for every other usage, it is
-  /// `DeviceOnly`; a buffer or a non-transient image never takes lazily
-  /// allocated memory. Its contents never outlive the render pass that writes
-  /// them -- in tile memory nothing holds them after it -- so loading or
-  /// storing them is meaningless: load `CLEAR` or `DONT_CARE`, store
+  /// (@ref HeapStats::lazy_bytes counts it), wherever the device has one: on
+  /// a GPU that renders in on-chip memory it can be that memory alone, as
+  /// Metal's memoryless storage is under MoltenVK. Elsewhere, and for every
+  /// other usage, it is `DeviceOnly`; a buffer or a non-transient image never
+  /// takes lazily allocated memory. Its contents never outlive the render
+  /// pass that writes them -- on chip nothing holds them after it -- so
+  /// loading or storing them is meaningless: load `CLEAR` or `DONT_CARE`, store
   /// `DONT_CARE`, and never suspend the pass to resume it later. Beside
   /// transient usage Vulkan allows only attachment usages
   /// (VUID-VkImageCreateInfo-usage-00963), so the image cannot be copied,

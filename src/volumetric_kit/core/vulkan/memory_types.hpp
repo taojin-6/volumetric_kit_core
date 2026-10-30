@@ -156,7 +156,7 @@ inline std::uint32_t placement_types(
 }
 
 // The lazily allocated types: device-local memory the device commits only as
-// a render pass needs it, and a GPU that keeps attachments in tile memory
+// a render pass needs it, and a GPU that keeps attachments in on-chip memory
 // never does. Only an image with VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT may be
 // bound to one (the spec's "Lazily Allocated Memory"). Never a protected or a
 // feature-gated type.
