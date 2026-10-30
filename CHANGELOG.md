@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-29
+
+### Added
+
+- `config::Application::FuseRealsense`: live fusion of one RealSense
+  camera's own depth with its colour into a PLY (CONFIG.md). Source `live`,
+  driver `realsense`, its `serial`, the colour and depth sizes and `fps`
+  (1280x800, 1280x720 and 30 by default); the fusion fields FuseOrbbec takes,
+  Dynamic by default, with `free_after`; `output.path` (`fuse_realsense.ply`)
+  and `run.frames` (300). It refuses the Orbbec rig's fields, the codec and
+  its outputs, `operation` `stream` and diagnostics.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged. A
+  consumer that adds a RealSense fusion program loads its scenario with
+  `Application::FuseRealsense`.
+
 ## [0.30.0] - 2026-10-29
 
 ### Added
