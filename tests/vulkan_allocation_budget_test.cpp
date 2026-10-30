@@ -105,10 +105,10 @@ TEST(AllocationBudget, RequiredDedicatedMemoryIsMadeDedicated) {
   EXPECT_FALSE(never_allocates(calls[0]));
 }
 
-// Lazily allocated bytes leave this allocator's blocks and allocations for a
-// figure of their own; the heap's usage and budget stay the driver's. A count
-// read across a resource's creation or release never wraps.
-TEST(AllocationBudget, LazilyAllocatedBytesAreReportedApart) {
+// Lazily allocated bytes are flagged within this allocator's allocations,
+// which keep VMA's figures, as the heap's usage and budget do. A count read
+// across a resource's creation or release never exceeds the allocations.
+TEST(AllocationBudget, LazilyAllocatedBytesAreFlaggedWithinTheAllocations) {
   VmaBudget budgets[2]{};
   budgets[0].usage = 5000;
   budgets[0].budget = 9000;
@@ -121,15 +121,14 @@ TEST(AllocationBudget, LazilyAllocatedBytesAreReportedApart) {
   ASSERT_EQ(stats.heap_count, 2U);
   EXPECT_EQ(stats.heaps[0].usage_bytes, 5000U);
   EXPECT_EQ(stats.heaps[0].budget_bytes, 9000U);
-  EXPECT_EQ(stats.heaps[0].reserved_bytes, 400U);
-  EXPECT_EQ(stats.heaps[0].allocation_bytes, 100U);
+  EXPECT_EQ(stats.heaps[0].reserved_bytes, 1000U);
+  EXPECT_EQ(stats.heaps[0].allocation_bytes, 700U);
   EXPECT_EQ(stats.heaps[0].lazy_bytes, 600U);
-  EXPECT_EQ(stats.heaps[1].reserved_bytes, 0U);
-  EXPECT_EQ(stats.heaps[1].allocation_bytes, 0U);
-  EXPECT_EQ(stats.heaps[1].lazy_bytes, 400U);
+  EXPECT_EQ(stats.heaps[1].reserved_bytes, 300U);
+  EXPECT_EQ(stats.heaps[1].allocation_bytes, 200U);
+  EXPECT_EQ(stats.heaps[1].lazy_bytes, 200U);
 
   const MemoryStats none = detail::memory_stats_of(budgets, 2, nullptr);
-  EXPECT_EQ(none.heaps[0].reserved_bytes, 1000U);
   EXPECT_EQ(none.heaps[0].allocation_bytes, 700U);
   EXPECT_EQ(none.heaps[0].lazy_bytes, 0U);
 }

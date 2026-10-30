@@ -17,8 +17,8 @@
 namespace volumetric_kit::core::detail {
 
 // Types no general resource may use: lazily allocated memory is for transient
-// attachments alone (image_types), protected memory for
-// protected submissions, and device-coherent and device-uncached memory
+// attachments alone (image_types), protected memory for protected
+// submissions, and device-coherent and device-uncached memory
 // (VK_AMD_device_coherent_memory) for markers read while the device runs -- a
 // feature this tier never enables, and memory VMA leaves out of every
 // allocation unless its allocator opts in.

@@ -109,11 +109,13 @@ enum class HostAccess {
 /// device.
 ///
 /// Lazily allocated memory -- a transient attachment's
-/// (@ref ImageDesc::usage) -- is counted in `lazy_bytes` alone, never in
-/// `reserved_bytes` or `allocation_bytes`: the device commits it only as a
+/// (@ref ImageDesc::usage) -- counts in `reserved_bytes` and
+/// `allocation_bytes` at its full size, as every allocation does, and
+/// `lazy_bytes` says how much of them it is: the device commits it only as a
 /// render pass needs it, and a GPU that keeps such attachments on chip
-/// commits none. The driver's `usage_bytes` counts what it commits; VMA adds
-/// its own allocations made since it last asked the driver, so a new lazily
+/// commits none. Subtract it for the memory the allocator certainly holds.
+/// The driver's `usage_bytes` counts what it commits; VMA adds its own
+/// allocations made since it last asked the driver, so a new lazily
 /// allocated image can appear there at full size until the next query.
 ///
 /// @code
@@ -121,7 +123,8 @@ enum class HostAccess {
 /// const std::uint64_t headroom =
 ///     heap.budget_bytes > heap.usage_bytes
 ///         ? heap.budget_bytes - heap.usage_bytes : 0;
-/// report(headroom, heap.reserved_bytes, heap.allocation_bytes);
+/// report(headroom, heap.reserved_bytes - heap.lazy_bytes,
+///        heap.allocation_bytes);
 /// @endcode
 struct HeapStats {
   /// The heap's usage, which new allocations are admitted against. With
@@ -138,9 +141,10 @@ struct HeapStats {
   /// Bytes of this allocator's live allocations, within
   /// @ref reserved_bytes.
   std::uint64_t allocation_bytes = 0;
-  /// Bytes of this allocator's lazily allocated memory, outside
-  /// @ref reserved_bytes: the most the device may commit for its transient
-  /// attachments, none of it on a GPU that keeps them on chip.
+  /// Bytes of this allocator's lazily allocated memory, within
+  /// @ref allocation_bytes: its transient attachments', which the device
+  /// commits only as a render pass needs them -- at most this much, and none
+  /// on a GPU that keeps them on chip.
   std::uint64_t lazy_bytes = 0;
 };
 

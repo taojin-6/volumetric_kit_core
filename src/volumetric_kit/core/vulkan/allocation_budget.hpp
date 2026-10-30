@@ -20,30 +20,26 @@ namespace volumetric_kit::core::detail {
 // An Allocator's figures from VMA's: each heap's usage and budget -- the
 // driver's estimate for the process where VK_EXT_memory_budget is enabled --
 // and this allocator's own blocks and allocations in it. `lazy` holds each
-// heap's lazily allocated bytes, or is null for none: VMA counts them among
-// the blocks and allocations, at full size, so they are taken out of those
-// and reported apart, as the device commits that memory only as a render pass
-// needs it. Taken out without wrapping: the counts are read at different
-// moments, so a resource made or freed between the reads can tip one past the
-// other.
+// heap's lazily allocated bytes, or is null for none: the part of those
+// allocations, which VMA counts at full size, that the device commits only as
+// a render pass needs it. Capped at the allocations, which are read at
+// another moment: a resource made or freed between the reads could otherwise
+// tip it past them.
 inline MemoryStats memory_stats_of(const VmaBudget* budgets,
                                    std::uint32_t heap_count,
                                    const std::uint64_t* lazy) {
-  const auto without = [](std::uint64_t bytes, std::uint64_t part) {
-    return bytes > part ? bytes - part : 0;
-  };
   MemoryStats stats;
   stats.heap_count = heap_count;
   for (std::uint32_t heap = 0; heap < heap_count; ++heap) {
-    const std::uint64_t lazy_bytes = lazy != nullptr ? lazy[heap] : 0;
     HeapStats& figures = stats.heaps[heap];
     figures.usage_bytes = budgets[heap].usage;
     figures.budget_bytes = budgets[heap].budget;
-    figures.reserved_bytes =
-        without(budgets[heap].statistics.blockBytes, lazy_bytes);
-    figures.allocation_bytes =
-        without(budgets[heap].statistics.allocationBytes, lazy_bytes);
-    figures.lazy_bytes = lazy_bytes;
+    figures.reserved_bytes = budgets[heap].statistics.blockBytes;
+    figures.allocation_bytes = budgets[heap].statistics.allocationBytes;
+    const std::uint64_t lazy_bytes = lazy != nullptr ? lazy[heap] : 0;
+    figures.lazy_bytes = lazy_bytes < figures.allocation_bytes
+                             ? lazy_bytes
+                             : figures.allocation_bytes;
   }
   return stats;
 }

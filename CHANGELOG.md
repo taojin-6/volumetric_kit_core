@@ -21,17 +21,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
-- `HeapStats::lazy_bytes`: this allocator's lazily allocated bytes, the most
-  the device may commit for its transient attachments. `reserved_bytes` and
-  `allocation_bytes` no longer include them.
+- `HeapStats::lazy_bytes`: the part of `allocation_bytes` that is lazily
+  allocated, the most the device may commit for this allocator's transient
+  attachments. `reserved_bytes` and `allocation_bytes` still count every
+  allocation at its size.
 
 ### Migration
 
 - Nothing to change beyond the pin. A consumer that loads or stores a
   transient attachment's contents across passes must drop
-  `TRANSIENT_ATTACHMENT` from that image. On a device with lazily allocated
-  memory, a transient image's bytes move from `reserved_bytes` and
-  `allocation_bytes` to `lazy_bytes`.
+  `TRANSIENT_ATTACHMENT` from that image. A consumer that reports the memory
+  its allocator holds subtracts `lazy_bytes`.
 
 ## [0.34.0] - 2026-10-30
 

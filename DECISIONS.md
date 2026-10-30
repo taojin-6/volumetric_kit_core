@@ -636,8 +636,8 @@ rules after review, the same day.
   allocators. `reserved_bytes` (blocks and dedicated memory, free space
   included) and `allocation_bytes` (live allocations) are this allocator's
   own, and may be summed. Budget admission uses the heap's usage, not
-  per-library accounting. Lazily allocated memory is reported apart, in
-  `lazy_bytes` (amended 2026-10-30, below).
+  per-library accounting. `lazy_bytes` flags the lazily allocated part of
+  the allocations (amended 2026-10-30, below).
 - **Special memory stays out.** Protected and feature-gated device-coherent
   and device-uncached memory are never a placement's: each needs a use or a
   feature this tier does not have, and VMA leaves the latter kinds out of
@@ -1619,14 +1619,16 @@ requirements allow, where the device has it (core 0.35.0). This reverses
 - **Each image's memory is its own**, as VMA's own lazily allocated usage
   makes it, never a block VMA would size for resources to come. Admission
   against the heap's budget is unchanged.
-- **Reported apart.** VMA counts the allocation at full size among the
-  allocator's blocks. `memory_stats()` takes it out of `reserved_bytes` and
-  `allocation_bytes` and reports it as `HeapStats::lazy_bytes`: the most the
-  device may commit, and nothing on chip. `usage_bytes` stays the
-  heap's: the driver's figure where `VK_EXT_memory_budget` is enabled, which
-  counts what the driver commits, plus VMA's own allocations made since it
-  last asked, so a new transient image can appear there at full size until
-  the next query.
+- **Flagged, not hidden.** VMA counts the allocation at full size, as every
+  allocation, so `reserved_bytes` and `allocation_bytes` keep their meaning
+  and their consumers' checks (gfx counts a window's set by them).
+  `HeapStats::lazy_bytes` says how much of them is lazily allocated: the
+  most the device may commit, and nothing on chip; subtract it for the
+  memory the allocator certainly holds. `usage_bytes` stays the heap's: the
+  driver's figure where `VK_EXT_memory_budget` is enabled, which counts what
+  the driver commits, plus VMA's own allocations made since it last asked,
+  so a new transient image can appear there at full size until the next
+  query.
 - **Its contents last one pass.** Memoryless storage cannot be loaded or
   stored: MoltenVK turns a load into `DONT_CARE` and a store into a discard
   or a resolve, so a pass that resumes after suspending, or a later pass that

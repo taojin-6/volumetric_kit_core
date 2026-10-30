@@ -773,8 +773,9 @@ class TransientAttachmentTest : public AllocatorTest {
 
 // A 4x colour and depth set, as a renderer's frame target makes it, takes
 // lazily allocated memory wherever the device offers it -- on MoltenVK,
-// Metal's memoryless storage -- reported as lazy bytes, not as the
-// allocator's blocks; elsewhere it is device-only like any image.
+// Metal's memoryless storage -- each image on memory of its own, counted in
+// the allocations and flagged as lazy bytes; elsewhere it is device-only like
+// any image.
 TEST_F(TransientAttachmentTest, AMultisampledSetTakesLazyMemoryWhereOffered) {
   const MemoryStats before = allocator().memory_stats();
   std::uint64_t lazy[VK_MAX_MEMORY_HEAPS]{};
@@ -790,8 +791,12 @@ TEST_F(TransientAttachmentTest, AMultisampledSetTakesLazyMemoryWhereOffered) {
                    VK_SAMPLE_COUNT_4_BIT);
     ASSERT_TRUE(color.valid() && depth.valid());
     for (const Image* image : {&color, &depth}) {
+      const std::optional<MemoryInfo>& memory = image->memory_info();
+      if (!memory.has_value()) {
+        FAIL() << "no memory info";
+      }
       if (expect_placed_by_usage(*image)) {
-        lazy[image->memory_info()->heap_index] += requirements_of(*image).size;
+        lazy[memory->heap_index] += requirements_of(*image).size;
       } else {
         all_lazy = false;
       }
@@ -801,11 +806,14 @@ TEST_F(TransientAttachmentTest, AMultisampledSetTakesLazyMemoryWhereOffered) {
     for (std::uint32_t h = 0; h < made.heap_count; ++h) {
       EXPECT_EQ(made.heaps[h].lazy_bytes, before.heaps[h].lazy_bytes + lazy[h])
           << "heap " << h;
+      // Dedicated: the blocks grow by the images alone, never by a block
+      // sized for resources to come.
       if (all_lazy) {
-        EXPECT_EQ(made.heaps[h].reserved_bytes, before.heaps[h].reserved_bytes)
+        EXPECT_EQ(made.heaps[h].reserved_bytes,
+                  before.heaps[h].reserved_bytes + lazy[h])
             << "heap " << h;
         EXPECT_EQ(made.heaps[h].allocation_bytes,
-                  before.heaps[h].allocation_bytes)
+                  before.heaps[h].allocation_bytes + lazy[h])
             << "heap " << h;
       }
     }

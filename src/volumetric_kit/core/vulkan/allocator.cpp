@@ -70,8 +70,8 @@ struct Allocator::Impl {
   // The heaps and types each placement is cut from (memory_types.hpp).
   VkPhysicalDeviceMemoryProperties memory{};
   bool dedicated_queries = false;
-  // Each heap's live lazily allocated bytes, which memory_stats reports apart
-  // from VMA's figures (HeapStats::lazy_bytes).
+  // Each heap's live lazily allocated bytes, which memory_stats reports
+  // beside VMA's figures (HeapStats::lazy_bytes).
   std::atomic<std::uint64_t> lazy_bytes[VK_MAX_MEMORY_HEAPS]{};
 
   AllocatorView view(const Allocator& owner) const {
