@@ -19,17 +19,31 @@ namespace volumetric_kit::core::detail {
 
 // An Allocator's figures from VMA's: each heap's usage and budget -- the
 // driver's estimate for the process where VK_EXT_memory_budget is enabled --
-// and this allocator's own blocks and allocations in it.
+// and this allocator's own blocks and allocations in it. `lazy` holds each
+// heap's lazily allocated bytes, or is null for none: VMA counts them among
+// the blocks and allocations, at full size, so they are taken out of those
+// and reported apart, as the device commits that memory only as a render pass
+// needs it. Taken out without wrapping: the counts are read at different
+// moments, so a resource made or freed between the reads can tip one past the
+// other.
 inline MemoryStats memory_stats_of(const VmaBudget* budgets,
-                                   std::uint32_t heap_count) {
+                                   std::uint32_t heap_count,
+                                   const std::uint64_t* lazy) {
+  const auto without = [](std::uint64_t bytes, std::uint64_t part) {
+    return bytes > part ? bytes - part : 0;
+  };
   MemoryStats stats;
   stats.heap_count = heap_count;
   for (std::uint32_t heap = 0; heap < heap_count; ++heap) {
-    stats.heaps[heap].usage_bytes = budgets[heap].usage;
-    stats.heaps[heap].budget_bytes = budgets[heap].budget;
-    stats.heaps[heap].reserved_bytes = budgets[heap].statistics.blockBytes;
-    stats.heaps[heap].allocation_bytes =
-        budgets[heap].statistics.allocationBytes;
+    const std::uint64_t lazy_bytes = lazy != nullptr ? lazy[heap] : 0;
+    HeapStats& figures = stats.heaps[heap];
+    figures.usage_bytes = budgets[heap].usage;
+    figures.budget_bytes = budgets[heap].budget;
+    figures.reserved_bytes =
+        without(budgets[heap].statistics.blockBytes, lazy_bytes);
+    figures.allocation_bytes =
+        without(budgets[heap].statistics.allocationBytes, lazy_bytes);
+    figures.lazy_bytes = lazy_bytes;
   }
   return stats;
 }
@@ -54,7 +68,9 @@ struct BudgetedAllocation {
 //
 // At the budget no new memory is made, but a block's unused space already
 // counts against its heap, so a resource that fits in one still takes it, in
-// any candidate type. Memory a resource requires to itself is never reused.
+// any candidate type. Memory a resource requires to itself -- an exported
+// resource's, a lazily allocated one's, or one the driver requires dedicated
+// -- is always made dedicated, and never reused.
 template <typename Allocate, typename Budgets>
 BudgetedAllocation allocate_with_budget(
     const VkPhysicalDeviceMemoryProperties& memory,
@@ -64,6 +80,9 @@ BudgetedAllocation allocate_with_budget(
   info.usage = VMA_MEMORY_USAGE_UNKNOWN;
   info.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
   if (mapped) info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
+  if (dedicated_required) {
+    info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+  }
 
   const std::uint32_t admitted =
       types_within_budget(memory, types, needs.size, budgets());

@@ -90,6 +90,48 @@ TEST(AllocationBudget, WithRoomVmaAllocatesUnrestricted) {
   EXPECT_FALSE(never_allocates(calls[0]));
   EXPECT_EQ(calls[0].memoryTypeBits, 0x3U);
   EXPECT_NE(calls[0].flags & VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT, 0U);
+  EXPECT_EQ(calls[0].flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT, 0U);
+}
+
+// Memory a resource requires to itself -- a lazily allocated image's among
+// it -- is asked of VMA as dedicated, so VMA never makes a block of it.
+TEST(AllocationBudget, RequiredDedicatedMemoryIsMadeDedicated) {
+  std::vector<VmaAllocationCreateInfo> calls;
+  const detail::BudgetedAllocation made =
+      Scripted(0).run({VK_SUCCESS}, calls, /*dedicated_required=*/true);
+  EXPECT_EQ(made.result, VK_SUCCESS);
+  ASSERT_EQ(calls.size(), 1U);
+  EXPECT_NE(calls[0].flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT, 0U);
+  EXPECT_FALSE(never_allocates(calls[0]));
+}
+
+// Lazily allocated bytes leave this allocator's blocks and allocations for a
+// figure of their own; the heap's usage and budget stay the driver's. A count
+// read across a resource's creation or release never wraps.
+TEST(AllocationBudget, LazilyAllocatedBytesAreReportedApart) {
+  VmaBudget budgets[2]{};
+  budgets[0].usage = 5000;
+  budgets[0].budget = 9000;
+  budgets[0].statistics.blockBytes = 1000;
+  budgets[0].statistics.allocationBytes = 700;
+  budgets[1].statistics.blockBytes = 300;
+  budgets[1].statistics.allocationBytes = 200;
+  const std::uint64_t lazy[2] = {600, 400};
+  const MemoryStats stats = detail::memory_stats_of(budgets, 2, lazy);
+  ASSERT_EQ(stats.heap_count, 2U);
+  EXPECT_EQ(stats.heaps[0].usage_bytes, 5000U);
+  EXPECT_EQ(stats.heaps[0].budget_bytes, 9000U);
+  EXPECT_EQ(stats.heaps[0].reserved_bytes, 400U);
+  EXPECT_EQ(stats.heaps[0].allocation_bytes, 100U);
+  EXPECT_EQ(stats.heaps[0].lazy_bytes, 600U);
+  EXPECT_EQ(stats.heaps[1].reserved_bytes, 0U);
+  EXPECT_EQ(stats.heaps[1].allocation_bytes, 0U);
+  EXPECT_EQ(stats.heaps[1].lazy_bytes, 400U);
+
+  const MemoryStats none = detail::memory_stats_of(budgets, 2, nullptr);
+  EXPECT_EQ(none.heaps[0].reserved_bytes, 1000U);
+  EXPECT_EQ(none.heaps[0].allocation_bytes, 700U);
+  EXPECT_EQ(none.heaps[0].lazy_bytes, 0U);
 }
 
 // An error other than exhaustion is returned as it is, without a retry.
@@ -188,7 +230,7 @@ class AllocationBudgetTest : public test::VulkanTest {
     VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
     vmaGetHeapBudgets(allocator_, budgets);
     return detail::memory_stats_of(
-        budgets, physical().memory_properties().memoryHeapCount);
+        budgets, physical().memory_properties().memoryHeapCount, nullptr);
   }
 
   void exhaust_budget() {

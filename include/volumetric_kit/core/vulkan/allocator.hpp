@@ -57,7 +57,9 @@ enum class MemoryUsage {
   /// linear image whose requirements allow only host-visible types.
   /// On a non-unified device that has private types, a resource none of those
   /// types suits is refused (`Unsupported`) instead of using the mapped
-  /// window. Never falls back to host memory. For kernel data and every image.
+  /// window. Never falls back to host memory. For kernel data and every image
+  /// but a transient attachment on a device with lazily allocated memory
+  /// (@ref ImageDesc::usage).
   DeviceOnly,
   /// Device-local memory the host maps, coherently: a discrete GPU's BAR
   /// window, whose capacity depends on the device configuration, or the
@@ -102,8 +104,17 @@ enum class HostAccess {
 /// `VK_EXT_memory_budget` is enabled they are the driver's estimates for the
 /// current process -- every allocator and library in it -- and the budget
 /// moves as other processes allocate; otherwise the usage counts this
-/// allocator alone, against 80% of the heap's size. `reserved_bytes` and
-/// `allocation_bytes` are this allocator's own, whatever the device.
+/// allocator alone, against 80% of the heap's size. `reserved_bytes`,
+/// `allocation_bytes` and `lazy_bytes` are this allocator's own, whatever the
+/// device.
+///
+/// Lazily allocated memory -- a transient attachment's
+/// (@ref ImageDesc::usage) -- is counted in `lazy_bytes` alone, never in
+/// `reserved_bytes` or `allocation_bytes`: the device commits it only as a
+/// render pass needs it, and a GPU that keeps such attachments in tile memory
+/// commits none. The driver's `usage_bytes` counts what it commits; VMA adds
+/// its own allocations made since it last asked the driver, so a new lazily
+/// allocated image can appear there at full size until the next query.
 ///
 /// @code
 /// const HeapStats& heap = allocator.memory_stats().heaps[0];
@@ -127,6 +138,10 @@ struct HeapStats {
   /// Bytes of this allocator's live allocations, within
   /// @ref reserved_bytes.
   std::uint64_t allocation_bytes = 0;
+  /// Bytes of this allocator's lazily allocated memory, outside
+  /// @ref reserved_bytes: the most the device may commit for its transient
+  /// attachments, none of it on a GPU that keeps them in tile memory.
+  std::uint64_t lazy_bytes = 0;
 };
 
 /// @brief Per-heap usage and budget across a device's memory heaps.
@@ -215,12 +230,13 @@ VKC_VULKAN_API Status check_queue_family_count(std::uint32_t count,
 ///
 /// The defaults describe a single-mip, single-layer, single-sample 2D image
 /// with a default view. Every image is `MemoryUsage::DeviceOnly`, which also
-/// lets a driver use its private image-storage optimizations; an image has
-/// no host accessor, so read one back by copying it into a staging buffer.
-/// Set `type` and `depth` for a 3D (volume) image, `array_layers` for an
-/// array, `cube` for a cubemap, `mip_levels` for a mip chain, `samples` for
-/// multisampling. An image another API imports is made from one by
-/// @ref create_exported_image.
+/// lets a driver use its private image-storage optimizations, except a
+/// transient attachment where the device has lazily allocated memory (see
+/// @ref usage); an image has no host accessor, so read one back by copying it
+/// into a staging buffer. Set `type` and `depth` for a 3D (volume) image,
+/// `array_layers` for an array, `cube` for a cubemap, `mip_levels` for a mip
+/// chain, `samples` for multisampling. An image another API imports is made
+/// from one by @ref create_exported_image.
 ///
 /// @code
 /// // A 128^3 volume a kernel writes and a renderer samples.
@@ -231,6 +247,16 @@ VKC_VULKAN_API Status check_queue_family_count(std::uint32_t count,
 /// desc.format = VK_FORMAT_R16_SFLOAT;
 /// desc.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 /// VKC_ASSIGN(Image volume, allocator.create_image(desc));
+///
+/// // A 4x colour attachment a render pass resolves into a 1x target: no
+/// // memory at all on a GPU that keeps it in tile memory.
+/// ImageDesc msaa;
+/// msaa.extent = target.extent;
+/// msaa.format = target.format;
+/// msaa.samples = VK_SAMPLE_COUNT_4_BIT;
+/// msaa.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+///              VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+/// VKC_ASSIGN(Image color, allocator.create_image(msaa));
 /// @endcode
 struct ImageDesc {
   /// Width and height in texels; non-zero.
@@ -240,6 +266,22 @@ struct ImageDesc {
   /// Texel format; not `VK_FORMAT_UNDEFINED`.
   VkFormat format = VK_FORMAT_UNDEFINED;
   /// Usage flags; non-zero.
+  ///
+  /// With `VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT` -- an attachment whose
+  /// contents live within one render pass, such as a multisampled colour or
+  /// depth target the pass resolves or discards -- the image takes a lazily
+  /// allocated memory type its requirements allow, on memory dedicated to it
+  /// (@ref HeapStats::lazy_bytes counts it), wherever the device has one; on
+  /// tile-based GPUs such memory is tile memory, and Metal's memoryless
+  /// storage under MoltenVK. Elsewhere, and for every other usage, it is
+  /// `DeviceOnly`; a buffer or a non-transient image never takes lazily
+  /// allocated memory. Its contents never outlive the render pass that writes
+  /// them -- in tile memory nothing holds them after it -- so loading or
+  /// storing them is meaningless: load `CLEAR` or `DONT_CARE`, store
+  /// `DONT_CARE`, and never suspend the pass to resume it later. Beside
+  /// transient usage Vulkan allows only attachment usages
+  /// (VUID-VkImageCreateInfo-usage-00963), so the image cannot be copied,
+  /// sampled or written by a shader.
   VkImageUsageFlags usage = 0;
   /// 1D, 2D or 3D.
   VkImageType type = VK_IMAGE_TYPE_2D;
@@ -379,10 +421,11 @@ class VKC_VULKAN_API Allocator {
   static Status check_image(const ImageDesc& desc, const char* caller);
 
   // create_image after its checks: `desc`'s image, with `image_next`
-  // chained to its VkImageCreateInfo, placed as DeviceOnly is and within its
-  // heap's budget, and its view. With `export_info`, the memory is dedicated
-  // to it and made with `export_info` chained, and `memory` and
-  // `memory_size` receive the allocation, for the caller to export.
+  // chained to its VkImageCreateInfo, placed by its usage (ImageDesc::usage)
+  // and within its heap's budget, and its view. With `export_info`, the
+  // memory is DeviceOnly, dedicated to it and made with `export_info`
+  // chained, and `memory` and `memory_size` receive the allocation, for the
+  // caller to export.
   Result<Image> make_image(const ImageDesc& desc, const char* caller,
                            const void* image_next, void* export_info,
                            VkDeviceMemory* memory, VkDeviceSize* memory_size);

@@ -127,7 +127,9 @@ slot's threading rule (DECISIONS.md, "Where memory lives").
 
 `Allocator::memory_stats()` reports each heap's usage against its budget
 (`usage_bytes`, `budget_bytes`) beside this allocator's own share: its
-reserved blocks (`reserved_bytes`) and live allocations (`allocation_bytes`).
+reserved blocks (`reserved_bytes`), live allocations (`allocation_bytes`) and
+transient attachments' lazily allocated memory (`lazy_bytes`, outside the
+other two: the device commits it only as a pass needs it).
 Only the allocator's own figures may be summed across sibling allocators;
 with `VK_EXT_memory_budget`, a heap's usage already includes every allocation
 in the process.

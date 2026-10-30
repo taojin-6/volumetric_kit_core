@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <ios>
 #include <numeric>
 #include <optional>
@@ -22,6 +23,7 @@
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 
@@ -703,6 +705,246 @@ TEST_F(AllocatorTest, ImagesMoveAndAnAdoptedOneDescribesItself) {
     EXPECT_FALSE(borrowed.memory_info().has_value());  // nobody said
   }
   EXPECT_EQ(released, 1);
+}
+
+// --- transient attachments ---------------------------------------------------
+
+constexpr VkImageUsageFlags kTransient =
+    VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+constexpr VkMemoryPropertyFlags kLazy = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+
+// A renderer's device, as gfx asks for one: graphics and dynamic rendering.
+class TransientAttachmentTest : public AllocatorTest {
+ protected:
+  static constexpr std::uint32_t kW = 64;
+  static constexpr std::uint32_t kH = 32;
+
+  DeviceRequirements requirements() const override {
+    DeviceRequirements req;
+    req.api_version = VK_API_VERSION_1_3;
+    req.queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    req.dynamic_rendering = true;
+    return req;
+  }
+
+  Image attachment(VkFormat format, VkImageUsageFlags usage,
+                   VkSampleCountFlagBits samples) {
+    ImageDesc desc;
+    desc.extent = {kW, kH};
+    desc.format = format;
+    desc.usage = usage;
+    desc.samples = samples;
+    Result<Image> made = allocator().create_image(desc);
+    EXPECT_TRUE(made.ok()) << made.status().message();
+    return made.ok() ? *std::move(made) : Image{};
+  }
+
+  VkMemoryRequirements requirements_of(const Image& image) {
+    VkMemoryRequirements needs{};
+    vkGetImageMemoryRequirements(device().handle(), image.handle(), &needs);
+    return needs;
+  }
+
+  // Whether `image` took lazily allocated memory: it must wherever its
+  // requirements allow a lazily allocated type, and is device-only otherwise.
+  bool expect_placed_by_usage(const Image& image) {
+    const VkMemoryRequirements needs = requirements_of(image);
+    const std::optional<MemoryInfo>& memory = image.memory_info();
+    if (!memory.has_value()) {
+      ADD_FAILURE() << "no memory info";
+      return false;
+    }
+    const std::uint32_t lazy =
+        (image.usage() & kTransient) != 0
+            ? detail::lazily_allocated_types(physical().memory_properties()) &
+                  needs.memoryTypeBits
+            : 0;
+    if (lazy == 0) {
+      expect_device_only(needs.memoryTypeBits, memory);
+      EXPECT_EQ(memory->properties & kLazy, 0U);
+      return false;
+    }
+    EXPECT_NE(lazy & (1U << memory->type_index), 0U)
+        << "type " << memory->type_index << " (flags 0x" << std::hex
+        << memory->properties << ") is not lazily allocated";
+    return true;
+  }
+};
+
+// A 4x colour and depth set, as a renderer's frame target makes it, takes
+// lazily allocated memory wherever the device offers it -- on MoltenVK,
+// Metal's memoryless storage -- reported as lazy bytes, not as the
+// allocator's blocks; elsewhere it is device-only like any image.
+TEST_F(TransientAttachmentTest, AMultisampledSetTakesLazyMemoryWhereOffered) {
+  const MemoryStats before = allocator().memory_stats();
+  std::uint64_t lazy[VK_MAX_MEMORY_HEAPS]{};
+  bool all_lazy = true;
+  {
+    const Image color =
+        attachment(VK_FORMAT_R8G8B8A8_UNORM,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | kTransient,
+                   VK_SAMPLE_COUNT_4_BIT);
+    const Image depth =
+        attachment(VK_FORMAT_D32_SFLOAT,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | kTransient,
+                   VK_SAMPLE_COUNT_4_BIT);
+    ASSERT_TRUE(color.valid() && depth.valid());
+    for (const Image* image : {&color, &depth}) {
+      if (expect_placed_by_usage(*image)) {
+        lazy[image->memory_info()->heap_index] += requirements_of(*image).size;
+      } else {
+        all_lazy = false;
+      }
+    }
+    const MemoryStats made = allocator().memory_stats();
+    ASSERT_EQ(made.heap_count, before.heap_count);
+    for (std::uint32_t h = 0; h < made.heap_count; ++h) {
+      EXPECT_EQ(made.heaps[h].lazy_bytes, before.heaps[h].lazy_bytes + lazy[h])
+          << "heap " << h;
+      if (all_lazy) {
+        EXPECT_EQ(made.heaps[h].reserved_bytes, before.heaps[h].reserved_bytes)
+            << "heap " << h;
+        EXPECT_EQ(made.heaps[h].allocation_bytes,
+                  before.heaps[h].allocation_bytes)
+            << "heap " << h;
+      }
+    }
+  }
+  const MemoryStats freed = allocator().memory_stats();
+  for (std::uint32_t h = 0; h < freed.heap_count; ++h) {
+    EXPECT_EQ(freed.heaps[h].lazy_bytes, before.heaps[h].lazy_bytes)
+        << "heap " << h;
+    EXPECT_EQ(freed.heaps[h].allocation_bytes, before.heaps[h].allocation_bytes)
+        << "heap " << h;
+  }
+}
+
+// A multisampled attachment without transient usage, and a sampled image,
+// never take lazily allocated memory, nor count as lazy bytes.
+TEST_F(TransientAttachmentTest, ANonTransientImageNeverTakesLazyMemory) {
+  const MemoryStats before = allocator().memory_stats();
+  const Image msaa =
+      attachment(VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                 VK_SAMPLE_COUNT_4_BIT);
+  const Image sampled = attachment(
+      VK_FORMAT_R8G8B8A8_UNORM,
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+      VK_SAMPLE_COUNT_1_BIT);
+  ASSERT_TRUE(msaa.valid() && sampled.valid());
+  EXPECT_FALSE(expect_placed_by_usage(msaa));
+  EXPECT_FALSE(expect_placed_by_usage(sampled));
+  const MemoryStats after = allocator().memory_stats();
+  for (std::uint32_t h = 0; h < after.heap_count; ++h) {
+    EXPECT_EQ(after.heaps[h].lazy_bytes, before.heaps[h].lazy_bytes);
+  }
+}
+
+// A pass clears a 4x transient colour and depth set, stores neither, and
+// resolves the colour into a 1x image the host reads back -- a frame target's
+// one pass, validation-clean (VKC_TEST_VALIDATION, VKC_TEST_SYNC_VALIDATION)
+// with the set in lazily allocated memory.
+TEST_F(TransientAttachmentTest, APassResolvesFromATransientSet) {
+  const Image color = attachment(
+      VK_FORMAT_R8G8B8A8_UNORM,
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | kTransient, VK_SAMPLE_COUNT_4_BIT);
+  const Image depth =
+      attachment(VK_FORMAT_D32_SFLOAT,
+                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | kTransient,
+                 VK_SAMPLE_COUNT_4_BIT);
+  const Image resolved = attachment(
+      VK_FORMAT_R8G8B8A8_UNORM,
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+      VK_SAMPLE_COUNT_1_BIT);
+  ASSERT_TRUE(color.valid() && depth.valid() && resolved.valid());
+  constexpr VkDeviceSize kBytes = VkDeviceSize{kW} * kH * 4;
+  const Buffer readback =
+      make(kBytes, kTransfer, MemoryUsage::Staging, HostAccess::Random);
+  ASSERT_TRUE(readback.valid());
+  // Exact in 8-bit UNORM: 51, 102, 204 and 255 of 255.
+  const VkClearColorValue clear{{0.2F, 0.4F, 0.8F, 1.0F}};
+
+  const Status s = device().submit_single_time([&](VkCommandBuffer cmd) {
+    VkImageMemoryBarrier to_attachment[3]{};
+    for (VkImageMemoryBarrier& barrier : to_attachment) {
+      barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    }
+    to_attachment[0].image = color.handle();
+    to_attachment[1].image = resolved.handle();
+    to_attachment[2].image = depth.handle();
+    to_attachment[2].dstAccessMask =
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    to_attachment[2].newLayout =
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    to_attachment[2].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                         0, 0, nullptr, 0, nullptr, 3, to_attachment);
+
+    VkRenderingAttachmentInfo color_info{};
+    color_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color_info.imageView = color.view();
+    color_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_info.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    color_info.resolveImageView = resolved.view();
+    color_info.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color_info.clearValue.color = clear;
+    VkRenderingAttachmentInfo depth_info{};
+    depth_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depth_info.imageView = depth.view();
+    depth_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_info.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth_info.clearValue.depthStencil = {1.0F, 0};
+    VkRenderingInfo rendering{};
+    rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering.renderArea.extent = {kW, kH};
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &color_info;
+    rendering.pDepthAttachment = &depth_info;
+    vkCmdBeginRendering(cmd, &rendering);
+    vkCmdEndRendering(cmd);
+
+    // The resolve wrote the 1x image at the colour output stage.
+    VkImageMemoryBarrier to_copy = to_attachment[1];
+    to_copy.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    to_copy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    to_copy.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_copy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &to_copy);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = resolved.extent();
+    vkCmdCopyImageToBuffer(cmd, resolved.handle(),
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           readback.handle(), 1, &region);
+    test::host_read_barrier(cmd);
+  });
+  ASSERT_TRUE(s.ok()) << s.message();
+
+  const auto* texels = static_cast<const std::uint8_t*>(readback.mapped());
+  const std::uint8_t want[4] = {51, 102, 204, 255};
+  std::uint32_t wrong = 0;
+  for (VkDeviceSize i = 0; i < kBytes; ++i) {
+    const int diff = int{texels[i]} - int{want[i % 4]};
+    if (diff < -1 || diff > 1) ++wrong;
+  }
+  EXPECT_EQ(wrong, 0U) << "of " << kBytes << " bytes, first texel "
+                       << int{texels[0]} << "," << int{texels[1]} << ","
+                       << int{texels[2]} << "," << int{texels[3]};
 }
 
 }  // namespace

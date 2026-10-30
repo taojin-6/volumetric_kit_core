@@ -352,5 +352,87 @@ TEST(MemoryTypes, APlacementIsCutToWhatTheResourceAllows) {
   EXPECT_EQ(placed(props, MemoryUsage::DeviceMapped, bits({1, 2})), 0U);
 }
 
+// --- images, and transient attachments ---------------------------------------
+// On the layouts drivers report, as measured: MoltenVK on Apple GPUs (one
+// unified heap with private, shared and memoryless types, the same on a laptop
+// and a phone), a discrete GPU with five types and no lazily allocated memory,
+// and lavapipe's single type.
+
+constexpr VkImageUsageFlags kColor = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+constexpr VkImageUsageFlags kDepth =
+    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+constexpr VkImageUsageFlags kTransient =
+    VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+
+VkPhysicalDeviceMemoryProperties moltenvk_layout() {
+  return layout({kLocalHeap},
+                {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
+}
+
+VkPhysicalDeviceMemoryProperties five_type_discrete_layout() {
+  return layout({kLocalHeap, 0}, {{1, 0},
+                                  {0, kDL},
+                                  {1, kHV | kHC},
+                                  {1, kHV | kHC | kCached},
+                                  {0, kDL | kHV | kHC}});
+}
+
+VkPhysicalDeviceMemoryProperties lavapipe_layout() {
+  return layout({kLocalHeap}, {{0, kDL | kHV | kHC | kCached}});
+}
+
+// A transient attachment takes the lazily allocated types it allows -- on
+// MoltenVK, Metal's memoryless storage -- and nothing else does, even where
+// a resource's requirements allowed them.
+TEST(MemoryTypes, ATransientAttachmentTakesLazilyAllocatedMemory) {
+  const auto props = moltenvk_layout();
+  EXPECT_EQ(detail::lazily_allocated_types(props), bits({2}));
+  EXPECT_EQ(detail::image_types(props, kColor | kTransient, bits({0, 2})),
+            bits({2}));
+  EXPECT_EQ(detail::image_types(props, kDepth | kTransient, kAny), bits({2}));
+  // Not transient: device-only, the private type.
+  EXPECT_EQ(detail::image_types(props, kColor, kAny), bits({0}));
+  EXPECT_EQ(detail::image_types(props, kColor, bits({2})), 0U);
+  // Transient, but its requirements leave the lazy type out: device-only.
+  EXPECT_EQ(detail::image_types(props, kColor | kTransient, bits({0, 1})),
+            bits({0}));
+  // No other placement, nor the search for memory bound outside the
+  // allocator, ever takes it.
+  for (const MemoryUsage memory :
+       {MemoryUsage::DeviceOnly, MemoryUsage::DeviceMapped,
+        MemoryUsage::Staging}) {
+    EXPECT_EQ(placed(props, memory) & bits({2}), 0U);
+    EXPECT_EQ(placed(props, memory, kAny, HostAccess::Random) & bits({2}), 0U);
+  }
+  EXPECT_FALSE(detail::first_memory_type(props, bits({2}), kDL, 0));
+}
+
+// Without lazily allocated memory a transient attachment is device-only,
+// as any image: a discrete GPU's VRAM outside the BAR window, lavapipe's one
+// type.
+TEST(MemoryTypes, ATransientAttachmentIsDeviceOnlyWithoutLazyMemory) {
+  const auto discrete = five_type_discrete_layout();
+  EXPECT_EQ(detail::lazily_allocated_types(discrete), 0U);
+  EXPECT_EQ(detail::image_types(discrete, kColor | kTransient, kAny),
+            bits({1}));
+  EXPECT_EQ(detail::image_types(discrete, kDepth | kTransient, kAny),
+            placed(discrete, MemoryUsage::DeviceOnly));
+  EXPECT_EQ(detail::image_types(discrete, kColor | kTransient, bits({4})), 0U)
+      << "never the BAR window";
+
+  const auto cpu = lavapipe_layout();
+  EXPECT_EQ(detail::lazily_allocated_types(cpu), 0U);
+  EXPECT_EQ(detail::image_types(cpu, kColor | kTransient, kAny), bits({0}));
+}
+
+// A lazily allocated type that is also protected is not one a transient
+// attachment may take.
+TEST(MemoryTypes, OnlyPlainLazilyAllocatedTypesServeTransientAttachments) {
+  const auto props =
+      layout({kLocalHeap}, {{0, kDL}, {0, kDL | kLazy | kProtected}});
+  EXPECT_EQ(detail::lazily_allocated_types(props), 0U);
+  EXPECT_EQ(detail::image_types(props, kColor | kTransient, kAny), bits({0}));
+}
+
 }  // namespace
 }  // namespace volumetric_kit::core

@@ -7,6 +7,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-10-30
+
+### Changed
+
+- `Allocator::create_image` places an image whose usage includes
+  `VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT` in a lazily allocated memory type
+  its requirements allow, on memory dedicated to it, wherever the device has
+  one (MoltenVK: Metal's memoryless storage, which takes no memory); elsewhere
+  it stays `DeviceOnly`. No other resource ever takes lazily allocated memory
+  (DECISIONS.md, the 2026-10-30 entry). Such an image's contents last only
+  the render pass that writes them: never load or store them.
+
+### Added
+
+- `HeapStats::lazy_bytes`: this allocator's lazily allocated bytes, the most
+  the device may commit for its transient attachments. `reserved_bytes` and
+  `allocation_bytes` no longer include them.
+
+### Migration
+
+- Nothing to change beyond the pin. A consumer that loads or stores a
+  transient attachment's contents across passes must drop
+  `TRANSIENT_ATTACHMENT` from that image. On a device with lazily allocated
+  memory, a transient image's bytes move from `reserved_bytes` and
+  `allocation_bytes` to `lazy_bytes`.
+
 ## [0.34.0] - 2026-10-30
 
 ### Added
