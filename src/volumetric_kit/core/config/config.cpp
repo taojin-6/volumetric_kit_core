@@ -260,7 +260,6 @@ void read_fusion(const Json& json, Config& c, ParseState& state) {
   BOOL(share_vertices);
   BOOL(device_extract);
   BOOL(dynamic);
-  BOOL(depth_within_color);
 #undef NUM
 #undef BOOL
   r.finish();
@@ -388,8 +387,7 @@ bool supports(std::string_view field, App app) {
     return is_one_of(app, {App::FuseReplica, App::FuseRender, App::FuseViewer});
   if (field == "fusion.dynamic")
     return is_dataset(app) || is_live_fusion(app) || app == App::FuseRealsense;
-  if (field_in(field, {"fusion.depth_within_color", "fusion.hold_ms"}))
-    return app == App::RigViewer;
+  if (field == "fusion.hold_ms") return app == App::RigViewer;
   if (field == "fusion.free_after")
     return is_live_fusion(app) || app == App::FuseRealsense;
   if (field == "fusion.occlusion_m")

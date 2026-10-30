@@ -118,7 +118,6 @@ struct Fusion {
   /// Dynamic integration if true, else Classic; FuseOrbbec, FuseRealsense
   /// and RigViewer resolve true.
   bool dynamic = false;
-  bool depth_within_color = true;
   float occlusion_m = 0.05F;
   int remesh_every = 1;
   int hold_ms = 2000;
