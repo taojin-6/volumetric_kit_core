@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.34.0 CONFIG)
+vkc_require_core(0.35.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -85,7 +85,7 @@ does not override the requested operation or source discriminator.
 | `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
 | `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 3840x2160 HEVC, depth 640x576, 25 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
-| `FuseRealsense` | `fuse` | `live`, `realsense`; with `depth` `ffs`, its model and plan cache required | the camera's depth with the projector on; colour 1280x800, depth 1280x720 (FFS: 960x544, projector off), 30 fps, 300 frames; dynamic fusion, fusion output `fuse_realsense.ply` |
+| `FuseRealsense` | `fuse` | `live`, `realsense`; with `depth` `ffs`, its model and plan cache required | the camera's depth with the projector on; colour 1280x800, depth 1280x720 (FFS: 960x544, projector off), 30 fps, 300 frames; dynamic fusion, fusion output `fuse_realsense.ply`; nothing coded |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
 | `RigViewer` | `view` | `live`, `orbbec`; sync config required | colour 3840x2160 HEVC, depth 640x576, 25 fps; voxel 0.01 m, dynamic fusion, 1280x720 window, overlay, unlit shading, unlimited frames/sets |
@@ -117,8 +117,8 @@ unknown extension object.
 - Live RealSense fields (core 0.31.0, `FuseRealsense`): `driver`
   `realsense`, `serial` (empty: the only camera attached), the colour/depth
   widths and heights, as pairs, and `fps`. One camera's depth with its
-  colour: none of the Orbbec rig's fields, the codec and its outputs, or
-  diagnostics.
+  colour: none of the Orbbec rig's fields, or diagnostics. From core 0.35.0
+  it codes and serves its fused sets as FuseOrbbec does (below).
 - RealSense depth (core 0.33.0, `FuseRealsense`): `depth` is `camera` (the
   default, the camera's own) or `ffs` (Fast-FoundationStereo on its infrared
   pair, which the consumer runs on CUDA and TensorRT and refuses in a build
@@ -179,10 +179,10 @@ unknown extension object.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
   core 0.6.0; `screenshot` for GfxModel; `serve` and `max_viewers` (core
-  0.30.0) for FuseOrbbec. An empty string disables each optional output;
-  fusion/export operations require a nonempty `path`.
-  `path`, `csv` and `stream` must differ once resolved, and none may be
-  `source.sync_config` or `source.calibration` (core 0.13.0), or
+  0.30.0) for FuseOrbbec, and FuseRealsense (core 0.35.0). An empty string
+  disables each optional output; fusion/export operations require a nonempty
+  `path`. `path`, `csv` and `stream` must differ once resolved, and none may
+  be `source.sync_config` or `source.calibration` (core 0.13.0), or
   `source.ffs_model` (core 0.33.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/CalibColor limits are
@@ -212,18 +212,19 @@ unknown extension object.
   `mjpeg`, since an H.265 frame is not self-contained, and must not exceed
   `run.frames`; a directory requires a positive count. Other profiles reject
   both fields.
-- `FuseOrbbec` codes its fused sets, one frame per set, when `output.stream`
-  or `output.csv` names a file (core 0.13.0) or `output.serve` a port (core
-  0.16.0); it still writes the PLY at `output.path`. A nonzero `serve` serves
-  the coded frames live on that port, on every interface (grid's
-  `networking::StreamServer`); 0, the default, serves nothing.
+- `FuseOrbbec` and, from core 0.35.0, `FuseRealsense` code their fused sets,
+  one frame per set, when `output.stream` or `output.csv` names a file (core
+  0.13.0) or `output.serve` a port (core 0.16.0); each still writes the PLY
+  at `output.path`. A nonzero `serve` serves the coded frames live on that
+  port, on every interface (grid's `networking::StreamServer`); 0, the
+  default, serves nothing.
   `max_viewers` (core 0.30.0), a positive integer, default 4, is how many
   viewers it serves at once, first come; a connection past them is closed.
   It is refused unless `serve` is nonzero. No upper bound is checked: each
   viewer costs the sender a thread and a socket, and the server takes no
-  authentication. FuseOrbbec takes the codec fields the codec profiles
-  share, with their defaults and checks. A `codec` section without any of
-  the three outputs is refused, since nothing would be coded.
+  authentication. Both take the codec fields the codec profiles share, with
+  their defaults and checks. A `codec` section without any of the three
+  outputs is refused, since nothing would be coded.
 - `FuseOrbbec` and `FuseRealsense` accept `source.audio` (core 0.34.0), the
   audio input recorded beside the cameras, on the host's clock, as a track of
   the coded stream. Omitted, the default, records none; `default` is the
@@ -231,8 +232,9 @@ unknown extension object.
   OS lists it, which the consumer looks up. It requires `output.stream` or
   `output.serve`, since audio is written only to the stream, and FuseOrbbec's
   cameras on the host's clock: a rig (`sync_config`) or `host_clock`. A
-  RealSense camera always is, but FuseRealsense takes neither output yet, so
-  until it does its audio is refused. Other profiles reject it.
+  RealSense camera always is, so FuseRealsense asks only for the stream
+  (core 0.35.0, when it took the two outputs; 0.34.0 refused its audio).
+  Other profiles reject it.
 - `FuseOrbbec` (core 0.14.0), `FuseRealsense` and `RigViewer` accept
   `fusion.free_after`, a nonnegative integer, default 30. Every that many
   fused sets, the consumer
