@@ -974,6 +974,12 @@ TEST_F(TransientAttachmentTest, APassResolvesFromATransientSet) {
 // lives (`churn`); the driver never counted the set, so freeing it would
 // otherwise take its whole size off the driver's figure.
 TEST_F(TransientAttachmentTest, UsageStaysTrueAcrossATransientSet) {
+  // Without lazily allocated memory nothing here touches usage_bytes, and a
+  // driver's figure can move with more than this allocator's memory:
+  // lavapipe's fell by twice the set in CI's sanitizer job.
+  if (detail::lazily_allocated_types(physical().memory_properties()) == 0) {
+    GTEST_SKIP() << "the device has no lazily allocated memory";
+  }
   // 32 MiB of 4x colour and depth, beyond the driver's own fluctuations.
   constexpr VkExtent2D kExtent{1024, 1024};
   const auto churn = [&] {
