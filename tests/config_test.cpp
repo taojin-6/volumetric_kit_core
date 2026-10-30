@@ -1539,6 +1539,82 @@ TEST(Config, FuseOrbbecLimitsTheViewersItServes) {
   }
 }
 
+TEST(Config, LiveFusionRecordsAudioOnTheHostClockIntoItsStream) {
+  // None by default.
+  EXPECT_TRUE(Source{}.audio.empty());
+  for (const auto app : {App::FuseOrbbec, App::FuseRealsense}) {
+    const auto plain = scenario(R"({"version":1})", app);
+    ASSERT_TRUE(plain) << plain.status().message();
+    EXPECT_TRUE(plain->source.audio.empty());
+  }
+  // A rig's cameras are on the host clock: the default input, or one by its
+  // name, which is not a path and stays as written; a stream file or a port.
+  for (const char* name : {"default", "USB Audio Device", "hw:1,0"}) {
+    const auto rig = scenario(
+        std::string(
+            R"({"version":1,"source":{"sync_config":"rig.json","audio":")") +
+            name + R"("},"output":{"stream":"rig.vrst"}})",
+        App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(rig) << rig.status().message();
+    EXPECT_EQ(rig->source.audio, name);
+    EXPECT_EQ(rig->output.stream, "/scenario/rig.vrst");
+  }
+  // So is one camera on host_clock.
+  const auto one = scenario(
+      R"({"version":1,"source":{"serial":"A","host_clock":true,"audio":"default"},"output":{"serve":47801}})",
+      App::FuseOrbbec);
+  ASSERT_TRUE(one) << one.status().message();
+  EXPECT_EQ(one->source.audio, "default");
+  EXPECT_EQ(one->output.serve, 47801U);
+
+  // A camera on its own clock cannot be lined up with the audio.
+  for (const char* clock :
+       {"", R"(,"host_clock":false)", R"(,"serial":"A","host_clock":false)"}) {
+    rejected(std::string(R"({"version":1,"source":{"audio":"default")") +
+                 clock + R"(},"output":{"stream":"rig.vrst"}})",
+             App::FuseOrbbec,
+             "source.audio: requires every camera on the host clock: set "
+             "source.sync_config (a rig) or source.host_clock");
+  }
+  // Audio is written only to the stream: rows, a PLY, or a port of 0 are
+  // not one.
+  for (const char* output :
+       {"", R"(,"output":{"csv":"rows.csv"})", R"(,"output":{"path":"a.ply"})",
+        R"(,"output":{"serve":0})", R"(,"output":{"stream":""})"}) {
+    rejected(
+        std::string(
+            R"({"version":1,"source":{"sync_config":"rig.json","audio":"default"})") +
+            output + "}",
+        App::FuseOrbbec,
+        "source.audio: requires output.stream or output.serve");
+  }
+  // Operation stream writes no output, so it refuses the key as it does the
+  // output section, before the clock and stream checks.
+  rejected(R"({"version":1,"operation":"stream","source":{"audio":"default"}})",
+           App::FuseOrbbec, "source.audio: is not used by operation stream");
+  // A RealSense camera is always on the host clock, so only the stream is
+  // asked for.
+  // TODO: accept FuseRealsense's audio here once it takes output.stream and
+  // output.serve, and drop CONFIG.md's "FuseRealsense takes neither output
+  // yet" clause.
+  rejected(R"({"version":1,"source":{"audio":"default"}})", App::FuseRealsense,
+           "source.audio: requires output.stream or output.serve");
+  // A name, never empty.
+  rejected(R"({"version":1,"source":{"audio":""}})", App::FuseOrbbec,
+           "source.audio: must not be empty");
+  rejected(R"({"version":1,"source":{"audio":true}})", App::FuseOrbbec,
+           "source.audio: expected a string");
+  rejected(R"({"version":1,"source":{"audio":"a\u0000b"}})", App::FuseOrbbec,
+           "source.audio: embedded NUL");
+
+  // Every other profile refuses it.
+  for (const auto app : every_profile()) {
+    if (app == App::FuseOrbbec || app == App::FuseRealsense) continue;
+    rejected(R"({"version":1,"source":{"audio":"default"}})", app,
+             "source.audio: is not used by this application");
+  }
+}
+
 TEST(Config, PlayerPlaysAStreamFileOrALiveSender) {
   // A stream file, against the scenario's directory, in a 1280x720 window
   // without validation, until the window closes.
