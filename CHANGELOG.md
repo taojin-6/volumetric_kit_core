@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
-## [0.32.0] - 2026-10-29
+## [0.33.0] - 2026-10-29
 
 ### Added
 
@@ -28,6 +28,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   the camera's depth and the projector on. A consumer that runs FFS reads
   `source.depth` and the new fields, and refuses `ffs` in a build that
   cannot run it.
+
+## [0.32.0] - 2026-10-29
+
+### Removed
+
+- `config::Fusion::depth_within_color` and its scenario key,
+  `fusion.depth_within_color` (RigViewer's). volumetric_kit_sensor 0.9.0 keeps
+  only what both of a frame's cameras see whenever a frame has colour and
+  depth, so there is nothing left to switch; RigViewer stopped reading it in
+  volumetric_kit_recon at its sensor 0.9.0 pin.
+
+### Migration
+
+- Drop `fusion.depth_within_color` from RigViewer scenarios: it is now an
+  unknown field and refused. No consumer reads the struct field.
 
 ## [0.31.0] - 2026-10-29
 

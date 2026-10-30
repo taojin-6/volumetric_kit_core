@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.32.0 CONFIG)
+vkc_require_core(0.33.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -119,7 +119,7 @@ unknown extension object.
   widths and heights, as pairs, and `fps`. One camera's depth with its
   colour: none of the Orbbec rig's fields, the codec and its outputs, or
   diagnostics.
-- RealSense depth (core 0.32.0, `FuseRealsense`): `depth` is `camera` (the
+- RealSense depth (core 0.33.0, `FuseRealsense`): `depth` is `camera` (the
   default, the camera's own) or `ffs` (Fast-FoundationStereo on its infrared
   pair, which the consumer runs on CUDA and TensorRT and refuses in a build
   without them).
@@ -183,7 +183,7 @@ unknown extension object.
   fusion/export operations require a nonempty `path`.
   `path`, `csv` and `stream` must differ once resolved, and none may be
   `source.sync_config` or `source.calibration` (core 0.13.0), or
-  `source.ffs_model` (core 0.32.0).
+  `source.ffs_model` (core 0.33.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/CalibColor limits are
   positive; FuseOrbbec's counts camera frames, each set adding one per camera

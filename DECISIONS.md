@@ -1567,7 +1567,7 @@ realsense depth with IR emitter on, and a path for FFS using stereo
 monochrome with IR emitter off", FFS on NVIDIA devices only. recon's
 `fuse_realsense` opens either as one depth sensor and runs the same loop, so
 the choice is one key of the profile it already loads, `source.depth`
-(`camera` or `ffs`), not a second profile or program (core 0.32.0;
+(`camera` or `ffs`), not a second profile or program (core 0.33.0;
 CONFIG.md, "RealSense depth").
 
 - **The projector follows the depth,** unless given: on for the camera's

@@ -1801,12 +1801,13 @@ TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
   EXPECT_EQ(dynamic->fusion.free_after, 10);
   rejected(R"({"version":1,"operation":"stream","fusion":{"free_after":30}})",
            App::FuseOrbbec, "fusion: is not used by operation stream");
-  // RigViewer's other fusion keys stay its own.
+  // RigViewer's hold_ms stays its own.
   rejected(R"({"version":1,"fusion":{"hold_ms":2000}})", App::FuseOrbbec,
            "fusion.hold_ms: is not used by this application");
+  // depth_within_color is gone: the sensor keeps only what both of a frame's
+  // cameras see, so no application takes it.
   rejected(R"({"version":1,"fusion":{"depth_within_color":true}})",
-           App::FuseOrbbec,
-           "fusion.depth_within_color: is not used by this application");
+           App::RigViewer, "fusion.depth_within_color: unknown field");
 
   // Every other profile refuses it, even at its default; those that do not
   // fuse refuse the fusion section.
