@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-10-29
+
+### Added
+
+- `FuseRealsense` codes and serves its fused sets as `FuseOrbbec` does
+  (CONFIG.md): it takes the `codec` section, with the codec profiles' shared
+  fields, defaults and checks, and `output.stream`, `output.csv`,
+  `output.serve` and `output.max_viewers`. A `codec` section without one of
+  the three outputs is refused, and `max_viewers` without a port, as for
+  `FuseOrbbec`. Its PLY at `output.path` stays required, and the three
+  files must differ. It still refuses the Orbbec rig's fields, diagnostics
+  and `operation` `stream`.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged and
+  code nothing. A consumer that runs `FuseRealsense` scenarios codes and
+  serves when they name an output, as for `FuseOrbbec`, or refuses those
+  keys itself.
+
 ## [0.33.0] - 2026-10-29
 
 ### Added

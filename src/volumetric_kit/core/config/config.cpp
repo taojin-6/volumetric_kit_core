@@ -58,9 +58,13 @@ bool is_dataset(App app) {
 bool is_codec(App app) {
   return is_one_of(app, {App::CodecReplica, App::CodecMesh});
 }
-// The profiles that code frames: the codec applications, and FuseOrbbec, which
-// can code each fused set.
-bool takes_codec(App app) { return is_codec(app) || app == App::FuseOrbbec; }
+// The live fusion programs that can code each fused set, writing the frames
+// or serving them: FuseOrbbec and FuseRealsense.
+bool codes_sets(App app) {
+  return is_one_of(app, {App::FuseOrbbec, App::FuseRealsense});
+}
+// The profiles that code frames: the codec applications, and those above.
+bool takes_codec(App app) { return is_codec(app) || codes_sets(app); }
 // The Orbbec profiles that can fuse. Not every live profile: CalibRig,
 // CalibColor and Scanner are live too.
 bool is_live_fusion(App app) {
@@ -442,7 +446,7 @@ bool supports(std::string_view field, App app) {
   if (field == "output.prefix") return is_codec(app);
   if (field_in(field, {"output.csv", "output.stream"})) return takes_codec(app);
   if (field_in(field, {"output.serve", "output.max_viewers"}))
-    return app == App::FuseOrbbec;
+    return codes_sets(app);
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
@@ -504,9 +508,9 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     for (const char* section : {"fusion", "codec", "output"})
       if (has(state, section)) fail(section, "is not used by operation stream");
   }
-  // FuseOrbbec codes only when it writes the codec's rows or frames, or serves
-  // the frames.
-  if (app == App::FuseOrbbec && has(state, "codec") && c.output.csv.empty() &&
+  // A live fusion program codes only when it writes the codec's rows or
+  // frames, or serves the frames.
+  if (codes_sets(app) && has(state, "codec") && c.output.csv.empty() &&
       c.output.stream.empty() && c.output.serve == 0)
     fail("codec", "requires output.stream, output.csv or output.serve");
   if (has(state, "output.max_viewers") && c.output.serve == 0)
@@ -530,7 +534,7 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   path_check(c.output.csv, "output.csv");
   path_check(c.output.stream, "output.stream");
   // Compared after resolution, so two spellings of one path are refused too.
-  // FuseOrbbec's PLY is a third file.
+  // A live fusion program's PLY is a third file.
   if (!c.output.stream.empty() && c.output.stream == c.output.csv)
     fail("output.stream", "must differ from output.csv");
   if (!c.output.path.empty() && c.output.stream == c.output.path)

@@ -879,17 +879,17 @@ TEST(Config, FuseRealsenseFusesOneCameraAtItsModesToAPly) {
            "source.driver: only orbbec is supported");
   rejected(R"({"version":1,"operation":"stream"})", App::FuseRealsense,
            "operation: is not supported by this application");
-  // The Orbbec rig's fields, the codec and its outputs, and diagnostics are
-  // not its.
+  // The Orbbec rig's fields and diagnostics are not its (its codec and
+  // outputs: FuseRealsenseCodesAndServesItsSetsAsFuseOrbbecDoes).
   for (const char* field :
        {R"("source":{"sync_config":"rig.json"})",
         R"("source":{"apply_sync":true})",
         R"("source":{"calibration":"poses.json"})",
         R"("source":{"host_clock":true})",
         R"("source":{"color_codec":"mjpeg"})",
-        R"("source":{"color_exposure":100})", R"("codec":{})",
-        R"("output":{"stream":"out.vrst"})", R"("output":{"csv":"out.csv"})",
-        R"("output":{"serve":9000})", R"("diagnostics":{"readback":true})",
+        R"("source":{"color_exposure":100})",
+        R"("diagnostics":{"readback":true})",
+        R"("diagnostics":{"dump_sets":1,"dump_directory":"dump"})",
         R"("fusion":{"occlusion_m":0.1})", R"("window":{})"}) {
     rejected(std::string(R"({"version":1,)") + field + "}", App::FuseRealsense,
              "is not used by this application");
@@ -1388,17 +1388,17 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
              std::string("output.") + key + ": must differ from output.path");
   }
 
-  // Only the codec profiles and FuseOrbbec code: every other profile refuses
-  // the codec section, even empty, and both of its outputs.
+  // Only the codec profiles and the live fusion profiles code: every other
+  // profile refuses the codec section, even empty, and both of its outputs.
   for (const auto app : every_profile()) {
     if (app == App::CodecReplica || app == App::CodecMesh ||
-        app == App::FuseOrbbec)
+        app == App::FuseOrbbec || app == App::FuseRealsense)
       continue;
     rejected(with_sections(app, R"(,"codec":{})"), app,
              "codec: is not used by this application");
     const bool writes = app == App::FuseReplica || app == App::FuseRender ||
                         app == App::GfxModel || app == App::CalibRig ||
-                        app == App::CalibColor || app == App::FuseRealsense;
+                        app == App::CalibColor;
     for (const char* key : {"csv", "stream"}) {
       rejected(with_sections(
                    app, std::string(R"(,"output":{")") + key + R"(":"out"})"),
@@ -1409,7 +1409,7 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
   }
 }
 
-TEST(Config, OnlyFuseOrbbecServesItsCodedFramesLive) {
+TEST(Config, OnlyTheLiveFusionProfilesServeTheirCodedFramesLive) {
   // A port, 0 serving nothing by default.
   EXPECT_EQ(Output{}.serve, 0U);
   const auto plain = scenario(R"({"version":1})", App::FuseOrbbec);
@@ -1456,14 +1456,14 @@ TEST(Config, OnlyFuseOrbbecServesItsCodedFramesLive) {
         App::FuseOrbbec, "output: is not used by operation stream");
   }
 
-  // Every other profile refuses it, even at its default; those without
-  // outputs refuse the output section.
+  // Every other profile but FuseRealsense refuses it, even at its default;
+  // those without outputs refuse the output section.
   for (const auto app : every_profile()) {
-    if (app == App::FuseOrbbec) continue;
+    if (app == App::FuseOrbbec || app == App::FuseRealsense) continue;
     const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
                          app == App::CodecMesh || app == App::FuseRender ||
                          app == App::GfxModel || app == App::CalibRig ||
-                         app == App::CalibColor || app == App::FuseRealsense;
+                         app == App::CalibColor;
     for (const char* port : {"0", "47801"}) {
       rejected(with_sections(
                    app, std::string(R"(,"output":{"serve":)") + port + "}"),
@@ -1525,18 +1525,118 @@ TEST(Config, FuseOrbbecLimitsTheViewersItServes) {
         App::FuseOrbbec, "output: is not used by operation stream");
   }
 
-  // Every other profile refuses it; those without outputs refuse the output
-  // section.
+  // Every other profile but FuseRealsense refuses it; those without outputs
+  // refuse the output section.
   for (const auto app : every_profile()) {
-    if (app == App::FuseOrbbec) continue;
+    if (app == App::FuseOrbbec || app == App::FuseRealsense) continue;
     const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
                          app == App::CodecMesh || app == App::FuseRender ||
                          app == App::GfxModel || app == App::CalibRig ||
-                         app == App::CalibColor || app == App::FuseRealsense;
+                         app == App::CalibColor;
     rejected(with_sections(app, R"(,"output":{"max_viewers":4})"), app,
              (outputs ? "output.max_viewers" : "output") +
                  std::string(": is not used by this application"));
   }
+}
+
+TEST(Config, FuseRealsenseCodesAndServesItsSetsAsFuseOrbbecDoes) {
+  // Nothing coded by default, at FuseOrbbec's codec defaults.
+  const auto plain =
+      scenario(R"({"version":1})", App::FuseRealsense, "/scenario");
+  const auto rig = scenario(R"({"version":1})", App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(plain) << plain.status().message();
+  ASSERT_TRUE(rig) << rig.status().message();
+  EXPECT_TRUE(plain->output.csv.empty());
+  EXPECT_TRUE(plain->output.stream.empty());
+  EXPECT_EQ(plain->output.serve, 0U);
+  EXPECT_EQ(plain->output.max_viewers, 4U);
+  EXPECT_EQ(plain->codec.coefficient_count, rig->codec.coefficient_count);
+  EXPECT_EQ(plain->codec.quantization_scale, rig->codec.quantization_scale);
+  EXPECT_EQ(plain->codec.quantization_table, rig->codec.quantization_table);
+  EXPECT_EQ(plain->codec.segment_size, rig->codec.segment_size);
+  EXPECT_EQ(plain->codec.update_size, rig->codec.update_size);
+  EXPECT_EQ(plain->codec.intra_period, rig->codec.intra_period);
+  EXPECT_EQ(plain->codec.sweep, rig->codec.sweep);
+
+  // Every codec key the codec applications share, every output, served, with
+  // FFS depth; the files resolve against the scenario.
+  const auto coded = scenario(
+      R"({"version":1,"source":{"driver":"realsense","depth":"ffs","ffs_model":"models/ffs.onnx","ffs_plan_cache":"models/plans"},"codec":{"coefficient_count":32,"quantization_scale":0.05,"quantization_table":"band","segment_size":128,"intra_period":30,"update_size":256,"sweep":true},"output":{"path":"room.ply","csv":"runs/room.csv","stream":"runs/../room.vrst","serve":47811,"max_viewers":2}})",
+      App::FuseRealsense, "/scenario");
+  ASSERT_TRUE(coded) << coded.status().message();
+  EXPECT_EQ(coded->source.depth, DepthSource::Ffs);
+  EXPECT_EQ(coded->codec.coefficient_count, 32U);
+  EXPECT_EQ(coded->codec.quantization_scale, 0.05F);
+  EXPECT_EQ(coded->codec.quantization_table, QuantizationTable::Band);
+  EXPECT_EQ(coded->codec.segment_size, 128U);
+  EXPECT_EQ(coded->codec.intra_period, 30U);
+  EXPECT_EQ(coded->codec.update_size, 256U);
+  EXPECT_TRUE(coded->codec.sweep);
+  EXPECT_EQ(coded->output.path, "/scenario/room.ply");
+  EXPECT_EQ(coded->output.csv, "/scenario/runs/room.csv");
+  EXPECT_EQ(coded->output.stream, "/scenario/room.vrst");
+  EXPECT_EQ(coded->output.serve, 47811U);
+  EXPECT_EQ(coded->output.max_viewers, 2U);
+  // Any one output codes, at the codec's defaults without its section; the
+  // PLY is still written.
+  for (const char* output :
+       {R"("stream":"room.vrst")", R"("csv":"room.csv")", R"("serve":47811)"}) {
+    const auto one =
+        scenario(std::string(R"({"version":1,"output":{)") + output + "}}",
+                 App::FuseRealsense, "/scenario");
+    ASSERT_TRUE(one) << one.status().message();
+    EXPECT_EQ(one->codec.intra_period, 1U);
+    EXPECT_EQ(one->output.path, "/scenario/fuse_realsense.ply");
+  }
+
+  // FuseOrbbec's checks hold: a codec section that codes nothing, a viewer
+  // count without a port, the codec's own checks, the other codec
+  // profiles' keys, and the PLY, rows and frames as three files.
+  for (const char* output :
+       {"", R"(,"output":{"path":"room.ply"})",
+        R"(,"output":{"csv":"","stream":""})", R"(,"output":{"serve":0})"}) {
+    rejected(std::string(R"({"version":1,"codec":{"intra_period":30})") +
+                 output + "}",
+             App::FuseRealsense,
+             "codec: requires output.stream, output.csv or output.serve");
+  }
+  rejected(R"({"version":1,"output":{"max_viewers":4}})", App::FuseRealsense,
+           "output.max_viewers: is not used when output.serve is 0");
+  rejected(R"({"version":1,"output":{"serve":47811,"max_viewers":0}})",
+           App::FuseRealsense,
+           "output.max_viewers: must be finite and positive");
+  rejected(R"({"version":1,"output":{"serve":65536}})", App::FuseRealsense,
+           "output.serve: integer is out of range");
+  const auto refused = [](const std::string& codec, const std::string& reason) {
+    rejected(R"({"version":1,"codec":{)" + codec +
+                 R"(},"output":{"stream":"room.vrst"}})",
+             App::FuseRealsense, reason);
+  };
+  refused(R"("intra_period":0)",
+          "codec.intra_period: must be finite and positive");
+  refused(R"("update_size":64)",
+          "codec.update_size: is not used when codec.intra_period is 1");
+  refused(R"("coefficient_count":513)",
+          "codec.coefficient_count: must be in [1, 512]");
+  refused(R"("encode_every":1)",
+          "codec.encode_every: is not used by this application");
+  refused(R"("inspect_only":false)",
+          "codec.inspect_only: is not used by this application");
+  rejected(R"({"version":1,"output":{"prefix":"runs/room"}})",
+           App::FuseRealsense,
+           "output.prefix: is not used by this application");
+  rejected(R"({"version":1,"output":{"csv":"out.bin","stream":"./out.bin"}})",
+           App::FuseRealsense, "output.stream: must differ from output.csv");
+  for (const char* key : {"stream", "csv"}) {
+    // The PLY's default name counts too.
+    rejected(std::string(R"({"version":1,"output":{")") + key +
+                 R"(":"fuse_realsense.ply"}})",
+             App::FuseRealsense,
+             std::string("output.") + key + ": must differ from output.path");
+  }
+  rejected(
+      R"({"version":1,"source":{"depth":"ffs","ffs_model":"m.onnx","ffs_plan_cache":"p"},"output":{"stream":"./m.onnx"}})",
+      App::FuseRealsense, "output.stream: must differ from source.ffs_model");
 }
 
 TEST(Config, PlayerPlaysAStreamFileOrALiveSender) {

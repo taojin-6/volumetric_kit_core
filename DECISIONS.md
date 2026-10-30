@@ -1586,3 +1586,16 @@ CONFIG.md, "RealSense depth").
   consumer's runtime checks (the 2026-10-11 entry): core reads no model.
 - **The depth range is fusion's** `min_depth_m` and `max_depth_m`, which
   gate either depth; FFS's own range takes them.
+
+## 2026-10-29 — FuseRealsense codes and serves as FuseOrbbec does
+
+The owner wants the RealSense camera's live reconstruction seen in a remote
+player, as the rig's is. recon's `fuse_realsense` runs the live run
+`fuse_orbbec` shares, which already codes each fused set and serves it when
+the scenario names an output, so FuseRealsense takes the same keys rather
+than a second program or profile (core 0.34.0; CONFIG.md, the coding
+bullet): the `codec` section, `output.stream`, `output.csv`, `output.serve`
+and `output.max_viewers`, with FuseOrbbec's checks, one rule for both live
+fusion profiles. It still refuses what only the rig has: the rig's source
+fields, and diagnostics, whose picture dump keeps the rig's own coded
+pictures.
