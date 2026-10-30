@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
-## [0.34.0] - 2026-10-29
+## [0.35.0] - 2026-10-30
 
 ### Added
 
@@ -19,13 +19,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `FuseOrbbec`. Its PLY at `output.path` stays required, and the three
   files must differ. It still refuses the Orbbec rig's fields, diagnostics
   and `operation` `stream`.
+- With `output.stream` or `output.serve`, `FuseRealsense` takes
+  `source.audio` (0.34.0), which it refused while it took neither output.
 
 ### Migration
 
 - Nothing to change beyond the pin; existing scenarios load unchanged and
   code nothing. A consumer that runs `FuseRealsense` scenarios codes and
-  serves when they name an output, as for `FuseOrbbec`, or refuses those
-  keys itself.
+  serves when they name an output, as for `FuseOrbbec`, and records the
+  named audio input, or refuses those keys itself.
+
+## [0.34.0] - 2026-10-30
+
+### Added
+
+- `source.audio` (CONFIG.md): the audio input `FuseOrbbec` and
+  `FuseRealsense` record beside the cameras, on the host's clock, into the
+  coded stream. Omitted, the default, records none; `default` is the
+  system's default input; any other value is an input device's name as the
+  OS lists it. It requires `output.stream` or `output.serve`, which
+  FuseRealsense does not take yet, and FuseOrbbec's cameras on the host's
+  clock (`sync_config` or `host_clock`). Other profiles, and `operation`
+  `stream`, refuse it. `Source` gains `audio`.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged and
+  record no audio. A consumer that runs FuseOrbbec or FuseRealsense records
+  the named input, or refuses the key itself.
 
 ## [0.33.0] - 2026-10-29
 

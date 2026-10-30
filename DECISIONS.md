@@ -1593,9 +1593,10 @@ The owner wants the RealSense camera's live reconstruction seen in a remote
 player, as the rig's is. recon's `fuse_realsense` runs the live run
 `fuse_orbbec` shares, which already codes each fused set and serves it when
 the scenario names an output, so FuseRealsense takes the same keys rather
-than a second program or profile (core 0.34.0; CONFIG.md, the coding
+than a second program or profile (core 0.35.0; CONFIG.md, the coding
 bullet): the `codec` section, `output.stream`, `output.csv`, `output.serve`
 and `output.max_viewers`, with FuseOrbbec's checks, one rule for both live
 fusion profiles. It still refuses what only the rig has: the rig's source
 fields, and diagnostics, whose picture dump keeps the rig's own coded
-pictures.
+pictures. With a stream or a port it takes `source.audio` (core 0.34.0),
+which waited on these outputs.
