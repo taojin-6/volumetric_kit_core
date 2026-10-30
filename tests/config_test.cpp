@@ -1577,7 +1577,7 @@ TEST(Config, LiveFusionRecordsAudioOnTheHostClockIntoItsStream) {
              "source.sync_config (a rig) or source.host_clock");
   }
   // Audio is written only to the stream: rows, a PLY, or a port of 0 are
-  // not one, and streaming writes none.
+  // not one.
   for (const char* output :
        {"", R"(,"output":{"csv":"rows.csv"})", R"(,"output":{"path":"a.ply"})",
         R"(,"output":{"serve":0})", R"(,"output":{"stream":""})"}) {
@@ -1588,13 +1588,15 @@ TEST(Config, LiveFusionRecordsAudioOnTheHostClockIntoItsStream) {
         App::FuseOrbbec,
         "source.audio: requires output.stream or output.serve");
   }
-  rejected(
-      R"({"version":1,"operation":"stream","source":{"host_clock":true,"audio":"default"}})",
-      App::FuseOrbbec, "source.audio: requires output.stream or output.serve");
+  // Operation stream writes no output, so it refuses the key as it does the
+  // output section, before the clock and stream checks.
+  rejected(R"({"version":1,"operation":"stream","source":{"audio":"default"}})",
+           App::FuseOrbbec, "source.audio: is not used by operation stream");
   // A RealSense camera is always on the host clock, so only the stream is
   // asked for.
   // TODO: accept FuseRealsense's audio here once it takes output.stream and
-  // output.serve.
+  // output.serve, and drop CONFIG.md's "FuseRealsense takes neither output
+  // yet" clause.
   rejected(R"({"version":1,"source":{"audio":"default"}})", App::FuseRealsense,
            "source.audio: requires output.stream or output.serve");
   // A name, never empty.

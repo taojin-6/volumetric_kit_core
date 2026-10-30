@@ -226,7 +226,7 @@ unknown extension object.
   the three outputs is refused, since nothing would be coded.
 - `FuseOrbbec` and `FuseRealsense` accept `source.audio` (core 0.34.0), the
   audio input recorded beside the cameras, on the host's clock, as a track of
-  the coded stream. Empty, the default, records none; `default` is the
+  the coded stream. Omitted, the default, records none; `default` is the
   system's default input; any other value is an input device's name as the
   OS lists it, which the consumer looks up. It requires `output.stream` or
   `output.serve`, since audio is written only to the stream, and FuseOrbbec's
@@ -277,8 +277,8 @@ contradictory settings fail before resource setup. A known section is not
 silently ignored by an application that does not consume it. In particular:
 
 - Stream mode rejects an explicit `fusion`, `codec` or `output` section, even
-  empty or equal to defaults. This preserves recon's stream-only option
-  exclusions.
+  empty or equal to defaults, and `source.audio` (core 0.34.0). This
+  preserves recon's stream-only option exclusions.
 - Headless model screenshots reject explicit frame limits or overlay settings.
 - Mesh inspection rejects fusion, SDF (`sdf_mode`, `shell_voxels`,
   `allow_holes`), encoder and `csv`/`stream` output settings it would not

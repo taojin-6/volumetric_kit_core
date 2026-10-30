@@ -504,8 +504,8 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (c.source.kind != expected.source.kind)
     fail("source.kind", "is not supported by this application");
   if (c.operation == Operation::Stream) {
-    for (const char* section : {"fusion", "codec", "output"})
-      if (has(state, section)) fail(section, "is not used by operation stream");
+    for (const char* key : {"fusion", "codec", "output", "source.audio"})
+      if (has(state, key)) fail(key, "is not used by operation stream");
   }
   // FuseOrbbec codes only when it writes the codec's rows or frames, or serves
   // the frames.

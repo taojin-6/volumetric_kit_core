@@ -13,12 +13,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 - `source.audio` (CONFIG.md): the audio input `FuseOrbbec` and
   `FuseRealsense` record beside the cameras, on the host's clock, into the
-  coded stream. Empty, the default, records none; `default` is the system's
-  default input; any other value is an input device's name as the OS lists
-  it. It requires `output.stream` or `output.serve`, which FuseRealsense
-  does not take yet, and FuseOrbbec's cameras on the host's clock
-  (`sync_config` or `host_clock`). Other profiles refuse it. `Source` gains
-  `audio`.
+  coded stream. Omitted, the default, records none; `default` is the
+  system's default input; any other value is an input device's name as the
+  OS lists it. It requires `output.stream` or `output.serve`, which
+  FuseRealsense does not take yet, and FuseOrbbec's cameras on the host's
+  clock (`sync_config` or `host_clock`). Other profiles, and `operation`
+  `stream`, refuse it. `Source` gains `audio`.
 
 ### Migration
 
