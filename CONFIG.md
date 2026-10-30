@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.31.0 CONFIG)
+vkc_require_core(0.32.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -85,7 +85,7 @@ does not override the requested operation or source discriminator.
 | `CodecReplica` | `codec` | `dataset`, `replica`; path required | voxel 0.01 m, frames 2^30, encode every frame, no outputs |
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
 | `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 3840x2160 HEVC, depth 640x576, 25 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
-| `FuseRealsense` | `fuse` | `live`, `realsense` | colour 1280x800, depth 1280x720, 30 fps, 300 frames; dynamic fusion, fusion output `fuse_realsense.ply` |
+| `FuseRealsense` | `fuse` | `live`, `realsense`; with `depth` `ffs`, its model and plan cache required | the camera's depth with the projector on; colour 1280x800, depth 1280x720 (FFS: 960x544, projector off), 30 fps, 300 frames; dynamic fusion, fusion output `fuse_realsense.ply` |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
 | `RigViewer` | `view` | `live`, `orbbec`; sync config required | colour 3840x2160 HEVC, depth 640x576, 25 fps; voxel 0.01 m, dynamic fusion, 1280x720 window, overlay, unlit shading, unlimited frames/sets |
@@ -116,9 +116,21 @@ unknown extension object.
   Width/height overrides are pairs. Scanner accepts only `kind`/`driver`.
 - Live RealSense fields (core 0.31.0, `FuseRealsense`): `driver`
   `realsense`, `serial` (empty: the only camera attached), the colour/depth
-  widths and heights, as pairs, and `fps`. The camera's own depth with its
-  colour, one camera: none of the Orbbec rig's fields, the codec and its
-  outputs, or diagnostics.
+  widths and heights, as pairs, and `fps`. One camera's depth with its
+  colour: none of the Orbbec rig's fields, the codec and its outputs, or
+  diagnostics.
+- RealSense depth (core 0.32.0, `FuseRealsense`): `depth` is `camera` (the
+  default, the camera's own) or `ffs` (Fast-FoundationStereo on its infrared
+  pair, which the consumer runs on CUDA and TensorRT and refuses in a build
+  without them).
+  `emitter`, the infrared projector, resolves on for `camera` and off for
+  `ffs` unless given. `ffs` requires `ffs_model`, the FFS ONNX model, and
+  `ffs_plan_cache`, the directory its built TensorRT plans are kept in, both
+  config-relative; `camera` refuses both. The depth size is the depth fused:
+  the camera's depth mode, or the rectified size FFS runs at, which defaults
+  to 960x544 and is the model's own size (the consumer checks the model). The
+  infrared cameras run at their own mode; `fusion.min_depth_m` and
+  `max_depth_m` gate either depth.
 - Mesh fields: `path`; exactly one of `height_m` (a height the consumer
   scales the input to) and `metres_per_unit` (the input's declared unit, core
   0.7.0), finite and positive; either `up_axis` (`x`, `y`, `z`, optionally
@@ -170,7 +182,8 @@ unknown extension object.
   0.30.0) for FuseOrbbec. An empty string disables each optional output;
   fusion/export operations require a nonempty `path`.
   `path`, `csv` and `stream` must differ once resolved, and none may be
-  `source.sync_config` or `source.calibration` (core 0.13.0).
+  `source.sync_config` or `source.calibration` (core 0.13.0), or
+  `source.ffs_model` (core 0.32.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/CalibColor limits are
   positive; FuseOrbbec's counts camera frames, each set adding one per camera

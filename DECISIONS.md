@@ -1559,3 +1559,30 @@ and CI checks the triggers that bypass a pull request.
   the owner's approval or re-run of one, is still untested ("Only the owner
   triggers CI"); and a job that does run on a runner can still reach what the
   host's account can.
+
+## 2026-10-29 — FuseRealsense chooses its depth: the camera's, or FFS on its infrared pair
+
+The owner keeps both depths of a RealSense camera: "the ability to use
+realsense depth with IR emitter on, and a path for FFS using stereo
+monochrome with IR emitter off", FFS on NVIDIA devices only. recon's
+`fuse_realsense` opens either as one depth sensor and runs the same loop, so
+the choice is one key of the profile it already loads, `source.depth`
+(`camera` or `ffs`), not a second profile or program (core 0.32.0;
+CONFIG.md, "RealSense depth").
+
+- **The projector follows the depth,** unless given: on for the camera's
+  own matcher, whose dots texture blank surfaces, off for FFS, which they
+  hinder. Either can be stated, for a comparison.
+- **The depth size stays the depth fused.** With FFS it is the rectified
+  size the network runs at, 960x544 by default: about 28 ms a frame on the
+  lab's GPU, within a 30 fps camera's 33 ms. The infrared cameras run at
+  their own mode and the rectifier resamples their pictures, so there is no
+  second size to set.
+- **The model and its plan cache have no defaults** and are required with
+  FFS: a model is exported for one size and checkpoint, and a plan takes
+  minutes to build, so a scenario names both. The camera's depth refuses
+  them, as every profile refuses a key it does not use. Whether the model
+  fits the size, and whether the build can run FFS at all, are the
+  consumer's runtime checks (the 2026-10-11 entry): core reads no model.
+- **The depth range is fusion's** `min_depth_m` and `max_depth_m`, which
+  gate either depth; FFS's own range takes them.

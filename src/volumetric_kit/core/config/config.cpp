@@ -210,9 +210,12 @@ void read_source(const Json& json, Config& c, ParseState& state) {
   STR(sync_config);
   STR(calibration);
   r.string("up_axis", state.up_axis);
+  STR(ffs_model);
+  STR(ffs_plan_cache);
   BOOL(preload);
   BOOL(apply_sync);
   BOOL(host_clock);
+  BOOL(emitter);
   NUM(color_width);
   NUM(color_height);
   NUM(depth_width);
@@ -229,6 +232,8 @@ void read_source(const Json& json, Config& c, ParseState& state) {
 #undef BOOL
   r.choice("color_codec", c.source.color_codec,
            {{"hevc", ColorCodec::Hevc}, {"mjpeg", ColorCodec::Mjpeg}});
+  r.choice("depth", c.source.depth,
+           {{"camera", DepthSource::Camera}, {"ffs", DepthSource::Ffs}});
   r.choice("sdf_mode", c.source.sdf_mode,
            {{"signed", SdfMode::Signed}, {"shell", SdfMode::Shell}});
   if (json.contains("up_vector")) {
@@ -361,6 +366,9 @@ bool supports(std::string_view field, App app) {
   if (field_in(field, {"source.color_exposure", "source.color_gain"}))
     return app == App::CalibColor;
   if (field == "source.host_clock") return app == App::FuseOrbbec;
+  if (field_in(field, {"source.depth", "source.emitter", "source.ffs_model",
+                       "source.ffs_plan_cache"}))
+    return app == App::FuseRealsense;
   if (field_in(field, {"source.height_m", "source.metres_per_unit",
                        "source.up_axis", "source.up_vector", "source.sdf_mode",
                        "source.shell_voxels", "source.allow_holes"}))
@@ -531,14 +539,15 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     fail("output.stream", "must differ from output.path");
   if (!c.output.path.empty() && c.output.csv == c.output.path)
     fail("output.csv", "must differ from output.path");
-  // A run never overwrites the rig files it reads.
+  // A run never overwrites the rig files, or the FFS model, it reads.
   for (const auto& [output, output_name] :
        {std::pair{&c.output.path, "output.path"},
         std::pair{&c.output.csv, "output.csv"},
         std::pair{&c.output.stream, "output.stream"}}) {
     for (const auto& [source, source_name] :
          {std::pair{&c.source.sync_config, "source.sync_config"},
-          std::pair{&c.source.calibration, "source.calibration"}}) {
+          std::pair{&c.source.calibration, "source.calibration"},
+          std::pair{&c.source.ffs_model, "source.ffs_model"}}) {
       if (!output->empty() && *output == *source)
         fail(output_name, std::string("must differ from ") + source_name);
     }
@@ -588,6 +597,20 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         if (!has(state, name)) fail(name, "is required");
         positive(value, name);
       }
+    }
+  }
+  if (app == App::FuseRealsense) {
+    if (c.source.depth != DepthSource::Camera &&
+        c.source.depth != DepthSource::Ffs)
+      fail("source.depth", "unknown choice");
+    // FFS runs one model at one size and keeps the plans it builds: neither
+    // has a default, and the camera's own depth takes neither.
+    const bool ffs = c.source.depth == DepthSource::Ffs;
+    for (const char* name : {"source.ffs_model", "source.ffs_plan_cache"}) {
+      if (ffs && !has(state, name))
+        fail(name, "is required when source.depth is ffs");
+      if (!ffs && has(state, name))
+        fail(name, "is not used when source.depth is camera");
     }
   }
   if (app == App::Scanner && c.source.driver != "arkit")
@@ -793,6 +816,16 @@ void resolve(Config& c, App app, std::string_view directory,
     c.fusion.truncation_m = 4.F * c.fusion.voxel_size_m;
   if (c.operation == Operation::Stream) c.output.path.clear();
   if (!state.up_axis.empty()) c.source.up_vector = axis_vector(state.up_axis);
+  // FFS depth defaults to 960x544, the size its model was chosen at, with
+  // the projector off, whose dots hinder it; each only unless given.
+  if (app == App::FuseRealsense && c.source.depth == DepthSource::Ffs) {
+    if (!has(state, "source.depth_width") &&
+        !has(state, "source.depth_height")) {
+      c.source.depth_width = 960;
+      c.source.depth_height = 544;
+    }
+    if (!has(state, "source.emitter")) c.source.emitter = false;
+  }
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()
                                          : std::filesystem::path(directory);
@@ -803,6 +836,8 @@ void resolve(Config& c, App app, std::string_view directory,
   resolve_path(c.source.camera_parameters, base);
   resolve_path(c.source.sync_config, base);
   resolve_path(c.source.calibration, base);
+  resolve_path(c.source.ffs_model, base);
+  resolve_path(c.source.ffs_plan_cache, base);
   resolve_path(c.output.path, base);
   resolve_path(c.output.prefix, base);
   resolve_path(c.output.screenshot, base);

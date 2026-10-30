@@ -916,6 +916,105 @@ TEST(Config, FuseRealsenseFusesOneCameraAtItsModesToAPly) {
       << unsourced.status().message();
 }
 
+std::vector<App> every_profile();
+
+TEST(Config, FuseRealsenseFusesTheCamerasDepthOrFfsOnItsInfraredPair) {
+  // The camera's own depth by default, with the projector on.
+  const auto camera =
+      scenario(R"({"version":1})", App::FuseRealsense, "/scenario");
+  ASSERT_TRUE(camera) << camera.status().message();
+  EXPECT_EQ(camera->source.depth, DepthSource::Camera);
+  EXPECT_TRUE(camera->source.emitter);
+  EXPECT_TRUE(camera->source.ffs_model.empty());
+  EXPECT_TRUE(camera->source.ffs_plan_cache.empty());
+  const auto dark =
+      scenario(R"({"version":1,"source":{"depth":"camera","emitter":false}})",
+               App::FuseRealsense, "/scenario");
+  ASSERT_TRUE(dark) << dark.status().message();
+  EXPECT_EQ(dark->source.depth, DepthSource::Camera);
+  EXPECT_FALSE(dark->source.emitter);
+  EXPECT_EQ(dark->source.depth_width, 1280U);
+  EXPECT_EQ(dark->source.depth_height, 720U);
+
+  // FFS: its model and plan cache, relative to the file; 960x544 and the
+  // projector off unless given.
+  const auto ffs = scenario(
+      R"({"version":1,"source":{"depth":"ffs","ffs_model":"models/../ffs_960x544.onnx","ffs_plan_cache":"plans"}})",
+      App::FuseRealsense, "/scenario");
+  ASSERT_TRUE(ffs) << ffs.status().message();
+  EXPECT_EQ(ffs->source.depth, DepthSource::Ffs);
+  EXPECT_FALSE(ffs->source.emitter);
+  EXPECT_EQ(ffs->source.ffs_model, "/scenario/ffs_960x544.onnx");
+  EXPECT_EQ(ffs->source.ffs_plan_cache, "/scenario/plans");
+  EXPECT_EQ(ffs->source.depth_width, 960U);
+  EXPECT_EQ(ffs->source.depth_height, 544U);
+  EXPECT_EQ(ffs->source.color_width, 1280U);
+  EXPECT_EQ(ffs->source.color_height, 800U);
+  EXPECT_EQ(ffs->source.fps, 30U);
+  EXPECT_EQ(ffs->fusion.min_depth_m, 0.25F);
+  EXPECT_EQ(ffs->fusion.max_depth_m, 5.F);
+  const auto stated = scenario(
+      R"({"version":1,"source":{"depth":"ffs","emitter":true,"ffs_model":"/models/ffs_1280x720.onnx","ffs_plan_cache":"/plans","depth_width":1280,"depth_height":720}})",
+      App::FuseRealsense, "/scenario");
+  ASSERT_TRUE(stated) << stated.status().message();
+  EXPECT_TRUE(stated->source.emitter);
+  EXPECT_EQ(stated->source.ffs_model, "/models/ffs_1280x720.onnx");
+  EXPECT_EQ(stated->source.ffs_plan_cache, "/plans");
+  EXPECT_EQ(stated->source.depth_width, 1280U);
+  EXPECT_EQ(stated->source.depth_height, 720U);
+
+  // FFS needs both; the camera's depth takes neither.
+  rejected(R"({"version":1,"source":{"depth":"ffs","ffs_plan_cache":"p"}})",
+           App::FuseRealsense,
+           "source.ffs_model: is required when source.depth is ffs");
+  rejected(R"({"version":1,"source":{"depth":"ffs","ffs_model":"m.onnx"}})",
+           App::FuseRealsense,
+           "source.ffs_plan_cache: is required when source.depth is ffs");
+  for (const char* source :
+       {R"("ffs_model":"m.onnx")", R"("depth":"camera","ffs_model":"m.onnx")",
+        R"("ffs_plan_cache":"p")",
+        R"("depth":"camera","ffs_plan_cache":"p")"}) {
+    const std::string_view text(source);
+    const auto at = text.find("ffs_");
+    const std::string key(text.substr(at, text.find('"', at) - at));
+    rejected(std::string(R"({"version":1,"source":{)") + source + "}}",
+             App::FuseRealsense,
+             "source." + key + ": is not used when source.depth is camera");
+  }
+  rejected(R"({"version":1,"source":{"depth":"chip"}})", App::FuseRealsense,
+           "source.depth: unknown choice 'chip'");
+  rejected(
+      R"({"version":1,"source":{"depth":"ffs","ffs_model":"","ffs_plan_cache":"p"}})",
+      App::FuseRealsense, "source.ffs_model: must not be empty");
+  rejected(R"({"version":1,"source":{"emitter":1}})", App::FuseRealsense,
+           "source.emitter: expected a boolean");
+  // FFS's size is checked as any depth size, and its PLY never replaces the
+  // model it reads.
+  const std::string ffs_source =
+      R"({"version":1,"source":{"depth":"ffs","ffs_model":"m.onnx","ffs_plan_cache":"p")";
+  rejected(ffs_source + R"(,"depth_width":960}})", App::FuseRealsense,
+           "source: depth_width and depth_height must be provided together");
+  rejected(ffs_source + R"(,"depth_width":0,"depth_height":544}})",
+           App::FuseRealsense,
+           "source.depth_width: must be finite and positive");
+  rejected(ffs_source + R"(},"output":{"path":"./m.onnx"}})",
+           App::FuseRealsense,
+           "output.path: must differ from source.ffs_model");
+
+  // No other profile takes them.
+  for (const auto app : every_profile()) {
+    if (app == App::FuseRealsense) continue;
+    for (const char* field :
+         {R"("depth":"ffs")", R"("depth":"camera")", R"("emitter":true)",
+          R"("ffs_model":"m.onnx")", R"("ffs_plan_cache":"p")"}) {
+      const std::string_view text(field);
+      const std::string key(text.substr(1, text.find('"', 1) - 1));
+      rejected(std::string(R"({"version":1,"source":{)") + field + "}}", app,
+               "source." + key + ": is not used by this application");
+    }
+  }
+}
+
 TEST(Config, LiveRelationsAndCountsAreCentral) {
   rejected(R"({"version":1,"source":{"serial":"A\u0000B"}})", App::FuseOrbbec,
            "source.serial: embedded NUL");
