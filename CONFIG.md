@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.33.0 CONFIG)
+vkc_require_core(0.34.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -224,6 +224,15 @@ unknown extension object.
   authentication. FuseOrbbec takes the codec fields the codec profiles
   share, with their defaults and checks. A `codec` section without any of
   the three outputs is refused, since nothing would be coded.
+- `FuseOrbbec` and `FuseRealsense` accept `source.audio` (core 0.34.0), the
+  audio input recorded beside the cameras, on the host's clock, as a track of
+  the coded stream. Empty, the default, records none; `default` is the
+  system's default input; any other value is an input device's name as the
+  OS lists it, which the consumer looks up. It requires `output.stream` or
+  `output.serve`, since audio is written only to the stream, and FuseOrbbec's
+  cameras on the host's clock: a rig (`sync_config`) or `host_clock`. A
+  RealSense camera always is, but FuseRealsense takes neither output yet, so
+  until it does its audio is refused. Other profiles reject it.
 - `FuseOrbbec` (core 0.14.0), `FuseRealsense` and `RigViewer` accept
   `fusion.free_after`, a nonnegative integer, default 30. Every that many
   fused sets, the consumer

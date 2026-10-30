@@ -208,6 +208,7 @@ void read_source(const Json& json, Config& c, ParseState& state) {
   STR(camera_parameters);
   STR(serial);
   STR(sync_config);
+  STR(audio);
   STR(calibration);
   r.string("up_axis", state.up_axis);
   STR(ffs_model);
@@ -365,6 +366,8 @@ bool supports(std::string_view field, App app) {
   if (field_in(field, {"source.color_exposure", "source.color_gain"}))
     return app == App::CalibColor;
   if (field == "source.host_clock") return app == App::FuseOrbbec;
+  if (field == "source.audio")
+    return is_one_of(app, {App::FuseOrbbec, App::FuseRealsense});
   if (field_in(field, {"source.depth", "source.emitter", "source.ffs_model",
                        "source.ffs_plan_cache"}))
     return app == App::FuseRealsense;
@@ -610,6 +613,18 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
       if (!ffs && has(state, name))
         fail(name, "is not used when source.depth is camera");
     }
+  }
+  // Audio is stamped on the host's clock and written only to the coded
+  // stream, so the cameras must be on that clock too (a RealSense camera
+  // always is), and the stream must be written or served.
+  if (!c.source.audio.empty()) {
+    if (app == App::FuseOrbbec && c.source.sync_config.empty() &&
+        !c.source.host_clock)
+      fail("source.audio",
+           "requires every camera on the host clock: set source.sync_config "
+           "(a rig) or source.host_clock");
+    if (c.output.stream.empty() && c.output.serve == 0)
+      fail("source.audio", "requires output.stream or output.serve");
   }
   if (app == App::Scanner && c.source.driver != "arkit")
     fail("source.driver", "only arkit is supported");

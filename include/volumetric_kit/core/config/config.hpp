@@ -71,6 +71,11 @@ struct Source {
   bool preload = false;
   bool apply_sync = false;
   bool host_clock = false;
+  /// FuseOrbbec and FuseRealsense: the audio input recorded beside the
+  /// cameras, on the host's clock, into the coded stream. Empty, the default,
+  /// records none; `default` is the system's default input; any other value
+  /// is an input device's name as the OS lists it.
+  std::string audio;
   /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG only,
   /// CalibColor's H.265 only. FuseRealsense takes the sizes and rate, not
   /// the codec, and resolves colour 1280x800 at 30 fps; its depth size is
