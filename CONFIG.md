@@ -180,10 +180,9 @@ unknown extension object.
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
   core 0.6.0; `screenshot` for GfxModel; `serve` and `max_viewers` (core
   0.30.0) for FuseOrbbec, and FuseRealsense (core 0.35.0). An empty string
-  disables each optional output;
-  fusion/export operations require a nonempty `path`.
-  `path`, `csv` and `stream` must differ once resolved, and none may be
-  `source.sync_config` or `source.calibration` (core 0.13.0), or
+  disables each optional output; fusion/export operations require a nonempty
+  `path`. `path`, `csv` and `stream` must differ once resolved, and none may
+  be `source.sync_config` or `source.calibration` (core 0.13.0), or
   `source.ffs_model` (core 0.33.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/CalibColor limits are
@@ -216,16 +215,16 @@ unknown extension object.
 - `FuseOrbbec` and, from core 0.35.0, `FuseRealsense` code their fused sets,
   one frame per set, when `output.stream` or `output.csv` names a file (core
   0.13.0) or `output.serve` a port (core 0.16.0); each still writes the PLY
-  at `output.path`. A nonzero `serve` serves
-  the coded frames live on that port, on every interface (grid's
-  `networking::StreamServer`); 0, the default, serves nothing.
+  at `output.path`. A nonzero `serve` serves the coded frames live on that
+  port, on every interface (grid's `networking::StreamServer`); 0, the
+  default, serves nothing.
   `max_viewers` (core 0.30.0), a positive integer, default 4, is how many
   viewers it serves at once, first come; a connection past them is closed.
   It is refused unless `serve` is nonzero. No upper bound is checked: each
   viewer costs the sender a thread and a socket, and the server takes no
   authentication. Both take the codec fields the codec profiles share, with
-  their defaults and checks. A `codec` section without any of
-  the three outputs is refused, since nothing would be coded.
+  their defaults and checks. A `codec` section without any of the three
+  outputs is refused, since nothing would be coded.
 - `FuseOrbbec` and `FuseRealsense` accept `source.audio` (core 0.34.0), the
   audio input recorded beside the cameras, on the host's clock, as a track of
   the coded stream. Omitted, the default, records none; `default` is the
