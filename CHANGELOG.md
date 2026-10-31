@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.35.2] - 2026-10-31
+
+### Fixed
+
+- A wait of `Device::PendingSubmit` or `PendingBatch` that sees the work
+  complete -- `wait`, the destructor, a move assignment -- returns only once
+  every timeline value the work sets reads as set, on every driver. Vulkan
+  sets a submit's values before its fence, but lavapipe (Mesa's emulated
+  timelines) can show the fence first, so a value read right after the wait,
+  or a later check of reached values (`TimelineWaits::Reached`), could see
+  the old one. `ready()` still answers by the fence.
+
+### Migration
+
+- Nothing to change beyond the pin. The semaphores a pending submit sets
+  must outlive its wait, not just the work.
+
 ## [0.35.1] - 2026-10-31
 
 ### Fixed

@@ -1046,6 +1046,7 @@ Result<Device::PendingSubmit> Device::submit_pending(
   // Made before the submit, so nothing after it allocates.
   PendingSubmit pending;
   pending.waits_ = wait;
+  pending.signals_ = signal;
 
   VKC_ASSIGN(const Command command, record_one_time(record));
   VkCommandBuffer cmd = command.buffer;
@@ -1097,6 +1098,7 @@ Device::PendingSubmit::PendingSubmit(PendingSubmit&& other) noexcept
       command_(std::exchange(other.command_, Command{})),
       keep_alive_(std::exchange(other.keep_alive_, nullptr)),
       waits_(std::exchange(other.waits_, {})),
+      signals_(std::exchange(other.signals_, {})),
       running_(std::exchange(other.running_, false)),
       failed_(std::exchange(other.failed_, Status{})) {}
 
@@ -1108,6 +1110,7 @@ Device::PendingSubmit& Device::PendingSubmit::operator=(
     command_ = std::exchange(other.command_, Command{});
     keep_alive_ = std::exchange(other.keep_alive_, nullptr);
     waits_ = std::exchange(other.waits_, {});
+    signals_ = std::exchange(other.signals_, {});
     running_ = std::exchange(other.running_, false);
     failed_ = std::exchange(other.failed_, Status{});
   }
@@ -1119,6 +1122,16 @@ namespace {
 // How long finish() waits before it warns: long enough that work merely
 // queued behind other work rarely warns.
 std::atomic<std::uint64_t> pending_stall_ns{1'000'000'000};
+
+// What is left of `timeout_ns` since `start`: all of an unbounded one.
+std::uint64_t time_left(std::uint64_t timeout_ns,
+                        std::chrono::steady_clock::time_point start) noexcept {
+  if (timeout_ns == UINT64_MAX) return timeout_ns;
+  const std::int64_t spent = detail::elapsed_ns(start);
+  if (spent <= 0) return timeout_ns;
+  const auto used = static_cast<std::uint64_t>(spent);
+  return used < timeout_ns ? timeout_ns - used : 0;
+}
 
 }  // namespace
 
@@ -1162,16 +1175,35 @@ bool Device::PendingSubmit::ready() const {
 
 Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) try {
   if (!running_) return failed_;
-  const VkResult waited = detail::wait_for_fence(
+  const auto start = std::chrono::steady_clock::now();
+  VkResult waited = detail::wait_for_fence(
       device_->handle(), command_.fence, timeout_ns, device_->counters_.get());
-  if (waited == VK_TIMEOUT) return vk_error(waited, "vkWaitForFences");
+  const char* call = "vkWaitForFences";
+  // Vulkan sets a submit's values before its fence, but a driver may show the
+  // fence first: Mesa's emulated timelines (lavapipe) add a value to its
+  // semaphore only after the submit returns, and their polls can miss one a
+  // timed wait sees. So the values get the rest of the timeout too, which
+  // returns at once where they are set.
+  for (const TimelinePoint& point : signals_) {
+    if (waited != VK_SUCCESS) break;
+    VkSemaphore semaphore = point.semaphore->handle();
+    VkSemaphoreWaitInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    info.semaphoreCount = 1;
+    info.pSemaphores = &semaphore;
+    info.pValues = &point.value;
+    waited = vkWaitSemaphores(device_->handle(), &info,
+                              time_left(timeout_ns, start));
+    call = "vkWaitSemaphores";
+  }
+  if (waited == VK_TIMEOUT) return vk_error(waited, call);
   running_ = false;
   if (waited != VK_SUCCESS) {
     // The work may still run, so its buffer and fence must not go to another
     // submit, nor what it uses be freed: the device's, as a failed wait of
     // submit_single_time leaves them. It stays pending there.
     device_->leave_to_device(command_, std::move(keep_alive_));
-    failed_ = vk_error(waited, "vkWaitForFences");
+    failed_ = vk_error(waited, call);
   } else {
     // One whose fence will not reset is not reused; destroy() frees it.
     device_->release_running(
@@ -1181,6 +1213,7 @@ Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) try {
   keep_alive_.reset();
   command_ = Command{};
   waits_.clear();
+  signals_.clear();
   device_ = nullptr;
   return failed_;
 } catch (...) {

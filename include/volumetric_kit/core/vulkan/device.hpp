@@ -781,7 +781,9 @@ class VKC_VULKAN_API Device {
 /// run the work, as a failed wait of @ref Device::submit_single_time does.
 /// Destroying an unfinished one waits for it first, so what the work uses is
 /// never freed under it; an empty one (default, or moved from) has nothing
-/// to wait for.
+/// to wait for. A wait sees the work complete only once every value it sets
+/// also reads as set -- Vulkan sets them before the fence, but a driver may
+/// show the fence first -- so the semaphores it sets must outlive that wait.
 ///
 /// **Set every value the work waits for, on every path, before it goes.**
 /// Work submitted to Vulkan cannot be withdrawn, and freeing what it uses
@@ -815,8 +817,9 @@ class VKC_VULKAN_API Device::PendingSubmit {
   /// Waits for this one's own unfinished work before taking @p other's.
   PendingSubmit& operator=(PendingSubmit&& other) noexcept;
 
-  /// @return Whether @ref wait would return without blocking: the work has
-  ///         completed, failed, or the submission is empty. Never blocks.
+  /// @return Whether the work's fence has signalled, the work failed, or the
+  ///         submission is empty: @ref wait then blocks at most until the
+  ///         values the work sets read as set. Never blocks.
   bool ready() const;
 
   /// @brief Wait until the work completes, or the timeout passes.
@@ -850,6 +853,8 @@ class VKC_VULKAN_API Device::PendingSubmit {
   // What the work waits for, named by the warning finish() gives; the
   // semaphores outlive the work, as TimelinePoint says.
   std::vector<TimelinePoint> waits_;
+  // What the work sets, which a wait waits for after the fence.
+  std::vector<TimelinePoint> signals_;
   bool running_ = false;  // submitted; no wait has seen it complete or fail
   Status failed_;         // a failed wait's status, returned again
 };
