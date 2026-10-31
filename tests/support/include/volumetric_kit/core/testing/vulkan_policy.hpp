@@ -141,9 +141,11 @@ class ScopedEnv {
 ///        instance is created.
 ///
 /// It loads no layer; an instance from @ref instance_config does that.
-/// At @ref Validation::Sync and above, it overrides legacy layer enables and
-/// disables (including their environment aliases), which otherwise suppress
-/// the synchronization setting. The caller's values return on destruction.
+/// At every level, it turns off the layer's limit on repeated messages, so
+/// each report of an error reaches the log sink. At @ref Validation::Sync and
+/// above, it overrides legacy layer enables and disables (including their
+/// environment aliases), which otherwise suppress the synchronization
+/// setting. The caller's values return on destruction.
 ///
 /// @code
 /// const test::ValidationSession validation(test::Validation::Sync);

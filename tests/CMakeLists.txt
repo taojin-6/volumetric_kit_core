@@ -342,15 +342,20 @@ endif()
 # under VKC_REQUIRE_VULKAN_DEVICE and skips without it; one whose layer cannot
 # be found fails under VKC_TEST_VALIDATION; two tests in one process share the
 # device; a buffer a test never destroys fails the run as the shared device goes
-# (LeakSanitizer off: the leak is the point); a fixture chain stops where its
-# middle SetUp failed; and under VKC_TEST_SYNC_VALIDATION an instance a test
-# makes itself runs synchronization validation.
+# (LeakSanitizer off: the leak is the point); a device that could not be made,
+# or was lost, is made again, and a lost one goes with the test that lost it; a
+# fixture chain stops where its middle SetUp failed; and under
+# VKC_TEST_SYNC_VALIDATION an instance a test makes itself runs synchronization
+# validation. The probe injects its failures and losses through the fixture's
+# private faults (support/vulkan_fixture_faults.hpp).
 if(VKC_WITH_VULKAN)
   add_executable(vkc_testing_vulkan_fixture_probe
                  testing_vulkan_fixture_probe.cpp)
   target_link_libraries(
     vkc_testing_vulkan_fixture_probe PRIVATE volumetric_kit::core_test_support
                                              volumetric_kit::core_test_main)
+  target_include_directories(vkc_testing_vulkan_fixture_probe
+                             PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support")
   vkc_target_warnings(vkc_testing_vulkan_fixture_probe)
 
   set(_vkc_probe "$<TARGET_FILE:vkc_testing_vulkan_fixture_probe>")
@@ -421,6 +426,37 @@ if(VKC_WITH_VULKAN)
     vkc_testing_reports_a_leak
     PROPERTIES PASS_REGULAR_EXPRESSION "an object a test never destroyed"
                SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
+
+  # The next test makes again a device that could not be made, first or after a
+  # loss, on either fixture.
+  add_test(NAME vkc_testing_retries_the_device
+           COMMAND "${_vkc_probe}" --gtest_filter=Retried/DeviceProbe.*)
+  add_test(NAME vkc_testing_retries_the_two_family_device
+           COMMAND "${_vkc_probe}" --gtest_filter=Retried/TwoFamilyProbe.*)
+  set_tests_properties(
+    vkc_testing_retries_the_device vkc_testing_retries_the_two_family_device
+    PROPERTIES SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
+
+  # A lost device goes with the test that lost it: the layer's report of a
+  # buffer left on it fails that test, which allows validation errors and has no
+  # other failure, before the next test runs; the next passes, and no report is
+  # left for the shared devices' teardown.
+  add_test(NAME vkc_testing_destroys_a_lost_device
+           COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0
+                   "${_vkc_probe}" --gtest_filter=LossProbe.*)
+  add_test(NAME vkc_testing_destroys_a_lost_two_family_device
+           COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0
+                   "${_vkc_probe}" --gtest_filter=TwoFamilyLossProbe.*)
+  set_tests_properties(
+    vkc_testing_destroys_a_lost_device
+    vkc_testing_destroys_a_lost_two_family_device
+    PROPERTIES
+      PASS_REGULAR_EXPRESSION
+      "VUID-vkDestroyDevice-device-.*\\[  FAILED  \\] [A-Za-z]*LossProbe\\.LeavesABufferAndLosesTheDevice.*\\[ RUN      \\] [A-Za-z]*LossProbe\\.GetsANewDevice"
+      FAIL_REGULAR_EXPRESSION
+      "\\[  FAILED  \\] [A-Za-z]*LossProbe\\.GetsANewDevice|an object a test never destroyed"
+      SKIP_REGULAR_EXPRESSION
+      "${_vkc_skipped}")
 
   add_test(NAME vkc_testing_stops_a_fixture_chain
            COMMAND "${_vkc_probe}" --gtest_filter=LeafProbe.*)

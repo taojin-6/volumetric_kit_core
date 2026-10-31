@@ -7,14 +7,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-10-31
+
 ### Fixed
 
+- The test fixtures' validation layer reports every repeat of an error:
+  `test::ValidationSession` turns off the layer's limit on repeated messages
+  at every level. The limit counts per instance, which the tests in a process
+  share, so once an error had been reported about ten times, later tests that
+  committed it passed.
+- `test::VulkanDeviceTest` and `test::SharedDeviceTest` try again, for the
+  next test, to make a shared device that could not be made -- including one
+  replacing a lost device -- rather than fail every later test in the process
+  with the first failure. A lost device is destroyed with the test that lost
+  it, so what the layer reports as it goes fails that test, not the next.
 - The allocator checks that VMA's successful allocation returned one before
   binding a resource to it, and otherwise refuses the resource with
   `VK_ERROR_UNKNOWN`. VMA always returns one, so nothing changes at run time;
   clang-tidy's analyzer, which cannot always see that, no longer fails CI
-  with `clang-analyzer-nullability.NullPassedToNonnull`. No migration is
-  needed.
+  with `clang-analyzer-nullability.NullPassedToNonnull`.
+
+### Migration
+
+- Nothing to change beyond the pin. A sibling's test whose error the limit
+  hid now fails, and a count of allowed errors includes every repeat.
 
 ## [0.35.0] - 2026-10-30
 
