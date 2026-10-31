@@ -1,0 +1,84 @@
+name: ci-images
+
+# Builds the family's Linux CI images (tools/ci/images/README.md), checks each
+# inside a GPU container, and pushes it to the private GHCR package
+# ghcr.io/taojin-6/volumetric_kit_ci. Run by hand only: the owner dispatches
+# it, then moves each repository's pin to the digest the summary prints. No
+# pull request or push runs it, so no change reaches the host's docker
+# unreviewed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time.
+concurrency:
+  group: ci-images
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: ubuntu-${{ matrix.version }}
+    # On the host, not in a job container: it drives the host's docker.
+    runs-on: [self-hosted, vk-linux-gpu]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['24.04', '26.04']
+    env:
+      IMAGE: ghcr.io/taojin-6/volumetric_kit_ci
+      TAG: ubuntu-${{ matrix.version }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: src
+    steps:
+      # Other repositories share the host; leave no token in the checkout.
+      # Into src/: the build legs' containers leave root's files in the
+      # workspace, which this job, as the runner's user, could not clean.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: src
+
+      # No layer from an earlier build: a rebuild exists to take Ubuntu's and
+      # NVIDIA's current packages.
+      - name: Build
+        run: |
+          docker build --no-cache \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${IMAGE}:${TAG}" "tools/ci/images/${TAG}"
+
+      - name: Check
+        run: |
+          docker run --rm --gpus all -e NVIDIA_DRIVER_CAPABILITIES=all \
+            -v "${PWD}/tools/ci/images/smoke.sh:/smoke.sh:ro" \
+            "${IMAGE}:${TAG}" bash /smoke.sh
+
+      # The login lives in this job's temporary directory, which the runner
+      # empties, not in the account's ~/.docker, which other repositories'
+      # jobs on the host read.
+      - name: Push
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          export DOCKER_CONFIG="${RUNNER_TEMP}/docker"
+          printf '%s' "${TOKEN}" |
+            docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE}:${TAG}"
+          # The digest the registry serves for the tag: what a job pulls.
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" |
+            awk '$1 == "Digest:" && !d { d = $2 } END { print d }')
+          docker logout ghcr.io
+          [ -n "${digest}" ] || { echo "::error::no digest for ${IMAGE}:${TAG}"; exit 1; }
+          size=$(docker image inspect "${IMAGE}:${TAG}" --format '{{.Size}}')
+          {
+            echo "### ${TAG}"
+            echo
+            echo "Pin \`${IMAGE}@${digest}\` (${TAG}; $((size / 1000000)) MB on the host)."
+          } >> "${GITHUB_STEP_SUMMARY}"

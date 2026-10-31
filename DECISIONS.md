@@ -1645,3 +1645,33 @@ requirements allow, where the device has it (core 0.35.0). This reverses
   reads the attachment, sees undefined contents. `ImageDesc::usage` says so;
   gfx already clears the set, stores `DONT_CARE` and keeps each frame in one
   pass it never suspends.
+
+## 2026-10-31 — The family's Linux CI images, built by hand
+
+Every Linux leg of the family started from a bare `ubuntu@sha256` image and
+spent 17–89 s installing its packages, NVIDIA's repository and CUDA among
+them, on every run; a cache of apt's archives would save little, as most of
+it is dpkg unpacking. The core now owns one image per Ubuntu release, the
+union of what that release's legs install, pushed to a private GHCR package
+and pinned by digest in each repository
+([tools/ci/images/README.md](tools/ci/images/README.md)).
+
+- **Built and pinned by hand.** `ci-images.yml` runs only on the owner's
+  dispatch, never on a push or pull request, so no change reaches the host's
+  docker, where the job runs as the runner's user, before it is merged. A
+  repository moves to a new image as it moves to a new action: a commit that
+  changes the digest. Each rebuild takes current packages, with no cached
+  layers; there is no schedule and no automatic bump.
+- **The union, per release.** A leg gets packages it did not install before.
+  The family's optional dependencies are off unless a leg turns them on, so
+  what a leg builds does not change; one thing does: with glslc beside
+  glslang, CMake's FindVulkan finds glslc, so every Linux leg compiles its
+  shaders with glslc, as the Mac legs already do. The default compilers stay
+  GCC beside the sanitizers' clang, and lavapipe's manifests sit outside the
+  loader's search path, so a GPU leg still sees the NVIDIA ICD alone;
+  `smoke.sh` checks both before a push.
+- **Private.** The images carry NVIDIA's CUDA and TensorRT, which are not
+  ours to redistribute; each repository is given read access to the package.
+- **Not in them:** what keeps its pin elsewhere. The Orbbec SDK and
+  librealsense stay with sensor's actions, whose pins move with its CMake
+  floors, and a repository's own Python packages with its workflow.
