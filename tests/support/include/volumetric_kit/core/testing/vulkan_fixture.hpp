@@ -30,7 +30,9 @@
 /// that needs one makes it, and it is destroyed after the last test. Each test
 /// makes and destroys its own objects on them. An object a test never destroys
 /// is reported as the shared device is destroyed, failing the run rather than
-/// a named test.
+/// a named test. A device that could not be made is made again for the next
+/// test that needs it. A test that loses its device fails, and the device is
+/// destroyed with it, so what the layer reports as it goes fails that test.
 ///
 /// @code
 /// namespace test = volumetric_kit::core::test;
@@ -69,8 +71,8 @@
 namespace volumetric_kit::core::test {
 
 namespace detail {
-struct DeviceSlot;
-struct TwoFamilySlot;
+struct DeviceEntry;
+struct TwoFamilyEntry;
 }  // namespace detail
 
 /// @brief A test with an instance and a physical device: shared, validated
@@ -193,7 +195,7 @@ class VulkanDeviceTest : public VulkanTest {
   Allocator& allocator();
 
  private:
-  detail::DeviceSlot* slot_ = nullptr;  // the shared device's, to mark it lost
+  detail::DeviceEntry* entry_ = nullptr;  // to mark the shared device lost
   Device* device_ = nullptr;
   std::optional<Allocator> allocator_;
 };
@@ -277,7 +279,7 @@ class SharedDeviceTest : public VulkanTest {
   using VulkanTest::instance;
   using VulkanTest::physical;
 
-  detail::TwoFamilySlot* slot_ = nullptr;  // to mark it lost
+  detail::TwoFamilyEntry* entry_ = nullptr;  // to mark it lost
   TwoFamilyDevice* device_ = nullptr;
 };
 

@@ -930,6 +930,9 @@ without it; and a `"vulkan"` error fails the running test.
   them; one it leaks is reported as the shared device is destroyed, failing
   the run rather than the test. Requirements carrying a `feature_chain`
   cannot be compared, so a fixture asking for one fails rather than share.
+  A device that could not be made is made again for the next test, and one
+  a test loses is destroyed with that test, so neither the failure nor what
+  the layer reports as the device goes falls on later tests.
 - **Static**, so the shared objects are the test binary's own.
 - **The layer's settings through its environment variables**, which it reads
   as an instance is created: set while a fixture's instance is made, and for
@@ -941,7 +944,10 @@ without it; and a `"vulkan"` error fails the running test.
   one, and newer layers warn of the mix. A synchronization session temporarily
   overrides legacy enables/disables and their environment aliases so they
   cannot suppress the requested checks; it restores the caller's values when
-  it ends.
+  it ends. Every session turns off the layer's limit on repeated messages
+  (`VK_KHRONOS_VALIDATION_ENABLE_MESSAGE_LIMIT`): it counts per instance,
+  which a process's tests share, so a later test committing an error already
+  reported that many times would pass.
 - **A fixture may ask for more** (`validation()`), met wherever the layer is
   installed -- elsewhere the test runs without it -- so barrier-heavy tests
   run under synchronization validation locally as well as in CI.
