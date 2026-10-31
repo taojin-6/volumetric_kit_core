@@ -269,12 +269,38 @@ Reported intercept(Step&& step) {
   return reported;
 }
 
+// A fixture whose test can lose its device. TearDown checks that it reports
+// the injected loss, rather than fail on it, so the loss fails nothing else.
+template <typename Fixture>
+class Losing : public Fixture {
+ protected:
+  void TearDown() override {
+    if (!losing_) {
+      Fixture::TearDown();
+      return;
+    }
+    const Reported reported = intercept([this] { Fixture::TearDown(); });
+    EXPECT_NE(reported.failures.find("an injected device loss"),
+              std::string::npos)
+        << reported.failures;
+  }
+
+  // TearDown finds the device lost.
+  void lose_it() {
+    losing_ = true;
+    test::detail::fixture_faults().lost = true;
+  }
+
+ private:
+  bool losing_ = false;
+};
+
 // Run in one process, in this order, on either fixture: the first device made
 // fails, the next test makes it, loses it and fails the next creation, and the
 // test after that makes it again. The tests check what SetUp reports, and
 // TearDown the injected loss, rather than fail on them; a skip stays a skip.
 template <typename Fixture>
-class Retried : public Fixture {
+class Retried : public Losing<Fixture> {
  protected:
   static void SetUpTestSuite() {
     test::detail::fixture_faults().failed_creations = 1;
@@ -285,17 +311,6 @@ class Retried : public Fixture {
     const Reported reported = intercept([this] { Fixture::SetUp(); });
     if (reported.skipped) GTEST_SKIP() << reported.skip;
     setup_failures_ = reported.failures;
-  }
-
-  void TearDown() override {
-    if (!losing_) {
-      Fixture::TearDown();
-      return;
-    }
-    const Reported reported = intercept([this] { Fixture::TearDown(); });
-    EXPECT_NE(reported.failures.find("an injected device loss"),
-              std::string::npos)
-        << reported.failures;
   }
 
   // Whether SetUp made the device, failing nothing.
@@ -320,14 +335,12 @@ class Retried : public Fixture {
 
   // TearDown finds the device lost, and the next device made fails.
   void lose_it() {
-    losing_ = true;
-    test::detail::fixture_faults().lost = true;
+    Losing<Fixture>::lose_it();
     test::detail::fixture_faults().failed_creations = 1;
   }
 
  private:
   std::string setup_failures_;
-  bool losing_ = false;
 };
 
 // Names each instantiation for its fixture's device, as a probe.
@@ -357,10 +370,11 @@ TYPED_TEST(Retried, MakesItAgain) { EXPECT_TRUE(this->made()); }
 
 // --- a lost device -----------------------------------------------------------
 
-// Run in one process, in this order: the first test leaves a buffer on the
-// device and loses it, and the device goes with that test, which the layer's
-// report of the buffer fails; the next test gets a new device and passes.
-class LossProbe : public Probe {
+// Run in one process, in this order: the first test allows validation errors,
+// leaves a buffer on the device and loses it, and the device goes with that
+// test, which the layer's report of the buffer alone fails; the next test gets
+// a new device and passes.
+class LossProbe : public Losing<Probe> {
  protected:
   test::Validation validation() const override { return test::Validation::On; }
 
@@ -375,15 +389,16 @@ class LossProbe : public Probe {
 };
 
 TEST_F(LossProbe, LeavesABufferAndLosesTheDevice) {
+  allow_validation_errors();
   leave_a_buffer(device().handle());
-  test::detail::fixture_faults().lost = true;
+  lose_it();
 }
 
 TEST_F(LossProbe, GetsANewDevice) {
   EXPECT_NE(device().handle(), VK_NULL_HANDLE);
 }
 
-class TwoFamilyLossProbe : public test::SharedDeviceTest {
+class TwoFamilyLossProbe : public Losing<test::SharedDeviceTest> {
  protected:
   void SetUp() override {
     SharedDeviceTest::SetUp();
@@ -396,8 +411,9 @@ class TwoFamilyLossProbe : public test::SharedDeviceTest {
 };
 
 TEST_F(TwoFamilyLossProbe, LeavesABufferAndLosesTheDevice) {
+  allow_validation_errors();
   leave_a_buffer(two_family().compute().handle());
-  test::detail::fixture_faults().lost = true;
+  lose_it();
 }
 
 TEST_F(TwoFamilyLossProbe, GetsANewDevice) {

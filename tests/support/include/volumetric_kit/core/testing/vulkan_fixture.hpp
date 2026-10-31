@@ -132,7 +132,9 @@ class VulkanTest : public ::testing::Test {
   Validation active_validation() const { return validation_; }
 
   /// @brief For a test that commits invalid usage on purpose: from here on,
-  ///        its `"vulkan"` errors are counted instead of failing it.
+  ///        its `"vulkan"` errors are counted instead of failing it. What the
+  ///        layer reports as a device the test lost is destroyed still fails
+  ///        it.
   void allow_validation_errors();
   /// @return The `"vulkan"` errors reported since
   ///         @ref allow_validation_errors.

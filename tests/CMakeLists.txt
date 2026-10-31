@@ -438,8 +438,9 @@ if(VKC_WITH_VULKAN)
     PROPERTIES SKIP_REGULAR_EXPRESSION "${_vkc_skipped}")
 
   # A lost device goes with the test that lost it: the layer's report of a
-  # buffer left on it fails that test before the next one runs, which passes,
-  # and none is left for the shared devices' teardown.
+  # buffer left on it fails that test, which allows validation errors and has no
+  # other failure, before the next test runs; the next passes, and no report is
+  # left for the shared devices' teardown.
   add_test(NAME vkc_testing_destroys_a_lost_device
            COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0
                    "${_vkc_probe}" --gtest_filter=LossProbe.*)
@@ -451,7 +452,7 @@ if(VKC_WITH_VULKAN)
     vkc_testing_destroys_a_lost_two_family_device
     PROPERTIES
       PASS_REGULAR_EXPRESSION
-      "\\[vulkan error\\].*\\[ RUN      \\] [A-Za-z]*LossProbe\\.GetsANewDevice"
+      "VUID-vkDestroyDevice-device-.*\\[  FAILED  \\] [A-Za-z]*LossProbe\\.LeavesABufferAndLosesTheDevice.*\\[ RUN      \\] [A-Za-z]*LossProbe\\.GetsANewDevice"
       FAIL_REGULAR_EXPRESSION
       "\\[  FAILED  \\] [A-Za-z]*LossProbe\\.GetsANewDevice|an object a test never destroyed"
       SKIP_REGULAR_EXPRESSION

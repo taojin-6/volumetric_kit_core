@@ -378,9 +378,10 @@ VulkanDeviceTest::VulkanDeviceTest() = default;
 
 // A lost device goes with the test that lost it, after a derived fixture's
 // objects and while its capture runs, so what the layer reports as it goes
-// fails this test rather than the next.
+// fails this test rather than the next, whatever errors the test allowed.
 VulkanDeviceTest::~VulkanDeviceTest() {
   if (entry_ == nullptr || !entry_->lost) return;
+  capture_->allowing = false;
   allocator_.reset();
   entry_->device.reset();
   entry_->lost = false;
@@ -436,6 +437,7 @@ SharedDeviceTest::SharedDeviceTest() = default;
 // As VulkanDeviceTest's.
 SharedDeviceTest::~SharedDeviceTest() {
   if (entry_ == nullptr || !entry_->lost) return;
+  capture_->allowing = false;
   entry_->device.reset();
   entry_->lost = false;
 }
