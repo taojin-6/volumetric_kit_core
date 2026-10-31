@@ -1,11 +1,11 @@
 name: ci-images
 
 # Builds the family's Linux CI images (tools/ci/images/README.md), checks each
-# inside a GPU container, and pushes it to the private GHCR package
-# ghcr.io/taojin-6/volumetric_kit_ci. Run by hand only: the owner dispatches
-# it, then moves each repository's pin to the digest the summary prints. No
-# pull request or push runs it, so no change reaches the host's docker
-# unreviewed.
+# inside a GPU container, pushes it to the private GHCR package
+# ghcr.io/taojin-6/volumetric_kit_ci, and checks no anonymous client can pull
+# it. Run by hand only: the owner dispatches it, then moves each repository's
+# pin to the digest the summary prints. No pull request or push runs it, so no
+# change reaches the host's docker unreviewed.
 on:
   workflow_dispatch:
 
@@ -83,3 +83,8 @@ jobs:
             echo
             echo "Pin \`${IMAGE}@${digest}\` (${TAG}; $((size / 1000000)) MB on the host)."
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      # The images carry NVIDIA's components, which are not ours to
+      # redistribute publicly: fail while an anonymous client can pull one.
+      - name: Check the package is private
+        run: python3 -I tools/ci/images/check_private.py "${IMAGE}:${TAG}"

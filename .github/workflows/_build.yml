@@ -14,15 +14,33 @@ on:
         description: Self-hosted GPU runner label (vk-linux-gpu or mac).
         type: string
         required: true
-      container:
-        description: JSON job container for Linux; empty on the native Mac.
+      image:
+        description: Linux job container image, by digest; empty on the native Mac.
         type: string
         default: ''
 
 jobs:
   build:
     runs-on: [self-hosted, '${{ inputs.runner }}']
-    container: ${{ inputs.container != '' && fromJSON(inputs.container) || null }}
+    # The family's CI image (tools/ci/images/README.md); an empty image, the
+    # Mac's, runs the job on the host. The container needs the graphics driver
+    # capabilities, bounded fan-out (a runner's .env does not enter it), and a
+    # persistent shader-cache path.
+    container:
+      image: ${{ inputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --gpus all
+      env:
+        NVIDIA_DRIVER_CAPABILITIES: all
+        CMAKE_BUILD_PARALLEL_LEVEL: '4'
+        CTEST_PARALLEL_LEVEL: '4'
+        __GL_SHADER_DISK_CACHE_PATH: /__w/_tool/nvidia-glcache
+        __GL_SHADER_DISK_CACHE_SKIP_CLEANUP: '1'
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 30
     defaults:
       run:
@@ -41,17 +59,12 @@ jobs:
       VKC_TEST_SYNC_VALIDATION: '1'
       VKC_EXPECT_RING_PATH: ${{ inputs.runner == 'mac' && 'in_place' || 'copied' }}
     steps:
-      # The bare Ubuntu image runs as root and needs git before checkout. The
-      # NVIDIA ICD also needs libXext.so.6 and libEGL.so.1 to create a device.
-      # No software ICD is installed: these legs exercise discrete memory.
-      - name: Install dependencies (Linux)
+      # The image holds the build's packages, and its loader sees the NVIDIA
+      # ICD alone: these legs exercise discrete memory. The shader cache is
+      # under the runner's tool cache, mounted at run time.
+      - name: Shader cache directory (Linux)
         if: runner.os == 'Linux'
-        run: |
-          mkdir -p "$__GL_SHADER_DISK_CACHE_PATH"
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git \
-            cmake build-essential libvulkan-dev vulkan-tools \
-            vulkan-validationlayers glslc spirv-tools libxext6 libegl1
+        run: mkdir -p "$__GL_SHADER_DISK_CACHE_PATH"
 
       # Other repositories share the host; leave no token in the checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

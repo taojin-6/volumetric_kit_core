@@ -12,7 +12,8 @@ and re-pinned by hand only (DECISIONS.md, the 2026-10-31 entry).
 | `ubuntu-24.04/Dockerfile`, `ubuntu-26.04/Dockerfile` | the images; each comment says which legs need a group of packages |
 | `smoke.sh` | checks a built image inside a GPU container, before it is pushed |
 | `check_dockerfiles.py` | the rules below; lint runs its tests |
-| `../../../.github/workflows/ci-images.yml` | builds, checks and pushes both, when the owner dispatches it |
+| `check_private.py` | fails while an anonymous client can pull an image; lint runs its tests |
+| `../../../.github/workflows/ci-images.yml` | builds, checks and pushes both, then checks they are private, when the owner dispatches it |
 
 ## What is in them
 
@@ -54,9 +55,11 @@ container:
 
 The token can be named only under `credentials`: neither a matrix value nor
 a `container:` expression can read `secrets`, and `github.token` is null
-outside a job's steps. A leg that takes its whole container from JSON
+outside a job's steps. A leg whose container comes from JSON
 (`fromJSON(inputs.container)`) therefore writes `container:` as a mapping
-like this one, and handles its macOS leg, which has no container, apart.
+like this one, with `image: ${{ inputs.image }}`. A macOS leg of the same
+job passes an empty image: a container whose image is empty runs the job on
+the host (the core's `.github/workflows/_build.yml`).
 
 The leg then drops its install step. A host keeps a pulled image, so a job
 pays only the registry's manifest check.
@@ -80,13 +83,14 @@ it; the hosts' old images are pruned by hand too.
 
 ## The owner's one-time step
 
-The package is private, as it holds NVIDIA's CUDA and TensorRT, which are not
-ours to redistribute; keep it so. The core reaches it through the source
-label. Every other repository needs read access, given once after the first
-run: on the package's settings
-(<https://github.com/users/taojin-6/packages/container/volumetric_kit_ci/settings>),
-"Manage Actions access" -> "Add repository", each repository with a Linux leg,
-role Read.
+The package must be private, as it holds NVIDIA's CUDA and TensorRT, which
+are not ours to redistribute; `ci-images.yml` fails after a push while an
+anonymous client can pull an image (`check_private.py`). Once, after the
+first run, on the package's settings
+(<https://github.com/users/taojin-6/packages/container/volumetric_kit_ci/settings>):
+"Change visibility" -> Private, then "Manage Actions access" -> "Add
+repository", each repository with a Linux leg, role Read. The core reaches it
+through the source label.
 
 ## The rules
 
