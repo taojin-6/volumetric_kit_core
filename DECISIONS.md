@@ -1657,8 +1657,9 @@ and pinned by digest in each repository
 ([tools/ci/images/README.md](tools/ci/images/README.md)).
 
 - **Built and pinned by hand.** `ci-images.yml` runs only on the owner's
-  dispatch, never on a push or pull request, so no change reaches the host's
-  docker, where the job runs as the runner's user, before it is merged. A
+  dispatch, never on a push or pull request, so code reaches the host's
+  docker, where the job runs as the runner's user, only when the owner sends
+  it there. A
   repository moves to a new image as it moves to a new action: a commit that
   changes the digest. Each rebuild takes current packages, with no cached
   layers; there is no schedule and no automatic bump.
