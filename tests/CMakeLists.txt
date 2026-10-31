@@ -254,6 +254,16 @@ if(VKC_WITH_VULKAN)
               ${CMAKE_DL_LIBS})
     vkc_target_warnings(vkc_vulkan_calibration_test)
     _vkc_discover_device_tests(vkc_vulkan_calibration_test)
+
+    # The executable interposes vkQueueSubmit so a pending submit's fence is
+    # seen before its timeline values, as on a driver that shows them late.
+    add_executable(vkc_vulkan_late_values_test vulkan_late_values_test.cpp)
+    target_link_libraries(
+      vkc_vulkan_late_values_test
+      PRIVATE volumetric_kit::core_test_support volumetric_kit::core_test_main
+              ${CMAKE_DL_LIBS})
+    vkc_target_warnings(vkc_vulkan_late_values_test)
+    _vkc_discover_device_tests(vkc_vulkan_late_values_test)
   endif()
   if(_vkc_vulkan_type STREQUAL "SHARED_LIBRARY")
     target_compile_definitions(vkc_vulkan_allocation_budget_test
