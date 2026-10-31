@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Fixed
+
+- The allocator checks that VMA's successful allocation returned one before
+  binding a resource to it, and otherwise refuses the resource with
+  `VK_ERROR_UNKNOWN`. VMA always returns one, so nothing changes at run time;
+  clang-tidy's analyzer, which cannot always see that, no longer fails CI
+  with `clang-analyzer-nullability.NullPassedToNonnull`. No migration is
+  needed.
+
 ## [0.35.0] - 2026-10-30
 
 ### Added

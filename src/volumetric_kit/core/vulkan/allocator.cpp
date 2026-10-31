@@ -328,6 +328,12 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
     }
     return vk_error(made.result, vma_call);
   }
+  // VMA's every success returns an allocation, which binding requires: checked
+  // rather than assumed, as the allocation is made inside the callback.
+  if (placed.allocation == nullptr) {
+    return vk_error(VK_ERROR_UNKNOWN, std::string(caller) + ": " + vma_call +
+                                          " returned no allocation");
+  }
   // Lazy by the type it landed in. The driver is asked again once such
   // memory is bound and once it is freed (ask_driver_usage).
   placed.lazy = (detail::lazily_allocated_types(allocator.memory) &
