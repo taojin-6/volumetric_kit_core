@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- `tools/ci/images/`: the family's Linux CI images, one per Ubuntu release
+  (24.04, 26.04), holding what that release's legs install, CUDA 13.4
+  included. `.github/workflows/ci-images.yml`, run by hand only, builds and
+  checks them and pushes them to the private GHCR package
+  `ghcr.io/taojin-6/volumetric_kit_ci`; a repository pins one by digest and
+  drops its install step ([tools/ci/images/README.md](tools/ci/images/README.md)).
+  Nothing changes for a consumer of the library.
+
 ## [0.35.1] - 2026-10-31
 
 ### Fixed
