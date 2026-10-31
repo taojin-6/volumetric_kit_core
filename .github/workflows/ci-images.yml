@@ -36,15 +36,16 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: src
+        working-directory: _ci_images
     steps:
       # Other repositories share the host; leave no token in the checkout.
-      # Into src/: the build legs' containers leave root's files in the
-      # workspace, which this job, as the runner's user, could not clean.
+      # Into a directory the core does not track: the build legs' containers
+      # leave root's files at its tracked paths, which this job, as the
+      # runner's user, could not delete. A leg's checkout, as root, removes it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          path: src
+          path: _ci_images
 
       # No layer from an earlier build: a rebuild exists to take Ubuntu's and
       # NVIDIA's current packages.
