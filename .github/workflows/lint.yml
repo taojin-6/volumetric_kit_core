@@ -3,7 +3,7 @@ name: lint
 # Lint gate: the workflows' triggers, the pre-commit hooks (formatting,
 # hygiene, shellcheck), clang-tidy through the build, and the tests of the
 # runner tooling in tools/runners/, of the homebrew-key action, of the tools
-# in tools/github/ and of the CI images' Dockerfile check in tools/ci/images/.
+# in tools/github/ and of the CI images' checks in tools/ci/images/.
 # No job pushes, so no checkout keeps a token.
 # The formatters' output is deterministic across operating systems, so they run
 # on Linux alone; the tooling's tests also run on macOS, whose bash (3.2) the
