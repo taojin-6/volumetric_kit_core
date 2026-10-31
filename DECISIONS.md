@@ -586,6 +586,8 @@ rules after review, the same day.
   refused (`Unsupported`) otherwise, as the rest of a discrete GPU's
   device-local memory is the BAR window. Images take only this, so a driver
   may compress and tile them.
+  The one exception is a transient attachment on a device with lazily
+  allocated memory (2026-10-30, below).
 - **`DeviceMapped`** takes device-local, host-coherent types only: the BAR
   window on a discrete GPU, the one pool on unified memory. A device without
   one refuses it (`Unsupported`; `PhysicalDeviceInfo::device_mapped_memory`
@@ -634,12 +636,15 @@ rules after review, the same day.
   allocators. `reserved_bytes` (blocks and dedicated memory, free space
   included) and `allocation_bytes` (live allocations) are this allocator's
   own, and may be summed. Budget admission uses the heap's usage, not
-  per-library accounting.
-- **Special memory stays out.** Lazily allocated, protected, and feature-gated
-  device-coherent and device-uncached memory are never a placement's: each
-  needs a use or a feature this tier does not have, and VMA leaves the latter
-  kinds out of every allocation, so a mask that counted them would promise
-  memory VMA refuses.
+  per-library accounting. `lazy_bytes` flags the lazily allocated part of
+  the allocations (amended 2026-10-30, below).
+- **Special memory stays out.** Protected and feature-gated device-coherent
+  and device-uncached memory are never a placement's: each needs a use or a
+  feature this tier does not have, and VMA leaves the latter kinds out of
+  every allocation, so a mask that counted them would promise memory VMA
+  refuses. Lazily allocated memory is a transient attachment's alone, and no
+  `MemoryUsage` placement's (amended 2026-10-30, below; it was never used
+  before).
 - **Migrations.** recon's `DeviceLocal` and gfx's preferred `DeviceLocal`
   become `DeviceOnly`; host-visible buffers with copy usage become
   `Staging`, among them recon's frame staging in `gpu_frame_prep`, made by
@@ -1586,3 +1591,57 @@ CONFIG.md, "RealSense depth").
   consumer's runtime checks (the 2026-10-11 entry): core reads no model.
 - **The depth range is fusion's** `min_depth_m` and `max_depth_m`, which
   gate either depth; FFS's own range takes them.
+
+## 2026-10-30 — A transient attachment takes lazily allocated memory
+
+gfx renders every window at 4x MSAA through one shared colour and depth set
+made with `TRANSIENT_ATTACHMENT` usage, cleared and resolved in the pass and
+never stored. Placed `DeviceOnly`, as every image was, that set takes real
+memory: 32 bytes a pixel, about 66 MB at 1920x1080 and 265 MB at 3840x2160.
+On a GPU that keeps attachments in on-chip memory it need take none, so the
+allocator now gives a transient attachment the lazily allocated memory its
+requirements allow, where the device has it (core 0.35.0). This reverses
+"Special memory stays out" (above) for that memory and that use alone.
+
+- **Device facts decide, with no switch.** An image whose usage includes
+  `TRANSIENT_ATTACHMENT` takes the lazily allocated types
+  (`DEVICE_LOCAL | LAZILY_ALLOCATED`, never protected) its `memoryTypeBits`
+  allow. A device with none -- a discrete GPU, a CPU implementation -- or an
+  image that allows none places it `DeviceOnly`, as before. MoltenVK exposes
+  such a type on every Apple GPU and backs it with Metal's memoryless
+  storage, which takes no memory; on a discrete GPU the set stays in VRAM.
+  There is no option: an attachment that must keep its memory leaves out
+  `TRANSIENT`, which promises nothing else.
+- **Nothing else takes it.** Buffers, images without transient usage,
+  exported images (an importer maps their memory) and `find_memory_type`
+  never choose a lazily allocated type, whatever a resource's requirements
+  allow; Vulkan binds one only to a transient image anyway.
+- **Each image's memory is its own**, as VMA's own lazily allocated usage
+  makes it, never a block VMA would size for resources to come. So it is
+  admitted against the heap's budget at full size and, as other memory a
+  resource requires to itself, refused at the budget, where a `DeviceOnly`
+  image could still take a block's free space; a driver's refusal of the
+  lazily allocated type is returned, not retried in another.
+- **Flagged, not hidden.** VMA counts the allocation at full size, as every
+  allocation, so `reserved_bytes` and `allocation_bytes` keep their meaning
+  and their consumers' checks (gfx counts a window's set by them).
+  `HeapStats::lazy_bytes` says how much of them is lazily allocated: the
+  most the device may commit, and nothing on chip; subtract it for the
+  memory the allocator certainly holds.
+- **The driver is asked again around it.** `usage_bytes` stays the heap's:
+  the driver's figure where `VK_EXT_memory_budget` is enabled, which counts
+  what the driver commits. VMA 3.4 asks for it only every 30 allocations
+  and frees (`memory_stats()` does not ask), and in between adds the bytes
+  it allocated since and subtracts those it freed. So the figure reads high
+  while new memory is uncommitted and low once memory the driver never
+  committed is freed: on MoltenVK, freeing a 4K 4x set left it 271.6 MB
+  below the truth, and budget admission would have let that much more past
+  the budget. The allocator therefore asks again (`vmaSetCurrentFrameIndex`)
+  right after it makes or frees lazily allocated memory; other memory keeps
+  VMA's lag.
+- **Its contents last one pass.** Memoryless storage cannot be loaded or
+  stored: MoltenVK turns a load into `DONT_CARE` and a store into a discard
+  or a resolve, so a pass that resumes after suspending, or a later pass that
+  reads the attachment, sees undefined contents. `ImageDesc::usage` says so;
+  gfx already clears the set, stores `DONT_CARE` and keeps each frame in one
+  pass it never suspends.

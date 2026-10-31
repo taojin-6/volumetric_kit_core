@@ -98,10 +98,12 @@ struct ExportedImage {
 ///        the @ref Allocator: the first that @p type_bits allows with every
 ///        flag of @p required and none of @p excluded.
 ///
-/// Protected, lazily allocated, and feature-gated device-coherent and
-/// device-uncached types are never chosen: the features they need are not
-/// enabled. Of the rest, Vulkan orders a type ahead of any whose flags strictly
-/// contain its own, so the first match is the plainest.
+/// Protected and feature-gated device-coherent and device-uncached types are
+/// never chosen, as the features they need are not enabled, and neither are
+/// lazily allocated ones, which the @ref Allocator keeps for transient
+/// attachments (@ref ImageDesc::usage). Of the rest, Vulkan orders a type
+/// ahead of any whose flags strictly contain its own, so the first match is
+/// the plainest.
 ///
 /// Device-local memory asked for without `HOST_VISIBLE` is placed as
 /// @ref MemoryUsage::DeviceOnly is: a type the host cannot map where the

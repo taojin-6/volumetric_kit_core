@@ -17,11 +17,11 @@
 namespace volumetric_kit::core::detail {
 
 // Types no general resource may use: lazily allocated memory is for transient
-// attachments, protected memory for protected submissions, and
-// device-coherent and device-uncached memory (VK_AMD_device_coherent_memory)
-// for markers read while the device runs -- a feature this tier never
-// enables, and memory VMA leaves out of every allocation unless its allocator
-// opts in.
+// attachments alone (image_types), protected memory for protected
+// submissions, and device-coherent and device-uncached memory
+// (VK_AMD_device_coherent_memory) for markers read while the device runs -- a
+// feature this tier never enables, and memory VMA leaves out of every
+// allocation unless its allocator opts in.
 inline constexpr VkMemoryPropertyFlags kSpecialMemory =
     VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT | VK_MEMORY_PROPERTY_PROTECTED_BIT |
     VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD |
@@ -153,6 +153,61 @@ inline std::uint32_t placement_types(
   }
   if (memory == MemoryUsage::DeviceMapped) return cached;
   return cached != 0 ? cached : types;
+}
+
+// The lazily allocated types: device-local memory the device commits only as
+// a render pass needs it, and a GPU that keeps attachments in on-chip memory
+// never does. Only an image with VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT may be
+// bound to one (the spec's "Lazily Allocated Memory"). Never a protected or a
+// feature-gated type.
+inline std::uint32_t lazily_allocated_types(
+    const VkPhysicalDeviceMemoryProperties& props) {
+  constexpr VkMemoryPropertyFlags kLazy =
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+      VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+  constexpr VkMemoryPropertyFlags kOther =
+      kSpecialMemory & ~VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+  std::uint32_t mask = 0;
+  for (std::uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+    const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
+    if ((flags & kLazy) == kLazy && (flags & kOther) == 0) mask |= 1U << i;
+  }
+  return mask;
+}
+
+// The types an image of `usage` takes, given the types its memory
+// requirements allow (`allowed`): a transient attachment takes the lazily
+// allocated types it allows, where the device has any; every other image, and
+// a transient one on a device without them, is placed as DeviceOnly. 0 when
+// none suits.
+inline std::uint32_t image_types(const VkPhysicalDeviceMemoryProperties& props,
+                                 VkImageUsageFlags usage,
+                                 std::uint32_t allowed) {
+  if ((usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) != 0) {
+    const std::uint32_t lazy = lazily_allocated_types(props) & allowed;
+    if (lazy != 0) return lazy;
+  }
+  return placement_types(props, MemoryUsage::DeviceOnly,
+                         HostAccess::SequentialWrite, allowed);
+}
+
+// A resource the Allocator gives memory: a buffer, an image it keeps, or an
+// image another API imports (create_exported_image).
+enum class ResourceKind { Buffer, Image, ExportedImage };
+
+// The types a resource of `kind` takes, given the types its memory
+// requirements allow (`allowed`): a kept image by its usage (image_types);
+// a buffer, and an exported image whatever its usage, by its placement
+// (`memory`, `access`), as an exported image's importer maps its memory. 0
+// when none suits.
+inline std::uint32_t resource_types(
+    const VkPhysicalDeviceMemoryProperties& props, ResourceKind kind,
+    MemoryUsage memory, HostAccess access, VkImageUsageFlags image_usage,
+    std::uint32_t allowed) {
+  if (kind == ResourceKind::Image) {
+    return image_types(props, image_usage, allowed);
+  }
+  return placement_types(props, memory, access, allowed);
 }
 
 // find_memory_type's search: the first type `type_bits` allows with every

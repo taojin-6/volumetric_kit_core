@@ -3,6 +3,7 @@
 
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -69,6 +70,9 @@ struct Allocator::Impl {
   // The heaps and types each placement is cut from (memory_types.hpp).
   VkPhysicalDeviceMemoryProperties memory{};
   bool dedicated_queries = false;
+  // Each heap's live lazily allocated bytes, which memory_stats reports
+  // beside VMA's figures (HeapStats::lazy_bytes).
+  std::atomic<std::uint64_t> lazy_bytes[VK_MAX_MEMORY_HEAPS]{};
 
   AllocatorView view(const Allocator& owner) const {
     return AllocatorView{owner, device, allocator, memory, dedicated_queries};
@@ -84,13 +88,15 @@ struct Allocator::Impl {
 
 namespace {
 
-// A resource to give memory: a buffer or an image (the other null) and, for
-// an exported one, the dedicated-allocation chain its memory is made with.
-// Not overloads on the two handle types, which are one integer type on a
-// 32-bit target.
+// A resource to give memory: a buffer or an image (the other null), an
+// image's usage, which places it (memory_types.hpp, image_types), and, for an
+// exported one, the dedicated-allocation chain its memory is made with. Not
+// overloads on the two handle types, which are one integer type on a 32-bit
+// target.
 struct Resource {
   VkBuffer buffer = VK_NULL_HANDLE;
   VkImage image = VK_NULL_HANDLE;
+  VkImageUsageFlags image_usage = 0;
   VkMemoryDedicatedAllocateInfo* exported = nullptr;  // VMA takes it non-const
 };
 
@@ -206,11 +212,23 @@ MemoryInfo memory_info_of(VmaAllocator allocator, std::uint32_t type_index) {
   return MemoryInfo{type.propertyFlags, type_index, type.heapIndex};
 }
 
-// A resource's memory: its allocation, and where it landed.
+// A resource's memory: its allocation, where it landed, and whether that type
+// is lazily allocated (the memory is then dedicated to it).
 struct Placed {
   VmaAllocation allocation = nullptr;
   VmaAllocationInfo info{};
+  bool lazy = false;
 };
+
+// Asks the driver for each heap's usage again where VK_EXT_memory_budget is
+// enabled, as vmaSetCurrentFrameIndex does (VMA 3 uses the index for nothing
+// else). VMA asks by itself only every 30 allocations and frees, and between
+// asks adds the bytes it allocated since and subtracts those it freed: lazily
+// allocated memory, counted at full size and committed only as a pass needs
+// it, would read high once made and low once freed. Called right after each.
+void ask_driver_usage(VmaAllocator allocator) {
+  vmaSetCurrentFrameIndex(allocator, 0);
+}
 
 // Own every completed step until the returned Buffer/Image has its deleter.
 // In particular, constructing that std::function can allocate after placement
@@ -228,6 +246,7 @@ struct OwnedResource {
       vmaDestroyBuffer(allocator, resource.buffer, placed.allocation);
     } else if (resource.image != VK_NULL_HANDLE) {
       vmaDestroyImage(allocator, resource.image, placed.allocation);
+      if (placed.lazy) ask_driver_usage(allocator);
     }
   }
   void release() noexcept {
@@ -245,8 +264,12 @@ struct OwnedResource {
 
 // Gives `resource` memory of placement `usage`: cut to the types its
 // requirements allow (memory_types.hpp), allocated within budget
-// (allocation_budget.hpp), bound, and mapped unless it is DeviceOnly. Its
-// owner keeps partial placement on every return or exception; `caller`
+// (allocation_budget.hpp), bound, and mapped unless it is DeviceOnly. An
+// image (`usage` DeviceOnly) is placed by its usage instead
+// (detail::resource_types): a transient attachment in lazily allocated
+// memory, dedicated to it, where the device has such a type. An exported
+// image is DeviceOnly whatever its usage, as its importer maps the memory.
+// Its owner keeps partial placement on every return or exception; `caller`
 // prefixes refusals of its own.
 Status place(const AllocatorView& allocator, OwnedResource& owner,
              MemoryUsage usage, HostAccess access, const char* caller) {
@@ -255,8 +278,14 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
   const bool is_buffer = resource.buffer != VK_NULL_HANDLE;
   const ResourceRequirements requirements =
       requirements_of(allocator.device, resource, allocator.dedicated_queries);
-  const std::uint32_t types = detail::placement_types(
-      allocator.memory, usage, access, requirements.memory.memoryTypeBits);
+  detail::ResourceKind kind = detail::ResourceKind::Buffer;
+  if (!is_buffer) {
+    kind = resource.exported != nullptr ? detail::ResourceKind::ExportedImage
+                                        : detail::ResourceKind::Image;
+  }
+  const std::uint32_t types = detail::resource_types(
+      allocator.memory, kind, usage, access, resource.image_usage,
+      requirements.memory.memoryTypeBits);
   if (types == 0) {
     return unsuited(caller, usage);
   }
@@ -268,6 +297,8 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
     vma_call =
         is_buffer ? "vmaAllocateMemoryForBuffer" : "vmaAllocateMemoryForImage";
   }
+  // Lazily allocated memory is dedicated to its image too
+  // (allocate_with_budget).
   const detail::BudgetedAllocation made = detail::allocate_with_budget(
       allocator.memory, requirements.memory, types, mapped,
       requirements.dedicated || resource.exported != nullptr,
@@ -297,6 +328,10 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
     }
     return vk_error(made.result, vma_call);
   }
+  // Lazy by the type it landed in. The driver is asked again once such
+  // memory is bound and once it is freed (ask_driver_usage).
+  placed.lazy = (detail::lazily_allocated_types(allocator.memory) &
+                 (1U << placed.info.memoryType)) != 0;
   const VkResult bound =
       is_buffer ? vmaBindBufferMemory(allocator.vma, placed.allocation,
                                       resource.buffer)
@@ -312,6 +347,7 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
                         ": mapping requested, and VMA returned no mapped "
                         "pointer");
   }
+  if (placed.lazy) ask_driver_usage(allocator.vma);
   return {};
 }
 
@@ -580,6 +616,7 @@ Result<Image> Allocator::make_image(const ImageDesc& desc, const char* caller,
   VKC_VK_TRY(vkCreateImage(impl_->device, &image_info, nullptr, &image));
   Resource resource;
   resource.image = image;
+  resource.image_usage = desc.usage;
   VkMemoryDedicatedAllocateInfo dedicated{};
   if (export_info != nullptr) {
     dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
@@ -588,11 +625,17 @@ Result<Image> Allocator::make_image(const ImageDesc& desc, const char* caller,
     resource.exported = &dedicated;
   }
   OwnedResource owned(impl_->view(*this), resource);
-  // The host access is ignored for device-only memory.
+  // Placed by its usage, as DeviceOnly unless it is a transient attachment;
+  // the host access is ignored for device-only memory.
   VKC_TRY(place(impl_->view(*this), owned, MemoryUsage::DeviceOnly,
                 HostAccess::SequentialWrite, caller));
   const Placed& placed = owned.placed;
   VmaAllocation allocation = placed.allocation;
+  // A lazily allocated image's bytes, counted (HeapStats::lazy_bytes) from
+  // its return until its deleter runs.
+  const std::uint32_t heap =
+      impl_->memory.memoryTypes[placed.info.memoryType].heapIndex;
+  const VkDeviceSize lazy_bytes = placed.lazy ? placed.info.size : 0;
 
   VkImageView view = VK_NULL_HANDLE;
   if (desc.with_view) {
@@ -628,17 +671,24 @@ Result<Image> Allocator::make_image(const ImageDesc& desc, const char* caller,
   info.sharing = sharing.mode;
   info.memory = memory_info_of(impl_->allocator, placed.info.memoryType);
   // The view goes first: it references the image.
-  Image result(info, [impl = impl_, view, image, allocation] {
+  Image result(info, [impl = impl_, view, image, allocation, heap, lazy_bytes] {
     if (view != VK_NULL_HANDLE) {
       vkDestroyImageView(impl->device, view, nullptr);
     }
+    if (lazy_bytes != 0) {
+      impl->lazy_bytes[heap].fetch_sub(lazy_bytes, std::memory_order_relaxed);
+    }
     vmaDestroyImage(impl->allocator, image, allocation);
+    if (lazy_bytes != 0) ask_driver_usage(impl->allocator);
   });
   if (export_info != nullptr) {
     *memory = placed.info.deviceMemory;
     *memory_size = placed.info.size;
   }
   owned.release();
+  if (lazy_bytes != 0) {
+    impl_->lazy_bytes[heap].fetch_add(lazy_bytes, std::memory_order_relaxed);
+  }
   return result;
 }
 
@@ -682,7 +732,11 @@ MemoryStats Allocator::memory_stats() const {
   if (props == nullptr) return stats;
   VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
   vmaGetHeapBudgets(impl_->allocator, budgets);
-  return detail::memory_stats_of(budgets, props->memoryHeapCount);
+  std::uint64_t lazy[VK_MAX_MEMORY_HEAPS]{};
+  for (std::uint32_t h = 0; h < props->memoryHeapCount; ++h) {
+    lazy[h] = impl_->lazy_bytes[h].load(std::memory_order_relaxed);
+  }
+  return detail::memory_stats_of(budgets, props->memoryHeapCount, lazy);
 }
 
 VkDevice Allocator::device_handle() const noexcept {
