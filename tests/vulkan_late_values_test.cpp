@@ -12,12 +12,15 @@
 
 #include <chrono>
 #include <cstdint>
+#include <future>
+#include <string>
 #include <thread>
 #include <utility>
 
 #include <gtest/gtest.h>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -148,12 +151,14 @@ class LateValuesTest : public test::VulkanDeviceTest {
     std::uint64_t value_;
   };
 
-  // Sets the gate to `value` from another thread, 20 ms on, as the host
-  // would; joined as it goes out of scope.
+  // Sets the gate to `value` from another thread, as the host would, 20 ms
+  // after go(), so a wait that follows go() starts with it unset. The
+  // destructor says go, if nothing did, and joins the thread.
   class LateRelease {
    public:
     LateRelease(TimelineSemaphore* gate, std::uint64_t value)
-        : thread_([gate, value] {
+        : thread_([gate, value, go = go_.get_future()] {
+            go.wait();
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             EXPECT_TRUE(gate->signal(value).ok());
           }) {}
@@ -161,9 +166,19 @@ class LateValuesTest : public test::VulkanDeviceTest {
     LateRelease& operator=(const LateRelease&) = delete;
     LateRelease(LateRelease&&) = delete;
     LateRelease& operator=(LateRelease&&) = delete;
-    ~LateRelease() { thread_.join(); }
+    ~LateRelease() {
+      go();
+      thread_.join();
+    }
+
+    void go() {
+      if (!gone_) go_.set_value();
+      gone_ = true;
+    }
 
    private:
+    std::promise<void> go_;  // before the thread, which takes its future
+    bool gone_ = false;
     std::thread thread_;
   };
 
@@ -172,7 +187,8 @@ class LateValuesTest : public test::VulkanDeviceTest {
 };
 
 // The fence alone says nothing of the values: a wait returns only once they
-// read as set, and a timeout leaves the work pending.
+// read as set, and a timeout leaves the work pending. One blocked on the
+// values alone is still one host wait, its time the open scope's.
 TEST_F(LateValuesTest, AWaitReturnsOnceTheValuesReadAsSet) {
   hold(1);
   Result<Device::PendingSubmit> made =
@@ -187,8 +203,17 @@ TEST_F(LateValuesTest, AWaitReturnsOnceTheValuesReadAsSet) {
   EXPECT_EQ(counter(), 0U);
   EXPECT_TRUE(pending.ready());  // by its fence
 
-  EXPECT_TRUE(is_timeout(pending.wait(20'000'000)));
+  const DeviceCounters before = device().counters();
+  StageMetrics metrics;
+  {
+    const StageScope scope(metrics, "values");
+    EXPECT_TRUE(is_timeout(pending.wait(20'000'000)));
+  }
   EXPECT_TRUE(pending.in_flight());
+  EXPECT_EQ(device().counters().host_waits - before.host_waits, 1U);
+  ASSERT_EQ(metrics.rows().size(), 1U);
+  EXPECT_EQ(std::string(metrics.rows()[0].name), "values");
+  EXPECT_GE(metrics.rows()[0].wait_ms, 15.0);
   ASSERT_TRUE(gate_.signal(1).ok());
   ASSERT_TRUE(pending.wait(kLongWaitNs).ok());
   EXPECT_EQ(counter(), 1U);
@@ -197,7 +222,7 @@ TEST_F(LateValuesTest, AWaitReturnsOnceTheValuesReadAsSet) {
 
 // Destroying a pending batch, or assigning over it, waits for its values
 // too: they read as set the moment either returns, though the host sets the
-// gate only later, from another thread.
+// gate only later, from another thread, 20 ms after the drop starts.
 TEST_F(LateValuesTest, DestroyingOrAssigningOverItWaitsForTheValues) {
   for (const std::uint64_t round : {1U, 2U}) {
     SCOPED_TRACE(round == 1 ? "destroyed" : "assigned over");
@@ -205,13 +230,14 @@ TEST_F(LateValuesTest, DestroyingOrAssigningOverItWaitsForTheValues) {
     CommandBatch batch(device(), allocator());
     Result<PendingBatch> made = batch.submit_async({}, {{&timeline_, round}});
     ASSERT_TRUE(made.ok()) << made.status().message();
-    const LateRelease release{&gate_, round};
+    LateRelease release{&gate_, round};
     {
       PendingBatch pending = *std::move(made);
       ASSERT_EQ(held_submits, round) << "the submit was not held";
-      ASSERT_EQ(vkWaitForFences(device().handle(), 1, &held_fence, VK_TRUE,
+      EXPECT_EQ(vkWaitForFences(device().handle(), 1, &held_fence, VK_TRUE,
                                 kLongWaitNs),
                 VK_SUCCESS);
+      release.go();  // the drop below starts before the gate is set
       if (round == 2) {
         pending = PendingBatch{};
         EXPECT_EQ(counter(), round);

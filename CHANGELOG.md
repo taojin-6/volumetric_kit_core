@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
-## [0.35.2] - 2026-10-31
+## [0.36.0] - 2026-10-31
 
 ### Added
 
@@ -19,6 +19,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   drops its install step ([tools/ci/images/README.md](tools/ci/images/README.md)).
   Nothing changes for a consumer of the library.
 
+### Changed
+
+- `Device::PendingSubmit`, and so `PendingBatch`, keep the semaphores and
+  values the work sets, for the wait below: their layout changes, and those
+  semaphores must outlive that wait, not just the work (`TimelinePoint`).
+
 ### Fixed
 
 - A wait of `Device::PendingSubmit` or `PendingBatch` that sees the work
@@ -27,12 +33,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   sets a submit's values before its fence, but lavapipe (Mesa's emulated
   timelines) can show the fence first, so a value read right after the wait,
   or a later check of reached values (`TimelineWaits::Reached`), could see
-  the old one. `ready()` still answers by the fence.
+  the old one. `ready()` still answers by the fence. A wait that blocks, on
+  the fence or the values, is one host wait.
 
 ### Migration
 
-- Nothing to change beyond the pin. The semaphores a pending submit sets
-  must outlive its wait, not just the work.
+- Nothing to change beyond the pin and a rebuild, unless a semaphore a
+  pending submit sets is destroyed before its wait: keep it until then.
 
 ## [0.35.1] - 2026-10-31
 

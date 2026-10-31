@@ -1037,16 +1037,14 @@ Result<Device::PendingSubmit> Device::submit_pending(
   // one mask valid on a queue of any capabilities.
   const std::vector<VkPipelineStageFlags> wait_stages(
       wait.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-  std::vector<VkSemaphore> signal_semaphores;
-  std::vector<std::uint64_t> signal_values;
-  for (const TimelinePoint& point : signal) {
-    signal_semaphores.push_back(point.semaphore->handle());
-    signal_values.push_back(point.value);
-  }
-  // Made before the submit, so nothing after it allocates.
+  // Made before the submit, so nothing after it allocates; what the work
+  // sets is its wait's too.
   PendingSubmit pending;
   pending.waits_ = wait;
-  pending.signals_ = signal;
+  for (const TimelinePoint& point : signal) {
+    pending.signal_semaphores_.push_back(point.semaphore->handle());
+    pending.signal_values_.push_back(point.value);
+  }
 
   VKC_ASSIGN(const Command command, record_one_time(record));
   VkCommandBuffer cmd = command.buffer;
@@ -1055,7 +1053,7 @@ Result<Device::PendingSubmit> Device::submit_pending(
   values.waitSemaphoreValueCount = static_cast<std::uint32_t>(wait.size());
   values.pWaitSemaphoreValues = wait_values.data();
   values.signalSemaphoreValueCount = static_cast<std::uint32_t>(signal.size());
-  values.pSignalSemaphoreValues = signal_values.data();
+  values.pSignalSemaphoreValues = pending.signal_values_.data();
   VkSubmitInfo submit{};
   submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   // Only with values to pass: a device without timeline semaphores gets the
@@ -1067,7 +1065,7 @@ Result<Device::PendingSubmit> Device::submit_pending(
   submit.commandBufferCount = 1;
   submit.pCommandBuffers = &cmd;
   submit.signalSemaphoreCount = static_cast<std::uint32_t>(signal.size());
-  submit.pSignalSemaphores = signal_semaphores.data();
+  submit.pSignalSemaphores = pending.signal_semaphores_.data();
   bool left = false;
   ScopeGuard give_back_command([&] {
     if (!left) give_back(command);
@@ -1098,7 +1096,8 @@ Device::PendingSubmit::PendingSubmit(PendingSubmit&& other) noexcept
       command_(std::exchange(other.command_, Command{})),
       keep_alive_(std::exchange(other.keep_alive_, nullptr)),
       waits_(std::exchange(other.waits_, {})),
-      signals_(std::exchange(other.signals_, {})),
+      signal_semaphores_(std::exchange(other.signal_semaphores_, {})),
+      signal_values_(std::exchange(other.signal_values_, {})),
       running_(std::exchange(other.running_, false)),
       failed_(std::exchange(other.failed_, Status{})) {}
 
@@ -1110,7 +1109,8 @@ Device::PendingSubmit& Device::PendingSubmit::operator=(
     command_ = std::exchange(other.command_, Command{});
     keep_alive_ = std::exchange(other.keep_alive_, nullptr);
     waits_ = std::exchange(other.waits_, {});
-    signals_ = std::exchange(other.signals_, {});
+    signal_semaphores_ = std::exchange(other.signal_semaphores_, {});
+    signal_values_ = std::exchange(other.signal_values_, {});
     running_ = std::exchange(other.running_, false);
     failed_ = std::exchange(other.failed_, Status{});
   }
@@ -1131,6 +1131,20 @@ std::uint64_t time_left(std::uint64_t timeout_ns,
   if (spent <= 0) return timeout_ns;
   const auto used = static_cast<std::uint64_t>(spent);
   return used < timeout_ns ? timeout_ns - used : 0;
+}
+
+// Waits for `fence`, then for `values` for what is left of `timeout_ns`;
+// `*call` names the last call made.
+VkResult wait_for_work(VkDevice device, VkFence fence,
+                       const VkSemaphoreWaitInfo& values,
+                       std::uint64_t timeout_ns, const char** call) noexcept {
+  const auto start = std::chrono::steady_clock::now();
+  *call = "vkWaitForFences";
+  const VkResult waited =
+      vkWaitForFences(device, 1, &fence, VK_TRUE, timeout_ns);
+  if (waited != VK_SUCCESS || values.semaphoreCount == 0) return waited;
+  *call = "vkWaitSemaphores";
+  return vkWaitSemaphores(device, &values, time_left(timeout_ns, start));
 }
 
 }  // namespace
@@ -1175,26 +1189,25 @@ bool Device::PendingSubmit::ready() const {
 
 Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) try {
   if (!running_) return failed_;
-  const auto start = std::chrono::steady_clock::now();
-  VkResult waited = detail::wait_for_fence(
-      device_->handle(), command_.fence, timeout_ns, device_->counters_.get());
-  const char* call = "vkWaitForFences";
   // Vulkan sets a submit's values before its fence, but a driver may show the
   // fence first: Mesa's emulated timelines (lavapipe) add a value to its
   // semaphore only after the submit returns, and their polls can miss one a
-  // timed wait sees. So the values get the rest of the timeout too, which
-  // returns at once where they are set.
-  for (const TimelinePoint& point : signals_) {
-    if (waited != VK_SUCCESS) break;
-    VkSemaphore semaphore = point.semaphore->handle();
-    VkSemaphoreWaitInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-    info.semaphoreCount = 1;
-    info.pSemaphores = &semaphore;
-    info.pValues = &point.value;
-    waited = vkWaitSemaphores(device_->handle(), &info,
-                              time_left(timeout_ns, start));
-    call = "vkWaitSemaphores";
+  // timed wait sees. So the values get the rest of the timeout too, in one
+  // wait for all of them, which returns at once where they are set.
+  VkSemaphoreWaitInfo values{};
+  values.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+  values.semaphoreCount = static_cast<std::uint32_t>(signal_semaphores_.size());
+  values.pSemaphores = signal_semaphores_.data();
+  values.pValues = signal_values_.data();
+  VkDevice device = device_->handle();
+  const char* call = nullptr;
+  // A poll, or work already done, blocks nothing: neither is a wait. One
+  // that blocks, on the fence or the values, is one host wait.
+  VkResult waited = wait_for_work(device, command_.fence, values, 0, &call);
+  if (waited == VK_TIMEOUT && timeout_ns != 0) {
+    const auto start = std::chrono::steady_clock::now();
+    waited = wait_for_work(device, command_.fence, values, timeout_ns, &call);
+    detail::report_blocked(detail::elapsed_ns(start), device_->counters_.get());
   }
   if (waited == VK_TIMEOUT) return vk_error(waited, call);
   running_ = false;
@@ -1213,7 +1226,8 @@ Status Device::PendingSubmit::wait(std::uint64_t timeout_ns) try {
   keep_alive_.reset();
   command_ = Command{};
   waits_.clear();
-  signals_.clear();
+  signal_semaphores_.clear();
+  signal_values_.clear();
   device_ = nullptr;
   return failed_;
 } catch (...) {
