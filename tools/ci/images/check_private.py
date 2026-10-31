@@ -23,8 +23,9 @@ ACCEPT = ", ".join((
     "application/vnd.docker.distribution.manifest.list.v2+json",
     "application/vnd.docker.distribution.manifest.v2+json",
 ))
-# What GHCR answers an anonymous client for a package it may not read.
-REFUSED = (401, 403, 404)
+# What GHCR answers an anonymous client for a package it may not read. A 404
+# is not one: a public package answers it for a tag it lacks.
+REFUSED = (401, 403)
 
 
 def fetch(url, headers):

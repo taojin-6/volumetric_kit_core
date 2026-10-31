@@ -57,7 +57,7 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual([url for url, _ in registry.requests], [TOKEN_URL])
 
     def test_a_refused_manifest_is_private(self):
-        for status in (401, 403, 404):
+        for status in (401, 403):
             registry = Registry(anonymous_token(), manifest=(status, DENIED))
             self.assertEqual(run(registry)[0], 0, status)
 
@@ -96,6 +96,13 @@ class CannotTellTest(unittest.TestCase):
     def test_a_failed_manifest_fetch(self):
         self.assert_fails(Registry(anonymous_token(), manifest=(502, b"")),
                           "manifest fetch returned 502")
+
+    def test_not_found_is_not_refused(self):
+        # A public package's answer for a tag it lacks.
+        unknown = json.dumps({"errors": [{"code": "MANIFEST_UNKNOWN"}]}).encode()
+        self.assert_fails(Registry(anonymous_token(), manifest=(404, unknown)),
+                          "manifest fetch returned 404")
+        self.assert_fails(Registry(token=(404, b"")), "token request returned 404")
 
     def test_no_connection(self):
         def unreachable(url, headers):
