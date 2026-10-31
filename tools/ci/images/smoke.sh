@@ -32,6 +32,14 @@ for header in cuda.h nvjpeg.h; do
   [ -f "$CUDAToolkit_ROOT/include/$header" ] || fail "no $header under $CUDAToolkit_ROOT"
 done
 
+# apt's sources are Ubuntu's archive alone, so a leg's apt-get update depends
+# on no other repository (NVIDIA's, which the CUDA layer used).
+others=$(grep -rhoE '^(deb(-src)?( \[[^]]*\])?|URIs:) +[^ ]+' \
+  /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null |
+  awk '{ print $NF }' |
+  grep -vE '^http://(archive|security)\.ubuntu\.com/ubuntu/?$' || true)
+[ -z "$others" ] || fail "an apt source besides Ubuntu's archive: $others"
+
 # No installed package puts a driver or an implicit layer where the loader
 # looks: the GPU legs see the NVIDIA ICD the toolkit mounts, and nothing else.
 for dir in /usr/local/share/vulkan /usr/share/vulkan /etc/vulkan /etc/xdg/vulkan; do

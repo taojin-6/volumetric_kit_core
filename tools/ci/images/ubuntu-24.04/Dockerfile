@@ -32,8 +32,10 @@ RUN apt-get update \
 # toolkit by, the runtime, the driver API's headers and nvJPEG, for the NVDEC
 # and nvJPEG builds; libcuda comes from the container toolkit at run time.
 # The repository's key comes as a .deb that dpkg installs, so only the file
-# with the SHA256 the repository's signed index lists is installed. TensorRT
-# for the FFS builds, every package at the build for this CUDA.
+# with the SHA256 the repository's signed index lists is installed; purging it
+# once the packages are in drops NVIDIA's apt source, so a leg's apt-get
+# update reads Ubuntu's archive alone. TensorRT for the FFS builds, every
+# package at the build for this CUDA.
 RUN keyring_sha256=d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba \
  && trt=11.4.0.106-1+cuda13.4 \
  && curl -fsSL -o /tmp/cuda-keyring.deb \
@@ -48,6 +50,7 @@ RUN keyring_sha256=d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06
       "libnvinfer11=${trt}" "libnvinfer-headers-dev=${trt}" \
       "libnvinfer-safe-headers-dev=${trt}" "libnvinfer-dev=${trt}" \
       "libnvonnxparsers11=${trt}" "libnvonnxparsers-dev=${trt}" \
+ && dpkg --purge cuda-keyring \
  && rm -rf /var/lib/apt/lists/*
 
 ENV CUDAToolkit_ROOT=/usr/local/cuda-13.4

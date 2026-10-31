@@ -21,7 +21,8 @@ and re-pinned by hand only (DECISIONS.md, the 2026-10-31 entry).
   layer; glslc, glslang and SPIRV-Tools; the two libraries the NVIDIA ICD
   needs (libXext, libEGL); GLM, GLFW and Xvfb; Assimp, FFmpeg's libraries and
   PortAudio; and CUDA 13.4's nvcc, runtime, driver API headers and nvJPEG,
-  with `CUDAToolkit_ROOT=/usr/local/cuda-13.4`.
+  with `CUDAToolkit_ROOT=/usr/local/cuda-13.4`. apt's only source is
+  Ubuntu's archive: NVIDIA's is removed once CUDA is in.
 - **24.04 adds** TensorRT, at the build for that CUDA.
 - **26.04 adds** ssh, Python's venv, the FFmpeg command line, and the
   sanitizer legs' clang, sanitizer runtimes, llvm-symbolizer and lavapipe.
@@ -50,6 +51,12 @@ container:
     password: ${{ secrets.GITHUB_TOKEN }}
   options: --gpus all
 ```
+
+The token can be named only under `credentials`: neither a matrix value nor
+a `container:` expression can read `secrets`, and `github.token` is null
+outside a job's steps. A leg that takes its whole container from JSON
+(`fromJSON(inputs.container)`) therefore writes `container:` as a mapping
+like this one, and handles its macOS leg, which has no container, apart.
 
 The leg then drops its install step. A host keeps a pulled image, so a job
 pays only the registry's manifest check.

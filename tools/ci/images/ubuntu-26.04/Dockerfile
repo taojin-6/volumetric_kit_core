@@ -10,9 +10,9 @@ LABEL org.opencontainers.image.source="https://github.com/taojin-6/volumetric_ki
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG DEBIAN_FRONTEND=noninteractive
 
-# As the 24.04 image, and: ssh for a sibling fetched over it; Python's venv and
-# the FFmpeg command line for Python tests; and the sanitizer legs' clang, its
-# sanitizer runtimes (libclang-rt-dev), llvm-symbolizer (llvm) and lavapipe
+# As the 24.04 image, and: ssh, Python's venv and the FFmpeg command line, for
+# other legs of the family; and the sanitizer legs' clang, its sanitizer
+# runtimes (libclang-rt-dev), llvm-symbolizer (llvm) and lavapipe
 # (mesa-vulkan-drivers).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -49,6 +49,7 @@ RUN keyring_sha256=f7f474b5f6a4adf987aa587920df00e713285958ef6a913dda1945a544a30
  && apt-get install -y --no-install-recommends \
       cuda-nvcc-13-4 cuda-cudart-dev-13-4 cuda-driver-dev-13-4 \
       libnvjpeg-dev-13-4 \
+ && dpkg --purge cuda-keyring \
  && rm -rf /var/lib/apt/lists/*
 
 ENV CUDAToolkit_ROOT=/usr/local/cuda-13.4
