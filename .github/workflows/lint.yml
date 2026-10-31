@@ -2,8 +2,9 @@ name: lint
 
 # Lint gate: the workflows' triggers, the pre-commit hooks (formatting,
 # hygiene, shellcheck), clang-tidy through the build, and the tests of the
-# runner tooling in tools/runners/, of the homebrew-key action and of the tools
-# in tools/github/. No job pushes, so no checkout keeps a token.
+# runner tooling in tools/runners/, of the homebrew-key action, of the tools
+# in tools/github/ and of the CI images' Dockerfile check in tools/ci/images/.
+# No job pushes, so no checkout keeps a token.
 # The formatters' output is deterministic across operating systems, so they run
 # on Linux alone; the tooling's tests also run on macOS, whose bash (3.2) the
 # runner scripts must work with. Invoked by ci.yml; its `lint` result covers
@@ -82,6 +83,7 @@ jobs:
       - run: /bin/bash tools/runners/tests/test_runner_scripts.sh
       - run: /bin/bash tools/runners/tests/test_homebrew_key.sh
       - run: python3 -B -m unittest discover -s tools/github -p 'test_*.py' -v
+      - run: python3 -B -m unittest discover -s tools/ci/images -p 'test_*.py' -v
       # The action as a sibling uses it: "none" on Linux, and on macOS a key
       # from the runner's Homebrew.
       - id: brew
