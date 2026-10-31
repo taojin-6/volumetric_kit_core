@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -29,6 +30,7 @@
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
+#include "vulkan_fixture_faults.hpp"
 
 namespace volumetric_kit::core::test {
 
@@ -36,24 +38,29 @@ namespace detail {
 
 // One shared device: made for a validation level and requirements, from the
 // instance for that level.
-struct DeviceSlot {
+struct DeviceEntry {
   Validation validation = Validation::Off;
   DeviceRequirements requirements;
-  std::optional<Device> device;
-  std::string error;  // why there is no device
-  bool lost = false;  // replaced when next borrowed
+  std::optional<Device> device;  // made when borrowed without one
+  std::string error;             // why there is no device
+  bool lost = false;             // destroyed with the test that lost it
 };
 
 // One shared two-family device, made for a validation level and both
 // libraries' requirements. It owns its instance.
-struct TwoFamilySlot {
+struct TwoFamilyEntry {
   Validation validation = Validation::Off;
   DeviceRequirements compute;
   DeviceRequirements graphics;
-  std::unique_ptr<TwoFamilyDevice> device;
-  std::string error;  // why there is no device
-  bool lost = false;  // replaced when next borrowed
+  std::unique_ptr<TwoFamilyDevice> device;  // made when borrowed without one
+  std::string error;                        // why there is no device
+  bool lost = false;  // destroyed with the test that lost it
 };
+
+FixtureFaults& fixture_faults() {
+  static FixtureFaults faults;
+  return faults;
+}
 
 }  // namespace detail
 
@@ -76,7 +83,7 @@ bool same_requirements(const DeviceRequirements& a,
 }
 
 // An instance for one validation level, or why there is none.
-struct InstanceSlot {
+struct InstanceEntry {
   std::optional<Instance> instance;
   std::string error;
 };
@@ -88,8 +95,10 @@ struct Logged {
   std::string message;
 };
 
-// The process's shared instances and devices, made on first use. One that
-// could not be made is not retried: every later test reports the same.
+// The process's shared instances and devices, made on first use. An instance
+// that could not be made is not retried: every later test reports the same. A
+// device that could not be made, or was lost, is made again by the next test
+// that borrows it.
 class Registry {
  public:
   static Registry& get() {
@@ -101,7 +110,7 @@ class Registry {
   // meanwhile is added to `logged`, for the caller to judge: the loader's
   // errors about a layer that failed to load are no failure when the layer
   // was only a fixture's wish.
-  InstanceSlot& instance(Validation validation, std::vector<Logged>& logged) {
+  InstanceEntry& instance(Validation validation, std::vector<Logged>& logged) {
     auto [it, made] = instances_.try_emplace(validation);
     if (made) {
       std::mutex mutex;
@@ -127,57 +136,46 @@ class Registry {
     return it->second;
   }
 
-  detail::DeviceSlot& device(Validation validation, const Instance& instance,
-                             const PhysicalDeviceInfo& physical,
-                             const DeviceRequirements& requirements) {
+  detail::DeviceEntry& device(Validation validation, const Instance& instance,
+                              const PhysicalDeviceInfo& physical,
+                              const DeviceRequirements& requirements) {
     auto found =
-        std::find_if(devices_.begin(), devices_.end(), [&](const auto& slot) {
-          return slot->validation == validation &&
-                 same_requirements(slot->requirements, requirements);
+        std::find_if(devices_.begin(), devices_.end(), [&](const auto& entry) {
+          return entry->validation == validation &&
+                 same_requirements(entry->requirements, requirements);
         });
     if (found == devices_.end()) {
-      auto slot = std::make_unique<detail::DeviceSlot>();
-      slot->validation = validation;
-      slot->requirements = requirements;
-      make(*slot, instance, physical);
-      devices_.push_back(std::move(slot));
-      return *devices_.back();
+      auto entry = std::make_unique<detail::DeviceEntry>();
+      entry->validation = validation;
+      entry->requirements = requirements;
+      devices_.push_back(std::move(entry));
+      found = std::prev(devices_.end());
     }
-    detail::DeviceSlot& slot = **found;
-    if (slot.lost) {
-      // The test that lost it is gone, and with it whatever it made there.
-      slot.device.reset();
-      slot.lost = false;
-      make(slot, instance, physical);
-    }
-    return slot;
+    detail::DeviceEntry& entry = **found;
+    if (!entry.device) make(entry, instance, physical);
+    return entry;
   }
 
-  detail::TwoFamilySlot& two_family(Validation validation,
-                                    const DeviceRequirements& compute,
-                                    const DeviceRequirements& graphics) {
+  detail::TwoFamilyEntry& two_family(Validation validation,
+                                     const DeviceRequirements& compute,
+                                     const DeviceRequirements& graphics) {
     auto found = std::find_if(
-        two_families_.begin(), two_families_.end(), [&](const auto& slot) {
-          return slot->validation == validation &&
-                 same_requirements(slot->compute, compute) &&
-                 same_requirements(slot->graphics, graphics);
+        two_families_.begin(), two_families_.end(), [&](const auto& entry) {
+          return entry->validation == validation &&
+                 same_requirements(entry->compute, compute) &&
+                 same_requirements(entry->graphics, graphics);
         });
     if (found == two_families_.end()) {
-      auto slot = std::make_unique<detail::TwoFamilySlot>();
-      slot->validation = validation;
-      slot->compute = compute;
-      slot->graphics = graphics;
-      make(*slot);
-      two_families_.push_back(std::move(slot));
-      return *two_families_.back();
+      auto entry = std::make_unique<detail::TwoFamilyEntry>();
+      entry->validation = validation;
+      entry->compute = compute;
+      entry->graphics = graphics;
+      two_families_.push_back(std::move(entry));
+      found = std::prev(two_families_.end());
     }
-    detail::TwoFamilySlot& slot = **found;
-    if (slot.lost) {
-      slot.device.reset();
-      slot.lost = false;
-      make(slot);
-    }
-    return slot;
+    detail::TwoFamilyEntry& entry = **found;
+    if (!entry.device) make(entry);
+    return entry;
   }
 
   // An instance held while the tests run, so the loader never unloads the
@@ -210,35 +208,51 @@ class Registry {
  private:
   Registry() = default;
 
-  static void make(detail::DeviceSlot& slot, const Instance& instance,
+  // Whether the core's own tests made this creation fail.
+  static bool injected_failure() {
+    int& failures = detail::fixture_faults().failed_creations;
+    if (failures == 0) return false;
+    --failures;
+    return true;
+  }
+
+  static void make(detail::DeviceEntry& entry, const Instance& instance,
                    const PhysicalDeviceInfo& physical) {
+    if (injected_failure()) {
+      entry.error = "Device::create: an injected failure";
+      return;
+    }
     Result<Device> device =
-        Device::create(instance, physical, slot.requirements);
+        Device::create(instance, physical, entry.requirements);
     if (device) {
-      slot.device.emplace(*std::move(device));
-      slot.error.clear();
+      entry.device.emplace(*std::move(device));
+      entry.error.clear();
     } else {
-      slot.error = "Device::create: " + device.status().message();
+      entry.error = "Device::create: " + device.status().message();
     }
   }
 
-  static void make(detail::TwoFamilySlot& slot) {
-    Result<std::unique_ptr<TwoFamilyDevice>> device =
-        TwoFamilyDevice::create(slot.compute, slot.graphics, slot.validation);
+  static void make(detail::TwoFamilyEntry& entry) {
+    if (injected_failure()) {
+      entry.error = "TwoFamilyDevice::create: an injected failure";
+      return;
+    }
+    Result<std::unique_ptr<TwoFamilyDevice>> device = TwoFamilyDevice::create(
+        entry.compute, entry.graphics, entry.validation);
     if (device) {
-      slot.device = *std::move(device);
-      slot.error.clear();
+      entry.device = *std::move(device);
+      entry.error.clear();
     } else {
-      slot.error = "TwoFamilyDevice::create: " + device.status().message();
+      entry.error = "TwoFamilyDevice::create: " + device.status().message();
     }
   }
 
   // Destroyed in reverse: the two-family devices, with their own instances;
   // the devices, each before the instance it was made from; then the anchor.
   std::optional<Instance> anchor_;
-  std::map<Validation, InstanceSlot> instances_;
-  std::vector<std::unique_ptr<detail::DeviceSlot>> devices_;
-  std::vector<std::unique_ptr<detail::TwoFamilySlot>> two_families_;
+  std::map<Validation, InstanceEntry> instances_;
+  std::vector<std::unique_ptr<detail::DeviceEntry>> devices_;
+  std::vector<std::unique_ptr<detail::TwoFamilyEntry>> two_families_;
 };
 
 // No instance or device: the test skips, or fails where one is required. The
@@ -249,6 +263,16 @@ void no_device(const std::string& why) {
     FAIL() << "VKC_REQUIRE_VULKAN_DEVICE is set, and " << why;
   }
   GTEST_SKIP() << "no Vulkan device for this test: " << why;
+}
+
+// Waits for `device` to go idle after a test; or, once it has, reports the
+// loss the core's own tests injected.
+Status wait_after_test(const Device& device) {
+  Status idle = device.wait_idle();
+  if (idle.ok() && std::exchange(detail::fixture_faults().lost, false)) {
+    idle = vk_error(VK_ERROR_DEVICE_LOST, "an injected device loss");
+  }
+  return idle;
 }
 
 class VulkanEnvironment final : public ::testing::Environment {
@@ -297,7 +321,7 @@ void VulkanTest::SetUp() {
   const Validation requested = requested_validation();
   validation_ = std::max(requested, validation());
   std::vector<Logged> logged;
-  InstanceSlot& slot = Registry::get().instance(validation_, logged);
+  InstanceEntry& entry = Registry::get().instance(validation_, logged);
   capture_->log.emplace([capture = capture_.get()](std::string_view message) {
     if (capture->allowing) {
       ++capture->allowed;
@@ -309,18 +333,18 @@ void VulkanTest::SetUp() {
   // errors say why, and fail nothing.
   const bool layer_missed =
       requested == Validation::Off && validation_ != Validation::Off &&
-      !(slot.instance && slot.instance->validation_logged());
+      !(entry.instance && entry.instance->validation_logged());
   for (const Logged& message : logged) {
     log_message(layer_missed && message.level == LogLevel::Error
                     ? LogLevel::Warning
                     : message.level,
                 message.source, message.message);
   }
-  if (!slot.instance) {
-    no_device(slot.error);
+  if (!entry.instance) {
+    no_device(entry.error);
     return;
   }
-  instance_ = &*slot.instance;
+  instance_ = &*entry.instance;
   if (const Status loaded = check_layer_loaded(*instance_); !loaded.ok()) {
     FAIL() << loaded.message();
   }
@@ -352,7 +376,16 @@ std::vector<std::string> VulkanTest::warnings() const {
 
 VulkanDeviceTest::VulkanDeviceTest() = default;
 
-VulkanDeviceTest::~VulkanDeviceTest() = default;
+// A lost device goes with the test that lost it, after a derived fixture's
+// objects and while its capture runs, so what the layer reports as it goes
+// fails this test rather than the next, whatever errors the test allowed.
+VulkanDeviceTest::~VulkanDeviceTest() {
+  if (entry_ == nullptr || !entry_->lost) return;
+  capture_->allowing = false;
+  allocator_.reset();
+  entry_->device.reset();
+  entry_->lost = false;
+}
 
 void VulkanDeviceTest::SetUp() {
   VulkanTest::SetUp();
@@ -364,13 +397,13 @@ void VulkanDeviceTest::SetUp() {
               "requirements, and cannot compare a feature_chain; make this "
               "device in the test, on a VulkanTest";
   }
-  detail::DeviceSlot& slot =
+  detail::DeviceEntry& entry =
       Registry::get().device(active_validation(), instance(), physical(), reqs);
-  if (!slot.device) {
-    FAIL() << slot.error;
+  if (!entry.device) {
+    FAIL() << entry.error;
   }
-  slot_ = &slot;
-  device_ = &*slot.device;
+  entry_ = &entry;
+  device_ = &*entry.device;
   Result<Allocator> allocator =
       Allocator::create(instance().handle(), *device_);
   ASSERT_TRUE(allocator.ok()) << allocator.status().message();
@@ -382,10 +415,10 @@ void VulkanDeviceTest::TearDown() {
   if (device_ == nullptr) return;
   // The test's work must be done before its objects go, and the device left
   // idle for the next test.
-  const Status idle = device_->wait_idle();
+  const Status idle = wait_after_test(*device_);
   EXPECT_TRUE(idle.ok()) << "waiting for the device after the test: "
                          << idle.message();
-  if (vk_result(idle) == VK_ERROR_DEVICE_LOST) slot_->lost = true;
+  if (vk_result(idle) == VK_ERROR_DEVICE_LOST) entry_->lost = true;
 }
 
 Device& VulkanDeviceTest::device() {
@@ -401,7 +434,13 @@ Allocator& VulkanDeviceTest::allocator() {
 
 SharedDeviceTest::SharedDeviceTest() = default;
 
-SharedDeviceTest::~SharedDeviceTest() = default;
+// As VulkanDeviceTest's.
+SharedDeviceTest::~SharedDeviceTest() {
+  if (entry_ == nullptr || !entry_->lost) return;
+  capture_->allowing = false;
+  entry_->device.reset();
+  entry_->lost = false;
+}
 
 DeviceRequirements SharedDeviceTest::graphics_requirements() const {
   DeviceRequirements graphics;
@@ -443,13 +482,13 @@ void SharedDeviceTest::SetUp() {
   // which did not load there, is not asked for again.
   const Validation validation =
       instance().validation_logged() ? active_validation() : Validation::Off;
-  detail::TwoFamilySlot& slot =
+  detail::TwoFamilyEntry& entry =
       Registry::get().two_family(validation, compute, graphics);
-  if (!slot.device) {
-    FAIL() << slot.error;
+  if (!entry.device) {
+    FAIL() << entry.error;
   }
-  slot_ = &slot;
-  device_ = slot.device.get();
+  entry_ = &entry;
+  device_ = entry.device.get();
   if (!device_->crosses_families()) {
     GTEST_SKIP() << "the shared device puts both libraries on one queue "
                     "family: "
@@ -461,10 +500,10 @@ void SharedDeviceTest::SetUp() {
 void SharedDeviceTest::TearDown() {
   if (device_ == nullptr) return;
   for (const Device* device : {&device_->compute(), &device_->graphics()}) {
-    const Status idle = device->wait_idle();
+    const Status idle = wait_after_test(*device);
     EXPECT_TRUE(idle.ok()) << "waiting for the device after the test: "
                            << idle.message();
-    if (vk_result(idle) == VK_ERROR_DEVICE_LOST) slot_->lost = true;
+    if (vk_result(idle) == VK_ERROR_DEVICE_LOST) entry_->lost = true;
   }
 }
 
