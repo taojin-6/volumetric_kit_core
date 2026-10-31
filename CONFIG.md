@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.35.0 CONFIG)
+vkc_require_core(0.37.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -117,7 +117,7 @@ unknown extension object.
 - Live RealSense fields (core 0.31.0, `FuseRealsense`): `driver`
   `realsense`, `serial` (empty: the only camera attached), the colour/depth
   widths and heights, as pairs, and `fps`. One camera's depth with its
-  colour: none of the Orbbec rig's fields, or diagnostics. From core 0.35.0
+  colour: none of the Orbbec rig's fields, or diagnostics. From core 0.37.0
   it codes and serves its fused sets as FuseOrbbec does (below).
 - RealSense depth (core 0.33.0, `FuseRealsense`): `depth` is `camera` (the
   default, the camera's own) or `ffs` (Fast-FoundationStereo on its infrared
@@ -179,7 +179,7 @@ unknown extension object.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
   core 0.6.0; `screenshot` for GfxModel; `serve` and `max_viewers` (core
-  0.30.0) for FuseOrbbec, and FuseRealsense (core 0.35.0). An empty string
+  0.30.0) for FuseOrbbec, and FuseRealsense (core 0.37.0). An empty string
   disables each optional output; fusion/export operations require a nonempty
   `path`. `path`, `csv` and `stream` must differ once resolved, and none may
   be `source.sync_config` or `source.calibration` (core 0.13.0), or
@@ -212,7 +212,7 @@ unknown extension object.
   `mjpeg`, since an H.265 frame is not self-contained, and must not exceed
   `run.frames`; a directory requires a positive count. Other profiles reject
   both fields.
-- `FuseOrbbec` and, from core 0.35.0, `FuseRealsense` code their fused sets,
+- `FuseOrbbec` and, from core 0.37.0, `FuseRealsense` code their fused sets,
   one frame per set, when `output.stream` or `output.csv` names a file (core
   0.13.0) or `output.serve` a port (core 0.16.0); each still writes the PLY
   at `output.path`. A nonzero `serve` serves the coded frames live on that
@@ -233,7 +233,7 @@ unknown extension object.
   `output.serve`, since audio is written only to the stream, and FuseOrbbec's
   cameras on the host's clock: a rig (`sync_config`) or `host_clock`. A
   RealSense camera always is, so FuseRealsense asks only for the stream
-  (core 0.35.0, when it took the two outputs; 0.34.0 refused its audio).
+  (core 0.37.0, when it took the two outputs; 0.34.0 refused its audio).
   Other profiles reject it.
 - `FuseOrbbec` (core 0.14.0), `FuseRealsense` and `RigViewer` accept
   `fusion.free_after`, a nonnegative integer, default 30. Every that many

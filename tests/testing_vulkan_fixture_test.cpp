@@ -33,6 +33,7 @@
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/core/vulkan/shared_device.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -124,6 +125,20 @@ TEST(ValidationSession, SetsOneSpellingOfSynchronizationValidation) {
   EXPECT_EQ(env(kValidateSync), nullptr);
   EXPECT_EQ(env(kLayerEnables), nullptr);
   EXPECT_EQ(env(kShaderAccesses), nullptr);
+}
+
+TEST(ValidationSession, TurnsOffTheMessageLimitAtEveryLevel) {
+  constexpr const char* kMessageLimit =
+      "VK_KHRONOS_VALIDATION_ENABLE_MESSAGE_LIMIT";
+  const test::ScopedEnv original(kMessageLimit, "true");
+  for (const test::Validation level :
+       {test::Validation::Off, test::Validation::On, test::Validation::Sync,
+        test::Validation::ShaderAccesses}) {
+    const test::ValidationSession session(level);
+    EXPECT_STREQ(env(kMessageLimit), "false") << static_cast<int>(level);
+  }
+  // Restored on the way out.
+  EXPECT_STREQ(env(kMessageLimit), "true");
 }
 
 TEST(ValidationSession, RestoresLegacySettingsAfterNestedSessions) {
@@ -276,6 +291,26 @@ TEST_F(ValidatedTest, AnAllowedErrorIsCountedInstead) {
   EXPECT_TRUE(
       failures_of([&] { create_empty_buffer(device().handle()); }).empty());
   EXPECT_GT(allowed_validation_errors(), 0);
+}
+
+// The layer's default duplicate_message_limit: with the limit on, it reports
+// a message this many times per instance, and then no more.
+constexpr int kLayerMessageLimit = 10;
+
+// One error, more often than that limit allows, on the shared device and on
+// another made on the same instance: every report reaches the test.
+TEST_F(ValidatedTest, EveryRepeatOfAnErrorIsReported) {
+  allow_validation_errors();
+  create_empty_buffer(device().handle());
+  const int each = allowed_validation_errors();
+  ASSERT_GT(each, 0);
+  Result<Device> other = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(other.ok()) << other.status().message();
+  for (int i = 0; i < kLayerMessageLimit; ++i) {
+    create_empty_buffer(device().handle());
+    create_empty_buffer(other->handle());
+  }
+  EXPECT_EQ(allowed_validation_errors(), each * ((2 * kLayerMessageLimit) + 1));
 }
 
 // Under synchronization validation wherever the layer is installed.

@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
-## [0.35.0] - 2026-10-30
+## [0.37.0] - 2026-10-31
 
 ### Added
 
@@ -28,6 +28,95 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   code nothing. A consumer that runs `FuseRealsense` scenarios codes and
   serves when they name an output, as for `FuseOrbbec`, and records the
   named audio input, or refuses those keys itself.
+
+## [0.36.0] - 2026-10-31
+
+### Added
+
+- `tools/ci/images/`: the family's Linux CI images, one per Ubuntu release
+  (24.04, 26.04), holding what that release's legs install, CUDA 13.4
+  included. `.github/workflows/ci-images.yml`, run by hand only, builds and
+  checks them and pushes them to the private GHCR package
+  `ghcr.io/taojin-6/volumetric_kit_ci`; a repository pins one by digest and
+  drops its install step ([tools/ci/images/README.md](tools/ci/images/README.md)).
+  Nothing changes for a consumer of the library.
+
+### Changed
+
+- `Device::PendingSubmit`, and so `PendingBatch`, keep the semaphores and
+  values the work sets, for the wait below: their layout changes, and those
+  semaphores must outlive that wait, not just the work (`TimelinePoint`).
+
+### Fixed
+
+- A wait of `Device::PendingSubmit` or `PendingBatch` that sees the work
+  complete -- `wait`, the destructor, a move assignment -- returns only once
+  every timeline value the work sets reads as set, on every driver. Vulkan
+  sets a submit's values before its fence, but lavapipe (Mesa's emulated
+  timelines) can show the fence first, so a value read right after the wait,
+  or a later check of reached values (`TimelineWaits::Reached`), could see
+  the old one. `ready()` still answers by the fence. A wait that blocks, on
+  the fence or the values, is one host wait.
+
+### Migration
+
+- Nothing to change beyond the pin and a rebuild, unless a semaphore a
+  pending submit sets is destroyed before its wait: keep it until then.
+
+## [0.35.1] - 2026-10-31
+
+### Fixed
+
+- The test fixtures' validation layer reports every repeat of an error:
+  `test::ValidationSession` turns off the layer's limit on repeated messages
+  at every level. The limit counts per instance, which the tests in a process
+  share, so once an error had been reported about ten times, later tests that
+  committed it passed.
+- `test::VulkanDeviceTest` and `test::SharedDeviceTest` try again, for the
+  next test, to make a shared device that could not be made -- including one
+  replacing a lost device -- rather than fail every later test in the process
+  with the first failure. A lost device is destroyed with the test that lost
+  it, so what the layer reports as it goes fails that test, not the next.
+- The allocator checks that VMA's successful allocation returned one before
+  binding a resource to it, and otherwise refuses the resource with
+  `VK_ERROR_UNKNOWN`. VMA always returns one, so nothing changes at run time;
+  clang-tidy's analyzer, which cannot always see that, no longer fails CI
+  with `clang-analyzer-nullability.NullPassedToNonnull`.
+
+### Migration
+
+- Nothing to change beyond the pin. A sibling's test whose error the limit
+  hid now fails, and a count of allowed errors includes every repeat.
+
+## [0.35.0] - 2026-10-30
+
+### Added
+
+- `HeapStats::lazy_bytes`: the part of `allocation_bytes` that is lazily
+  allocated, the most the device may commit for this allocator's transient
+  attachments. `reserved_bytes` and `allocation_bytes` still count every
+  allocation at its size.
+
+### Changed
+
+- `Allocator::create_image` places an image whose usage includes
+  `VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT` in a lazily allocated memory type
+  its requirements allow, on memory dedicated to it, wherever the device has
+  one (MoltenVK: Metal's memoryless storage, which takes no memory); elsewhere
+  it stays `DeviceOnly`. No other resource ever takes lazily allocated memory
+  (DECISIONS.md, the 2026-10-30 entry). Such an image's contents last only
+  the render pass that writes them: never `LOAD` or `STORE` them. At the
+  budget it is refused, as memory of its own, rather than cut from a block.
+- `usage_bytes` is asked of the driver again right after the allocator makes
+  or frees lazily allocated memory, so a transient attachment never leaves
+  it high or low.
+
+### Migration
+
+- Nothing to change beyond the pin. A consumer that loads or stores a
+  transient attachment's contents across passes must drop
+  `TRANSIENT_ATTACHMENT` from that image. A consumer that reports the memory
+  its allocator holds subtracts `lazy_bytes`.
 
 ## [0.34.0] - 2026-10-30
 

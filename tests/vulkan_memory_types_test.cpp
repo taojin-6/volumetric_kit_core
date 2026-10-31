@@ -66,6 +66,13 @@ VkPhysicalDeviceMemoryProperties discrete_layout() {
                                               {2, kDL | kHV | kHC}});
 }
 
+// MoltenVK on Apple GPUs, as measured on a laptop and a phone: one unified
+// heap with private, shared and memoryless storage.
+VkPhysicalDeviceMemoryProperties moltenvk_layout() {
+  return layout({kLocalHeap},
+                {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
+}
+
 // Duplicate private types remain eligible without admitting the mapped window.
 TEST(MemoryTypes, DiscreteDuplicateTypesKeepDeviceOnlyOutOfTheBar) {
   const auto props = discrete_layout();
@@ -94,9 +101,7 @@ TEST(MemoryTypes, DiscreteReorderedTypesKeepDeviceOnlyOutOfTheBar) {
 // One unified heap with private, shared and memoryless
 // storage. Device-only is the private storage, never memoryless.
 TEST(MemoryTypes, UnifiedMemoryUsesPrivateStorageWhereAvailable) {
-  const auto props =
-      layout({kLocalHeap},
-             {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
+  const auto props = moltenvk_layout();
   EXPECT_EQ(detail::device_only_types(props), bits({0}));
   EXPECT_EQ(detail::device_local_types(props), bits({0, 1}));
   EXPECT_EQ(detail::device_mapped_types(props), bits({1}));  // shared storage
@@ -202,9 +207,7 @@ TEST(MemoryTypes, DeviceOnlyNeverFallsBackToTheBarWindow) {
 // On unified memory every device-local type is the one pool, so a resource
 // no private type suits -- such as a linear image -- takes the rest of it.
 TEST(MemoryTypes, DeviceOnlyTakesTheOnePoolOnUnifiedMemory) {
-  const auto unified =
-      layout({kLocalHeap},
-             {{0, kDL}, {0, kDL | kHV | kHC | kCached}, {0, kDL | kLazy}});
+  const auto unified = moltenvk_layout();
   EXPECT_EQ(placed(unified, MemoryUsage::DeviceOnly), bits({0}));
   EXPECT_EQ(placed(unified, MemoryUsage::DeviceOnly, bits({1, 2})), bits({1}));
   EXPECT_EQ(placed(unified, MemoryUsage::DeviceOnly, bits({2})), 0U);  // lazy
@@ -350,6 +353,103 @@ TEST(MemoryTypes, APlacementIsCutToWhatTheResourceAllows) {
   EXPECT_EQ(placed(props, MemoryUsage::Staging, bits({4})), bits({4}));
   EXPECT_EQ(placed(props, MemoryUsage::Staging, bits({1, 5})), 0U);
   EXPECT_EQ(placed(props, MemoryUsage::DeviceMapped, bits({1, 2})), 0U);
+}
+
+// --- images, and transient attachments ---------------------------------------
+// On the layouts drivers report, as measured: MoltenVK's (above), a discrete
+// GPU with five types and no lazily allocated memory, and lavapipe's single
+// type.
+
+constexpr VkImageUsageFlags kColor = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+constexpr VkImageUsageFlags kDepth =
+    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+constexpr VkImageUsageFlags kTransient =
+    VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+
+VkPhysicalDeviceMemoryProperties five_type_discrete_layout() {
+  return layout({kLocalHeap, 0}, {{1, 0},
+                                  {0, kDL},
+                                  {1, kHV | kHC},
+                                  {1, kHV | kHC | kCached},
+                                  {0, kDL | kHV | kHC}});
+}
+
+VkPhysicalDeviceMemoryProperties lavapipe_layout() {
+  return layout({kLocalHeap}, {{0, kDL | kHV | kHC | kCached}});
+}
+
+// A transient attachment takes the lazily allocated types it allows -- on
+// MoltenVK, Metal's memoryless storage -- and nothing else does, even where
+// a resource's requirements allowed them.
+TEST(MemoryTypes, ATransientAttachmentTakesLazilyAllocatedMemory) {
+  const auto props = moltenvk_layout();
+  EXPECT_EQ(detail::lazily_allocated_types(props), bits({2}));
+  EXPECT_EQ(detail::image_types(props, kColor | kTransient, bits({0, 2})),
+            bits({2}));
+  EXPECT_EQ(detail::image_types(props, kDepth | kTransient, kAny), bits({2}));
+  // Not transient: device-only, the private type.
+  EXPECT_EQ(detail::image_types(props, kColor, kAny), bits({0}));
+  EXPECT_EQ(detail::image_types(props, kColor, bits({2})), 0U);
+  // Transient, but its requirements leave the lazy type out: device-only.
+  EXPECT_EQ(detail::image_types(props, kColor | kTransient, bits({0, 1})),
+            bits({0}));
+  // No other placement, nor the search for memory bound outside the
+  // allocator, ever takes it.
+  for (const MemoryUsage memory :
+       {MemoryUsage::DeviceOnly, MemoryUsage::DeviceMapped,
+        MemoryUsage::Staging}) {
+    EXPECT_EQ(placed(props, memory) & bits({2}), 0U);
+    EXPECT_EQ(placed(props, memory, kAny, HostAccess::Random) & bits({2}), 0U);
+  }
+  EXPECT_FALSE(detail::first_memory_type(props, bits({2}), kDL, 0));
+}
+
+// Without lazily allocated memory a transient attachment is device-only,
+// as any image: a discrete GPU's VRAM outside the BAR window, lavapipe's one
+// type.
+TEST(MemoryTypes, ATransientAttachmentIsDeviceOnlyWithoutLazyMemory) {
+  const auto discrete = five_type_discrete_layout();
+  EXPECT_EQ(detail::lazily_allocated_types(discrete), 0U);
+  EXPECT_EQ(detail::image_types(discrete, kColor | kTransient, kAny),
+            bits({1}));
+  EXPECT_EQ(detail::image_types(discrete, kDepth | kTransient, kAny),
+            placed(discrete, MemoryUsage::DeviceOnly));
+  EXPECT_EQ(detail::image_types(discrete, kColor | kTransient, bits({4})), 0U)
+      << "never the BAR window";
+
+  const auto cpu = lavapipe_layout();
+  EXPECT_EQ(detail::lazily_allocated_types(cpu), 0U);
+  EXPECT_EQ(detail::image_types(cpu, kColor | kTransient, kAny), bits({0}));
+}
+
+// A lazily allocated type that is also protected is not one a transient
+// attachment may take.
+TEST(MemoryTypes, OnlyPlainLazilyAllocatedTypesServeTransientAttachments) {
+  const auto props =
+      layout({kLocalHeap}, {{0, kDL}, {0, kDL | kLazy | kProtected}});
+  EXPECT_EQ(detail::lazily_allocated_types(props), 0U);
+  EXPECT_EQ(detail::image_types(props, kColor | kTransient, kAny), bits({0}));
+}
+
+// Only an image the allocator keeps is placed by its usage. A buffer is placed
+// by its MemoryUsage, and an exported image as DeviceOnly whatever its usage,
+// as its importer maps the memory: neither takes the memoryless type, even
+// asked with transient usage and allowed every type.
+TEST(MemoryTypes, OnlyAKeptImageIsPlacedByItsUsage) {
+  const auto props = moltenvk_layout();
+  const auto types = [&](detail::ResourceKind kind, VkImageUsageFlags usage,
+                         MemoryUsage memory = MemoryUsage::DeviceOnly) {
+    return detail::resource_types(props, kind, memory,
+                                  HostAccess::SequentialWrite, usage, kAny);
+  };
+  using detail::ResourceKind;
+  EXPECT_EQ(types(ResourceKind::Image, kColor | kTransient), bits({2}));
+  EXPECT_EQ(types(ResourceKind::Image, kColor), bits({0}));
+  EXPECT_EQ(types(ResourceKind::ExportedImage, kColor | kTransient), bits({0}));
+  EXPECT_EQ(types(ResourceKind::Buffer, kColor | kTransient), bits({0}));
+  EXPECT_EQ(types(ResourceKind::Buffer, 0, MemoryUsage::DeviceMapped),
+            bits({1}));
+  EXPECT_EQ(types(ResourceKind::Buffer, 0, MemoryUsage::Staging), bits({1}));
 }
 
 }  // namespace

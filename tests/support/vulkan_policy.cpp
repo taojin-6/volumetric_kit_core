@@ -125,6 +125,10 @@ ScopedEnv::~ScopedEnv() {
   set_env(name_.c_str(), old_ ? old_->c_str() : nullptr);
 }
 
+// The layer's limit on repeated messages counts per instance, which the tests
+// in a process share, so it is off at every level: a test sees each error it
+// commits, however often earlier tests committed it.
+//
 // Synchronization validation through its setting, or through
 // VK_LAYER_ENABLES on a layer too old for the setting. Never both: a layer
 // given both honours the deprecated one, and newer layers warn of the mix.
@@ -135,6 +139,7 @@ ValidationSession::ValidationSession(Validation validation) {
   const auto set = [this](const char* name, const char* value) {
     settings_.push_back(std::make_unique<ScopedEnv>(name, value));
   };
+  set("VK_KHRONOS_VALIDATION_ENABLE_MESSAGE_LIMIT", "false");
   if (validation >= Validation::Sync) {
     const std::uint32_t layer = validation_layer_version();
     const bool legacy = layer != 0 && layer < kSyncSettingLayerVersion;

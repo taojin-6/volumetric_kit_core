@@ -34,6 +34,7 @@ not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 | Formatting and CI | [CONTRIBUTING.md](CONTRIBUTING.md), `.pre-commit-config.yaml`, `.github/workflows/` |
 | Seeding the vulkan tier | `recon`'s and `gfx`'s `include/volumetric_kit/*/core/` and their DECISIONS.md |
 | Self-hosted runners, who can trigger CI | [tools/runners/README.md](tools/runners/README.md) |
+| The family's Linux CI images | [tools/ci/images/README.md](tools/ci/images/README.md) |
 
 ## Naming conventions
 

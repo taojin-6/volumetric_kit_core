@@ -586,6 +586,8 @@ rules after review, the same day.
   refused (`Unsupported`) otherwise, as the rest of a discrete GPU's
   device-local memory is the BAR window. Images take only this, so a driver
   may compress and tile them.
+  The one exception is a transient attachment on a device with lazily
+  allocated memory (2026-10-30, below).
 - **`DeviceMapped`** takes device-local, host-coherent types only: the BAR
   window on a discrete GPU, the one pool on unified memory. A device without
   one refuses it (`Unsupported`; `PhysicalDeviceInfo::device_mapped_memory`
@@ -634,12 +636,15 @@ rules after review, the same day.
   allocators. `reserved_bytes` (blocks and dedicated memory, free space
   included) and `allocation_bytes` (live allocations) are this allocator's
   own, and may be summed. Budget admission uses the heap's usage, not
-  per-library accounting.
-- **Special memory stays out.** Lazily allocated, protected, and feature-gated
-  device-coherent and device-uncached memory are never a placement's: each
-  needs a use or a feature this tier does not have, and VMA leaves the latter
-  kinds out of every allocation, so a mask that counted them would promise
-  memory VMA refuses.
+  per-library accounting. `lazy_bytes` flags the lazily allocated part of
+  the allocations (amended 2026-10-30, below).
+- **Special memory stays out.** Protected and feature-gated device-coherent
+  and device-uncached memory are never a placement's: each needs a use or a
+  feature this tier does not have, and VMA leaves the latter kinds out of
+  every allocation, so a mask that counted them would promise memory VMA
+  refuses. Lazily allocated memory is a transient attachment's alone, and no
+  `MemoryUsage` placement's (amended 2026-10-30, below; it was never used
+  before).
 - **Migrations.** recon's `DeviceLocal` and gfx's preferred `DeviceLocal`
   become `DeviceOnly`; host-visible buffers with copy usage become
   `Staging`, among them recon's frame staging in `gpu_frame_prep`, made by
@@ -925,6 +930,9 @@ without it; and a `"vulkan"` error fails the running test.
   them; one it leaks is reported as the shared device is destroyed, failing
   the run rather than the test. Requirements carrying a `feature_chain`
   cannot be compared, so a fixture asking for one fails rather than share.
+  A device that could not be made is made again for the next test, and one
+  a test loses is destroyed with that test, so neither the failure nor what
+  the layer reports as the device goes falls on later tests.
 - **Static**, so the shared objects are the test binary's own.
 - **The layer's settings through its environment variables**, which it reads
   as an instance is created: set while a fixture's instance is made, and for
@@ -936,7 +944,10 @@ without it; and a `"vulkan"` error fails the running test.
   one, and newer layers warn of the mix. A synchronization session temporarily
   overrides legacy enables/disables and their environment aliases so they
   cannot suppress the requested checks; it restores the caller's values when
-  it ends.
+  it ends. Every session turns off the layer's limit on repeated messages
+  (`VK_KHRONOS_VALIDATION_ENABLE_MESSAGE_LIMIT`): it counts per instance,
+  which a process's tests share, so a later test committing an error already
+  reported that many times would pass.
 - **A fixture may ask for more** (`validation()`), met wherever the layer is
   installed -- elsewhere the test runs without it -- so barrier-heavy tests
   run under synchronization validation locally as well as in CI.
@@ -1593,10 +1604,95 @@ The owner wants the RealSense camera's live reconstruction seen in a remote
 player, as the rig's is. recon's `fuse_realsense` runs the live run
 `fuse_orbbec` shares, which already codes each fused set and serves it when
 the scenario names an output, so FuseRealsense takes the same keys rather
-than a second program or profile (core 0.35.0; CONFIG.md, the coding
+than a second program or profile (core 0.37.0; CONFIG.md, the coding
 bullet): the `codec` section, `output.stream`, `output.csv`, `output.serve`
 and `output.max_viewers`, with FuseOrbbec's checks, one rule for both live
 fusion profiles. It still refuses what only the rig has: the rig's source
 fields, and diagnostics, whose picture dump keeps the rig's own coded
 pictures. With a stream or a port it takes `source.audio` (core 0.34.0),
 which waited on these outputs.
+
+## 2026-10-30 — A transient attachment takes lazily allocated memory
+
+gfx renders every window at 4x MSAA through one shared colour and depth set
+made with `TRANSIENT_ATTACHMENT` usage, cleared and resolved in the pass and
+never stored. Placed `DeviceOnly`, as every image was, that set takes real
+memory: 32 bytes a pixel, about 66 MB at 1920x1080 and 265 MB at 3840x2160.
+On a GPU that keeps attachments in on-chip memory it need take none, so the
+allocator now gives a transient attachment the lazily allocated memory its
+requirements allow, where the device has it (core 0.35.0). This reverses
+"Special memory stays out" (above) for that memory and that use alone.
+
+- **Device facts decide, with no switch.** An image whose usage includes
+  `TRANSIENT_ATTACHMENT` takes the lazily allocated types
+  (`DEVICE_LOCAL | LAZILY_ALLOCATED`, never protected) its `memoryTypeBits`
+  allow. A device with none -- a discrete GPU, a CPU implementation -- or an
+  image that allows none places it `DeviceOnly`, as before. MoltenVK exposes
+  such a type on every Apple GPU and backs it with Metal's memoryless
+  storage, which takes no memory; on a discrete GPU the set stays in VRAM.
+  There is no option: an attachment that must keep its memory leaves out
+  `TRANSIENT`, which promises nothing else.
+- **Nothing else takes it.** Buffers, images without transient usage,
+  exported images (an importer maps their memory) and `find_memory_type`
+  never choose a lazily allocated type, whatever a resource's requirements
+  allow; Vulkan binds one only to a transient image anyway.
+- **Each image's memory is its own**, as VMA's own lazily allocated usage
+  makes it, never a block VMA would size for resources to come. So it is
+  admitted against the heap's budget at full size and, as other memory a
+  resource requires to itself, refused at the budget, where a `DeviceOnly`
+  image could still take a block's free space; a driver's refusal of the
+  lazily allocated type is returned, not retried in another.
+- **Flagged, not hidden.** VMA counts the allocation at full size, as every
+  allocation, so `reserved_bytes` and `allocation_bytes` keep their meaning
+  and their consumers' checks (gfx counts a window's set by them).
+  `HeapStats::lazy_bytes` says how much of them is lazily allocated: the
+  most the device may commit, and nothing on chip; subtract it for the
+  memory the allocator certainly holds.
+- **The driver is asked again around it.** `usage_bytes` stays the heap's:
+  the driver's figure where `VK_EXT_memory_budget` is enabled, which counts
+  what the driver commits. VMA 3.4 asks for it only every 30 allocations
+  and frees (`memory_stats()` does not ask), and in between adds the bytes
+  it allocated since and subtracts those it freed. So the figure reads high
+  while new memory is uncommitted and low once memory the driver never
+  committed is freed: on MoltenVK, freeing a 4K 4x set left it 271.6 MB
+  below the truth, and budget admission would have let that much more past
+  the budget. The allocator therefore asks again (`vmaSetCurrentFrameIndex`)
+  right after it makes or frees lazily allocated memory; other memory keeps
+  VMA's lag.
+- **Its contents last one pass.** Memoryless storage cannot be loaded or
+  stored: MoltenVK turns a load into `DONT_CARE` and a store into a discard
+  or a resolve, so a pass that resumes after suspending, or a later pass that
+  reads the attachment, sees undefined contents. `ImageDesc::usage` says so;
+  gfx already clears the set, stores `DONT_CARE` and keeps each frame in one
+  pass it never suspends.
+
+## 2026-10-31 — The family's Linux CI images, built by hand
+
+Every Linux leg of the family started from a bare `ubuntu@sha256` image and
+spent 17–89 s installing its packages, NVIDIA's repository and CUDA among
+them, on every run; a cache of apt's archives would save little, as most of
+it is dpkg unpacking. The core now owns one image per Ubuntu release, the
+union of what that release's legs install, pushed to a private GHCR package
+and pinned by digest in each repository
+([tools/ci/images/README.md](tools/ci/images/README.md)).
+
+- **Built and pinned by hand.** `ci-images.yml` runs only on the owner's
+  dispatch, never on a push or pull request, so code reaches the host's
+  docker, where the job runs as the runner's user, only when the owner sends
+  it there. A
+  repository moves to a new image as it moves to a new action: a commit that
+  changes the digest. Each rebuild takes current packages, with no cached
+  layers; there is no schedule and no automatic bump.
+- **The union, per release.** A leg gets packages it did not install before.
+  The family's optional dependencies are off unless a leg turns them on, so
+  what a leg builds does not change; one thing does: with glslc beside
+  glslang, CMake's FindVulkan finds glslc, so every Linux leg compiles its
+  shaders with glslc, as the Mac legs already do. The default compilers stay
+  GCC beside the sanitizers' clang, and lavapipe's manifests sit outside the
+  loader's search path, so a GPU leg still sees the NVIDIA ICD alone;
+  `smoke.sh` checks both before a push.
+- **Private.** The images carry NVIDIA's CUDA and TensorRT, which are not
+  ours to redistribute; each repository is given read access to the package.
+- **Not in them:** what keeps its pin elsewhere. The Orbbec SDK and
+  librealsense stay with sensor's actions, whose pins move with its CMake
+  floors, and a repository's own Python packages with its workflow.

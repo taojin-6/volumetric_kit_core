@@ -207,7 +207,9 @@ class VKC_VULKAN_API TimelineSemaphore {
 ///        (@ref Device::submit_pending, @ref CommandBatch::submit_async).
 ///
 /// The semaphore is borrowed, and must outlive every submission that names
-/// it: one still waiting or running when it is destroyed is undefined.
+/// it -- one still waiting or running when it is destroyed is undefined --
+/// and, for a value a @ref Device::PendingSubmit sets, that submission's
+/// wait.
 ///
 /// @code
 /// // The fuse waits for frame n's prep, and says when it is done.

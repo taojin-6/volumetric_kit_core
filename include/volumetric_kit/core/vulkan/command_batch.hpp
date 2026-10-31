@@ -83,9 +83,9 @@ class VKC_VULKAN_API PendingBatch {
   /// before taking @p other's, as the destructor does.
   PendingBatch& operator=(PendingBatch&& other) noexcept;
 
-  /// @return Whether @ref wait would return without blocking: the work has
-  ///         completed or failed, or there is none. Never blocks, and writes
-  ///         no readback.
+  /// @return Whether the work's fence has signalled, it failed, or there is
+  ///         none, as @ref Device::PendingSubmit::ready says. Never blocks,
+  ///         and writes no readback.
   bool ready() const { return submit_.ready(); }
 
   /// @brief Wait until the work completes, or the timeout passes, then write
