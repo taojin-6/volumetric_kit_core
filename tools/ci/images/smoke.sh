@@ -32,6 +32,21 @@ for header in cuda.h nvjpeg.h; do
   [ -f "$CUDAToolkit_ROOT/include/$header" ] || fail "no $header under $CUDAToolkit_ROOT"
 done
 
+# The DeckLink SDK, where an image carries it: sensor's DeckLink driver finds
+# the headers and the dispatch source under DeckLinkSDK_ROOT/include, at the
+# version the directory names.
+sdk_note=""
+if [ -n "${DeckLinkSDK_ROOT:-}" ]; then
+  for file in DeckLinkAPI.h DeckLinkAPIDispatch.cpp DeckLinkAPIVersion.h; do
+    [ -f "$DeckLinkSDK_ROOT/include/$file" ] || fail "no $file under $DeckLinkSDK_ROOT/include"
+  done
+  sdk=${DeckLinkSDK_ROOT##*-}
+  grep -qE "BLACKMAGIC_DECKLINK_API_VERSION_STRING[[:space:]]+\"${sdk//./\\.}\"" \
+    "$DeckLinkSDK_ROOT/include/DeckLinkAPIVersion.h" ||
+    fail "the DeckLink SDK under $DeckLinkSDK_ROOT is not $sdk"
+  sdk_note=", DeckLink SDK $sdk"
+fi
+
 # apt's sources are Ubuntu's archive alone, so a leg's apt-get update depends
 # on no other repository (NVIDIA's, which the CUDA layer used).
 others=$(grep -rhoE '^(deb(-src)?( \[[^]]*\])?|URIs:) +[^ ]+' \
@@ -74,4 +89,4 @@ fi
 
 # shellcheck source=/dev/null
 . /etc/os-release
-echo "smoke: ok ($PRETTY_NAME, CUDA $cuda)"
+echo "smoke: ok ($PRETTY_NAME, CUDA $cuda$sdk_note)"

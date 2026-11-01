@@ -3,6 +3,10 @@
 #   pre-commit install
 # clang-tidy needs a compile database, so it runs through the build instead
 # (-DVKC_CLANG_TIDY=ON; see CONTRIBUTING.md), locally and in CI.
+# The DeckLink SDK's files in the 24.04 CI image stay as Blackmagic ships
+# them, checked against their SHA256SUMS (tools/ci/images), so no hook touches
+# them.
+exclude: ^tools/ci/images/ubuntu-24\.04/decklink-sdk-16\.0/include/
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
