@@ -54,18 +54,26 @@ def instructions(text):
 def copy_problems(arguments, directory):
     """What breaks the COPY rule in a COPY's ARGUMENTS: [message]. With
     DIRECTORY, the image's build context, each source must exist in it."""
-    if arguments.startswith("["):
-        try:
-            words = json.loads(arguments)
-        except ValueError:
-            return [f"COPY {arguments}: not a JSON array of strings"]
-    else:
-        words = arguments.split()
-    flags = [word for word in words if word.startswith("--")]
-    paths = [word for word in words if not word.startswith("--")]
+    flags = []
+    rest = arguments
+    while rest.startswith("--"):
+        flag, _, rest = rest.partition(" ")
+        flags.append(flag)
+        rest = rest.lstrip()
     problems = []
     if any(flag.startswith("--from") for flag in flags):
         problems.append("COPY --from: the image is one stage, copying only from its directory")
+    if rest.startswith("<<"):
+        return problems + ["COPY <<: a heredoc; COPY a file kept beside the Dockerfile"]
+    if rest.startswith("["):
+        try:
+            paths = json.loads(rest)
+        except ValueError:
+            paths = None
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            return problems + [f"COPY {arguments}: not a JSON array of strings"]
+    else:
+        paths = rest.split()
     if len(paths) < 2:
         return problems + [f"COPY {arguments}: a source and a destination"]
     for source in paths[:-1]:

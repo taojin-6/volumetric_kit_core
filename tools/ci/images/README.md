@@ -26,8 +26,7 @@ and re-pinned by hand only (DECISIONS.md, the 2026-10-31 entry).
   Ubuntu's archive: NVIDIA's is removed once CUDA is in.
 - **24.04 adds** TensorRT, at the build for that CUDA, and the DeckLink SDK
   16.0's headers for sensor's DeckLink driver, at
-  `DeckLinkSDK_ROOT=/opt/decklink-sdk-16.0`. They are kept here, under the
-  licence each file carries, because the SDK's download sits behind a form
+  `DeckLinkSDK_ROOT=/opt/decklink-sdk-16.0`
   (`ubuntu-24.04/decklink-sdk-16.0/README.md`).
 - **26.04 adds** ssh, Python's venv, the FFmpeg command line, and the
   sanitizer legs' clang, sanitizer runtimes, llvm-symbolizer and lavapipe.
@@ -39,9 +38,9 @@ and re-pinned by hand only (DECISIONS.md, the 2026-10-31 entry).
 Not in them: the Orbbec SDK and librealsense, which sensor's actions install
 at the pins they keep in lockstep with its CMake floors; Desktop Video, the
 library the DeckLink SDK loads at run time, whose absence the driver's SDK
-smoke test checks; a repository's own
-Python packages; and the driver's shader-cache directory, which is under the
-runner's tool cache, mounted at run time, so a leg still creates it.
+smoke test checks; a repository's own Python packages; and the driver's
+shader-cache directory, which is under the runner's tool cache, mounted at
+run time, so a leg still creates it.
 
 ## Using one
 
@@ -109,6 +108,3 @@ role Read.
   exists in the image's own directory, with no `..`, absolute path, wildcard
   or `--from`;
 - `org.opencontainers.image.source` names the core.
-
-Its tests also hold the DeckLink SDK's files to their `SHA256SUMS` and to the
-licence statement each keeps.

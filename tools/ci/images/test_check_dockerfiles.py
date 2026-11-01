@@ -143,6 +143,20 @@ class RulesTest(unittest.TestCase):
             text = broken("24.04", "COPY decklink-sdk-16.0/include", f"COPY {source}")
             self.assert_refused(text, "24.04", f"COPY {source}: a path inside")
 
+    def test_a_copy_with_flags_and_a_json_array(self):
+        context = os.path.join(HERE, "ubuntu-24.04")
+        for arguments in ('--chmod=644 ["decklink-sdk-16.0/include", "/opt/x/include"]',
+                          '["decklink-sdk-16.0/include", "/opt/x/include"]',
+                          "--chown=0:0 --link decklink-sdk-16.0/include /opt/x/include"):
+            self.assertEqual(check_dockerfiles.copy_problems(arguments, context), [], arguments)
+        self.assertEqual(check_dockerfiles.copy_problems('[1, "/opt/x"]', context),
+                         ['COPY [1, "/opt/x"]: not a JSON array of strings'])
+
+    def test_a_heredoc_copy(self):
+        text = broken("24.04", "COPY decklink-sdk-16.0/include /opt/decklink-sdk-16.0/include",
+                      "COPY <<EOF /opt/decklink-sdk-16.0/include")
+        self.assert_refused(text, "24.04", "COPY <<: a heredoc")
+
     def test_a_copy_from_another_stage(self):
         text = broken("24.04", "COPY decklink-sdk-16.0/include",
                       "COPY --from=builder decklink-sdk-16.0/include")
