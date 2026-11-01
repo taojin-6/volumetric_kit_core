@@ -9,13 +9,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Added
 
-- The 24.04 CI image carries the DeckLink SDK 16.0's headers, unmodified, at
-  `DeckLinkSDK_ROOT=/opt/decklink-sdk-16.0`, for sensor's DeckLink driver
-  (`tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/`). `check_dockerfiles.py`
-  refuses `ADD` and a `COPY` of anything outside the image's directory, and
-  `smoke.sh` checks the SDK where an image sets its root. The image changes
-  on its next build, when the owner dispatches it; nothing changes for a
-  consumer of the library.
+- `tools/ci/decklink-sdk-16.0/`: the DeckLink SDK 16.0's Linux headers,
+  unmodified, which sensor's 24.04 CI leg builds its DeckLink driver against;
+  `tools/ci/test_decklink_sdk.py`, run by lint, holds them to their SHA256s
+  and licence statements.
+
+### Removed
+
+- The prebuilt Linux CI images: `tools/ci/images/` and
+  `.github/workflows/ci-images.yml`. The core's Linux legs start from a bare
+  `ubuntu@sha256` image and install their packages again (core #81
+  reverted). Nothing changes for a consumer of the library.
 
 ## [0.39.0] - 2026-11-01
 

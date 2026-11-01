@@ -1712,6 +1712,9 @@ and pinned by digest in each repository
   librealsense stay with sensor's actions, whose pins move with its CMake
   floors, and a repository's own Python packages with its workflow.
 
+**Amended 2026-11-01: superseded; the images are gone** (the entry on the
+images going, below).
+
 ## 2026-11-01 — FuseDecklink: one DeckLink stereo pair, its depth from FFS
 
 recon's `fuse_decklink` fuses one stereo pair of SDI cameras captured on a
@@ -1743,24 +1746,37 @@ remove none (core 0.39.0; CONFIG.md, "Live DeckLink fields").
   fusion gate starts at 0.5 m; FFS's own near limit, from the pair's
   baseline and focal length, is the consumer's to apply.
 
-## 2026-11-01 — The 24.04 CI image carries the DeckLink SDK's headers, kept in the core as Blackmagic ships them
+## 2026-11-01 — The DeckLink SDK's headers are kept in the core, as Blackmagic ships them, for sensor's CI
 
 sensor's DeckLink driver (`VS_WITH_DECKLINK`) builds against the DeckLink
 SDK's headers and dispatch source, which no job could fetch: the SDK's
 download sits behind a form, so only the lab compiled the driver's SDK part.
-The 24.04 image now carries them for sensor's 24.04 leg
-([tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/README.md](tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/README.md)).
+The core keeps them, and sensor's 24.04 leg checks them out at its core pin
+([tools/ci/decklink-sdk-16.0/README.md](tools/ci/decklink-sdk-16.0/README.md)).
 
 - **Kept in the core, as shipped.** With nothing a job can fetch, the files
-  live beside the Dockerfile, held to a list of their SHA256s; a newer SDK
+  live in the repository, held to a list of their SHA256s; a newer SDK
   replaces the directory.
 - **Their licence permits it.** Each file allows redistribution with its
   notice and statement kept, under the SDK's EULA; the owner judged it fine
-  (2026-11-01). Unlike CUDA and TensorRT, these files are public in the
-  repository; the image stays private for those.
+  (2026-11-01).
 - **Headers only, no run-time library.** A leg compiles and tests the
   driver; the cameras are checked by hand.
-- **Only files beside a Dockerfile go in.** `check_dockerfiles.py` refuses
-  `ADD` and a `COPY` from outside the image's own directory, so what an image
-  copies is in the repository and reviewed
-  ([tools/ci/images/README.md](tools/ci/images/README.md), "The rules").
+
+## 2026-11-01 — The prebuilt CI images go: each leg installs what it needs again
+
+The owner asked to remove the family's Linux CI images (the 2026-10-31 entry)
+once sensor's DeckLink leg took its headers from the repository instead. What
+they saved, 17–89 s of installs on each Linux leg's run, did not pay for what
+they asked of the owner: a hand rebuild and a re-pin in every repository for
+each change, and a GHCR package that must stay private because it holds
+NVIDIA's CUDA and TensorRT.
+
+- **Back to the legs before the images.** Core #81, which moved the core's
+  legs onto them, is reverted: each starts from a bare `ubuntu@sha256` image
+  and installs its packages, as before. sensor reverts its own move.
+- **Gone:** `tools/ci/images/` (the Dockerfiles, `check_dockerfiles.py`,
+  `smoke.sh`, `check_private.py` and their tests) and `ci-images.yml`. The
+  GHCR package is left for the owner to delete.
+- **Kept:** the DeckLink SDK's headers, now in `tools/ci/decklink-sdk-16.0/`
+  with their tests (`tools/ci/test_decklink_sdk.py`), which lint runs.

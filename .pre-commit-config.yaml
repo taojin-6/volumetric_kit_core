@@ -4,8 +4,8 @@
 # clang-tidy needs a compile database, so it runs through the build instead
 # (-DVKC_CLANG_TIDY=ON; see CONTRIBUTING.md), locally and in CI.
 # The DeckLink SDK's files, kept as shipped
-# (tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/README.md).
-exclude: ^tools/ci/images/ubuntu-24\.04/decklink-sdk-16\.0/include/
+# (tools/ci/decklink-sdk-16.0/README.md).
+exclude: ^tools/ci/decklink-sdk-16\.0/include/
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
