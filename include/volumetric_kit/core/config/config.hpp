@@ -99,9 +99,9 @@ struct Source {
   /// CalibColor's H.265 only. FuseRealsense takes the sizes and rate, not
   /// the codec, and resolves colour 1280x800 at 30 fps; its depth size is
   /// the depth it fuses: the camera's depth mode, 1280x720, or with FFS the
-  /// rectified size the model runs at, 960x544. FuseDecklink takes them too:
-  /// the cameras' mode, 3840x2160 at 30 fps (24, 25 or 30), and FFS's size,
-  /// 960x544.
+  /// rectified size the model runs at, 960x544. FuseDecklink takes them too
+  /// and resolves the cameras' mode to 3840x2160 at 30 fps, its rate 24, 25
+  /// or 30 only, and FFS's size to 960x544.
   ColorCodec color_codec = ColorCodec::Hevc;
   std::uint32_t color_width = 3840;
   std::uint32_t color_height = 2160;

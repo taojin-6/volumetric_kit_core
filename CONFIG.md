@@ -86,7 +86,7 @@ does not override the requested operation or source discriminator.
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
 | `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 3840x2160 HEVC, depth 640x576, 25 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
 | `FuseRealsense` | `fuse` | `live`, `realsense`; with `depth` `ffs`, its model and plan cache required | the camera's depth with the projector on; colour 1280x800, depth 1280x720 (FFS: 960x544, projector off), 30 fps, 300 frames; dynamic fusion, fusion output `fuse_realsense.ply`; nothing coded |
-| `FuseDecklink` | `fuse` | `live`, `decklink`; two cameras, one pair, calibration, FFS model and plan cache required | colour 3840x2160, FFS depth 960x544, 30 fps, pair skew bound half a frame, 300 frames; depth 0.5–5 m, dynamic fusion, fusion output `fuse_decklink.ply`; nothing coded |
+| `FuseDecklink` | `fuse` | `live`, `decklink`; two cameras, one pair, calibration, FFS model and plan cache required | colour 3840x2160, FFS depth 960x544, 30 fps, pair skew bound half a frame, 300 frames; dynamic fusion, fusion output `fuse_decklink.ply`; nothing coded |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
 | `RigViewer` | `view` | `live`, `orbbec`; sync config required | colour 3840x2160 HEVC, depth 640x576, 25 fps; voxel 0.01 m, dynamic fusion, 1280x720 window, overlay, unlit shading, unlimited frames/sets |
@@ -141,7 +141,8 @@ unknown extension object.
   `calibration` (the rig file: lenses and poses), `ffs_model` and
   `ffs_plan_cache`, config-relative, all required, as FFS's are for
   FuseRealsense. The colour size and `fps` are the cameras' mode, 3840x2160
-  at 24, 25 or 30 fps (30 by default); the depth size is FFS's, 960x544.
+  at 30 fps by default; `fps` is 24, 25 or 30, the size any pair. The depth
+  size is FFS's, 960x544 by default.
   `max_pair_skew_us`, the most a pair's two pictures may lie apart, is from 1
   to half a frame at `fps`, rounded down, and defaults to that bound (16666
   at 30 fps), which pairs free-running cameras. It refuses the Orbbec rig's

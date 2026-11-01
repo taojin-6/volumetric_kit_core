@@ -16,9 +16,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `live`, driver `decklink`; `source.cameras`, two `config::LiveCamera`
   (`id`, `input` `SDI 1` to `SDI 4`) with distinct ids and connectors;
   `source.pairs`, one `config::StereoPairConfig` (`left`, `right`) of both;
-  `calibration`, `ffs_model` and `ffs_plan_cache` required. Colour 3840x2160
-  at 30 fps (24, 25 or 30), FFS depth 960x544, and `max_pair_skew_us` from 1
-  to half a frame, which it defaults to (16666 at 30 fps); fusion 0.5–5 m,
+  `calibration`, `ffs_model` and `ffs_plan_cache` required. `fps` 24, 25 or
+  30; `max_pair_skew_us` from 1 to half a frame at it. Defaults: colour
+  3840x2160 at 30 fps, FFS depth 960x544, the skew bound at its most (16666
+  at 30 fps); fusion 0.5–5 m,
   Dynamic, 300 frames into `fuse_decklink.ply`. It codes, serves and records
   audio as `FuseRealsense` does, and refuses the Orbbec rig's and the
   RealSense camera's keys, diagnostics and `operation` `stream`.

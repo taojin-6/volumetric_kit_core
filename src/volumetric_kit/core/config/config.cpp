@@ -174,7 +174,8 @@ class Reader {
     string(key, out);
   }
   // An array of objects, each read by `read(element_reader, item)` under its
-  // own path, `key[i]`; an element's keys are the array's, not fields.
+  // own path, `key[i]`, an unknown key refused. Only the array is recorded as
+  // a field, for `supports`; its elements' keys are not.
   template <class T, class Read>
   void objects(const char* key, std::vector<T>& out, Read read) {
     const Json* value = take(key);
