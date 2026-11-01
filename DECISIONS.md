@@ -1711,3 +1711,34 @@ and pinned by digest in each repository
 - **Not in them:** what keeps its pin elsewhere. The Orbbec SDK and
   librealsense stay with sensor's actions, whose pins move with its CMake
   floors, and a repository's own Python packages with its workflow.
+
+## 2026-11-01 — FuseDecklink: one DeckLink stereo pair, its depth from FFS
+
+recon's `fuse_decklink` fuses one stereo pair of SDI cameras captured on a
+DeckLink card, its depth from FFS on the pair. It is a profile of its own, as
+each live source is, not a generalised stereo profile: FuseRealsense keeps
+its camera depth, projector and factory calibration, FuseDecklink its
+connectors and a rig file, and one profile for both would add branches and
+remove none (core 0.39.0; CONFIG.md, "Live DeckLink fields").
+
+- **Cameras by name, paired by name.** A camera is `{id, input}` and the pair
+  `{left, right}` of ids. The id keys the camera in the rig file, so
+  recabling edits the scenario, not the file. These are the records calib's
+  DeckLink capture is planned to take, so one schema serves both, and a
+  second pair, on the card's other two connectors, is a second entry of
+  each. Until a consumer opens it: exactly two cameras and one pair. Remote
+  FFS on a pair waits for the transport that runs it.
+- **Connectors as on the bracket,** `SDI 1` to `SDI 4`. The driver maps them
+  to the SDK's sub-devices, which the scenario never names.
+- **Free-running pairs, a bound on their skew.** Without genlock the cameras
+  free-run, and the driver pairs each left frame with the nearest right one.
+  `max_pair_skew_us` bounds how far apart its pictures may be. Half a frame
+  at the rate, rounded down (16666 at 30 fps), always finds a partner, so it
+  is the default and the most; a genlocked rig lowers it, a number and not a
+  second path. The rates are the cameras' 2160p 24, 25 and 30 fps, which the
+  bound is computed from. Genlock and camera-control keys come with the
+  hardware that needs them.
+- **No defaults for the rig file or FFS.** No factory calibration poses these
+  cameras, and FFS's model and plans are named as FuseRealsense's are. The
+  fusion gate starts at 0.5 m; FFS's own near limit, from the pair's
+  baseline and focal length, is the consumer's to apply.
