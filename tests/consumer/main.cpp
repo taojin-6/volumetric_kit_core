@@ -114,6 +114,16 @@ vkc::Status run() {
     return vkc::Status::invalid_argument(
         "fuse_realsense's FFS depth was not read");
   VKC_ASSIGN(
+      const auto served,
+      vkc::config::parse(
+          R"({"version":1,"operation":"fuse","source":{"kind":"live","driver":"realsense"},"codec":{"intra_period":30},"output":{"stream":"camera.vrst","serve":47811,"max_viewers":2}})",
+          vkc::config::Application::FuseRealsense, "/scenario"));
+  if (served.codec.intra_period != 30 ||
+      served.output.stream != "/scenario/camera.vrst" ||
+      served.output.serve != 47811 || served.output.max_viewers != 2 ||
+      served.output.path != "/scenario/fuse_realsense.ply")
+    return vkc::Status::invalid_argument("fuse_realsense coding was not read");
+  VKC_ASSIGN(
       const auto rig,
       vkc::config::parse(
           R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json"},"output":{"path":"sessions"}})",
