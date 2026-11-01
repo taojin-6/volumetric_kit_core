@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/config/export.hpp"
@@ -34,7 +35,8 @@ enum class Application {
   CalibRig,
   Player,
   CalibColor,
-  FuseRealsense
+  FuseRealsense,
+  FuseDecklink
 };
 /// @brief The work requested by a scenario.
 enum class Operation { Fuse, Stream, Codec, View, Project, Calibrate };
@@ -54,6 +56,23 @@ enum class QuantizationTable { Uniform, Band, Radial };
 /// @brief Surface shading selection.
 enum class Shading { Unlit, Lit, Normals };
 
+/// @brief One camera of a live source: its name, which keys it in the
+/// calibration file, and the capture input it arrives on.
+/// @code /* FuseDecklink: {"id": "bm-1", "input": "SDI 2"} */ @endcode
+struct LiveCamera {
+  std::string id;
+  /// FuseDecklink: the card connector the camera feeds, as on the card's
+  /// bracket, `SDI 1` to `SDI 4`.
+  std::string input;
+};
+/// @brief Two cameras of `Source::cameras` matched into one stereo camera,
+/// named by id.
+/// @code /* FuseDecklink: {"left": "bm-1", "right": "bm-2"} */ @endcode
+struct StereoPairConfig {
+  std::string left;
+  std::string right;
+};
+
 /// @brief Input description. Paths returned by load/parse are config-relative.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Source {
@@ -71,16 +90,18 @@ struct Source {
   bool preload = false;
   bool apply_sync = false;
   bool host_clock = false;
-  /// FuseOrbbec and FuseRealsense: the audio input recorded beside the
-  /// cameras, on the host's clock, into the coded stream. Empty, the default,
-  /// records none; `default` is the system's default input; any other value
-  /// is an input device's name as the OS lists it.
+  /// The live fusion profiles: the audio input recorded beside the cameras,
+  /// on the host's clock, into the coded stream. Empty, the default, records
+  /// none; `default` is the system's default input; any other value is an
+  /// input device's name as the OS lists it.
   std::string audio;
   /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG only,
   /// CalibColor's H.265 only. FuseRealsense takes the sizes and rate, not
   /// the codec, and resolves colour 1280x800 at 30 fps; its depth size is
   /// the depth it fuses: the camera's depth mode, 1280x720, or with FFS the
-  /// rectified size the model runs at, 960x544.
+  /// rectified size the model runs at, 960x544. FuseDecklink takes them too
+  /// and resolves the cameras' mode to 3840x2160 at 30 fps, its rate 24, 25
+  /// or 30 only, and FFS's size to 960x544.
   ColorCodec color_codec = ColorCodec::Hevc;
   std::uint32_t color_width = 3840;
   std::uint32_t color_height = 2160;
@@ -98,11 +119,20 @@ struct Source {
   /// depth, whose matcher needs its dots on blank surfaces, and off for FFS,
   /// which they hinder, unless given.
   bool emitter = true;
-  /// FuseRealsense with FFS (required there, refused otherwise): the FFS
-  /// ONNX model, at the depth size, and the directory its built TensorRT
-  /// plans are kept in.
+  /// FuseRealsense with FFS, and FuseDecklink (required there, refused
+  /// otherwise): the FFS ONNX model, at the depth size, and the directory its
+  /// built TensorRT plans are kept in.
   std::string ffs_model;
   std::string ffs_plan_cache;
+  /// FuseDecklink (required there, refused otherwise): its two cameras, on
+  /// two inputs, and the one stereo pair they make.
+  std::vector<LiveCamera> cameras;
+  std::vector<StereoPairConfig> pairs;
+  /// FuseDecklink: the most a pair's two pictures may lie apart, in
+  /// microseconds, from 1 to half a frame at `fps`, rounded down. It resolves
+  /// to that bound (16666 at 30 fps), which pairs free-running cameras; 0 in
+  /// every other profile.
+  std::uint32_t max_pair_skew_us = 0;
   /// CodecMesh scale: exactly one of `height_m` (a height the consumer scales
   /// the input to) and `metres_per_unit` (the input's declared unit) is
   /// positive; the other stays 0.
@@ -137,8 +167,8 @@ struct Fusion {
   int fuse_every = 1;
   bool share_vertices = false;
   bool device_extract = false;
-  /// Dynamic integration if true, else Classic; FuseOrbbec, FuseRealsense
-  /// and RigViewer resolve true.
+  /// Dynamic integration if true, else Classic; FuseOrbbec, FuseRealsense,
+  /// FuseDecklink and RigViewer resolve true.
   bool dynamic = false;
   float occlusion_m = 0.05F;
   int remesh_every = 1;
@@ -181,10 +211,10 @@ struct Render {
   bool show_sources = false;
   bool texture_stats = false;
 };
-/// @brief Output paths, and the live fusion profiles' (FuseOrbbec's and
-/// FuseRealsense's) serving port and viewer limit. An empty string disables
-/// each optional output; fusion/export applications, CalibRig and CalibColor
-/// require a nonempty path.
+/// @brief Output paths, and the live fusion profiles' (FuseOrbbec's,
+/// FuseRealsense's and FuseDecklink's) serving port and viewer limit. An
+/// empty string disables each optional output; fusion/export applications,
+/// CalibRig and CalibColor require a nonempty path.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Output {
   /// A fusion or export program's file; for CalibRig, the directory each
@@ -198,7 +228,7 @@ struct Output {
   /// The codec's coded frames, in one stream file. Once resolved, a nonempty
   /// `path`, `csv` and `stream` are three different files.
   std::string stream;
-  /// FuseOrbbec's and FuseRealsense's live serving port (grid's
+  /// The live fusion profiles' serving port (grid's
   /// networking::StreamServer, on every interface); 0, the default, serves
   /// nothing.
   std::uint16_t serve = 0;
@@ -210,7 +240,8 @@ struct Output {
 /// For CodecMesh, `frames` is instead an exact count of numbered meshes from
 /// number `first`, where a dataset's is a limit that stops at its last frame.
 /// FuseOrbbec's counts camera frames, each set adding one per camera it holds,
-/// and FuseRealsense's its one camera's; CalibColor's counts sets.
+/// FuseRealsense's its one camera's and FuseDecklink's its pair's; CalibColor's
+/// counts sets.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
 struct Run {
   int frames = -1;

@@ -7,6 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-11-01
+
+### Added
+
+- `config::Application::FuseDecklink`: live fusion of one stereo pair of SDI
+  cameras on a DeckLink capture card, its depth from FFS (CONFIG.md). Source
+  `live`, driver `decklink`; `source.cameras`, two `config::LiveCamera`
+  (`id`, `input` `SDI 1` to `SDI 4`) with distinct ids and connectors;
+  `source.pairs`, one `config::StereoPairConfig` (`left`, `right`) of both;
+  `calibration`, `ffs_model` and `ffs_plan_cache` required. `fps` 24, 25 or
+  30; `max_pair_skew_us` from 1 to half a frame at it. Defaults: colour
+  3840x2160 at 30 fps, FFS depth 960x544, the skew bound at its most (16666
+  at 30 fps); fusion 0.5–5 m,
+  Dynamic, 300 frames into `fuse_decklink.ply`. It codes, serves and records
+  audio as `FuseRealsense` does, and refuses the Orbbec rig's and the
+  RealSense camera's keys, diagnostics and `operation` `stream`.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged.
+  `Source` gains `cameras`, `pairs` and `max_pair_skew_us`, empty or 0 in
+  every other profile, and `Application` a value, which a `switch` over it
+  without a default must handle. A consumer that adds a DeckLink fusion
+  program loads its scenario with `Application::FuseDecklink`.
+
 ## [0.38.0] - 2026-11-01
 
 ### Added

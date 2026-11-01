@@ -124,6 +124,20 @@ vkc::Status run() {
       served.output.path != "/scenario/fuse_realsense.ply")
     return vkc::Status::invalid_argument("fuse_realsense coding was not read");
   VKC_ASSIGN(
+      const auto pair,
+      vkc::config::parse(
+          R"({"version":1,"operation":"fuse","source":{"kind":"live","driver":"decklink","cameras":[{"id":"bm-1","input":"SDI 2"},{"id":"bm-2","input":"SDI 1"}],"pairs":[{"left":"bm-1","right":"bm-2"}],"calibration":"rig.json","ffs_model":"ffs.onnx","ffs_plan_cache":"plans"},"output":{"serve":47811}})",
+          vkc::config::Application::FuseDecklink, "/scenario"));
+  if (pair.source.cameras.size() != 2 ||
+      pair.source.cameras[0].input != "SDI 2" ||
+      pair.source.pairs.size() != 1 || pair.source.pairs[0].right != "bm-2" ||
+      pair.source.calibration != "/scenario/rig.json" ||
+      pair.source.depth_width != 960 || pair.source.fps != 30 ||
+      pair.source.max_pair_skew_us != 16666 || pair.output.serve != 47811 ||
+      pair.output.path != "/scenario/fuse_decklink.ply")
+    return vkc::Status::invalid_argument(
+        "fuse_decklink settings were not read");
+  VKC_ASSIGN(
       const auto rig,
       vkc::config::parse(
           R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json"},"output":{"path":"sessions"}})",

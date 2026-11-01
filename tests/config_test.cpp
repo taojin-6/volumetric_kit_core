@@ -24,14 +24,19 @@ namespace volumetric_kit::core::config {
 namespace {
 using App = Application;
 
+// A FuseDecklink source's required fields: two cameras, their pair, the rig
+// file and FFS's model and plans.
+constexpr std::string_view kDecklinkSource =
+    R"("cameras":[{"id":"bm-1","input":"SDI 2"},{"id":"bm-2","input":"SDI 1"}],"pairs":[{"left":"bm-1","right":"bm-2"}],"calibration":"rig.json","ffs_model":"ffs.onnx","ffs_plan_cache":"plans")";
+
 Result<Config> scenario(std::string_view text, App app,
                         std::string_view base = {}) {
   std::string document(text);
   if (!text.empty() && text.front() == '{') {
     const char* operation = "view";
     if (app == App::FuseReplica || app == App::FuseOrbbec ||
-        app == App::FuseRealsense || app == App::FuseRender ||
-        app == App::FuseViewer || app == App::Scanner)
+        app == App::FuseRealsense || app == App::FuseDecklink ||
+        app == App::FuseRender || app == App::FuseViewer || app == App::Scanner)
       operation = "fuse";
     if (app == App::CodecReplica || app == App::CodecMesh) operation = "codec";
     if (app == App::CalibProjectPoint) operation = "project";
@@ -44,8 +49,8 @@ Result<Config> scenario(std::string_view text, App app,
         app == App::FuseRender || app == App::FuseViewer)
       kind = "dataset";
     if (app == App::FuseOrbbec || app == App::FuseRealsense ||
-        app == App::RigViewer || app == App::Scanner || app == App::CalibRig ||
-        app == App::CalibColor)
+        app == App::FuseDecklink || app == App::RigViewer ||
+        app == App::Scanner || app == App::CalibRig || app == App::CalibColor)
       kind = "live";
     if (app == App::CodecMesh) kind = "mesh";
     if (app == App::GfxModel) kind = "model";
@@ -1001,7 +1006,9 @@ TEST(Config, FuseRealsenseFusesTheCamerasDepthOrFfsOnItsInfraredPair) {
            App::FuseRealsense,
            "output.path: must differ from source.ffs_model");
 
-  // No other profile takes them.
+  // No other profile takes them, but FuseDecklink, whose depth is FFS's
+  // alone, takes its model and plans
+  // (FuseDecklinkNeedsTwoCamerasOnePairItsCalibrationAndFfs).
   for (const auto app : every_profile()) {
     if (app == App::FuseRealsense) continue;
     for (const char* field :
@@ -1009,6 +1016,7 @@ TEST(Config, FuseRealsenseFusesTheCamerasDepthOrFfsOnItsInfraredPair) {
           R"("ffs_model":"m.onnx")", R"("ffs_plan_cache":"p")"}) {
       const std::string_view text(field);
       const std::string key(text.substr(1, text.find('"', 1) - 1));
+      if (app == App::FuseDecklink && key.rfind("ffs_", 0) == 0) continue;
       rejected(std::string(R"({"version":1,"source":{)") + field + "}}", app,
                "source." + key + ": is not used by this application");
     }
@@ -1254,7 +1262,7 @@ TEST(Config, UpdateSizeIsAnyCountWhereThereArePFrames) {
 // Every profile, so that one added later is held to each rule too.
 std::vector<App> every_profile() {
   std::vector<App> apps;
-  for (int app = 0; app <= static_cast<int>(App::FuseRealsense); ++app)
+  for (int app = 0; app <= static_cast<int>(App::FuseDecklink); ++app)
     apps.push_back(static_cast<App>(app));
   return apps;
 }
@@ -1275,6 +1283,8 @@ std::string with_sections(App app, const std::string& sections) {
     source =
         R"(,"source":{"sync_config":"rig.json","calibration":"c.json","color_exposure":200,"color_gain":32})";
   if (app == App::Player) source = R"(,"source":{"path":"rig.vrst"})";
+  if (app == App::FuseDecklink)
+    source = R"(,"source":{)" + std::string(kDecklinkSource) + "}";
   return R"({"version":1)" + source + sections + "}";
 }
 
@@ -1392,7 +1402,8 @@ TEST(Config, FuseOrbbecCodesEachSetWithTheCodecApplicationsKeys) {
   // profile refuses the codec section, even empty, and both of its outputs.
   for (const auto app : every_profile()) {
     if (app == App::CodecReplica || app == App::CodecMesh ||
-        app == App::FuseOrbbec || app == App::FuseRealsense)
+        app == App::FuseOrbbec || app == App::FuseRealsense ||
+        app == App::FuseDecklink)
       continue;
     rejected(with_sections(app, R"(,"codec":{})"), app,
              "codec: is not used by this application");
@@ -1456,10 +1467,12 @@ TEST(Config, OnlyTheLiveFusionProfilesServeTheirCodedFramesLive) {
         App::FuseOrbbec, "output: is not used by operation stream");
   }
 
-  // Every other profile but FuseRealsense refuses it, even at its default;
-  // those without outputs refuse the output section.
+  // Every other profile but FuseRealsense and FuseDecklink refuses it, even
+  // at its default; those without outputs refuse the output section.
   for (const auto app : every_profile()) {
-    if (app == App::FuseOrbbec || app == App::FuseRealsense) continue;
+    if (app == App::FuseOrbbec || app == App::FuseRealsense ||
+        app == App::FuseDecklink)
+      continue;
     const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
                          app == App::CodecMesh || app == App::FuseRender ||
                          app == App::GfxModel || app == App::CalibRig ||
@@ -1525,10 +1538,12 @@ TEST(Config, FuseOrbbecLimitsTheViewersItServes) {
         App::FuseOrbbec, "output: is not used by operation stream");
   }
 
-  // Every other profile but FuseRealsense refuses it; those without outputs
-  // refuse the output section.
+  // Every other profile but FuseRealsense and FuseDecklink refuses it; those
+  // without outputs refuse the output section.
   for (const auto app : every_profile()) {
-    if (app == App::FuseOrbbec || app == App::FuseRealsense) continue;
+    if (app == App::FuseOrbbec || app == App::FuseRealsense ||
+        app == App::FuseDecklink)
+      continue;
     const bool outputs = app == App::FuseReplica || app == App::CodecReplica ||
                          app == App::CodecMesh || app == App::FuseRender ||
                          app == App::GfxModel || app == App::CalibRig ||
@@ -1639,6 +1654,321 @@ TEST(Config, FuseRealsenseCodesAndServesItsSetsAsFuseOrbbecDoes) {
       App::FuseRealsense, "output.stream: must differ from source.ffs_model");
 }
 
+// A FuseDecklink scenario: its required source with these fields after it,
+// and these sections; each addition leads with a comma.
+std::string decklink(const std::string& source_fields,
+                     const std::string& sections = "") {
+  return R"({"version":1,"source":{)" + std::string(kDecklinkSource) +
+         source_fields + "}" + sections + "}";
+}
+// The same with `from` in the required source replaced by `to`.
+std::string decklink_with(std::string_view from, std::string_view to,
+                          const std::string& sections = "") {
+  std::string source(kDecklinkSource);
+  const auto at = source.find(from);
+  EXPECT_NE(at, std::string::npos) << from;
+  if (at != std::string::npos) source.replace(at, from.size(), to);
+  return R"({"version":1,"source":{)" + source + "}" + sections + "}";
+}
+
+TEST(Config, FuseDecklinkFusesOneDecklinkPairWithFfs) {
+  // Its two cameras on their connectors, its pair, and the files, relative to
+  // the scenario; the cameras' 2160p30, FFS's 960x544, and a skew bound of
+  // half a frame.
+  const auto fuse = scenario(decklink(""), App::FuseDecklink, "/scenario");
+  ASSERT_TRUE(fuse) << fuse.status().message();
+  EXPECT_EQ(fuse->operation, Operation::Fuse);
+  EXPECT_EQ(fuse->source.kind, SourceKind::Live);
+  EXPECT_EQ(fuse->source.driver, "decklink");
+  ASSERT_EQ(fuse->source.cameras.size(), 2U);
+  EXPECT_EQ(fuse->source.cameras[0].id, "bm-1");
+  EXPECT_EQ(fuse->source.cameras[0].input, "SDI 2");
+  EXPECT_EQ(fuse->source.cameras[1].id, "bm-2");
+  EXPECT_EQ(fuse->source.cameras[1].input, "SDI 1");
+  ASSERT_EQ(fuse->source.pairs.size(), 1U);
+  EXPECT_EQ(fuse->source.pairs[0].left, "bm-1");
+  EXPECT_EQ(fuse->source.pairs[0].right, "bm-2");
+  EXPECT_EQ(fuse->source.calibration, "/scenario/rig.json");
+  EXPECT_EQ(fuse->source.ffs_model, "/scenario/ffs.onnx");
+  EXPECT_EQ(fuse->source.ffs_plan_cache, "/scenario/plans");
+  EXPECT_EQ(fuse->source.color_width, 3840U);
+  EXPECT_EQ(fuse->source.color_height, 2160U);
+  EXPECT_EQ(fuse->source.depth_width, 960U);
+  EXPECT_EQ(fuse->source.depth_height, 544U);
+  EXPECT_EQ(fuse->source.fps, 30U);
+  EXPECT_EQ(fuse->source.max_pair_skew_us, 16666U);
+  EXPECT_TRUE(fuse->source.audio.empty());
+  EXPECT_EQ(fuse->fusion.voxel_size_m, 0.02F);
+  EXPECT_EQ(fuse->fusion.truncation_m, 0.08F);
+  EXPECT_EQ(fuse->fusion.min_depth_m, 0.5F);
+  EXPECT_EQ(fuse->fusion.max_depth_m, 5.F);
+  EXPECT_TRUE(fuse->fusion.dynamic);
+  EXPECT_EQ(fuse->fusion.free_after, 30);
+  EXPECT_EQ(fuse->run.frames, 300);
+  EXPECT_EQ(fuse->output.path, "/scenario/fuse_decklink.ply");
+  EXPECT_TRUE(fuse->output.csv.empty());
+  EXPECT_TRUE(fuse->output.stream.empty());
+  EXPECT_EQ(fuse->output.serve, 0U);
+  // No other profile has a skew bound, cameras or pairs.
+  EXPECT_TRUE(Source{}.cameras.empty());
+  EXPECT_TRUE(Source{}.pairs.empty());
+  EXPECT_EQ(Source{}.max_pair_skew_us, 0U);
+  const auto realsense =
+      scenario(R"({"version":1})", App::FuseRealsense, "/scenario");
+  ASSERT_TRUE(realsense) << realsense.status().message();
+  EXPECT_EQ(realsense->source.max_pair_skew_us, 0U);
+
+  // The bound follows the rate: half a frame, rounded down.
+  for (const auto& [fps, half_frame] :
+       {std::pair{24U, 20833U}, std::pair{25U, 20000U},
+        std::pair{30U, 16666U}}) {
+    const auto rated = scenario(decklink(R"(,"fps":)" + std::to_string(fps)),
+                                App::FuseDecklink);
+    ASSERT_TRUE(rated) << rated.status().message();
+    EXPECT_EQ(rated->source.fps, fps);
+    EXPECT_EQ(rated->source.max_pair_skew_us, half_frame);
+  }
+
+  // Every field it takes, each away from its default.
+  const auto set = scenario(
+      decklink(
+          R"(,"driver":"decklink","color_width":1920,"color_height":1080,"depth_width":1280,"depth_height":720,"fps":25,"max_pair_skew_us":500,"audio":"default")",
+          R"(,"fusion":{"voxel_size_m":0.01,"truncation_m":0.05,"min_depth_m":0.8,"max_depth_m":4,"max_weight":40,"dynamic":false,"free_after":0},"codec":{"intra_period":30,"update_size":256},"output":{"path":"out/room.ply","csv":"room.csv","stream":"room.vrst","serve":47811,"max_viewers":2},"run":{"frames":900})"),
+      App::FuseDecklink, "/scenario");
+  ASSERT_TRUE(set) << set.status().message();
+  EXPECT_EQ(set->source.color_width, 1920U);
+  EXPECT_EQ(set->source.color_height, 1080U);
+  EXPECT_EQ(set->source.depth_width, 1280U);
+  EXPECT_EQ(set->source.depth_height, 720U);
+  EXPECT_EQ(set->source.fps, 25U);
+  EXPECT_EQ(set->source.max_pair_skew_us, 500U);
+  EXPECT_EQ(set->source.audio, "default");
+  EXPECT_EQ(set->fusion.voxel_size_m, 0.01F);
+  EXPECT_EQ(set->fusion.truncation_m, 0.05F);
+  EXPECT_EQ(set->fusion.min_depth_m, 0.8F);
+  EXPECT_EQ(set->fusion.max_depth_m, 4.F);
+  EXPECT_EQ(set->fusion.max_weight, 40.F);
+  EXPECT_FALSE(set->fusion.dynamic);
+  EXPECT_EQ(set->fusion.free_after, 0);
+  EXPECT_EQ(set->codec.intra_period, 30U);
+  EXPECT_EQ(set->codec.update_size, 256U);
+  EXPECT_EQ(set->output.path, "/scenario/out/room.ply");
+  EXPECT_EQ(set->output.csv, "/scenario/room.csv");
+  EXPECT_EQ(set->output.stream, "/scenario/room.vrst");
+  EXPECT_EQ(set->output.serve, 47811U);
+  EXPECT_EQ(set->output.max_viewers, 2U);
+  EXPECT_EQ(set->run.frames, 900);
+
+  // The scenario as the design writes it reads back as written: the
+  // cameras either way round on the card, the pair, the files and the port.
+  const auto written = parse(
+      R"({"version": 1, "operation": "fuse",
+          "source": {"kind": "live", "driver": "decklink",
+            "cameras": [{"id": "bm-1", "input": "SDI 2"},
+                        {"id": "bm-2", "input": "SDI 1"}],
+            "pairs": [{"left": "bm-1", "right": "bm-2"}],
+            "calibration": "rigs/bm_pair/array_calibration.json",
+            "ffs_model": "ffs_960x544.onnx", "ffs_plan_cache": "plans"},
+          "output": {"serve": 47811}})",
+      App::FuseDecklink, "/scenario");
+  ASSERT_TRUE(written) << written.status().message();
+  ASSERT_EQ(written->source.cameras.size(), 2U);
+  EXPECT_EQ(written->source.cameras[0].input, "SDI 2");
+  EXPECT_EQ(written->source.cameras[1].input, "SDI 1");
+  EXPECT_EQ(written->source.pairs[0].left, "bm-1");
+  EXPECT_EQ(written->source.calibration,
+            "/scenario/rigs/bm_pair/array_calibration.json");
+  EXPECT_EQ(written->source.ffs_model, "/scenario/ffs_960x544.onnx");
+  EXPECT_EQ(written->source.max_pair_skew_us, 16666U);
+  EXPECT_EQ(written->output.serve, 47811U);
+  EXPECT_EQ(written->output.path, "/scenario/fuse_decklink.ply");
+  // The other two connectors, and the right camera listed first.
+  const auto other = scenario(
+      R"({"version":1,"source":{"cameras":[{"id":"bm-4","input":"SDI 4"},{"id":"bm-3","input":"SDI 3"}],"pairs":[{"left":"bm-3","right":"bm-4"}],"calibration":"rig.json","ffs_model":"ffs.onnx","ffs_plan_cache":"plans"}})",
+      App::FuseDecklink);
+  ASSERT_TRUE(other) << other.status().message();
+  EXPECT_EQ(other->source.cameras[0].input, "SDI 4");
+  EXPECT_EQ(other->source.pairs[0].left, "bm-3");
+  EXPECT_EQ(other->source.pairs[0].right, "bm-4");
+}
+
+TEST(Config, FuseDecklinkNeedsTwoCamerasOnePairItsCalibrationAndFfs) {
+  const auto refused = [](const std::string& text, const std::string& reason) {
+    rejected(text, App::FuseDecklink, reason);
+  };
+  const std::string cameras =
+      R"("cameras":[{"id":"bm-1","input":"SDI 2"},{"id":"bm-2","input":"SDI 1"}])";
+  const std::string pairs = R"("pairs":[{"left":"bm-1","right":"bm-2"}])";
+
+  // Exactly two cameras, each an id and a connector.
+  refused(decklink_with(cameras + ",", ""), "source.cameras: is required");
+  for (
+      const char* list :
+      {"[]", R"([{"id":"bm-1","input":"SDI 2"}])",
+       R"([{"id":"bm-1","input":"SDI 2"},{"id":"bm-2","input":"SDI 1"},{"id":"bm-3","input":"SDI 3"}])"}) {
+    refused(decklink_with(cameras, std::string(R"("cameras":)") + list),
+            "source.cameras: must name exactly two cameras");
+  }
+  refused(decklink_with(cameras, R"("cameras":{"id":"bm-1"})"),
+          "source.cameras: expected an array of objects");
+  refused(decklink_with(cameras, R"("cameras":["bm-1","bm-2"])"),
+          "source.cameras[0]: expected an object");
+  refused(
+      decklink_with(R"({"id":"bm-1","input":"SDI 2"})", R"({"input":"SDI 2"})"),
+      "source.cameras[0].id: is required");
+  refused(decklink_with(R"({"id":"bm-2","input":"SDI 1"})", R"({"id":"bm-2"})"),
+          "source.cameras[1].input: is required");
+  refused(decklink_with(R"("id":"bm-1")", R"("id":"")"),
+          "source.cameras[0].id: must not be empty");
+  refused(decklink_with(R"("id":"bm-1")", R"("id":1)"),
+          "source.cameras[0].id: expected a string");
+  refused(
+      decklink_with(R"("input":"SDI 1")", R"("input":"SDI 1","serial":"A")"),
+      "source.cameras[1].serial: unknown field");
+  for (const char* input : {"SDI 5", "SDI 0", "sdi 1", "SDI1", "0", " SDI 1"}) {
+    refused(decklink_with(R"("input":"SDI 1")",
+                          std::string(R"("input":")") + input + "\""),
+            "source.cameras[1].input: must be SDI 1, SDI 2, SDI 3 or SDI 4");
+  }
+  // Two cameras, on two connectors.
+  refused(decklink_with(R"("id":"bm-2")", R"("id":"bm-1")"),
+          "source.cameras[1].id: must differ from source.cameras[0].id");
+  refused(decklink_with(R"("input":"SDI 1")", R"("input":"SDI 2")"),
+          "source.cameras[1].input: must differ from source.cameras[0].input");
+
+  // Exactly one pair, of both cameras, left and right.
+  refused(decklink_with(pairs + ",", ""), "source.pairs: is required");
+  for (const char* list :
+       {"[]",
+        R"([{"left":"bm-1","right":"bm-2"},{"left":"bm-2","right":"bm-1"}])"}) {
+    refused(decklink_with(pairs, std::string(R"("pairs":)") + list),
+            "source.pairs: must name exactly one pair");
+  }
+  refused(decklink_with(R"("left":"bm-1")", R"("left":"bm-3")"),
+          "source.pairs[0].left: must name a camera of source.cameras");
+  refused(decklink_with(R"("right":"bm-2")", R"("right":"SDI 1")"),
+          "source.pairs[0].right: must name a camera of source.cameras");
+  refused(decklink_with(R"("right":"bm-2")", R"("right":"bm-1")"),
+          "source.pairs[0].right: must differ from source.pairs[0].left");
+  refused(decklink_with(R"(,"right":"bm-2")", ""),
+          "source.pairs[0].right: is required");
+  // Remote FFS is not taken yet.
+  refused(decklink_with(R"("right":"bm-2")",
+                        R"("right":"bm-2","ffs_remote":["ssh","ffs-host"])"),
+          "source.pairs[0].ffs_remote: unknown field");
+
+  // The cameras' rates, and a skew bound from 1 us to half a frame at it.
+  for (const char* fps : {"23", "29", "50", "60"}) {
+    refused(decklink(std::string(R"(,"fps":)") + fps),
+            "source.fps: must be 24, 25 or 30");
+  }
+  refused(decklink(R"(,"fps":0)"), "source.fps: must be finite and positive");
+  for (const auto& [fps, bound] :
+       {std::pair{"24", 20833U}, std::pair{"25", 20000U},
+        std::pair{"30", 16666U}}) {
+    const std::string rate = std::string(R"(,"fps":)") + fps;
+    for (const unsigned skew : {1U, 500U, bound}) {
+      const auto parsed = scenario(
+          decklink(rate + R"(,"max_pair_skew_us":)" + std::to_string(skew)),
+          App::FuseDecklink);
+      ASSERT_TRUE(parsed) << parsed.status().message();
+      EXPECT_EQ(parsed->source.max_pair_skew_us, skew);
+    }
+    for (const unsigned skew : {0U, bound + 1}) {
+      refused(decklink(rate + R"(,"max_pair_skew_us":)" + std::to_string(skew)),
+              "source.max_pair_skew_us: must be in [1, " +
+                  std::to_string(bound) + "], half a frame at source.fps");
+    }
+  }
+  refused(decklink(R"(,"max_pair_skew_us":-1)"),
+          "source.max_pair_skew_us: integer is out of range");
+  refused(decklink(R"(,"max_pair_skew_us":0.5)"),
+          "source.max_pair_skew_us: expected an integer");
+
+  // The rig file and FFS's model and plans have no defaults.
+  for (const char* key : {"calibration", "ffs_model", "ffs_plan_cache"}) {
+    const std::string source(kDecklinkSource);
+    const auto at = source.find(std::string(",\"") + key + "\":");
+    const auto end = source.find('"', source.find(':', at) + 2);
+    refused(decklink_with(source.substr(at, end + 1 - at), ""),
+            std::string("source.") + key + ": is required");
+    refused(decklink_with(source.substr(at, end + 1 - at),
+                          std::string(R"(,")") + key + R"(":"")"),
+            std::string("source.") + key + ": must not be empty");
+  }
+  // Its driver alone, and fuse alone.
+  for (const char* driver : {"orbbec", "realsense"}) {
+    refused(decklink(std::string(R"(,"driver":")") + driver + "\""),
+            "source.driver: only decklink is supported");
+  }
+  refused(decklink(R"(,"kind":"stream")"),
+          "source.kind: is not supported by this application");
+  rejected(R"({"version":1,"operation":"stream","source":{"kind":"live",)" +
+               std::string(kDecklinkSource) + "}}",
+           App::FuseDecklink,
+           "operation: is not supported by this application");
+  const auto unsourced =
+      parse(R"({"version":1,"operation":"fuse"})", App::FuseDecklink);
+  ASSERT_FALSE(unsourced);
+  EXPECT_NE(unsourced.status().message().find("source: is required"),
+            std::string::npos)
+      << unsourced.status().message();
+
+  // The Orbbec rig's and the RealSense camera's keys are not its.
+  for (const char* field :
+       {R"("serial":"A")", R"("depth":"ffs")", R"("depth":"camera")",
+        R"("emitter":false)", R"("sync_config":"sync.json")",
+        R"("apply_sync":true)", R"("host_clock":true)",
+        R"("color_codec":"hevc")", R"("color_exposure":200)",
+        R"("color_gain":32)"}) {
+    const std::string_view text(field);
+    const std::string key(text.substr(1, text.find('"', 1) - 1));
+    refused(decklink(std::string(",") + field),
+            "source." + key + ": is not used by this application");
+  }
+  for (const char* section :
+       {R"(,"diagnostics":{"readback":true})", R"(,"window":{})",
+        R"(,"render":{})", R"(,"fusion":{"occlusion_m":0.1})",
+        R"(,"run":{"sets":1})"}) {
+    refused(decklink("", section), "is not used by this application");
+  }
+
+  // The live fusion profiles' checks hold: the PLY is required and none of
+  // the outputs is a file it reads; a codec section codes into an output;
+  // audio goes into the stream; frames and depths are counted as theirs.
+  refused(decklink("", R"(,"output":{"path":""})"), "output.path: is required");
+  refused(decklink("", R"(,"output":{"path":"./rig.json"})"),
+          "output.path: must differ from source.calibration");
+  refused(decklink("", R"(,"output":{"stream":"./ffs.onnx"})"),
+          "output.stream: must differ from source.ffs_model");
+  refused(decklink("", R"(,"codec":{"intra_period":30})"),
+          "codec: requires output.stream, output.csv or output.serve");
+  refused(decklink("", R"(,"output":{"max_viewers":4})"),
+          "output.max_viewers: is not used when output.serve is 0");
+  refused(decklink(R"(,"audio":"default")"),
+          "source.audio: requires output.stream or output.serve");
+  refused(decklink(R"(,"color_width":3840)"),
+          "source: color_width and color_height must be provided together");
+  refused(decklink("", R"(,"run":{"frames":0})"),
+          "run.frames: must be positive");
+  refused(decklink("", R"(,"fusion":{"min_depth_m":5,"max_depth_m":4})"),
+          "min_depth_m");
+
+  // No other profile takes its cameras, pairs or skew bound, even empty.
+  for (const auto app : every_profile()) {
+    if (app == App::FuseDecklink) continue;
+    for (const char* field :
+         {R"("cameras":[])", R"("pairs":[])", R"("max_pair_skew_us":500)"}) {
+      const std::string_view text(field);
+      const std::string key(text.substr(1, text.find('"', 1) - 1));
+      rejected(std::string(R"({"version":1,"source":{)") + field + "}}", app,
+               "source." + key + ": is not used by this application");
+    }
+  }
+  // And its scenario is no other profile's.
+  rejected(decklink(""), App::FuseRealsense, "is not used by this application");
+}
+
 TEST(Config, LiveFusionRecordsAudioOnTheHostClockIntoItsStream) {
   // None by default.
   EXPECT_TRUE(Source{}.audio.empty());
@@ -1719,7 +2049,9 @@ TEST(Config, LiveFusionRecordsAudioOnTheHostClockIntoItsStream) {
 
   // Every other profile refuses it.
   for (const auto app : every_profile()) {
-    if (app == App::FuseOrbbec || app == App::FuseRealsense) continue;
+    if (app == App::FuseOrbbec || app == App::FuseRealsense ||
+        app == App::FuseDecklink)
+      continue;
     rejected(R"({"version":1,"source":{"audio":"default"}})", app,
              "source.audio: is not used by this application");
   }
@@ -1946,18 +2278,19 @@ TEST(Config, OnlyTheLiveFusingProfilesDefaultToDynamic) {
     const auto parsed = scenario(
         with_sections(app, calibrates ? R"(,"output":{"path":"s"})" : ""), app);
     ASSERT_TRUE(parsed) << parsed.status().message();
-    EXPECT_EQ(parsed->fusion.dynamic, app == App::FuseOrbbec ||
-                                          app == App::FuseRealsense ||
-                                          app == App::RigViewer)
+    EXPECT_EQ(parsed->fusion.dynamic,
+              app == App::FuseOrbbec || app == App::FuseRealsense ||
+                  app == App::FuseDecklink || app == App::RigViewer)
         << static_cast<int>(app);
   }
 }
 
 TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
-  // FuseOrbbec and FuseRealsense take RigViewer's key: every 30 sets by
-  // default, 0 for never.
+  // FuseOrbbec, FuseRealsense and FuseDecklink take RigViewer's key: every
+  // 30 sets by default, 0 for never.
   EXPECT_EQ(Fusion{}.free_after, 30);
-  for (const auto app : {App::FuseOrbbec, App::FuseRealsense, App::RigViewer}) {
+  for (const auto app : {App::FuseOrbbec, App::FuseRealsense, App::FuseDecklink,
+                         App::RigViewer}) {
     const auto omitted = scenario(with_sections(app, ""), app);
     ASSERT_TRUE(omitted) << omitted.status().message();
     EXPECT_EQ(omitted->fusion.free_after, 30);
@@ -1999,7 +2332,7 @@ TEST(Config, OnlyTheLiveFusingProfilesFreeStaleBlocks) {
   // fuse refuse the fusion section.
   for (const auto app : every_profile()) {
     if (app == App::FuseOrbbec || app == App::FuseRealsense ||
-        app == App::RigViewer)
+        app == App::FuseDecklink || app == App::RigViewer)
       continue;
     const bool fuses = app != App::GfxTriangle && app != App::GfxImGui &&
                        app != App::GfxModel && app != App::GfxImage &&

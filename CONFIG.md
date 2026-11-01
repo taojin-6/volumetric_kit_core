@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.38.0 CONFIG)
+vkc_require_core(0.39.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -86,6 +86,7 @@ does not override the requested operation or source discriminator.
 | `CodecMesh` | `codec` | `mesh`; path, one scale (height or unit), one up direction required | voxel 0.01 m, truncation 4 voxels, signed SDF, shell thickness 1.5 voxels, one frame from number 0 |
 | `FuseOrbbec` | `fuse` or `stream` | `live`, `orbbec` | colour 3840x2160 HEVC, depth 640x576, 25 fps, 300 frames; dynamic fusion, fusion output `fuse_orbbec.ply`; nothing coded |
 | `FuseRealsense` | `fuse` | `live`, `realsense`; with `depth` `ffs`, its model and plan cache required | the camera's depth with the projector on; colour 1280x800, depth 1280x720 (FFS: 960x544, projector off), 30 fps, 300 frames; dynamic fusion, fusion output `fuse_realsense.ply`; nothing coded |
+| `FuseDecklink` | `fuse` | `live`, `decklink`; two cameras, one pair, calibration, FFS model and plan cache required | colour 3840x2160, FFS depth 960x544, 30 fps, pair skew bound half a frame, 300 frames; dynamic fusion, fusion output `fuse_decklink.ply`; nothing coded |
 | `FuseRender` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, yaw 45 degrees, pitch 30 degrees, output `fuse_render.png` |
 | `FuseViewer` | `fuse` | `dataset`, `replica`; path required | 400 frames, 1280x720, overlay, lit shading, remesh every frame |
 | `RigViewer` | `view` | `live`, `orbbec`; sync config required | colour 3840x2160 HEVC, depth 640x576, 25 fps; voxel 0.01 m, dynamic fusion, 1280x720 window, overlay, unlit shading, unlimited frames/sets |
@@ -131,6 +132,22 @@ unknown extension object.
   to 960x544 and is the model's own size (the consumer checks the model). The
   infrared cameras run at their own mode; `fusion.min_depth_m` and
   `max_depth_m` gate either depth.
+- Live DeckLink fields (core 0.39.0, `FuseDecklink`): one stereo pair of SDI
+  cameras on a capture card, its depth from FFS. `driver` `decklink`;
+  `cameras`, exactly two objects of an `id`, the camera's key in the
+  calibration file, and an `input`, the card connector its SDI output feeds,
+  `SDI 1` to `SDI 4` as on the bracket; ids and inputs distinct. `pairs`,
+  exactly one object, whose `left` and `right` name the two cameras.
+  `calibration` (the rig file: lenses and poses), `ffs_model` and
+  `ffs_plan_cache`, config-relative, all required, as FFS's are for
+  FuseRealsense. The colour size and `fps` are the cameras' mode, 3840x2160
+  at 30 fps by default; `fps` is 24, 25 or 30, the size any pair. The depth
+  size is FFS's, 960x544 by default.
+  `max_pair_skew_us`, the most a pair's two pictures may lie apart, is from 1
+  to half a frame at `fps`, rounded down, and defaults to that bound (16666
+  at 30 fps), which pairs free-running cameras. It refuses the Orbbec rig's
+  and the RealSense camera's keys and diagnostics. The consumer checks the
+  card, its connectors and mode, and that the file names both cameras.
 - Mesh fields: `path`; exactly one of `height_m` (a height the consumer
   scales the input to) and `metres_per_unit` (the input's declared unit, core
   0.7.0), finite and positive; either `up_axis` (`x`, `y`, `z`, optionally
@@ -150,9 +167,10 @@ unknown extension object.
   containing `:` is refused, as the port is its own field.
 - Fusion shared fields: `voxel_size_m`, `truncation_m`, `min_depth_m`,
   `max_depth_m`, `max_weight`. Every dataset profile, FuseOrbbec,
-  FuseRealsense and RigViewer accept the boolean `dynamic` (core 0.6.0):
-  Dynamic integration when true, Classic when false; FuseOrbbec (core
-  0.15.0), FuseRealsense and RigViewer default to true, the others to false. Other application-specific extraction/dynamic fields
+  FuseRealsense, FuseDecklink and RigViewer accept the boolean `dynamic`
+  (core 0.6.0): Dynamic integration when true, Classic when false;
+  FuseOrbbec (core 0.15.0), FuseRealsense, FuseDecklink and RigViewer default
+  to true, the others to false. Other application-specific extraction/dynamic fields
   are accepted only by their actual consumers.
   CodecMesh accepts voxel size and, from core 0.7.0, truncation.
 - Codec fields: `coefficient_count`, `quantization_scale`,
@@ -179,15 +197,16 @@ unknown extension object.
 - Output fields: `path` for fusion/export programs; `prefix`, `csv` (per-frame
   rows) and `stream` (coded frames, in one file) for codecs, the last two in
   core 0.6.0; `screenshot` for GfxModel; `serve` and `max_viewers` (core
-  0.30.0) for FuseOrbbec, and FuseRealsense (core 0.37.0). An empty string
-  disables each optional output; fusion/export operations require a nonempty
-  `path`. `path`, `csv` and `stream` must differ once resolved, and none may
+  0.30.0) for FuseOrbbec, FuseRealsense (core 0.37.0) and FuseDecklink. An
+  empty string disables each optional output; fusion/export operations
+  require a nonempty `path`. `path`, `csv` and `stream` must differ once resolved, and none may
   be `source.sync_config` or `source.calibration` (core 0.13.0), or
   `source.ffs_model` (core 0.33.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
-  for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/CalibColor limits are
-  positive; FuseOrbbec's counts camera frames, each set adding one per camera
-  it holds, FuseRealsense's its one camera's, and CalibColor's counts sets; RigViewer uses zero for unlimited; gfx uses
+  for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/FuseDecklink/CalibColor
+  limits are positive; FuseOrbbec's counts camera frames, each set adding one
+  per camera it holds, FuseRealsense's its one camera's, FuseDecklink's its
+  pair's, and CalibColor's counts sets; RigViewer uses zero for unlimited; gfx uses
   -1 for unlimited and permits zero frames; Player plays until its window
   closes unless `frames` gives a positive count of presents of a stream
   frame. CodecMesh's `frames` is instead an exact count, at least 1, of
@@ -212,12 +231,12 @@ unknown extension object.
   `mjpeg`, since an H.265 frame is not self-contained, and must not exceed
   `run.frames`; a directory requires a positive count. Other profiles reject
   both fields.
-- `FuseOrbbec` and, from core 0.37.0, `FuseRealsense` code their fused sets,
-  one frame per set, when `output.stream` or `output.csv` names a file (core
-  0.13.0) or `output.serve` a port (core 0.16.0); each still writes the PLY
-  at `output.path`. A nonzero `serve` serves the coded frames live on that
-  port, on every interface (grid's `networking::StreamServer`); 0, the
-  default, serves nothing.
+- `FuseOrbbec`, `FuseRealsense` (core 0.37.0) and `FuseDecklink` code their
+  fused sets, one frame per set, when `output.stream` or `output.csv` names a
+  file (core 0.13.0) or `output.serve` a port (core 0.16.0); each still
+  writes the PLY at `output.path`. A nonzero `serve` serves the coded frames
+  live on that port, on every interface (grid's `networking::StreamServer`);
+  0, the default, serves nothing.
   `max_viewers` (core 0.30.0), a positive integer, default 4, is how many
   viewers it serves at once, first come; a connection past them is closed.
   It is refused unless `serve` is nonzero. No upper bound is checked: each
@@ -225,22 +244,23 @@ unknown extension object.
   authentication. Both take the codec fields the codec profiles share, with
   their defaults and checks. A `codec` section without any of the three
   outputs is refused, since nothing would be coded.
-- `FuseOrbbec` and `FuseRealsense` accept `source.audio` (core 0.34.0), the
-  audio input recorded beside the cameras, on the host's clock, as a track of
-  the coded stream. Omitted, the default, records none; `default` is the
-  system's default input; any other value is an input device's name as the
+- `FuseOrbbec`, `FuseRealsense` and `FuseDecklink` accept `source.audio`
+  (core 0.34.0), the audio input recorded beside the cameras, on the host's
+  clock, as a track of the coded stream. Omitted, the default, records
+  none; `default` is the system's default input; any other value is an input device's name as the
   OS lists it, which the consumer looks up. It requires `output.stream` or
   `output.serve`, since audio is written only to the stream, and FuseOrbbec's
   cameras on the host's clock: a rig (`sync_config`) or `host_clock`. A
-  RealSense camera always is, so FuseRealsense asks only for the stream
-  (core 0.37.0, when it took the two outputs; 0.34.0 refused its audio).
+  RealSense camera and DeckLink cameras always are, so FuseRealsense and
+  FuseDecklink ask only for the stream (FuseRealsense from core 0.37.0, when
+  it took the two outputs; 0.34.0 refused its audio).
   Other profiles reject it.
-- `FuseOrbbec` (core 0.14.0), `FuseRealsense` and `RigViewer` accept
-  `fusion.free_after`, a nonnegative integer, default 30. Every that many
-  fused sets, the consumer
-  runs recon's `VoxelBlockGrid::free_stale_blocks`, which frees each grid
-  block that none of those sets asked to allocate and in which neither this
-  pass nor the one before found an observed voxel; 0 never frees. Dynamic
+- `FuseOrbbec` (core 0.14.0), `FuseRealsense`, `FuseDecklink` and
+  `RigViewer` accept `fusion.free_after`, a nonnegative integer, default 30.
+  Every that many fused sets, the consumer runs recon's
+  `VoxelBlockGrid::free_stale_blocks`, which frees each grid block that none
+  of those sets asked to allocate and in which neither this pass nor the one
+  before found an observed voxel; 0 never frees. Dynamic
   integration clears the free space a camera sees through, so the blocks a
   surface has left go. Classic integration never clears a voxel, so a run
   fused Classic throughout frees only blocks that never held an observed
@@ -293,9 +313,10 @@ silently ignored by an application that does not consume it. In particular:
 Recon's existing truncation sentinel is preserved: absent or nonpositive
 truncation resolves to four times the chosen voxel size. Scanner's explicit
 truncation must be positive and its default stays 0.03 m. Depth defaults are
-0.1–8 m for datasets and 0.25–5 m for FuseOrbbec, FuseRealsense and
-RigViewer. Core checks the block-of-eight size, truncation ratio and
-bucket-index bounds before library construction.
+0.1–8 m for datasets, 0.25–5 m for FuseOrbbec, FuseRealsense and
+RigViewer, and 0.5–5 m for FuseDecklink, whose FFS consumer also gates at
+the pair's own near limit. Core checks the block-of-eight size, truncation
+ratio and bucket-index bounds before library construction.
 
 `parse` and `load` return resolved settings for consumption. Field-presence
 tracking, defaults and validation remain private to decoding; there is no

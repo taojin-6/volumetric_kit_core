@@ -59,9 +59,10 @@ bool is_codec(App app) {
   return is_one_of(app, {App::CodecReplica, App::CodecMesh});
 }
 // The live fusion programs that can code each fused set, writing the frames
-// or serving them: FuseOrbbec and FuseRealsense.
+// or serving them: FuseOrbbec, FuseRealsense and FuseDecklink.
 bool codes_sets(App app) {
-  return is_one_of(app, {App::FuseOrbbec, App::FuseRealsense});
+  return is_one_of(app,
+                   {App::FuseOrbbec, App::FuseRealsense, App::FuseDecklink});
 }
 // The profiles that code frames: the codec applications, and those above.
 bool takes_codec(App app) { return is_codec(app) || codes_sets(app); }
@@ -80,9 +81,21 @@ bool is_orbbec(App app) {
   return is_live_fusion(app) || is_rig_calibration(app);
 }
 // The profiles that open a camera at stated sizes and rate: the Orbbec
-// profiles, and FuseRealsense, which fuses a RealSense camera's own depth.
+// profiles, FuseRealsense, which fuses a RealSense camera's depth, and
+// FuseDecklink, which fuses FFS's on a DeckLink pair.
 bool takes_camera_modes(App app) {
-  return is_orbbec(app) || app == App::FuseRealsense;
+  return is_orbbec(app) ||
+         is_one_of(app, {App::FuseRealsense, App::FuseDecklink});
+}
+// The connectors a DeckLink camera may feed, named as on a four-input card's
+// bracket.
+constexpr std::array<std::string_view, 4> kDecklinkInputs = {"SDI 1", "SDI 2",
+                                                             "SDI 3", "SDI 4"};
+// Half a frame at `fps`, in whole microseconds, rounded down: the most two
+// free-running cameras' frames lie apart once each is paired with its
+// nearest.
+std::uint32_t half_frame_us(std::uint32_t fps) {
+  return static_cast<std::uint32_t>(1'000'000 / (std::uint64_t{2} * fps));
 }
 struct ParseState {
   std::vector<std::string> fields;
@@ -156,6 +169,29 @@ class Reader {
     if (out.find('\0') != std::string::npos) fail(field(key), "embedded NUL");
     if (out.empty() && !allow_empty) fail(field(key), "must not be empty");
   }
+  void required_string(const char* key, std::string& out) {
+    if (!value_.contains(key)) fail(field(key), "is required");
+    string(key, out);
+  }
+  // An array of objects, each read by `read(element_reader, item)` under its
+  // own path, `key[i]`, an unknown key refused. Only the array is recorded as
+  // a field, for `supports`; its elements' keys are not.
+  template <class T, class Read>
+  void objects(const char* key, std::vector<T>& out, Read read) {
+    const Json* value = take(key);
+    if (value == nullptr) return;
+    if (!value->is_array()) fail(field(key), "expected an array of objects");
+    out.clear();
+    for (std::size_t i = 0; i < value->size(); ++i) {
+      ParseState element_state;
+      Reader element((*value)[i], field(key) + "[" + std::to_string(i) + "]",
+                     element_state);
+      T item;
+      read(element, item);
+      element.finish();
+      out.push_back(std::move(item));
+    }
+  }
   template <class T>
   void choice(const char* key, T& out,
               std::initializer_list<std::pair<std::string_view, T>> choices) {
@@ -217,6 +253,15 @@ void read_source(const Json& json, Config& c, ParseState& state) {
   r.string("up_axis", state.up_axis);
   STR(ffs_model);
   STR(ffs_plan_cache);
+  r.objects("cameras", c.source.cameras, [](Reader& q, LiveCamera& camera) {
+    q.required_string("id", camera.id);
+    q.required_string("input", camera.input);
+  });
+  r.objects("pairs", c.source.pairs, [](Reader& q, StereoPairConfig& pair) {
+    q.required_string("left", pair.left);
+    q.required_string("right", pair.right);
+  });
+  NUM(max_pair_skew_us);
   BOOL(preload);
   BOOL(apply_sync);
   BOOL(host_clock);
@@ -360,7 +405,8 @@ bool supports(std::string_view field, App app) {
     return is_live_fusion(app) || app == App::FuseRealsense;
   if (field == "source.apply_sync") return is_live_fusion(app);
   if (field == "source.calibration")
-    return is_live_fusion(app) || app == App::CalibColor;
+    return is_live_fusion(app) ||
+           is_one_of(app, {App::CalibColor, App::FuseDecklink});
   if (field_in(field, {"source.sync_config", "source.color_codec"}))
     return is_orbbec(app);
   if (field_in(field,
@@ -370,11 +416,14 @@ bool supports(std::string_view field, App app) {
   if (field_in(field, {"source.color_exposure", "source.color_gain"}))
     return app == App::CalibColor;
   if (field == "source.host_clock") return app == App::FuseOrbbec;
-  if (field == "source.audio")
-    return is_one_of(app, {App::FuseOrbbec, App::FuseRealsense});
-  if (field_in(field, {"source.depth", "source.emitter", "source.ffs_model",
-                       "source.ffs_plan_cache"}))
+  if (field == "source.audio") return codes_sets(app);
+  if (field_in(field, {"source.depth", "source.emitter"}))
     return app == App::FuseRealsense;
+  if (field_in(field, {"source.ffs_model", "source.ffs_plan_cache"}))
+    return is_one_of(app, {App::FuseRealsense, App::FuseDecklink});
+  if (field_in(field,
+               {"source.cameras", "source.pairs", "source.max_pair_skew_us"}))
+    return app == App::FuseDecklink;
   if (field_in(field, {"source.height_m", "source.metres_per_unit",
                        "source.up_axis", "source.up_vector", "source.sdf_mode",
                        "source.shell_voxels", "source.allow_holes"}))
@@ -383,14 +432,11 @@ bool supports(std::string_view field, App app) {
     return !is_gfx(app) && !is_rig_calibration(app) &&
            !is_one_of(app, {App::CalibProjectPoint, App::Player});
   if (field == "fusion.truncation_m")
-    return is_dataset(app) ||
-           is_one_of(app, {App::FuseOrbbec, App::FuseRealsense, App::RigViewer,
-                           App::Scanner, App::CodecMesh});
+    return is_dataset(app) || codes_sets(app) ||
+           is_one_of(app, {App::RigViewer, App::Scanner, App::CodecMesh});
   if (field_in(field, {"fusion.min_depth_m", "fusion.max_depth_m",
                        "fusion.max_weight"}))
-    return is_dataset(app) ||
-           is_one_of(app,
-                     {App::FuseOrbbec, App::FuseRealsense, App::RigViewer});
+    return is_dataset(app) || codes_sets(app) || app == App::RigViewer;
   if (field_in(field, {"fusion.stride", "fusion.mesh_every",
                        "fusion.dirty_every", "fusion.device_extract"}))
     return app == App::FuseReplica;
@@ -401,10 +447,10 @@ bool supports(std::string_view field, App app) {
   if (field == "fusion.share_vertices")
     return is_one_of(app, {App::FuseReplica, App::FuseRender, App::FuseViewer});
   if (field == "fusion.dynamic")
-    return is_dataset(app) || is_live_fusion(app) || app == App::FuseRealsense;
+    return is_dataset(app) || is_live_fusion(app) || codes_sets(app);
   if (field == "fusion.hold_ms") return app == App::RigViewer;
   if (field == "fusion.free_after")
-    return is_live_fusion(app) || app == App::FuseRealsense;
+    return is_live_fusion(app) || codes_sets(app);
   if (field == "fusion.occlusion_m")
     return app == App::RigViewer || app == App::Scanner;
   if (field == "fusion.remesh_every")
@@ -439,13 +485,11 @@ bool supports(std::string_view field, App app) {
   if (field == "render.show_sources" || field == "render.texture_stats")
     return app == App::RigViewer;
   if (field == "output")
-    return is_codec(app) || is_rig_calibration(app) ||
-           is_one_of(app, {App::FuseReplica, App::FuseOrbbec,
-                           App::FuseRealsense, App::FuseRender, App::GfxModel});
+    return is_codec(app) || is_rig_calibration(app) || codes_sets(app) ||
+           is_one_of(app, {App::FuseReplica, App::FuseRender, App::GfxModel});
   if (field == "output.path")
-    return is_rig_calibration(app) ||
-           is_one_of(app, {App::FuseReplica, App::FuseOrbbec,
-                           App::FuseRealsense, App::FuseRender});
+    return is_rig_calibration(app) || codes_sets(app) ||
+           is_one_of(app, {App::FuseReplica, App::FuseRender});
   if (field == "output.prefix") return is_codec(app);
   if (field_in(field, {"output.csv", "output.stream"})) return takes_codec(app);
   if (field_in(field, {"output.serve", "output.max_viewers"}))
@@ -453,8 +497,8 @@ bool supports(std::string_view field, App app) {
   if (field == "output.screenshot") return app == App::GfxModel;
   if (field == "run" || field == "run.frames")
     return is_dataset(app) || is_live_fusion(app) || is_gfx(app) ||
-           is_one_of(app, {App::CodecMesh, App::Player, App::CalibColor,
-                           App::FuseRealsense});
+           codes_sets(app) ||
+           is_one_of(app, {App::CodecMesh, App::Player, App::CalibColor});
   if (field == "run.sets") return app == App::RigViewer;
   if (field == "run.first") return app == App::CodecMesh;
   if (field == "calibration") return app == App::CalibProjectPoint;
@@ -526,12 +570,11 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   path_check(c.source.sync_config, "source.sync_config",
              app == App::RigViewer || is_rig_calibration(app));
   path_check(c.source.calibration, "source.calibration",
-             app == App::CalibColor);
+             is_one_of(app, {App::CalibColor, App::FuseDecklink}));
   path_check(c.output.path, "output.path",
              c.operation != Operation::Stream &&
-                 (is_rig_calibration(app) ||
-                  is_one_of(app, {App::FuseReplica, App::FuseOrbbec,
-                                  App::FuseRealsense, App::FuseRender})));
+                 (is_rig_calibration(app) || codes_sets(app) ||
+                  is_one_of(app, {App::FuseReplica, App::FuseRender})));
   path_check(c.output.prefix, "output.prefix");
   path_check(c.output.screenshot, "output.screenshot");
   path_check(c.output.csv, "output.csv");
@@ -559,11 +602,10 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   }
   if (is_dataset(app) && c.source.format != "replica")
     fail("source.format", "only replica is supported");
-  // FuseRealsense refuses the Orbbec fields below as unused, so it reaches
-  // only the driver's and the modes' checks.
+  // FuseRealsense and FuseDecklink refuse the Orbbec fields below as unused,
+  // so they reach only the driver's and the modes' checks.
   if (takes_camera_modes(app)) {
-    const std::string driver =
-        app == App::FuseRealsense ? "realsense" : "orbbec";
+    const std::string& driver = expected.source.driver;
     if (c.source.driver != driver)
       fail("source.driver", "only " + driver + " is supported");
     if (!c.source.serial.empty() && !c.source.sync_config.empty())
@@ -604,23 +646,73 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
       }
     }
   }
-  if (app == App::FuseRealsense) {
-    if (c.source.depth != DepthSource::Camera &&
-        c.source.depth != DepthSource::Ffs)
-      fail("source.depth", "unknown choice");
-    // FFS runs one model at one size and keeps the plans it builds: neither
-    // has a default, and the camera's own depth takes neither.
-    const bool ffs = c.source.depth == DepthSource::Ffs;
+  if (app == App::FuseRealsense && c.source.depth != DepthSource::Camera &&
+      c.source.depth != DepthSource::Ffs)
+    fail("source.depth", "unknown choice");
+  // FFS runs one model at one size and keeps the plans it builds: neither
+  // has a default. FuseDecklink's depth is always FFS's; FuseRealsense's
+  // when source.depth says so, and the camera's own depth takes neither.
+  if (is_one_of(app, {App::FuseRealsense, App::FuseDecklink})) {
+    const bool always = app == App::FuseDecklink;
+    const bool ffs = always || c.source.depth == DepthSource::Ffs;
     for (const char* name : {"source.ffs_model", "source.ffs_plan_cache"}) {
       if (ffs && !has(state, name))
-        fail(name, "is required when source.depth is ffs");
+        fail(name,
+             always ? "is required" : "is required when source.depth is ffs");
       if (!ffs && has(state, name))
         fail(name, "is not used when source.depth is camera");
     }
   }
+  if (app == App::FuseDecklink) {
+    // Two cameras, each on its own connector, and the one stereo pair they
+    // make, named by the calibration's keys.
+    // TODO: a second pair, on the other two connectors, adds two cameras and
+    // a pair once the consumer opens more than one.
+    const auto& cameras = c.source.cameras;
+    const auto camera = [](std::size_t i) {
+      return "source.cameras[" + std::to_string(i) + "]";
+    };
+    if (!has(state, "source.cameras")) fail("source.cameras", "is required");
+    if (cameras.size() != 2)
+      fail("source.cameras", "must name exactly two cameras");
+    for (std::size_t i = 0; i < cameras.size(); ++i) {
+      if (std::find(kDecklinkInputs.begin(), kDecklinkInputs.end(),
+                    cameras[i].input) == kDecklinkInputs.end())
+        fail(camera(i) + ".input", "must be SDI 1, SDI 2, SDI 3 or SDI 4");
+      for (std::size_t j = 0; j < i; ++j) {
+        if (cameras[i].id == cameras[j].id)
+          fail(camera(i) + ".id", "must differ from " + camera(j) + ".id");
+        if (cameras[i].input == cameras[j].input)
+          fail(camera(i) + ".input",
+               "must differ from " + camera(j) + ".input");
+      }
+    }
+    if (!has(state, "source.pairs")) fail("source.pairs", "is required");
+    if (c.source.pairs.size() != 1)
+      fail("source.pairs", "must name exactly one pair");
+    const StereoPairConfig& pair = c.source.pairs[0];
+    for (const auto& [id, name] :
+         {std::pair{&pair.left, "source.pairs[0].left"},
+          std::pair{&pair.right, "source.pairs[0].right"}}) {
+      if (std::none_of(
+              cameras.begin(), cameras.end(),
+              [id = id](const LiveCamera& named) { return named.id == *id; }))
+        fail(name, "must name a camera of source.cameras");
+    }
+    if (pair.left == pair.right)
+      fail("source.pairs[0].right", "must differ from source.pairs[0].left");
+    // The cameras' 2160p rates; the skew bound is half a frame at the rate.
+    if (c.source.fps != 24 && c.source.fps != 25 && c.source.fps != 30)
+      fail("source.fps", "must be 24, 25 or 30");
+    const std::uint32_t half_frame = half_frame_us(c.source.fps);
+    if (c.source.max_pair_skew_us < 1 || c.source.max_pair_skew_us > half_frame)
+      fail("source.max_pair_skew_us", "must be in [1, " +
+                                          std::to_string(half_frame) +
+                                          "], half a frame at source.fps");
+  }
   // Audio is stamped on the host's clock and written only to the coded
-  // stream, so the cameras must be on that clock too (a RealSense camera
-  // always is), and the stream must be written or served.
+  // stream, so the cameras must be on that clock too (a RealSense camera and
+  // DeckLink cameras always are), and the stream must be written or served.
   if (!c.source.audio.empty()) {
     if (app == App::FuseOrbbec && c.source.sync_config.empty() &&
         !c.source.host_clock)
@@ -740,8 +832,8 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (c.render.shading == Shading::Normals &&
       (app == App::FuseViewer || app == App::FuseRender))
     fail("render.shading", "normals is only supported by rig_viewer");
-  if ((is_dataset(app) || is_one_of(app, {App::FuseOrbbec, App::FuseRealsense,
-                                          App::CodecMesh, App::CalibColor})) &&
+  if ((is_dataset(app) || codes_sets(app) ||
+       is_one_of(app, {App::CodecMesh, App::CalibColor})) &&
       c.run.frames < 1)
     fail("run.frames", "must be positive");
   nonnegative(c.run.first, "run.first");
@@ -843,6 +935,12 @@ void resolve(Config& c, App app, std::string_view directory,
     }
     if (!has(state, "source.emitter")) c.source.emitter = false;
   }
+  // The skew bound defaults to half a frame at the rate, which pairs
+  // free-running cameras; a rate of 0, which the modes' check refuses,
+  // resolves none.
+  if (app == App::FuseDecklink && !has(state, "source.max_pair_skew_us") &&
+      c.source.fps > 0)
+    c.source.max_pair_skew_us = half_frame_us(c.source.fps);
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()
                                          : std::filesystem::path(directory);
@@ -873,7 +971,7 @@ void resolve(Config& c, App app, std::string_view directory,
 
 namespace {
 Config defaults_impl(Application application) {
-  if (static_cast<int>(application) < 0 || application > App::FuseRealsense)
+  if (static_cast<int>(application) < 0 || application > App::FuseDecklink)
     fail("application", "unknown application");
   Config c;
   if (is_dataset(application)) {
@@ -957,6 +1055,25 @@ Config defaults_impl(Application application) {
     c.fusion.dynamic = true;
     c.run.frames = 300;
     c.output.path = "fuse_realsense.ply";
+  }
+  // One DeckLink stereo pair: the live profiles' fusion and run length, at
+  // the cameras' 2160p30 and FFS's 960x544. FFS sees nothing nearer than its
+  // disparity range, which its consumer gates at the pair's own limit; the
+  // fusion's gate starts at 0.5 m.
+  if (application == App::FuseDecklink) {
+    c.operation = Operation::Fuse;
+    c.source.kind = SourceKind::Live;
+    c.source.driver = "decklink";
+    c.source.color_width = 3840;
+    c.source.color_height = 2160;
+    c.source.depth_width = 960;
+    c.source.depth_height = 544;
+    c.source.fps = 30;
+    c.fusion.min_depth_m = 0.5F;
+    c.fusion.max_depth_m = 5.F;
+    c.fusion.dynamic = true;
+    c.run.frames = 300;
+    c.output.path = "fuse_decklink.ply";
   }
   return c;
 }
