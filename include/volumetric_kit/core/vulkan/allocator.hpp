@@ -176,7 +176,8 @@ struct MemoryStats {
 ///
 /// Memory another API imports is not made here but by
 /// @ref create_exported_buffer, which allocates it through an allocator too,
-/// dedicated to its buffer.
+/// dedicated to its buffer; host pages another device writes are imported by
+/// @ref create_imported_host_buffer, the same way.
 ///
 /// @code
 /// // A storage buffer a compute library writes and a renderer reads.
@@ -421,6 +422,8 @@ class VKC_VULKAN_API Allocator {
   friend Result<ExportedImage> create_exported_image(const Device& device,
                                                      Allocator& allocator,
                                                      const ImageDesc& desc);
+  friend Result<ImportedHostBuffer> create_imported_host_buffer(
+      const Device& device, Allocator& allocator, VkDeviceSize bytes);
 
   Allocator() = default;
 
@@ -451,6 +454,16 @@ class VKC_VULKAN_API Allocator {
                                VkBufferUsageFlags usage, void* export_info,
                                VkDeviceMemory* memory,
                                VkDeviceSize* memory_size);
+
+  // What create_imported_host_buffer needs of VMA: `buffer` -- the caller's,
+  // created for host-allocation import and destroyed here on a failure --
+  // bound to memory dedicated to it, imported from the `size` bytes at
+  // `pages`, in a type of `page_types` placed as Staging is and within its
+  // heap's budget. On success the buffer owns `pages`, freed with std::free
+  // after its memory; on a failure they stay the caller's.
+  Result<Buffer> bind_imported(VkBuffer buffer, VkDeviceSize size,
+                               VkBufferUsageFlags usage,
+                               std::uint32_t page_types, void* pages);
 
   // The VMA handle stays out of this header. Shared, because every buffer
   // and image holds a reference so it can free through it.

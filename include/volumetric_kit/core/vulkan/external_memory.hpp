@@ -7,8 +7,9 @@
 /// @brief Device memory another API on the same GPU writes into -- CUDA
 ///        writing a hardware decoder's picture, which the kernels then read
 ///        or sample in place -- as a buffer or an image, the descriptor that
-///        hands it across, and the memory-type search for a resource bound
-///        outside the @ref Allocator.
+///        hands it across; host pages another device writes by DMA, which
+///        this device copies from; and the memory-type search for a resource
+///        bound outside the @ref Allocator.
 
 #include <cstdint>
 #include <optional>
@@ -92,6 +93,37 @@ struct ExportedImage {
   UniqueFd fd;
   /// The memory's size, which an importer is told; at least the image's.
   VkDeviceSize memory_size = 0;
+};
+
+/// @brief Host pages another device writes by DMA -- a capture card's
+///        pictures -- which this device copies from where they are.
+///
+/// The pages are allocated here, aligned to the device's
+/// `minImportedHostPointerAlignment`, and imported
+/// (`VK_EXT_external_memory_host`), so no CPU copy stages them. A copy
+/// source only (`TRANSFER_SRC`), as @ref MemoryUsage::Staging is: no shader
+/// reads host memory. The buffer frees its memory, then the pages, so
+/// @ref data is valid while @ref buffer is.
+///
+/// @code
+/// VKC_ASSIGN(ImportedHostBuffer pages,
+///            create_imported_host_buffer(device, allocator, picture_bytes));
+/// // ... the card's DMA writes a picture into pages.data, and its driver
+/// // says it is done ...
+/// CommandBatch batch(device, allocator);
+/// VKC_TRY(batch.copy(pages.buffer, 0, picture, 0, picture_bytes));
+/// VKC_TRY(batch.submit());  // the card may write these pages again
+/// @endcode
+struct ImportedHostBuffer {
+  /// `TRANSFER_SRC`, bound to the imported pages; unmapped, as the host
+  /// reaches the pages through @ref data.
+  Buffer buffer;
+  /// The pages, for their writer: a card's DMA, or a test. Their contents
+  /// start undefined.
+  std::uint8_t* data = nullptr;
+  /// The bytes asked for, rounded up to the import alignment: the size of
+  /// the pages and of @ref buffer.
+  VkDeviceSize bytes = 0;
 };
 
 /// @brief The memory type to bind a resource to that is not allocated through
@@ -237,5 +269,39 @@ VKC_VULKAN_API Result<ExportedBuffer> create_exported_buffer(
 ///         its budget).
 VKC_VULKAN_API Result<ExportedImage> create_exported_image(
     const Device& device, Allocator& allocator, const ImageDesc& desc);
+
+/// @brief Allocate host pages another device writes, imported as a buffer
+///        this device copies from.
+///
+/// The import's memory comes through @p allocator, dedicated to the buffer
+/// and admitted within its heap's budget, as an exported buffer's is, in a
+/// coherent host type the pages allow -- a cached one where there is one, as
+/// the pages are ordinary host memory. The host orders the writer and the
+/// copies: the writer is done with a picture before the batch that copies
+/// it is submitted, and writes those pages again only once that batch's
+/// work has finished. Host bookkeeping failures return `OutOfMemory` and
+/// free the pages and any partial buffer and allocation, leaving
+/// @p allocator usable for retry.
+///
+/// @code
+/// VKC_ASSIGN(ImportedHostBuffer pages,
+///            create_imported_host_buffer(device, allocator, 10000));
+/// // pages.bytes is 12288 where the import alignment is 4 KiB
+/// @endcode
+/// @param device     A device that enabled `VK_EXT_external_memory_host`,
+///                   among its extensions or optional extensions.
+/// @param allocator  An allocator over @p device; the buffer frees its memory
+///                   through it.
+/// @param bytes      The bytes the writer needs; not 0.
+/// @return The buffer and its pages; @ref Status::Code::Unsupported where
+///         @p device did not enable `VK_EXT_external_memory_host`, cannot
+///         import such a buffer, or no coherent host memory type takes the
+///         pages; @ref Status::Code::InvalidArgument for 0 bytes, or a
+///         moved-from @p allocator or one made for another device;
+///         `OutOfMemory` where the pages cannot be allocated; or a backend
+///         @ref Status (`VK_ERROR_OUT_OF_DEVICE_MEMORY` past the heap's
+///         budget).
+VKC_VULKAN_API Result<ImportedHostBuffer> create_imported_host_buffer(
+    const Device& device, Allocator& allocator, VkDeviceSize bytes);
 
 }  // namespace volumetric_kit::core

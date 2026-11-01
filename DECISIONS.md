@@ -715,6 +715,21 @@ rules after review, the same day.
   graphics stages included: its change of layout is a write, which every
   read of the image on the same queue since the acquire, a draw's included,
   must precede, and only the barrier's own scope orders the two.
+- **Host pages another device writes are imported, never staged** (core
+  0.38.0). A capture card's DMA writes each picture into host memory;
+  `create_imported_host_buffer` makes that memory a `TRANSFER_SRC` buffer
+  (`VK_EXT_external_memory_host`), so one GPU copy moves a picture into
+  device-only memory and the CPU copies nothing. The core allocates the
+  pages itself, aligned to `minImportedHostPointerAlignment` and rounded up
+  to it, rather than importing a caller's pointer: the alignment and size
+  rules are the device's, and the buffer that frees the memory frees the
+  pages after it, so no caller can free pages under live memory. The import
+  goes through the `Allocator` as an exported buffer's memory does --
+  dedicated, within its heap's budget -- placed as `Staging` is among the
+  types the pages allow, cached where they allow it: the pages are ordinary
+  host memory, and only a copy reads them. A non-coherent type is never
+  taken, as nothing flushes or invalidates the pages. The host orders the
+  writer and the copies, as it orders CUDA and a batch.
 - **`PhysicalDeviceInfo::unified_memory`** tells the architectures apart:
   every heap is device-local, so every type is (the spec sets
   `DEVICE_LOCAL` on a type exactly when its heap has it). An APU whose driver

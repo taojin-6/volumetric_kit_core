@@ -3,7 +3,11 @@
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -210,6 +214,131 @@ Result<ExportedImage> create_exported_image(const Device& device,
   return out;
 } catch (...) {
   return exception_status("create_exported_image",
+                          Status::Code::InvalidArgument);
+}
+
+namespace {
+
+struct FreePages {
+  void operator()(std::uint8_t* pages) const noexcept { std::free(pages); }
+};
+
+}  // namespace
+
+Result<ImportedHostBuffer> create_imported_host_buffer(const Device& device,
+                                                       Allocator& allocator,
+                                                       VkDeviceSize bytes) try {
+  if (!allocator.valid()) {
+    return Status::invalid_argument(
+        "create_imported_host_buffer: allocator is moved-from");
+  }
+  // As create_exported_buffer's, before the buffer exists.
+  if (allocator.device_handle() != device.handle()) {
+    return Status::invalid_argument(
+        "create_imported_host_buffer: the allocator was made for another "
+        "device");
+  }
+  if (!device.extension_enabled(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME)) {
+    return Status::unsupported(
+        "create_imported_host_buffer: the device did not enable "
+        "VK_EXT_external_memory_host");
+  }
+  if (bytes == 0) {
+    return Status::invalid_argument(
+        "create_imported_host_buffer: size is zero");
+  }
+  // Enabled, so a null entry point is the driver's fault, not a refusal.
+  const auto host_pointer_properties =
+      reinterpret_cast<PFN_vkGetMemoryHostPointerPropertiesEXT>(
+          vkGetDeviceProcAddr(device.handle(),
+                              "vkGetMemoryHostPointerPropertiesEXT"));
+  if (host_pointer_properties == nullptr) {
+    return vk_error(VK_ERROR_EXTENSION_NOT_PRESENT,
+                    "vkGetDeviceProcAddr(vkGetMemoryHostPointerPropertiesEXT)");
+  }
+  constexpr VkExternalMemoryHandleTypeFlagBits kHandle =
+      VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+  constexpr VkBufferUsageFlags kUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+  // The pointer and the memory's size are multiples of the import alignment
+  // (VUID-VkImportMemoryHostPointerInfoEXT-pHostPointer-01749,
+  // VUID-VkMemoryAllocateInfo-allocationSize-01745), a power of two.
+  VkPhysicalDeviceExternalMemoryHostPropertiesEXT host{};
+  host.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT;
+  VkPhysicalDeviceProperties2 properties{};
+  properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+  properties.pNext = &host;
+  vkGetPhysicalDeviceProperties2(device.physical_device(), &properties);
+  const VkDeviceSize alignment = host.minImportedHostPointerAlignment;
+  if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+    return Status::unsupported(
+        "create_imported_host_buffer: the device reports no power-of-two "
+        "minImportedHostPointerAlignment");
+  }
+  if (bytes > std::numeric_limits<std::size_t>::max() - (alignment - 1)) {
+    return Status::out_of_memory(
+        "create_imported_host_buffer: the size rounded up to the import "
+        "alignment exceeds the address space");
+  }
+  const VkDeviceSize rounded = (bytes + alignment - 1) & ~(alignment - 1);
+
+  // The extension alone does not promise an importable copy source.
+  // Zeroed, then set: handleType has no zero enumerator.
+  // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+  VkPhysicalDeviceExternalBufferInfo query{};
+  query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO;
+  query.usage = kUsage;
+  query.handleType = kHandle;
+  VkExternalBufferProperties can{};
+  can.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES;
+  vkGetPhysicalDeviceExternalBufferProperties(device.physical_device(), &query,
+                                              &can);
+  if ((can.externalMemoryProperties.externalMemoryFeatures &
+       VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) == 0) {
+    return Status::unsupported(
+        "create_imported_host_buffer: the device cannot import host memory "
+        "as a copy source");
+  }
+
+  // The pages first, as the types the import may take are theirs; owned
+  // here until the buffer takes them, so every failure frees them.
+  std::unique_ptr<std::uint8_t, FreePages> pages(static_cast<std::uint8_t*>(
+      std::aligned_alloc(static_cast<std::size_t>(alignment),
+                         static_cast<std::size_t>(rounded))));
+  if (pages == nullptr) {
+    return Status::out_of_memory(
+        "create_imported_host_buffer: the host pages cannot be allocated");
+  }
+  VkMemoryHostPointerPropertiesEXT pointer{};
+  pointer.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT;
+  VKC_VK_TRY(
+      host_pointer_properties(device.handle(), kHandle, pages.get(), &pointer));
+
+  VkExternalMemoryBufferCreateInfo external{};
+  external.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+  external.handleTypes = kHandle;
+  VkBufferCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  info.pNext = &external;
+  info.size = rounded;
+  info.usage = kUsage;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreateBuffer(device.handle(), &info, nullptr, &buffer));
+
+  // Placed as Staging is, among the types the pages allow, and budgeted and
+  // dedicated by the allocator, with the import chained to its allocation.
+  VKC_ASSIGN(Buffer made,
+             allocator.bind_imported(buffer, rounded, kUsage,
+                                     pointer.memoryTypeBits, pages.get()));
+  ImportedHostBuffer out;
+  out.data = pages.release();  // the buffer frees them now
+  out.buffer = std::move(made);
+  out.bytes = rounded;
+  return out;
+} catch (...) {
+  return exception_status("create_imported_host_buffer",
                           Status::Code::InvalidArgument);
 }
 

@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-11-01
+
+### Added
+
+- `create_imported_host_buffer` and `ImportedHostBuffer`
+  (`vulkan/external_memory.hpp`): host pages another device writes by DMA --
+  a capture card's pictures -- which this device copies from where they are,
+  with no CPU copy. The pages are allocated aligned to the device's
+  `minImportedHostPointerAlignment`, the size asked is rounded up to it, and
+  they are imported (`VK_EXT_external_memory_host`) as a `TRANSFER_SRC`
+  buffer through the `Allocator`: dedicated, budgeted, in a coherent host
+  type the pages allow. The buffer frees its memory, then the pages. A
+  device that did not enable the extension gives `Unsupported`, naming it.
+
+### Migration
+
+- Nothing to change beyond the pin. A consumer that imports host pages adds
+  `VK_EXT_external_memory_host` to its `DeviceRequirements` (its
+  optional extensions, where it can run without).
+
 ## [0.37.0] - 2026-10-31
 
 ### Added
