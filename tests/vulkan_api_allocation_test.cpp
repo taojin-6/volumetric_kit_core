@@ -253,6 +253,9 @@ TEST_F(DeviceAllocationTest, AllocatorDiagnosticsContainAllocationFailure) {
   expect_diagnostic_failure([&] {
     return create_exported_image(device(), allocator(), {}).status();
   });
+  expect_diagnostic_failure([&] {
+    return create_imported_host_buffer(device(), allocator(), 0).status();
+  });
   expect_diagnostic_failure([] {
     return check_queue_family_count(BufferDesc::kMaxQueueFamilies + 1, "test");
   });
@@ -397,6 +400,44 @@ TEST_F(ExportAllocationTest, ExportedImageOwnerFailureReleasesItAndCanRetry) {
   ASSERT_TRUE(retried.ok()) << retried.status().message();
   EXPECT_NE(retried->image.view(), VK_NULL_HANDLE);
   retried.value() = ExportedImage{};
+  EXPECT_EQ(live_bytes(allocator()), before);
+}
+
+// A device that imports host memory where its driver can.
+class HostImportAllocationTest : public DeviceAllocationTest {
+ protected:
+  DeviceRequirements requirements() const override {
+    DeviceRequirements r;
+    r.optional_extensions = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
+    return r;
+  }
+};
+
+TEST_F(HostImportAllocationTest, ImportOwnerFailureReleasesItAndCanRetry) {
+  auto initial = create_imported_host_buffer(device(), allocator(), 4096);
+  if (!initial.ok()) {
+    ASSERT_EQ(initial.status().domain(), Status::Code::Unsupported);
+    GTEST_SKIP() << "the device cannot import host memory";
+  }
+  // Its final core allocation is bind_imported's deleter, as for a buffer:
+  // refused, the memory goes with the partial buffer, and the pages, which
+  // the sanitizer leg's leak check would report, with the call.
+  test::record_allocations();
+  initial = create_imported_host_buffer(device(), allocator(), 4096);
+  const test::AllocationSite site = test::finish_allocations();
+  ASSERT_TRUE(initial.ok()) << initial.status().message();
+  ASSERT_NE(site.caller, nullptr);
+  initial.value() = ImportedHostBuffer{};
+  const std::uint64_t before = live_bytes(allocator());
+  test::AllocationFailure failure(site);
+  const auto refused = create_imported_host_buffer(device(), allocator(), 4096);
+  const bool failed = failure.stop();
+  ASSERT_TRUE(failed);
+  EXPECT_EQ(refused.status().domain(), Status::Code::OutOfMemory);
+  EXPECT_EQ(live_bytes(allocator()), before);
+  auto retried = create_imported_host_buffer(device(), allocator(), 4096);
+  ASSERT_TRUE(retried.ok()) << retried.status().message();
+  retried.value() = ImportedHostBuffer{};
   EXPECT_EQ(live_bytes(allocator()), before);
 }
 
