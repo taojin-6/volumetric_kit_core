@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <ios>
 #include <optional>
 #include <string>
 #include <utility>
@@ -811,6 +812,21 @@ VkExternalMemoryFeatureFlags host_import_features(VkPhysicalDevice physical) {
   return can.externalMemoryProperties.externalMemoryFeatures;
 }
 
+// The memory types `device` lets the host pages at `pages` be imported into
+// (vkGetMemoryHostPointerPropertiesEXT), or 0.
+std::uint32_t host_pointer_types(const Device& device, const void* pages) {
+  const auto query = reinterpret_cast<PFN_vkGetMemoryHostPointerPropertiesEXT>(
+      vkGetDeviceProcAddr(device.handle(),
+                          "vkGetMemoryHostPointerPropertiesEXT"));
+  if (query == nullptr) return 0;
+  VkMemoryHostPointerPropertiesEXT properties{};
+  properties.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT;
+  const VkResult got = query(
+      device.handle(), VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+      pages, &properties);
+  return got == VK_SUCCESS ? properties.memoryTypeBits : 0;
+}
+
 // The first byte where `got` and `want` differ, or their size where none
 // does: a mismatch reports one index, not two pictures' bytes.
 std::size_t first_difference(const std::vector<std::uint8_t>& got,
@@ -887,6 +903,28 @@ TEST_F(HostImportTest, ACopyReadsWhatIsWrittenThroughThePages) {
       EXPECT_EQ(memory->properties & kCoherent, kCoherent);
       if (!physical().unified_memory()) {
         EXPECT_FALSE(pages.buffer.is_device_local());
+      }
+      // In a type the pages allow, and cached where they allow a coherent
+      // cached host type: the pages are ordinary host memory.
+      const std::uint32_t page_types = host_pointer_types(device(), pages.data);
+      EXPECT_NE(page_types & (1U << memory->type_index), 0U)
+          << "type " << memory->type_index << " of 0x" << std::hex
+          << page_types;
+      constexpr VkMemoryPropertyFlags kCached =
+          kCoherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+      bool cached_allowed = false;
+      for (std::uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
+        if ((page_types & (1U << i)) != 0 && (flags & kCached) == kCached &&
+            (physical().unified_memory() ||
+             (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0)) {
+          cached_allowed = true;
+        }
+      }
+      if (cached_allowed) {
+        EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0U)
+            << "type " << memory->type_index << " of 0x" << std::hex
+            << page_types;
       }
       // Through the allocator: its heap's share counts the pages.
       heap = memory->heap_index;

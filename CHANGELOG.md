@@ -17,9 +17,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   with no CPU copy. The pages are allocated aligned to the device's
   `minImportedHostPointerAlignment`, the size asked is rounded up to it, and
   they are imported (`VK_EXT_external_memory_host`) as a `TRANSFER_SRC`
-  buffer through the `Allocator`: dedicated, budgeted, in a coherent host
-  type the pages allow. The buffer frees its memory, then the pages. A
-  device that did not enable the extension gives `Unsupported`, naming it.
+  buffer, which frees them after its memory. A device that did not enable
+  the extension gives `Unsupported`, naming it.
 
 ### Migration
 
