@@ -8,6 +8,7 @@ file and line, each rule an instruction breaks (README.md, "The rules").
 Python's standard library alone, as in tools/github.
 """
 
+import json
 import os
 import re
 import sys
@@ -50,8 +51,44 @@ def instructions(text):
     return result
 
 
-def check_text(text, version):
-    """The rules TEXT, the Dockerfile of ubuntu-VERSION, breaks: [(line, message)]."""
+def copy_problems(arguments, directory):
+    """What breaks the COPY rule in a COPY's ARGUMENTS: [message]. With
+    DIRECTORY, the image's build context, each source must exist in it."""
+    flags = []
+    rest = arguments
+    while rest.startswith("--"):
+        flag, _, rest = rest.partition(" ")
+        flags.append(flag)
+        rest = rest.lstrip()
+    problems = []
+    if any(flag.startswith("--from") for flag in flags):
+        problems.append("COPY --from: the image is one stage, copying only from its directory")
+    if rest.startswith("<<"):
+        return problems + ["COPY <<: a heredoc; COPY a file kept beside the Dockerfile"]
+    if rest.startswith("["):
+        try:
+            paths = json.loads(rest)
+        except ValueError:
+            paths = None
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            return problems + [f"COPY {arguments}: not a JSON array of strings"]
+    else:
+        paths = rest.split()
+    if len(paths) < 2:
+        return problems + [f"COPY {arguments}: a source and a destination"]
+    for source in paths[:-1]:
+        parts = source.replace("\\", "/").split("/")
+        if source.startswith("/") or ".." in parts or any(c in source for c in "*?["):
+            problems.append(f"COPY {source}: a path inside the image's directory, "
+                            "no '..', absolute path or wildcard")
+        elif directory is not None and not os.path.exists(os.path.join(directory, source)):
+            problems.append(f"COPY {source}: not in the image's directory")
+    return problems
+
+
+def check_text(text, version, directory=None):
+    """The rules TEXT, the Dockerfile of ubuntu-VERSION, breaks: [(line, message)].
+    DIRECTORY, the Dockerfile's own, is where a COPY's sources must exist."""
     problems = []
     found = instructions(text)
     froms = [entry for entry in found if entry[1] == "FROM"]
@@ -66,6 +103,11 @@ def check_text(text, version):
     if f'org.opencontainers.image.source="{SOURCE}"' not in labels:
         problems.append((1, f'no LABEL org.opencontainers.image.source="{SOURCE}"'))
     for line, keyword, arguments, _ in found:
+        if keyword == "ADD":
+            problems.append((line, "ADD fetches and unpacks; COPY a file kept beside the "
+                                   "Dockerfile instead"))
+        if keyword == "COPY":
+            problems += [(line, message) for message in copy_problems(arguments, directory)]
         if keyword != "RUN":
             continue
         for install in re.findall(r"apt-get install[^&;|]*", arguments):
@@ -94,7 +136,8 @@ def check(directory):
         count += 1
         with open(path, encoding="utf-8") as file:
             text = file.read()
-        problems += [(path, line, message) for line, message in check_text(text, match.group(1))]
+        problems += [(path, line, message) for line, message in
+                     check_text(text, match.group(1), os.path.join(directory, name))]
     return problems, count
 
 

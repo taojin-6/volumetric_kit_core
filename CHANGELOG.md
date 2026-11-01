@@ -7,6 +7,82 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- The 24.04 CI image carries the DeckLink SDK 16.0's headers, unmodified, at
+  `DeckLinkSDK_ROOT=/opt/decklink-sdk-16.0`, for sensor's DeckLink driver
+  (`tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/`). `check_dockerfiles.py`
+  refuses `ADD` and a `COPY` of anything outside the image's directory, and
+  `smoke.sh` checks the SDK where an image sets its root. The image changes
+  on its next build, when the owner dispatches it; nothing changes for a
+  consumer of the library.
+
+## [0.39.0] - 2026-11-01
+
+### Added
+
+- `config::Application::FuseDecklink`: live fusion of one stereo pair of SDI
+  cameras on a DeckLink capture card, its depth from FFS (CONFIG.md). Source
+  `live`, driver `decklink`; `source.cameras`, two `config::LiveCamera`
+  (`id`, `input` `SDI 1` to `SDI 4`) with distinct ids and connectors;
+  `source.pairs`, one `config::StereoPairConfig` (`left`, `right`) of both;
+  `calibration`, `ffs_model` and `ffs_plan_cache` required. `fps` 24, 25 or
+  30; `max_pair_skew_us` from 1 to half a frame at it. Defaults: colour
+  3840x2160 at 30 fps, FFS depth 960x544, the skew bound at its most (16666
+  at 30 fps); fusion 0.5–5 m,
+  Dynamic, 300 frames into `fuse_decklink.ply`. It codes, serves and records
+  audio as `FuseRealsense` does, and refuses the Orbbec rig's and the
+  RealSense camera's keys, diagnostics and `operation` `stream`.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged.
+  `Source` gains `cameras`, `pairs` and `max_pair_skew_us`, empty or 0 in
+  every other profile, and `Application` a value, which a `switch` over it
+  without a default must handle. A consumer that adds a DeckLink fusion
+  program loads its scenario with `Application::FuseDecklink`.
+
+## [0.38.0] - 2026-11-01
+
+### Added
+
+- `create_imported_host_buffer` and `ImportedHostBuffer`
+  (`vulkan/external_memory.hpp`): host pages another device writes by DMA --
+  a capture card's pictures -- which this device copies from where they are,
+  with no CPU copy. The pages are allocated aligned to the device's
+  `minImportedHostPointerAlignment`, the size asked is rounded up to it, and
+  they are imported (`VK_EXT_external_memory_host`) as a `TRANSFER_SRC`
+  buffer, which frees them after its memory. A device that did not enable
+  the extension gives `Unsupported`, naming it.
+
+### Migration
+
+- Nothing to change beyond the pin. A consumer that imports host pages adds
+  `VK_EXT_external_memory_host` to its `DeviceRequirements` (its
+  optional extensions, where it can run without).
+
+## [0.37.0] - 2026-10-31
+
+### Added
+
+- `FuseRealsense` codes and serves its fused sets as `FuseOrbbec` does
+  (CONFIG.md): it takes the `codec` section, with the codec profiles' shared
+  fields, defaults and checks, and `output.stream`, `output.csv`,
+  `output.serve` and `output.max_viewers`. A `codec` section without one of
+  the three outputs is refused, and `max_viewers` without a port, as for
+  `FuseOrbbec`. Its PLY at `output.path` stays required, and the three
+  files must differ. It still refuses the Orbbec rig's fields, diagnostics
+  and `operation` `stream`.
+- With `output.stream` or `output.serve`, `FuseRealsense` takes
+  `source.audio` (0.34.0), which it refused while it took neither output.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged and
+  code nothing. A consumer that runs `FuseRealsense` scenarios codes and
+  serves when they name an output, as for `FuseOrbbec`, and records the
+  named audio input, or refuses those keys itself.
+
 ## [0.36.0] - 2026-10-31
 
 ### Added

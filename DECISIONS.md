@@ -715,6 +715,21 @@ rules after review, the same day.
   graphics stages included: its change of layout is a write, which every
   read of the image on the same queue since the acquire, a draw's included,
   must precede, and only the barrier's own scope orders the two.
+- **Host pages another device writes are imported, never staged** (core
+  0.38.0). A capture card's DMA writes each picture into host memory;
+  `create_imported_host_buffer` makes that memory a `TRANSFER_SRC` buffer
+  (`VK_EXT_external_memory_host`), so one GPU copy moves a picture into
+  device-only memory and the CPU copies nothing. The core allocates the
+  pages itself, aligned to `minImportedHostPointerAlignment` and rounded up
+  to it, rather than importing a caller's pointer: the alignment and size
+  rules are the device's, and the buffer that frees the memory frees the
+  pages after it, so no caller can free pages under live memory. The import
+  goes through the `Allocator` as an exported buffer's memory does --
+  dedicated, within its heap's budget -- placed as `Staging` is among the
+  types the pages allow, cached where they allow it: the pages are ordinary
+  host memory, and only a copy reads them. A non-coherent type is never
+  taken, as nothing flushes or invalidates the pages. The host orders the
+  writer and the copies, as it orders CUDA and a batch.
 - **`PhysicalDeviceInfo::unified_memory`** tells the architectures apart:
   every heap is device-local, so every type is (the spec sets
   `DEVICE_LOCAL` on a type exactly when its heap has it). An APU whose driver
@@ -1598,6 +1613,20 @@ CONFIG.md, "RealSense depth").
 - **The depth range is fusion's** `min_depth_m` and `max_depth_m`, which
   gate either depth; FFS's own range takes them.
 
+## 2026-10-29 — FuseRealsense codes and serves as FuseOrbbec does
+
+The owner wants the RealSense camera's live reconstruction seen in a remote
+player, as the rig's is. recon's `fuse_realsense` runs the live run
+`fuse_orbbec` shares, which already codes each fused set and serves it when
+the scenario names an output, so FuseRealsense takes the same keys rather
+than a second program or profile (core 0.37.0; CONFIG.md, the coding
+bullet): the `codec` section, `output.stream`, `output.csv`, `output.serve`
+and `output.max_viewers`, with FuseOrbbec's checks, one rule for both live
+fusion profiles. It still refuses what only the rig has: the rig's source
+fields, and diagnostics, whose picture dump keeps the rig's own coded
+pictures. With a stream or a port it takes `source.audio` (core 0.34.0),
+which waited on these outputs.
+
 ## 2026-10-30 — A transient attachment takes lazily allocated memory
 
 gfx renders every window at 4x MSAA through one shared colour and depth set
@@ -1682,3 +1711,56 @@ and pinned by digest in each repository
 - **Not in them:** what keeps its pin elsewhere. The Orbbec SDK and
   librealsense stay with sensor's actions, whose pins move with its CMake
   floors, and a repository's own Python packages with its workflow.
+
+## 2026-11-01 — FuseDecklink: one DeckLink stereo pair, its depth from FFS
+
+recon's `fuse_decklink` fuses one stereo pair of SDI cameras captured on a
+DeckLink card, its depth from FFS on the pair. It is a profile of its own, as
+each live source is, not a generalised stereo profile: FuseRealsense keeps
+its camera depth, projector and factory calibration, FuseDecklink its
+connectors and a rig file, and one profile for both would add branches and
+remove none (core 0.39.0; CONFIG.md, "Live DeckLink fields").
+
+- **Cameras by name, paired by name.** A camera is `{id, input}` and the pair
+  `{left, right}` of ids. The id keys the camera in the rig file, so
+  recabling edits the scenario, not the file. These are the records calib's
+  DeckLink capture is planned to take, so one schema serves both, and a
+  second pair, on the card's other two connectors, is a second entry of
+  each. Until a consumer opens it: exactly two cameras and one pair. Remote
+  FFS on a pair waits for the transport that runs it.
+- **Connectors as on the bracket,** `SDI 1` to `SDI 4`. The driver maps them
+  to the SDK's sub-devices, which the scenario never names.
+- **Free-running pairs, a bound on their skew.** Without genlock the cameras
+  free-run, and the driver pairs each left frame with the nearest right one.
+  `max_pair_skew_us` bounds how far apart its pictures may be. Half a frame
+  at the rate, rounded down (16666 at 30 fps), always finds a partner, so it
+  is the default and the most; a genlocked rig lowers it, a number and not a
+  second path. The rates are the cameras' 2160p 24, 25 and 30 fps, which the
+  bound is computed from. Genlock and camera-control keys come with the
+  hardware that needs them.
+- **No defaults for the rig file or FFS.** No factory calibration poses these
+  cameras, and FFS's model and plans are named as FuseRealsense's are. The
+  fusion gate starts at 0.5 m; FFS's own near limit, from the pair's
+  baseline and focal length, is the consumer's to apply.
+
+## 2026-11-01 — The 24.04 CI image carries the DeckLink SDK's headers, kept in the core as Blackmagic ships them
+
+sensor's DeckLink driver (`VS_WITH_DECKLINK`) builds against the DeckLink
+SDK's headers and dispatch source, which no job could fetch: the SDK's
+download sits behind a form, so only the lab compiled the driver's SDK part.
+The 24.04 image now carries them for sensor's 24.04 leg
+([tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/README.md](tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/README.md)).
+
+- **Kept in the core, as shipped.** With nothing a job can fetch, the files
+  live beside the Dockerfile, held to a list of their SHA256s; a newer SDK
+  replaces the directory.
+- **Their licence permits it.** Each file allows redistribution with its
+  notice and statement kept, under the SDK's EULA; the owner judged it fine
+  (2026-11-01). Unlike CUDA and TensorRT, these files are public in the
+  repository; the image stays private for those.
+- **Headers only, no run-time library.** A leg compiles and tests the
+  driver; the cameras are checked by hand.
+- **Only files beside a Dockerfile go in.** `check_dockerfiles.py` refuses
+  `ADD` and a `COPY` from outside the image's own directory, so what an image
+  copies is in the repository and reviewed
+  ([tools/ci/images/README.md](tools/ci/images/README.md), "The rules").

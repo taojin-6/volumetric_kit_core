@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -98,6 +99,12 @@ struct Resource {
   VkImage image = VK_NULL_HANDLE;
   VkImageUsageFlags image_usage = 0;
   VkMemoryDedicatedAllocateInfo* exported = nullptr;  // VMA takes it non-const
+  // A buffer on imported host pages (bind_imported): the import chain its
+  // memory is made with, the pages' size, which the memory takes whole, and
+  // the types the pages allow.
+  void* imported = nullptr;
+  VkDeviceSize imported_bytes = 0;
+  std::uint32_t imported_types = 0;
 };
 
 // A resource's memory requirements, and whether the driver requires memory
@@ -269,6 +276,8 @@ struct OwnedResource {
 // (detail::resource_types): a transient attachment in lazily allocated
 // memory, dedicated to it, where the device has such a type. An exported
 // image is DeviceOnly whatever its usage, as its importer maps the memory.
+// A buffer on imported host pages takes the pages whole, in a type they
+// allow, unmapped: the host has them already.
 // Its owner keeps partial placement on every return or exception; `caller`
 // prefixes refusals of its own.
 Status place(const AllocatorView& allocator, OwnedResource& owner,
@@ -276,8 +285,21 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
   const Resource& resource = owner.resource;
   Placed& placed = owner.placed;
   const bool is_buffer = resource.buffer != VK_NULL_HANDLE;
-  const ResourceRequirements requirements =
+  const bool imported = resource.imported != nullptr;
+  ResourceRequirements requirements =
       requirements_of(allocator.device, resource, allocator.dedicated_queries);
+  if (imported) {
+    // The memory is the pages, so its size is theirs
+    // (VUID-VkImportMemoryHostPointerInfoEXT-handleType-01750), which must
+    // hold the buffer (VUID-vkBindBufferMemory-None-10741).
+    if (requirements.memory.size > resource.imported_bytes) {
+      return Status::unsupported(std::string(caller) +
+                                 ": the buffer needs more memory than its "
+                                 "pages hold");
+    }
+    requirements.memory.size = resource.imported_bytes;
+    requirements.memory.memoryTypeBits &= resource.imported_types;
+  }
   detail::ResourceKind kind = detail::ResourceKind::Buffer;
   if (!is_buffer) {
     kind = resource.exported != nullptr ? detail::ResourceKind::ExportedImage
@@ -287,13 +309,20 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
       allocator.memory, kind, usage, access, resource.image_usage,
       requirements.memory.memoryTypeBits);
   if (types == 0) {
+    if (imported) {
+      return Status::unsupported(
+          std::string(caller) +
+          ": no coherent host memory type takes the pages");
+    }
     return unsuited(caller, usage);
   }
   // A device-mapped or staging buffer is mapped persistently, and its types
   // are coherent, so mapped() is a plain pointer: writes need no flush.
-  const bool mapped = usage != MemoryUsage::DeviceOnly;
+  const bool mapped = usage != MemoryUsage::DeviceOnly && !imported;
+  void* const chain =
+      imported ? resource.imported : static_cast<void*>(resource.exported);
   const char* vma_call = "vmaAllocateDedicatedMemory";
-  if (resource.exported == nullptr) {
+  if (chain == nullptr) {
     vma_call =
         is_buffer ? "vmaAllocateMemoryForBuffer" : "vmaAllocateMemoryForImage";
   }
@@ -301,16 +330,18 @@ Status place(const AllocatorView& allocator, OwnedResource& owner,
   // (allocate_with_budget).
   const detail::BudgetedAllocation made = detail::allocate_with_budget(
       allocator.memory, requirements.memory, types, mapped,
-      requirements.dedicated || resource.exported != nullptr,
+      requirements.dedicated || chain != nullptr,
       [&](const VmaAllocationCreateInfo& info) {
         // An exported resource's memory is dedicated, as an importer of an
         // opaque descriptor maps the whole allocation as one resource. VMA
         // names the resource only for one it creates itself, so the chain
-        // does.
-        if (resource.exported != nullptr) {
+        // does. Imported pages are memory of their own too, but their chain
+        // names no resource, as an import of host pages may not
+        // (VUID-VkMemoryAllocateInfo-pNext-02806).
+        if (chain != nullptr) {
           return vmaAllocateDedicatedMemory(allocator.vma, &requirements.memory,
-                                            &info, resource.exported,
-                                            &placed.allocation, &placed.info);
+                                            &info, chain, &placed.allocation,
+                                            &placed.info);
         }
         if (is_buffer) {
           return vmaAllocateMemoryForBuffer(allocator.vma, resource.buffer,
@@ -727,6 +758,41 @@ Result<Buffer> Allocator::bind_exported(VkBuffer buffer, VkDeviceSize size,
   return result;
 } catch (...) {
   return exception_status("Allocator::bind_exported",
+                          Status::Code::InvalidArgument);
+}
+
+Result<Buffer> Allocator::bind_imported(VkBuffer buffer, VkDeviceSize size,
+                                        VkBufferUsageFlags usage,
+                                        std::uint32_t page_types,
+                                        void* pages) try {
+  // Zeroed, then set: handleType has no zero enumerator.
+  // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+  VkImportMemoryHostPointerInfoEXT import{};
+  import.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT;
+  import.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+  import.pHostPointer = pages;
+  Resource resource;
+  resource.buffer = buffer;
+  resource.imported = &import;
+  resource.imported_bytes = size;
+  resource.imported_types = page_types;
+  OwnedResource owned(impl_->view(*this), resource);
+  // Cached where the pages allow it: they are ordinary host memory.
+  VKC_TRY(place(impl_->view(*this), owned, MemoryUsage::Staging,
+                HostAccess::Random, "create_imported_host_buffer"));
+  const Placed& placed = owned.placed;
+  Buffer result(
+      buffer, size, usage, VK_SHARING_MODE_EXCLUSIVE, nullptr,
+      [impl = impl_, buffer, allocation = placed.allocation, pages] {
+        // The memory goes before the pages it was imported from.
+        vmaDestroyBuffer(impl->allocator, buffer, allocation);
+        std::free(pages);
+      },
+      memory_info_of(impl_->allocator, placed.info.memoryType));
+  owned.release();
+  return result;
+} catch (...) {
+  return exception_status("Allocator::bind_imported",
                           Status::Code::InvalidArgument);
 }
 

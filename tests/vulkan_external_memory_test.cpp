@@ -7,13 +7,16 @@
 // written through the export. create_exported_image likewise, its image
 // crossing both ways through batches that release it to, and acquire it
 // from, outside Vulkan. Export needs VK_KHR_external_memory_fd; where the
-// device lacks it, the refusal is what is checked.
+// device lacks it, the refusal is what is checked. create_imported_host_buffer
+// likewise with VK_EXT_external_memory_host: pages written by the host, as a
+// capture card's DMA would, read by a copy on the device.
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <ios>
 #include <optional>
 #include <string>
 #include <utility>
@@ -768,6 +771,209 @@ TEST_F(ImageExportTest, MovesAndFreesItsMemory) {
   }
   EXPECT_EQ(allocator().memory_stats().heaps[heap].reserved_bytes,
             before.heaps[heap].reserved_bytes);
+}
+
+// The fixture's default device does not enable host import, so it refuses,
+// naming the extension to enable.
+TEST_F(MemoryTypeTest, ADeviceWithoutHostImportRefusesIt) {
+  ASSERT_FALSE(
+      device().extension_enabled(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME));
+  const Status refused =
+      create_imported_host_buffer(device(), allocator(), 4096).status();
+  EXPECT_EQ(refused.domain(), Status::Code::Unsupported);
+  EXPECT_NE(refused.message().find(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME),
+            std::string::npos)
+      << refused.message();
+}
+
+// The alignment `physical` imports host pointers at.
+VkDeviceSize import_alignment(VkPhysicalDevice physical) {
+  VkPhysicalDeviceExternalMemoryHostPropertiesEXT host{};
+  host.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT;
+  VkPhysicalDeviceProperties2 properties{};
+  properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+  properties.pNext = &host;
+  vkGetPhysicalDeviceProperties2(physical, &properties);
+  return host.minImportedHostPointerAlignment;
+}
+
+// What `physical` can do with host memory as a copy source: import it.
+VkExternalMemoryFeatureFlags host_import_features(VkPhysicalDevice physical) {
+  // Zeroed, then set: handleType has no zero enumerator.
+  // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+  VkPhysicalDeviceExternalBufferInfo query{};
+  query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO;
+  query.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  query.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+  VkExternalBufferProperties can{};
+  can.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES;
+  vkGetPhysicalDeviceExternalBufferProperties(physical, &query, &can);
+  return can.externalMemoryProperties.externalMemoryFeatures;
+}
+
+// The memory types `device` lets the host pages at `pages` be imported into
+// (vkGetMemoryHostPointerPropertiesEXT), or 0.
+std::uint32_t host_pointer_types(const Device& device, const void* pages) {
+  const auto query = reinterpret_cast<PFN_vkGetMemoryHostPointerPropertiesEXT>(
+      vkGetDeviceProcAddr(device.handle(),
+                          "vkGetMemoryHostPointerPropertiesEXT"));
+  if (query == nullptr) return 0;
+  VkMemoryHostPointerPropertiesEXT properties{};
+  properties.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT;
+  const VkResult got = query(
+      device.handle(), VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+      pages, &properties);
+  return got == VK_SUCCESS ? properties.memoryTypeBits : 0;
+}
+
+// The first byte where `got` and `want` differ, or their size where none
+// does: a mismatch reports one index, not two pictures' bytes.
+std::size_t first_difference(const std::vector<std::uint8_t>& got,
+                             const std::vector<std::uint8_t>& want) {
+  const auto at =
+      std::mismatch(got.begin(), got.end(), want.begin(), want.end()).first;
+  return static_cast<std::size_t>(at - got.begin());
+}
+
+// A device asked for host import where the driver offers it.
+class HostImportTest : public test::VulkanDeviceTest {
+ protected:
+  DeviceRequirements requirements() const override {
+    DeviceRequirements r;
+    r.optional_extensions = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
+    return r;
+  }
+
+  void SetUp() override {
+    VulkanDeviceTest::SetUp();
+    if (base_setup_incomplete()) return;
+    // Refused, not failed, wherever the import is impossible.
+    if (!device().extension_enabled(
+            VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) ||
+        (host_import_features(physical().handle()) &
+         VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) == 0) {
+      EXPECT_EQ(create_imported_host_buffer(device(), allocator(), 4096)
+                    .status()
+                    .domain(),
+                Status::Code::Unsupported);
+      GTEST_SKIP() << "the device cannot import host memory as a copy source";
+    }
+  }
+};
+
+// The pages a writer fills are what a copy on the device reads, at one
+// 2160p v210 picture (22,118,400 bytes, a multiple of every import
+// alignment up to 16 KiB) and at a size the alignment rounds up (10,000
+// bytes: 12,288 at 4 KiB). A second picture written into the same pages is
+// what the next copy reads: the buffer is the pages, not a copy of them.
+TEST_F(HostImportTest, ACopyReadsWhatIsWrittenThroughThePages) {
+  const VkDeviceSize alignment = import_alignment(physical().handle());
+  ASSERT_GT(alignment, 0U);
+  const VkPhysicalDeviceMemoryProperties& props =
+      physical().memory_properties();
+  for (const VkDeviceSize asked :
+       {VkDeviceSize{22118400}, VkDeviceSize{10000}}) {
+    SCOPED_TRACE(asked);
+    const VkDeviceSize rounded =
+        (asked + alignment - 1) / alignment * alignment;
+    const MemoryStats before = allocator().memory_stats();
+    std::uint32_t heap = 0;
+    {
+      Result<ImportedHostBuffer> made =
+          create_imported_host_buffer(device(), allocator(), asked);
+      ASSERT_TRUE(made.ok()) << made.status().message();
+      const ImportedHostBuffer pages = *std::move(made);
+      EXPECT_EQ(pages.bytes, rounded);
+      ASSERT_NE(pages.data, nullptr);
+      EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pages.data) % alignment, 0U);
+      // A copy source only, unmapped: the host has the pages.
+      EXPECT_EQ(pages.buffer.size(), rounded);
+      EXPECT_EQ(pages.buffer.usage(),
+                VkBufferUsageFlags{VK_BUFFER_USAGE_TRANSFER_SRC_BIT});
+      EXPECT_EQ(pages.buffer.mapped(), nullptr);
+      const std::optional<MemoryInfo> memory = pages.buffer.memory_info();
+      if (!memory.has_value()) {
+        FAIL() << "no memory info";
+      }
+      ASSERT_LT(memory->type_index, props.memoryTypeCount);
+      constexpr VkMemoryPropertyFlags kCoherent =
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+      EXPECT_EQ(memory->properties & kCoherent, kCoherent);
+      if (!physical().unified_memory()) {
+        EXPECT_FALSE(pages.buffer.is_device_local());
+      }
+      // In a type the pages allow, and cached where they allow a coherent
+      // cached host type: the pages are ordinary host memory.
+      const std::uint32_t page_types = host_pointer_types(device(), pages.data);
+      EXPECT_NE(page_types & (1U << memory->type_index), 0U)
+          << "type " << memory->type_index << " of 0x" << std::hex
+          << page_types;
+      constexpr VkMemoryPropertyFlags kCached =
+          kCoherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+      bool cached_allowed = false;
+      for (std::uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
+        if ((page_types & (1U << i)) != 0 && (flags & kCached) == kCached &&
+            (physical().unified_memory() ||
+             (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0)) {
+          cached_allowed = true;
+        }
+      }
+      if (cached_allowed) {
+        EXPECT_NE(memory->properties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0U)
+            << "type " << memory->type_index << " of 0x" << std::hex
+            << page_types;
+      }
+      // Through the allocator: its heap's share counts the pages.
+      heap = memory->heap_index;
+      ASSERT_LT(heap, before.heap_count);
+      EXPECT_EQ(allocator().memory_stats().heaps[heap].reserved_bytes,
+                before.heaps[heap].reserved_bytes + rounded);
+
+      Result<Buffer> landing_made = device_storage_buffer(allocator(), rounded);
+      ASSERT_TRUE(landing_made.ok()) << landing_made.status().message();
+      const Buffer landing = *std::move(landing_made);
+      for (const std::uint32_t seed : {7U, 13U}) {
+        SCOPED_TRACE(seed);
+        const std::vector<std::uint8_t> picture =
+            texels(static_cast<std::size_t>(rounded), seed);
+        std::copy(picture.begin(), picture.end(), pages.data);
+        std::vector<std::uint8_t> got(picture.size(), 0);
+        CommandBatch batch(device(), allocator());
+        ASSERT_TRUE(batch.copy(pages.buffer, 0, landing, 0, rounded).ok());
+        ASSERT_TRUE(batch.readback(landing, 0, rounded, got.data()).ok());
+        ASSERT_TRUE(batch.submit().ok());
+        EXPECT_EQ(first_difference(got, picture), picture.size());
+      }
+    }
+    // The buffer freed its memory, and with it the pages. Allocations, not
+    // reservations: on unified memory the landing buffer's block may stay.
+    EXPECT_EQ(allocator().memory_stats().heaps[heap].allocation_bytes,
+              before.heaps[heap].allocation_bytes);
+  }
+}
+
+// 0 bytes is refused, and so is an allocator that is not the device's own,
+// before anything is made: its memory could not be bound to this device's
+// buffer.
+TEST_F(HostImportTest, RefusesNoBytesAndAnotherDevicesAllocator) {
+  EXPECT_EQ(
+      create_imported_host_buffer(device(), allocator(), 0).status().domain(),
+      Status::Code::InvalidArgument);
+  Result<Device> other = Device::create(instance(), physical(), requirements());
+  ASSERT_TRUE(other.ok()) << other.status().message();
+  Result<Allocator> foreign = Allocator::create(instance().handle(), *other);
+  ASSERT_TRUE(foreign.ok()) << foreign.status().message();
+  EXPECT_EQ(
+      create_imported_host_buffer(device(), *foreign, 4096).status().domain(),
+      Status::Code::InvalidArgument);
+  const Allocator taken = *std::move(foreign);
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(
+      create_imported_host_buffer(device(), *foreign, 4096).status().domain(),
+      Status::Code::InvalidArgument);
 }
 
 }  // namespace
