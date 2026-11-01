@@ -10,6 +10,7 @@ and re-pinned by hand only (DECISIONS.md, the 2026-10-31 entry).
 | File | Does |
 | --- | --- |
 | `ubuntu-24.04/Dockerfile`, `ubuntu-26.04/Dockerfile` | the images; each comment says which legs need a group of packages |
+| `ubuntu-24.04/decklink-sdk-16.0/` | the DeckLink SDK's Linux headers the 24.04 image copies in, unmodified, with their SHA256s and where they come from |
 | `smoke.sh` | checks a built image inside a GPU container, before it is pushed |
 | `check_dockerfiles.py` | the rules below; lint runs its tests |
 | `../../../.github/workflows/ci-images.yml` | builds, checks and pushes both, when the owner dispatches it |
@@ -23,7 +24,10 @@ and re-pinned by hand only (DECISIONS.md, the 2026-10-31 entry).
   PortAudio; and CUDA 13.4's nvcc, runtime, driver API headers and nvJPEG,
   with `CUDAToolkit_ROOT=/usr/local/cuda-13.4`. apt's only source is
   Ubuntu's archive: NVIDIA's is removed once CUDA is in.
-- **24.04 adds** TensorRT, at the build for that CUDA.
+- **24.04 adds** TensorRT, at the build for that CUDA, and the DeckLink SDK
+  16.0's headers for sensor's DeckLink driver, at
+  `DeckLinkSDK_ROOT=/opt/decklink-sdk-16.0`
+  (`ubuntu-24.04/decklink-sdk-16.0/README.md`).
 - **26.04 adds** ssh, Python's venv, the FFmpeg command line, and the
   sanitizer legs' clang, sanitizer runtimes, llvm-symbolizer and lavapipe.
   Mesa's driver and implicit-layer manifests are moved out of the loader's
@@ -32,9 +36,11 @@ and re-pinned by hand only (DECISIONS.md, the 2026-10-31 entry).
   (alone) or `VK_ADD_DRIVER_FILES` (beside the GPU).
 
 Not in them: the Orbbec SDK and librealsense, which sensor's actions install
-at the pins they keep in lockstep with its CMake floors; a repository's own
-Python packages; and the driver's shader-cache directory, which is under the
-runner's tool cache, mounted at run time, so a leg still creates it.
+at the pins they keep in lockstep with its CMake floors; Desktop Video, the
+library the DeckLink SDK loads at run time, whose absence the driver's SDK
+smoke test checks; a repository's own Python packages; and the driver's
+shader-cache directory, which is under the runner's tool cache, mounted at
+run time, so a leg still creates it.
 
 ## Using one
 
@@ -98,4 +104,7 @@ role Read.
 - a `RUN` that runs `apt-get update` ends by removing `/var/lib/apt/lists/*`,
   so the lists stay out of the image;
 - `dpkg -i` installs a file only after the same `RUN` has checked its SHA256;
+- no `ADD`, which fetches URLs and unpacks archives: a `COPY` of a path that
+  exists in the image's own directory, with no `..`, absolute path, wildcard
+  or `--from`;
 - `org.opencontainers.image.source` names the core.

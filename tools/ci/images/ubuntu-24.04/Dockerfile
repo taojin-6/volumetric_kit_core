@@ -54,3 +54,9 @@ RUN keyring_sha256=d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06
  && rm -rf /var/lib/apt/lists/*
 
 ENV CUDAToolkit_ROOT=/usr/local/cuda-13.4
+
+# The DeckLink SDK 16.0's headers, for the 24.04 leg's build of sensor's
+# DeckLink driver, which finds them under DeckLinkSDK_ROOT
+# (decklink-sdk-16.0/README.md).
+COPY decklink-sdk-16.0/include /opt/decklink-sdk-16.0/include
+ENV DeckLinkSDK_ROOT=/opt/decklink-sdk-16.0

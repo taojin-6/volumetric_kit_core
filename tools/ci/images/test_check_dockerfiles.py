@@ -3,6 +3,7 @@
 """Tests of check_dockerfiles.py: the family's images pass, and each rule
 fails a copy of one that breaks it."""
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -46,6 +47,44 @@ class FamilyImagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             self.assertEqual(check_dockerfiles.main([empty]), 1)
 
+    def test_the_24_04_image_carries_the_decklink_sdk(self):
+        # Where sensor's DeckLink driver finds the SDK (its vs_decklink.cmake:
+        # DeckLinkSDK_ROOT/include, DeckLinkAPIDispatch.cpp beside the headers).
+        text = image("24.04")
+        self.assertIn("\nCOPY decklink-sdk-16.0/include /opt/decklink-sdk-16.0/include\n", text)
+        self.assertIn("\nENV DeckLinkSDK_ROOT=/opt/decklink-sdk-16.0\n", text)
+        for name in ("DeckLinkAPI.h", "DeckLinkAPIDispatch.cpp", "DeckLinkAPIVersion.h"):
+            self.assertTrue(os.path.isfile(os.path.join(SDK, "include", name)), name)
+        with open(os.path.join(SDK, "include", "DeckLinkAPIVersion.h"), encoding="utf-8") as file:
+            self.assertIn('BLACKMAGIC_DECKLINK_API_VERSION_STRING\t\t\t"16.0"', file.read())
+
+
+SDK = os.path.join(HERE, "ubuntu-24.04", "decklink-sdk-16.0")
+
+
+class VendoredSdkTest(unittest.TestCase):
+    """The DeckLink SDK's files stay as Blackmagic ships them."""
+
+    def listed(self):
+        with open(os.path.join(SDK, "SHA256SUMS"), encoding="utf-8") as file:
+            rows = [line.split("  ", 1) for line in file.read().splitlines() if line]
+        return {path: digest for digest, path in rows}
+
+    def test_every_file_is_listed_and_unchanged(self):
+        listed = self.listed()
+        present = sorted("include/" + name for name in os.listdir(os.path.join(SDK, "include")))
+        self.assertEqual(sorted(listed), present)
+        for path, digest in listed.items():
+            with open(os.path.join(SDK, path), "rb") as file:
+                self.assertEqual(hashlib.sha256(file.read()).hexdigest(), digest, path)
+
+    def test_every_file_keeps_its_licence_statement(self):
+        for path in self.listed():
+            with open(os.path.join(SDK, path), encoding="utf-8") as file:
+                head = file.read(4096)
+            self.assertIn("-LICENSE-START-", head, path)
+            self.assertIn("Blackmagic Design", head, path)
+
 
 class RulesTest(unittest.TestCase):
     def assert_refused(self, text, version, fragment):
@@ -88,6 +127,40 @@ class RulesTest(unittest.TestCase):
     def test_no_source_label(self):
         text = broken("26.04", "volumetric_kit_core\"", "volumetric_kit_recon\"")
         self.assert_refused(text, "26.04", "org.opencontainers.image.source")
+
+    def test_add(self):
+        text = broken("24.04", "\nCOPY decklink-sdk-16.0/include", "\nADD decklink-sdk-16.0/include")
+        self.assert_refused(text, "24.04", "ADD fetches and unpacks")
+
+    def test_a_copy_of_a_path_not_beside_the_dockerfile(self):
+        text = broken("24.04", "COPY decklink-sdk-16.0/include", "COPY decklink-sdk-15.3/include")
+        found = [message for _, message in check_dockerfiles.check_text(
+            text, "24.04", os.path.join(HERE, "ubuntu-24.04"))]
+        self.assertIn("COPY decklink-sdk-15.3/include: not in the image's directory", found)
+
+    def test_a_copy_from_outside_the_directory(self):
+        for source in ("../smoke.sh", "/etc/hosts", "decklink-sdk-16.0/*"):
+            text = broken("24.04", "COPY decklink-sdk-16.0/include", f"COPY {source}")
+            self.assert_refused(text, "24.04", f"COPY {source}: a path inside")
+
+    def test_a_copy_with_flags_and_a_json_array(self):
+        context = os.path.join(HERE, "ubuntu-24.04")
+        for arguments in ('--chmod=644 ["decklink-sdk-16.0/include", "/opt/x/include"]',
+                          '["decklink-sdk-16.0/include", "/opt/x/include"]',
+                          "--chown=0:0 --link decklink-sdk-16.0/include /opt/x/include"):
+            self.assertEqual(check_dockerfiles.copy_problems(arguments, context), [], arguments)
+        self.assertEqual(check_dockerfiles.copy_problems('[1, "/opt/x"]', context),
+                         ['COPY [1, "/opt/x"]: not a JSON array of strings'])
+
+    def test_a_heredoc_copy(self):
+        text = broken("24.04", "COPY decklink-sdk-16.0/include /opt/decklink-sdk-16.0/include",
+                      "COPY <<EOF /opt/decklink-sdk-16.0/include")
+        self.assert_refused(text, "24.04", "COPY <<: a heredoc")
+
+    def test_a_copy_from_another_stage(self):
+        text = broken("24.04", "COPY decklink-sdk-16.0/include",
+                      "COPY --from=builder decklink-sdk-16.0/include")
+        self.assert_refused(text, "24.04", "COPY --from")
 
     def test_a_comment_inside_a_run_is_skipped(self):
         text = broken("24.04", "      ca-certificates git sudo curl gnupg \\\n",

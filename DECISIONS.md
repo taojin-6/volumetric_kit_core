@@ -1742,3 +1742,25 @@ remove none (core 0.39.0; CONFIG.md, "Live DeckLink fields").
   cameras, and FFS's model and plans are named as FuseRealsense's are. The
   fusion gate starts at 0.5 m; FFS's own near limit, from the pair's
   baseline and focal length, is the consumer's to apply.
+
+## 2026-11-01 — The 24.04 CI image carries the DeckLink SDK's headers, kept in the core as Blackmagic ships them
+
+sensor's DeckLink driver (`VS_WITH_DECKLINK`) builds against the DeckLink
+SDK's headers and dispatch source, which no job could fetch: the SDK's
+download sits behind a form, so only the lab compiled the driver's SDK part.
+The 24.04 image now carries them for sensor's 24.04 leg
+([tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/README.md](tools/ci/images/ubuntu-24.04/decklink-sdk-16.0/README.md)).
+
+- **Kept in the core, as shipped.** With nothing a job can fetch, the files
+  live beside the Dockerfile, held to a list of their SHA256s; a newer SDK
+  replaces the directory.
+- **Their licence permits it.** Each file allows redistribution with its
+  notice and statement kept, under the SDK's EULA; the owner judged it fine
+  (2026-11-01). Unlike CUDA and TensorRT, these files are public in the
+  repository; the image stays private for those.
+- **Headers only, no run-time library.** A leg compiles and tests the
+  driver; the cameras are checked by hand.
+- **Only files beside a Dockerfile go in.** `check_dockerfiles.py` refuses
+  `ADD` and a `COPY` from outside the image's own directory, so what an image
+  copies is in the repository and reviewed
+  ([tools/ci/images/README.md](tools/ci/images/README.md), "The rules").
