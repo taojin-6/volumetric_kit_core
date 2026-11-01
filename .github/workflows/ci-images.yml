@@ -2,10 +2,11 @@ name: ci-images
 
 # Builds the family's Linux CI images (tools/ci/images/README.md), checks each
 # inside a GPU container, and pushes it to the private GHCR package
-# ghcr.io/taojin-6/volumetric_kit_ci. Run by hand only: the owner dispatches
-# it, then moves each repository's pin to the digest the summary prints. No
-# pull request or push runs it, so no change reaches the host's docker
-# unreviewed.
+# ghcr.io/taojin-6/volumetric_kit_ci, checking before the build and after the
+# push that no anonymous client can pull from it. Run by hand only: the owner
+# dispatches it, then moves each repository's pin to the digest the summary
+# prints. No pull request or push runs it, so no change reaches the host's
+# docker unreviewed.
 on:
   workflow_dispatch:
 
@@ -47,6 +48,12 @@ jobs:
           persist-credentials: false
           path: _ci_images
 
+      # The images carry NVIDIA's components, which are not ours to
+      # redistribute publicly: while an anonymous client can pull from the
+      # package, nothing is built or pushed.
+      - name: Check the package is private
+        run: python3 -I tools/ci/images/check_private.py "${IMAGE}:${TAG}"
+
       # No layer from an earlier build: a rebuild exists to take Ubuntu's and
       # NVIDIA's current packages.
       - name: Build
@@ -65,6 +72,7 @@ jobs:
       # empties, not in the account's ~/.docker, which other repositories'
       # jobs on the host read.
       - name: Push
+        id: push
         env:
           TOKEN: ${{ github.token }}
         run: |
@@ -78,8 +86,21 @@ jobs:
           docker logout ghcr.io
           [ -n "${digest}" ] || { echo "::error::no digest for ${IMAGE}:${TAG}"; exit 1; }
           size=$(docker image inspect "${IMAGE}:${TAG}" --format '{{.Size}}')
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "mb=$((size / 1000000))" >> "${GITHUB_OUTPUT}"
+
+      # Again, as a first push creates the package. Only then is a digest
+      # printed to pin.
+      - name: Check the package is still private
+        run: python3 -I tools/ci/images/check_private.py "${IMAGE}:${TAG}"
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          MB: ${{ steps.push.outputs.mb }}
+        run: |
           {
             echo "### ${TAG}"
             echo
-            echo "Pin \`${IMAGE}@${digest}\` (${TAG}; $((size / 1000000)) MB on the host)."
+            echo "Pin \`${IMAGE}@${DIGEST}\` (${TAG}; ${MB} MB on the host)."
           } >> "${GITHUB_STEP_SUMMARY}"

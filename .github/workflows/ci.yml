@@ -20,31 +20,33 @@ jobs:
     name: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      # Release, static, on the family's physical GPUs: Ubuntu userlands in
-      # containers on vk-linux-gpu, and MoltenVK on the native Mac. The Linux
-      # container needs the graphics driver capabilities, bounded fan-out (a
-      # runner's .env does not enter it), and a persistent shader-cache path.
-      # Each image is pinned by digest, the tag it was read from in a comment,
-      # so a new image comes only with a commit that moves the pin. Only the
-      # owner triggers workflows (DECISIONS.md).
+      # Release, static, on the family's physical GPUs: the family's CI images
+      # in containers on vk-linux-gpu, and MoltenVK on the native Mac. Each
+      # image is pinned by digest, the tag it was read from in a comment, so a
+      # new image comes only with a commit that moves the pin. Only the owner
+      # triggers workflows (DECISIONS.md).
       matrix:
         include:
           - os: ubuntu-24.04
             runner: vk-linux-gpu
-            # ubuntu:24.04
-            container: '{"image":"ubuntu@sha256:24737cef17f4e22b1977df7d9a05e77c4e28b7da5b8911f8d8ccda136bf3573c","options":"--gpus all","env":{"NVIDIA_DRIVER_CAPABILITIES":"all","CMAKE_BUILD_PARALLEL_LEVEL":"4","CTEST_PARALLEL_LEVEL":"4","__GL_SHADER_DISK_CACHE_PATH":"/__w/_tool/nvidia-glcache","__GL_SHADER_DISK_CACHE_SKIP_CLEANUP":"1"}}'
+            # ghcr.io/taojin-6/volumetric_kit_ci:ubuntu-24.04
+            image: ghcr.io/taojin-6/volumetric_kit_ci@sha256:14e18e23ec99fc77cb671722ec9d0f5774e124951c047f67731740441234fd6b
           - os: ubuntu-26.04
             runner: vk-linux-gpu
-            # ubuntu:26.04
-            container: '{"image":"ubuntu@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd","options":"--gpus all","env":{"NVIDIA_DRIVER_CAPABILITIES":"all","CMAKE_BUILD_PARALLEL_LEVEL":"4","CTEST_PARALLEL_LEVEL":"4","__GL_SHADER_DISK_CACHE_PATH":"/__w/_tool/nvidia-glcache","__GL_SHADER_DISK_CACHE_SKIP_CLEANUP":"1"}}'
+            # ghcr.io/taojin-6/volumetric_kit_ci:ubuntu-26.04
+            image: ghcr.io/taojin-6/volumetric_kit_ci@sha256:b39be8613b4e8140a45c98cfc23bb1f40f98300d213fdab901c3108f02df626e
           - os: macos-26
             runner: mac
-            container: ''
+            image: ''
+    # The legs pull their image with the job's token.
+    permissions:
+      contents: read
+      packages: read
     uses: ./.github/workflows/_build.yml
     with:
       os: ${{ matrix.os }}
       runner: ${{ matrix.runner }}
-      container: ${{ matrix.container }}
+      image: ${{ matrix.image }}
 
   lint:
     uses: ./.github/workflows/lint.yml
