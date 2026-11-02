@@ -21,8 +21,9 @@ buffers zero-copy on one shared device.
 > creates or adopts, the VMA allocator with its buffers and images,
 > descriptors, synchronization, compute kernels, `CommandBatch` (waited on, or
 > ordered by timeline semaphores and waited on later), the shader build
-> functions, GPU timers, buffers and images exported for CUDA to write, host
-> pages imported for a capture card to write, and the shared device a
+> functions, GPU timers, buffers and images exported for CUDA to write, a
+> timeline semaphore exported for CUDA to signal, host pages imported for a
+> capture card to write, and the shared device a
 > compute library and a renderer both adopt. Camera
 > models and sensors are not core tiers: they stay in recon and calib
 > ([DECISIONS.md](DECISIONS.md#tiers)).
@@ -36,7 +37,7 @@ Claude Code; `CLAUDE.md` imports it.
 | --- | --- | --- |
 | `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics (busy, blocked and device time), whole-file I/O, version |
 | `config` | `volumetric_kit::core_config` | Optional CPU-only family scenario format, typed settings, defaults and static validation; private nlohmann/json dependency |
-| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, persistent host rings (`HostRing`), shader build functions, tiled GPU timers and calibrated clocks, external memory, shared-device bootstrap, forward declarations of its classes |
+| `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, persistent host rings (`HostRing`), shader build functions, tiled GPU timers and calibrated clocks, external memory and timelines, shared-device bootstrap, forward declarations of its classes |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no
 GPU (calib's headless solver) links only the tiers it uses.

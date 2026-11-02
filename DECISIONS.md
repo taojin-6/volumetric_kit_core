@@ -677,8 +677,8 @@ rules after review, the same day.
   hands it back after them (`CommandBatch::release`, recorded after every
   command, so none runs on a buffer already handed back); CUDA's stream is
   synchronized before the batch is submitted, and writes again once the
-  submit returns. External semaphores would order the two on the GPU; they
-  wait for a consumer that needs the overlap. gfx's `ExternalHandleType`, a
+  submit returns, or the batch waits for a value CUDA sets on an exported
+  timeline (2026-11-02, below). gfx's `ExternalHandleType`, a
   field every value but `None` refused, is not carried over.
   The allocator must be the device's own, checked before the buffer is
   made: memory from another device's allocator could neither be bound to it
@@ -1805,3 +1805,37 @@ one, so it stays one profile with a driver switch.
 - **An optional rig file.** `calibration` names the file a session starts
   from, in either mode: a camera's first lens session has none. The board
   stays entered in the app, with no keys.
+
+## 2026-11-02 — An exported timeline orders another API's writes on the GPU
+
+A decoder hands each picture from CUDA to a Vulkan batch. Until now the host
+ordered the two: `cudaStreamSynchronize` after CUDA's writes, then the
+submit. `create_exported_timeline` (core 0.41.0, `vulkan/sync.hpp`) makes a
+timeline semaphore CUDA imports, so CUDA sets picture n's value on its
+stream and the batch waits for it on the device, and neither host waits.
+
+- **A timeline, as an opaque descriptor.** It is what CUDA imports as
+  `TIMELINE_SEMAPHORE_FD`; opaque descriptors only, as for exported memory,
+  since the family's CUDA interop is Linux. No binary semaphore is offered:
+  a timeline's values name the pictures, and the host reads and waits on
+  them as on any timeline. The descriptor is a `UniqueFd`, released only to an import that
+  takes it, as an exported buffer's is.
+- **Only the importer sets values.** `check_timeline_points` knows the
+  values the core's submits set, not the importer's, so it could not keep a
+  value set here from failing to advance the counter. Submissions here only
+  wait (`TimelineWaits::Any`). The host sets a value only when the importer
+  was due to set it and cannot: a batch held for a value never set is held
+  for good, and destroying its `PendingBatch` waits with no limit ("Submits
+  that do not wait", above).
+- **Checked as the device and driver say.** The device must have enabled
+  `timelineSemaphore` and `VK_KHR_external_semaphore_fd`
+  (`Device::exports_semaphores`), and the physical device must export a
+  timeline semaphore as an opaque descriptor; each refusal is `Unsupported`
+  and names its cause. MoltenVK has no such extension, and lavapipe 25.2
+  exports no such timeline: there, the refusals are what is tested.
+- **No public entry point for the descriptor.** `vkGetSemaphoreFdKHR` stays
+  in `Device`'s state, reached through the tier's internal `DeviceAccess`:
+  `create_exported_timeline` is its only caller.
+- **Tested without CUDA.** The core links no CUDA, so a second device on the
+  same GPU imports the descriptor and stands in for it: its host's signals
+  are read, waited for, and release a batch held on the device here.

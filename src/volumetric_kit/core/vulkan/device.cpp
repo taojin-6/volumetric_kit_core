@@ -39,6 +39,8 @@ namespace {
 constexpr const char* kLogSource = "vulkan";
 constexpr const char* kExternalMemoryFd =
     VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+constexpr const char* kExternalSemaphoreFd =
+    VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
 // Its name macro needs VK_USE_PLATFORM_METAL_EXT, which only Metal code
 // defines; the string is stable.
 constexpr const char* kMetalObjects = "VK_EXT_metal_objects";
@@ -543,6 +545,10 @@ void Device::resolve_entry_points(VkInstance instance,
   if (extension_enabled(kExternalMemoryFd)) {
     state_.get_memory_fd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
         vkGetDeviceProcAddr(state_.device, "vkGetMemoryFdKHR"));
+  }
+  if (extension_enabled(kExternalSemaphoreFd)) {
+    state_.get_semaphore_fd = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+        vkGetDeviceProcAddr(state_.device, "vkGetSemaphoreFdKHR"));
   }
   state_.metal_objects = extension_enabled(kMetalObjects);
   resolve_calibration(instance);

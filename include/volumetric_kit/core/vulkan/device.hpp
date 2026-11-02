@@ -640,6 +640,12 @@ class VKC_VULKAN_API Device {
   /// @return `VK_ERROR_EXTENSION_NOT_PRESENT` without @ref exports_memory;
   ///         otherwise the call's result.
   VkResult memory_fd(VkDeviceMemory memory, int* fd) const noexcept;
+  /// @return Whether the device exports semaphores as file descriptors
+  ///         (`VK_KHR_external_semaphore_fd`), as
+  ///         @ref create_exported_timeline needs.
+  bool exports_semaphores() const noexcept {
+    return state_.get_semaphore_fd != nullptr;
+  }
   /// @return Whether the device imports Metal objects as Vulkan ones
   ///         (`VK_EXT_metal_objects`, MoltenVK), so a VideoToolbox picture can
   ///         stay on the GPU.
@@ -673,6 +679,9 @@ class VKC_VULKAN_API Device {
     PFN_vkCmdBeginDebugUtilsLabelEXT begin_label = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT end_label = nullptr;
     PFN_vkGetMemoryFdKHR get_memory_fd = nullptr;
+    // Resolved only where VK_KHR_external_semaphore_fd is enabled; reached
+    // through detail::DeviceAccess by create_exported_timeline alone.
+    PFN_vkGetSemaphoreFdKHR get_semaphore_fd = nullptr;
     bool metal_objects = false;
     // vkGetCalibratedTimestamps{KHR,EXT}, null without the extension or the
     // device's own time domain; and the host domain it reads beside it, when
@@ -712,9 +721,9 @@ class VKC_VULKAN_API Device {
   Status check_record(const DeviceRequirements& reqs,
                       const std::vector<std::string>& required) const;
   // Resolves the debug-utils entry points (on the creator's word that the
-  // instance enabled the extension), the memory-fd export, the
-  // metal-objects flag and the calibrated clocks (whose time domains
-  // `instance` is asked for), from enabled_extensions_.
+  // instance enabled the extension), the memory-fd and semaphore-fd
+  // exports, the metal-objects flag and the calibrated clocks (whose time
+  // domains `instance` is asked for), from enabled_extensions_.
   void resolve_entry_points(VkInstance instance,
                             bool instance_debug_utils) noexcept;
   // Its calibrated-clocks half: the entry point, where the device's own time
