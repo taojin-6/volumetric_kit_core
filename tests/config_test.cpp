@@ -3,6 +3,7 @@
 #include "volumetric_kit/core/config/config.hpp"
 
 #include <cfenv>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>  // IWYU pragma: keep; glibc declares mkdtemp here.
 #include <filesystem>
@@ -459,10 +460,14 @@ TEST(Config, CalibRigOpensItsRigAtThePresetAndWritesUnderTheSessionRoot) {
   EXPECT_EQ(rig->window.width, 1280);
   EXPECT_EQ(rig->window.height, 720);
   EXPECT_FALSE(rig->window.validation);
-  // The rig is the sync file's, of any number of cameras.
+  // The rig is the sync file's, of any number of cameras, with no DeckLink
+  // pair or skew bound; no file names its lenses.
   EXPECT_TRUE(rig->source.serial.empty());
   EXPECT_TRUE(rig->source.calibration.empty());
   EXPECT_FALSE(rig->source.apply_sync);
+  EXPECT_TRUE(rig->source.cameras.empty());
+  EXPECT_TRUE(rig->source.pairs.empty());
+  EXPECT_EQ(rig->source.max_pair_skew_us, 0U);
 
   // The scenario may state other modes; the app holds every camera to them.
   const auto stated = scenario(
@@ -520,7 +525,7 @@ TEST(Config, CalibRigNeedsItsRigAndSessionRootAndRefusesWhatItDoesNotUse) {
   refused(calib_rig(R"(,"color_codec":"h264")"),
           "source.color_codec: unknown choice 'h264'");
   refused(calib_rig(R"(,"driver":"arkit")"),
-          "source.driver: only orbbec is supported");
+          "source.driver: only orbbec and decklink are supported");
   // The live profiles' mode rules hold.
   refused(calib_rig(R"(,"color_width":3840)"),
           "source: color_width and color_height must be provided together");
@@ -533,14 +538,14 @@ TEST(Config, CalibRigNeedsItsRigAndSessionRootAndRefusesWhatItDoesNotUse) {
   refused(calib_rig(R"(,"fps":0)"), "source.fps: must be finite and positive");
   refused(calib_rig(R"(,"fps":25.0)"), "source.fps: expected an integer");
 
-  // Source fields of the other profiles: one camera by serial, poses, writing
-  // the sync roles, host clocks, datasets and meshes.
+  // Source fields of the other profiles: one camera by serial, writing the
+  // sync roles, host clocks, datasets and meshes.
   for (const char* field :
-       {R"("serial":"CL2A141000N")", R"("calibration":"poses.json")",
-        R"("apply_sync":false)", R"("host_clock":false)", R"("path":"scene")",
-        R"("format":"replica")", R"("camera_parameters":"cam.json")",
-        R"("preload":false)", R"("height_m":1.7)", R"("up_axis":"y")",
-        R"("sdf_mode":"signed")", R"("allow_holes":false)"}) {
+       {R"("serial":"CL2A141000N")", R"("apply_sync":false)",
+        R"("host_clock":false)", R"("path":"scene")", R"("format":"replica")",
+        R"("camera_parameters":"cam.json")", R"("preload":false)",
+        R"("height_m":1.7)", R"("up_axis":"y")", R"("sdf_mode":"signed")",
+        R"("allow_holes":false)"}) {
     const std::string_view text(field);
     const std::string key(text.substr(1, text.find('"', 1) - 1));
     refused(calib_rig(std::string(",") + field),
@@ -1954,19 +1959,357 @@ TEST(Config, FuseDecklinkNeedsTwoCamerasOnePairItsCalibrationAndFfs) {
   refused(decklink("", R"(,"fusion":{"min_depth_m":5,"max_depth_m":4})"),
           "min_depth_m");
 
-  // No other profile takes its cameras, pairs or skew bound, even empty.
+  // No other profile takes its cameras, pairs or skew bound, even empty, but
+  // CalibRig takes the cameras and pair of its DeckLink pair
+  // (CalibRigTakesOnlyItsDriversKeysAndOneDecklinkPair).
   for (const auto app : every_profile()) {
     if (app == App::FuseDecklink) continue;
     for (const char* field :
          {R"("cameras":[])", R"("pairs":[])", R"("max_pair_skew_us":500)"}) {
       const std::string_view text(field);
       const std::string key(text.substr(1, text.find('"', 1) - 1));
+      if (app == App::CalibRig && key != "max_pair_skew_us") continue;
       rejected(std::string(R"({"version":1,"source":{)") + field + "}}", app,
                "source." + key + ": is not used by this application");
     }
   }
   // And its scenario is no other profile's.
   rejected(decklink(""), App::FuseRealsense, "is not used by this application");
+}
+
+// The cameras and the pair of a DeckLink pair, as FuseDecklink's.
+constexpr std::string_view kDecklinkCameras =
+    R"("cameras":[{"id":"bm-1","input":"SDI 2"},{"id":"bm-2","input":"SDI 1"}])";
+constexpr std::string_view kDecklinkPairs =
+    R"("pairs":[{"left":"bm-1","right":"bm-2"}])";
+// CalibRig's lens calibration, as a section; without it, its pose
+// calibration.
+constexpr const char* kIntrinsics = R"(,"operation":"calibrate_intrinsics")";
+
+// A CalibRig scenario of a DeckLink pair with no session root: its cameras
+// and pair and these further source fields, and these further sections; each
+// addition leads with a comma.
+std::string calib_pair_unrooted(const std::string& source,
+                                const std::string& sections) {
+  return R"({"version":1,"source":{"driver":"decklink",)" +
+         std::string(kDecklinkCameras) + "," + std::string(kDecklinkPairs) +
+         source + "}" + sections + "}";
+}
+// The same with a session root.
+std::string calib_pair(const std::string& source = "",
+                       const std::string& sections = "") {
+  return calib_pair_unrooted(source,
+                             R"(,"output":{"path":"sessions"})" + sections);
+}
+
+// The settings CalibRig reads, all but its operation, are equal.
+void expect_same_rig(const Config& a, const Config& b) {
+  EXPECT_EQ(a.source.kind, b.source.kind);
+  EXPECT_EQ(a.source.driver, b.source.driver);
+  EXPECT_EQ(a.source.sync_config, b.source.sync_config);
+  EXPECT_EQ(a.source.calibration, b.source.calibration);
+  EXPECT_EQ(a.source.color_codec, b.source.color_codec);
+  EXPECT_EQ(a.source.color_width, b.source.color_width);
+  EXPECT_EQ(a.source.color_height, b.source.color_height);
+  EXPECT_EQ(a.source.depth_width, b.source.depth_width);
+  EXPECT_EQ(a.source.depth_height, b.source.depth_height);
+  EXPECT_EQ(a.source.fps, b.source.fps);
+  ASSERT_EQ(a.source.cameras.size(), b.source.cameras.size());
+  for (std::size_t i = 0; i < a.source.cameras.size(); ++i) {
+    EXPECT_EQ(a.source.cameras[i].id, b.source.cameras[i].id);
+    EXPECT_EQ(a.source.cameras[i].input, b.source.cameras[i].input);
+  }
+  ASSERT_EQ(a.source.pairs.size(), b.source.pairs.size());
+  for (std::size_t i = 0; i < a.source.pairs.size(); ++i) {
+    EXPECT_EQ(a.source.pairs[i].left, b.source.pairs[i].left);
+    EXPECT_EQ(a.source.pairs[i].right, b.source.pairs[i].right);
+  }
+  EXPECT_EQ(a.source.max_pair_skew_us, b.source.max_pair_skew_us);
+  EXPECT_EQ(a.output.path, b.output.path);
+  EXPECT_EQ(a.window.width, b.window.width);
+  EXPECT_EQ(a.window.height, b.window.height);
+  EXPECT_EQ(a.window.validation, b.window.validation);
+}
+
+TEST(Config, CalibRigCalibratesLensesOrPosesFromOrbbecOrDecklinkCameras) {
+  for (const std::string& sections :
+       {std::string(), std::string(kIntrinsics)}) {
+    SCOPED_TRACE(sections);
+    const Operation operation = sections.empty()
+                                    ? Operation::Calibrate
+                                    : Operation::CalibrateIntrinsics;
+    // An Orbbec rig: the sync file's cameras at the preset, as before.
+    const auto rig =
+        scenario(calib_rig("", sections), App::CalibRig, "/scenario");
+    ASSERT_TRUE(rig) << rig.status().message();
+    EXPECT_EQ(rig->operation, operation);
+    EXPECT_EQ(rig->source.driver, "orbbec");
+    EXPECT_EQ(rig->source.sync_config, "/scenario/rig.json");
+    EXPECT_EQ(rig->source.color_codec, ColorCodec::Mjpeg);
+    EXPECT_EQ(rig->source.color_width, 3840U);
+    EXPECT_EQ(rig->source.color_height, 2160U);
+    EXPECT_EQ(rig->source.depth_width, 640U);
+    EXPECT_EQ(rig->source.depth_height, 576U);
+    EXPECT_EQ(rig->source.fps, 25U);
+    EXPECT_TRUE(rig->source.calibration.empty());
+    EXPECT_TRUE(rig->source.cameras.empty());
+    EXPECT_TRUE(rig->source.pairs.empty());
+    EXPECT_EQ(rig->output.path, "/scenario/sessions");
+
+    // A DeckLink pair: its two cameras and pair, no sync file or skew bound,
+    // at FuseDecklink's modes: 3840x2160 at 30 fps, and FFS's 960x544.
+    const auto pair =
+        scenario(calib_pair("", sections), App::CalibRig, "/scenario");
+    ASSERT_TRUE(pair) << pair.status().message();
+    EXPECT_EQ(pair->operation, operation);
+    EXPECT_EQ(pair->source.kind, SourceKind::Live);
+    EXPECT_EQ(pair->source.driver, "decklink");
+    ASSERT_EQ(pair->source.cameras.size(), 2U);
+    EXPECT_EQ(pair->source.cameras[0].id, "bm-1");
+    EXPECT_EQ(pair->source.cameras[0].input, "SDI 2");
+    EXPECT_EQ(pair->source.cameras[1].id, "bm-2");
+    EXPECT_EQ(pair->source.cameras[1].input, "SDI 1");
+    ASSERT_EQ(pair->source.pairs.size(), 1U);
+    EXPECT_EQ(pair->source.pairs[0].left, "bm-1");
+    EXPECT_EQ(pair->source.pairs[0].right, "bm-2");
+    EXPECT_TRUE(pair->source.sync_config.empty());
+    EXPECT_TRUE(pair->source.calibration.empty());
+    EXPECT_EQ(pair->source.max_pair_skew_us, 0U);
+    EXPECT_EQ(pair->source.color_width, 3840U);
+    EXPECT_EQ(pair->source.color_height, 2160U);
+    EXPECT_EQ(pair->source.depth_width, 960U);
+    EXPECT_EQ(pair->source.depth_height, 544U);
+    EXPECT_EQ(pair->source.fps, 30U);
+    EXPECT_EQ(pair->output.path, "/scenario/sessions");
+    EXPECT_EQ(pair->window.width, 1280);
+    EXPECT_EQ(pair->window.height, 720);
+
+    // Every key each driver takes, away from its default, reads back. A
+    // lens file, relative to the scenario, starts either operation.
+    const auto stated_rig = scenario(
+        calib_rig(
+            R"(,"driver":"orbbec","calibration":"../lenses/./femto.json","color_codec":"mjpeg","color_width":1920,"color_height":1080,"depth_width":320,"depth_height":288,"fps":15)",
+            R"(,"window":{"width":2560,"height":1440,"validation":true})" +
+                sections),
+        App::CalibRig, "/scenario/config");
+    ASSERT_TRUE(stated_rig) << stated_rig.status().message();
+    EXPECT_EQ(stated_rig->operation, operation);
+    EXPECT_EQ(stated_rig->source.sync_config, "/scenario/config/rig.json");
+    EXPECT_EQ(stated_rig->source.calibration, "/scenario/lenses/femto.json");
+    EXPECT_EQ(stated_rig->source.color_width, 1920U);
+    EXPECT_EQ(stated_rig->source.color_height, 1080U);
+    EXPECT_EQ(stated_rig->source.depth_width, 320U);
+    EXPECT_EQ(stated_rig->source.depth_height, 288U);
+    EXPECT_EQ(stated_rig->source.fps, 15U);
+    EXPECT_EQ(stated_rig->window.width, 2560);
+    EXPECT_TRUE(stated_rig->window.validation);
+    const auto stated_pair = scenario(
+        R"({"version":1,"source":{"driver":"decklink","cameras":[{"id":"bm-4","input":"SDI 4"},{"id":"bm-3","input":"SDI 3"}],"pairs":[{"left":"bm-3","right":"bm-4"}],"calibration":"/rigs/bm_pair/array_calibration.json","color_width":1920,"color_height":1080,"depth_width":1280,"depth_height":720,"fps":25},"output":{"path":"../sessions"},"window":{"width":2560,"height":1440,"validation":true})" +
+            sections + "}",
+        App::CalibRig, "/scenario/config");
+    ASSERT_TRUE(stated_pair) << stated_pair.status().message();
+    EXPECT_EQ(stated_pair->operation, operation);
+    ASSERT_EQ(stated_pair->source.cameras.size(), 2U);
+    EXPECT_EQ(stated_pair->source.cameras[0].id, "bm-4");
+    EXPECT_EQ(stated_pair->source.cameras[0].input, "SDI 4");
+    EXPECT_EQ(stated_pair->source.cameras[1].input, "SDI 3");
+    EXPECT_EQ(stated_pair->source.pairs[0].left, "bm-3");
+    EXPECT_EQ(stated_pair->source.pairs[0].right, "bm-4");
+    EXPECT_EQ(stated_pair->source.calibration,
+              "/rigs/bm_pair/array_calibration.json");
+    EXPECT_EQ(stated_pair->source.color_width, 1920U);
+    EXPECT_EQ(stated_pair->source.color_height, 1080U);
+    EXPECT_EQ(stated_pair->source.depth_width, 1280U);
+    EXPECT_EQ(stated_pair->source.depth_height, 720U);
+    EXPECT_EQ(stated_pair->source.fps, 25U);
+    EXPECT_EQ(stated_pair->output.path, "/scenario/sessions");
+    EXPECT_EQ(stated_pair->window.height, 1440);
+    EXPECT_TRUE(stated_pair->window.validation);
+  }
+
+  // The operation chooses the work alone: either resolves the same settings.
+  for (const auto& [plain, lenses] :
+       {std::pair{calib_rig(), calib_rig("", kIntrinsics)},
+        std::pair{calib_pair(), calib_pair("", kIntrinsics)},
+        std::pair{calib_pair(R"(,"calibration":"lenses.json","fps":24)"),
+                  calib_pair(R"(,"calibration":"lenses.json","fps":24)",
+                             kIntrinsics)}}) {
+    const auto poses = scenario(plain, App::CalibRig, "/scenario");
+    const auto fitted = scenario(lenses, App::CalibRig, "/scenario");
+    ASSERT_TRUE(poses) << poses.status().message();
+    ASSERT_TRUE(fitted) << fitted.status().message();
+    EXPECT_EQ(poses->operation, Operation::Calibrate);
+    EXPECT_EQ(fitted->operation, Operation::CalibrateIntrinsics);
+    expect_same_rig(*poses, *fitted);
+  }
+
+  // The pair's modes, FFS's size among them, resolve as FuseDecklink's, so
+  // the pair's row error is measured at the size FFS rectifies to.
+  for (
+      const char* modes :
+      {"", R"(,"fps":24)",
+       R"(,"color_width":1920,"color_height":1080,"depth_width":1280,"depth_height":720,"fps":25)"}) {
+    const auto calib = scenario(calib_pair(modes), App::CalibRig);
+    const auto fuse = scenario(decklink(modes), App::FuseDecklink);
+    ASSERT_TRUE(calib) << calib.status().message();
+    ASSERT_TRUE(fuse) << fuse.status().message();
+    EXPECT_EQ(calib->source.color_width, fuse->source.color_width) << modes;
+    EXPECT_EQ(calib->source.color_height, fuse->source.color_height) << modes;
+    EXPECT_EQ(calib->source.depth_width, fuse->source.depth_width) << modes;
+    EXPECT_EQ(calib->source.depth_height, fuse->source.depth_height) << modes;
+    EXPECT_EQ(calib->source.fps, fuse->source.fps) << modes;
+  }
+
+  // The scenario as the design writes it reads back as written.
+  const auto written = parse(
+      R"({"version": 1, "operation": "calibrate_intrinsics",
+          "source": {"kind": "live", "driver": "decklink",
+            "cameras": [{"id": "bm-1", "input": "SDI 2"},
+                        {"id": "bm-2", "input": "SDI 1"}],
+            "pairs": [{"left": "bm-1", "right": "bm-2"}],
+            "calibration": "bm_pair/array_calibration.json"},
+          "output": {"path": "/data/calib_sessions"}})",
+      App::CalibRig, "/scenario");
+  ASSERT_TRUE(written) << written.status().message();
+  EXPECT_EQ(written->operation, Operation::CalibrateIntrinsics);
+  EXPECT_EQ(written->source.driver, "decklink");
+  ASSERT_EQ(written->source.cameras.size(), 2U);
+  EXPECT_EQ(written->source.cameras[1].input, "SDI 1");
+  EXPECT_EQ(written->source.pairs[0].right, "bm-2");
+  EXPECT_EQ(written->source.calibration,
+            "/scenario/bm_pair/array_calibration.json");
+  EXPECT_EQ(written->source.depth_width, 960U);
+  EXPECT_EQ(written->output.path, "/data/calib_sessions");
+}
+
+TEST(Config, CalibRigTakesOnlyItsDriversKeysAndOneDecklinkPair) {
+  const auto refused = [](const std::string& text, const std::string& reason) {
+    rejected(text, App::CalibRig, reason);
+  };
+  // Lenses are CalibRig's to calibrate, in no other profile.
+  for (const auto app : every_profile()) {
+    if (app == App::CalibRig) continue;
+    std::string text = with_sections(app, "");
+    text.insert(1, R"("operation":"calibrate_intrinsics",)");
+    rejected(text, app, "operation: is not supported by this application");
+  }
+  rejected(
+      R"({"version":1,"operation":"intrinsics","source":{"sync_config":"rig.json"},"output":{"path":"s"}})",
+      App::CalibRig, "operation: unknown choice 'intrinsics'");
+
+  // An Orbbec rig or a DeckLink pair; a RealSense camera waits for a reader
+  // of its pose.
+  constexpr std::string_view decklink_driver = R"("driver":"decklink")";
+  for (const char* driver : {"realsense", "arkit", "Decklink", "orbbec "}) {
+    const std::string named = std::string(R"("driver":")") + driver + "\"";
+    refused(std::string(R"({"version":1,"source":{)") + named +
+                R"(},"output":{"path":"s"}})",
+            "source.driver: only orbbec and decklink are supported");
+    std::string pair = calib_pair();
+    pair.replace(pair.find(decklink_driver), decklink_driver.size(), named);
+    refused(pair, "source.driver: only orbbec and decklink are supported");
+  }
+
+  for (const std::string& sections :
+       {std::string(), std::string(kIntrinsics)}) {
+    SCOPED_TRACE(sections);
+    // calib_pair's scenario with `from` replaced by `to`.
+    const auto pair = [&sections](std::string_view from, std::string_view to) {
+      std::string text = calib_pair("", sections);
+      const auto at = text.find(from);
+      EXPECT_NE(at, std::string::npos) << from;
+      if (at != std::string::npos) text.replace(at, from.size(), to);
+      return text;
+    };
+    // Each driver's keys only with that driver: the Orbbec rig's sync file
+    // and colour coding, the DeckLink pair's cameras and pair, even before
+    // the rig's required sync file.
+    refused(calib_pair(R"(,"sync_config":"rig.json")", sections),
+            "source.sync_config: is not used by source.driver decklink");
+    refused(calib_pair(R"(,"color_codec":"mjpeg")", sections),
+            "source.color_codec: is not used by source.driver decklink");
+    for (const std::string_view field : {kDecklinkCameras, kDecklinkPairs}) {
+      const std::string key(field.substr(1, field.find('"', 1) - 1));
+      const std::string reason =
+          "source." + key + ": is not used by source.driver orbbec";
+      refused(calib_rig("," + std::string(field), sections), reason);
+      refused(
+          calib_rig(R"(,"driver":"orbbec",)" + std::string(field), sections),
+          reason);
+      refused(R"({"version":1,"source":{)" + std::string(field) +
+                  R"(},"output":{"path":"s"})" + sections + "}",
+              reason);
+    }
+    // The Orbbec rig's other keys, FFS's model and plans, a skew bound (a
+    // capture waits for a still board) and the RealSense camera's keys are
+    // CalibRig's with neither driver.
+    for (const char* field :
+         {R"("serial":"A")", R"("apply_sync":true)", R"("host_clock":true)",
+          R"("color_exposure":200)", R"("color_gain":32)",
+          R"("ffs_model":"ffs.onnx")", R"("ffs_plan_cache":"plans")",
+          R"("max_pair_skew_us":500)", R"("depth":"ffs")", R"("emitter":false)",
+          R"("audio":"default")"}) {
+      const std::string_view text(field);
+      const std::string key(text.substr(1, text.find('"', 1) - 1));
+      const std::string reason =
+          "source." + key + ": is not used by this application";
+      refused(calib_pair(std::string(",") + field, sections), reason);
+      refused(calib_rig(std::string(",") + field, sections), reason);
+    }
+    // No board keys: the board is entered in the app.
+    refused(calib_pair(R"(,"board":{"squares":[14,9]})", sections),
+            "source.board: unknown field");
+    refused(calib_pair("", sections + R"(,"board":{})"),
+            "board: unknown field");
+
+    // A DeckLink pair's rules, as FuseDecklink's: two cameras, each on its
+    // own connector, and one pair of both, at the cameras' 2160p rates.
+    refused(pair(std::string(kDecklinkCameras) + ",", ""),
+            "source.cameras: is required");
+    refused(pair("," + std::string(kDecklinkPairs), ""),
+            "source.pairs: is required");
+    refused(
+        pair(R"({"id":"bm-2","input":"SDI 1"})",
+             R"({"id":"bm-2","input":"SDI 1"},{"id":"bm-3","input":"SDI 3"})"),
+        "source.cameras: must name exactly two cameras");
+    refused(
+        pair(R"("input":"SDI 1")", R"("input":"SDI 2")"),
+        "source.cameras[1].input: must differ from source.cameras[0].input");
+    refused(pair(R"("id":"bm-2")", R"("id":"bm-1")"),
+            "source.cameras[1].id: must differ from source.cameras[0].id");
+    refused(pair(R"("input":"SDI 1")", R"("input":"SDI 5")"),
+            "source.cameras[1].input: must be SDI 1, SDI 2, SDI 3 or SDI 4");
+    // A camera the pair names must be listed, and is paired once.
+    refused(pair(R"("left":"bm-1")", R"("left":"bm-3")"),
+            "source.pairs[0].left: must name a camera of source.cameras");
+    refused(pair(R"("right":"bm-2")", R"("right":"bm-1")"),
+            "source.pairs[0].right: must differ from source.pairs[0].left");
+    refused(
+        pair(
+            R"({"left":"bm-1","right":"bm-2"})",
+            R"({"left":"bm-1","right":"bm-2"},{"left":"bm-2","right":"bm-1"})"),
+        "source.pairs: must name exactly one pair");
+    for (const char* fps : {"15", "29", "60"}) {
+      refused(calib_pair(std::string(R"(,"fps":)") + fps, sections),
+              "source.fps: must be 24, 25 or 30");
+    }
+    refused(calib_pair(R"(,"depth_width":960)", sections),
+            "source: depth_width and depth_height must be provided together");
+    refused(calib_pair(R"(,"depth_width":0,"depth_height":544)", sections),
+            "source.depth_width: must be finite and positive");
+
+    // The lens file, when given, is a path, never the session root.
+    refused(calib_pair(R"(,"calibration":"")", sections),
+            "source.calibration: must not be empty");
+    refused(calib_pair(R"(,"calibration":"a\u0000b")", sections),
+            "source.calibration: embedded NUL");
+    refused(calib_pair(R"(,"calibration":"lenses/../sessions")", sections),
+            "output.path: must differ from source.calibration");
+    refused(calib_rig(R"(,"calibration":"./sessions")", sections),
+            "output.path: must differ from source.calibration");
+    // The session root has no default for a pair either.
+    refused(calib_pair_unrooted("", sections), "output.path: is required");
+  }
 }
 
 TEST(Config, LiveFusionRecordsAudioOnTheHostClockIntoItsStream) {

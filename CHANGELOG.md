@@ -7,8 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-11-01
+
 ### Added
 
+- `config::Operation::CalibrateIntrinsics` (`calibrate_intrinsics`):
+  CalibRig's lens calibration; `calibrate` stays its pose calibration. No
+  other profile takes it (CONFIG.md).
+- CalibRig's `source.driver` `decklink`: one DeckLink pair, with
+  FuseDecklink's `cameras`, `pairs` and modes (24, 25 or 30 fps; FFS's depth
+  size, 960x544 by default). It refuses `sync_config`, `color_codec`, FFS's
+  model and plans and `max_pair_skew_us`; `orbbec` stays the default.
+- CalibRig's optional `source.calibration`, config-relative: the rig file a
+  session starts from.
 - `tools/ci/decklink-sdk-16.0/`: the DeckLink SDK 16.0's Linux headers,
   unmodified, which sensor's 24.04 CI leg builds its DeckLink driver against;
   `tools/ci/test_decklink_sdk.py`, run by lint, holds them to their SHA256s
@@ -20,6 +31,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `.github/workflows/ci-images.yml`. The core's Linux legs start from a bare
   `ubuntu@sha256` image and install their packages again (core #81
   reverted). Nothing changes for a consumer of the library.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged.
+  `Operation` gains a value, which a `switch` over it without a default must
+  handle. A CalibRig consumer must refuse `driver` `decklink`, `operation`
+  `calibrate_intrinsics` and a `calibration` file until it runs them.
 
 ## [0.39.0] - 2026-11-01
 

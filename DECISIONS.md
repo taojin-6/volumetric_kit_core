@@ -1780,3 +1780,28 @@ NVIDIA's CUDA and TensorRT.
   GHCR package is left for the owner to delete.
 - **Kept:** the DeckLink SDK's headers, now in `tools/ci/decklink-sdk-16.0/`
   with their tests (`tools/ci/test_decklink_sdk.py`), which lint runs.
+
+## 2026-11-01 — CalibRig calibrates lenses or poses, from Orbbec or DeckLink cameras
+
+calib_rig gains a lens calibration, and a DeckLink pair beside the Orbbec rig
+(core 0.40.0; CONFIG.md, `CalibRig`). The fusion programs are one per source,
+each its own profile (the FuseDecklink entry); calib_rig is one program that
+reads every source as grey pictures and names a driver only where it opens
+one, so it stays one profile with a driver switch.
+
+- **The mode is the `operation`,** as FuseOrbbec's `fuse` and `stream`:
+  `calibrate` keeps meaning the pose solve, so every scenario written before
+  loads unchanged, and `calibrate_intrinsics` is the lens solve. No other
+  profile takes it.
+- **Each driver's keys, and only its.** `orbbec` keeps the sync file, preset
+  and MJPEG colour. `decklink` takes FuseDecklink's `cameras` and `pairs`
+  under its rules, so one schema describes a pair to both programs, but no
+  skew bound: a capture waits for a still board. A key of the other driver
+  is refused, naming the driver; a RealSense camera, factory-rectified and
+  with no reader of its pose, waits for one.
+- **The pair's modes resolve as FuseDecklink's.** The depth size is FFS's,
+  which calib measures the pair's rectified row error at, so it has one
+  home: FuseDecklink's defaults, which CalibRig takes unless given.
+- **An optional rig file.** `calibration` names the file a session starts
+  from, in either mode: a camera's first lens session has none. The board
+  stays entered in the app, with no keys.
