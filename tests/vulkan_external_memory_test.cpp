@@ -34,6 +34,7 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
+#include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/testing/write_image.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -1059,6 +1060,19 @@ class TimelineExportTest : public test::VulkanDeviceTest {
     return true;
   }
 
+  // For a host signal of the exported timeline after the host read it. The
+  // validation layer 1.3.275 (Ubuntu 24.04's) records a value read from an
+  // exported timeline as a signal still pending, and reports the next host
+  // signal as not below it (VUID-VkSemaphoreSignalInfo-value-03259), though
+  // nothing is pending; 1.4.341 reports nothing. On an older layer the test's
+  // errors from here on are counted, so everything before stays validated
+  // there, and all of it on a newer layer.
+  void allow_the_old_layers_pending_read() {
+    constexpr std::uint32_t kClean = VK_MAKE_API_VERSION(0, 1, 4, 341);
+    const std::uint32_t layer = test::validation_layer_version();
+    if (layer != 0 && layer < kClean) allow_validation_errors();
+  }
+
   // Whether the device can import its own timeline's descriptor as well.
   bool cannot_import() const {
     return (opaque_fd_timeline(physical().handle()) &
@@ -1161,6 +1175,7 @@ TEST_F(TimelineExportTest, ExportsATimelineAtItsInitialValue) {
     fd = written.fd.get();
     EXPECT_NE(fcntl(fd, F_GETFD), -1);
 
+    allow_the_old_layers_pending_read();
     ASSERT_TRUE(written.semaphore.signal(6).ok());
     EXPECT_TRUE(written.semaphore.wait(6).ok());
     const Result<std::uint64_t> raised = written.semaphore.value();
@@ -1209,6 +1224,7 @@ TEST_F(TimelineExportTest, TheDescriptorImportsTheSameTimeline) {
   EXPECT_EQ(*seen, 7U);
   EXPECT_TRUE(written.semaphore.wait(7, kLongWaitNs).ok());
 
+  allow_the_old_layers_pending_read();
   ASSERT_TRUE(written.semaphore.signal(8).ok());
   EXPECT_EQ(counter(other.handle(), imported.get()), 8U);
 }
