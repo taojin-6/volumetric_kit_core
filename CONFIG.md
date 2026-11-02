@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.39.0 CONFIG)
+vkc_require_core(0.40.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -95,7 +95,7 @@ does not override the requested operation or source discriminator.
 | `GfxModel` | `view` | omitted for built-in cube; `model` with optional path | 1024x720, validation, unlimited frames; screenshot selects headless rendering |
 | `Scanner` | `fuse` | `live`, `arkit` | voxel 0.01 m, truncation 0.03 m, 1024 initial / 32768 maximum buckets, texture and timings enabled |
 | `CalibProjectPoint` | `project` | omitted | 1280x720, intrinsics [1000,1000,640,360], Brown distortion [-0.28,0.10,0.001,-0.0005,0], point [0.1,-0.2,2] |
-| `CalibRig` | `calibrate` | `live`, `orbbec`; sync config and `output.path` required | MJPEG colour 3840x2160, depth 640x576, 25 fps, 1280x720 window |
+| `CalibRig` | `calibrate` or `calibrate_intrinsics` | `live`, `orbbec` (sync config required) or `decklink` (two cameras, one pair required); `output.path` required | `orbbec`: MJPEG colour 3840x2160, depth 640x576, 25 fps; `decklink`: FuseDecklink's modes; 1280x720 window |
 | `Player` | `view` | `stream`; one of `path` and `host` required | 1280x720, unlimited frames |
 | `CalibColor` | `calibrate` | `live`, `orbbec`; sync config, calibration, `color_exposure`, `color_gain` and `output.path` required | colour 3840x2160 HEVC, depth 640x576, 25 fps, 50 sets; no window |
 
@@ -148,6 +148,8 @@ unknown extension object.
   at 30 fps), which pairs free-running cameras. It refuses the Orbbec rig's
   and the RealSense camera's keys and diagnostics. The consumer checks the
   card, its connectors and mode, and that the file names both cameras.
+  CalibRig's DeckLink pair (below, core 0.40.0) takes `cameras`, `pairs` and
+  the modes under the same rules and defaults.
 - Mesh fields: `path`; exactly one of `height_m` (a height the consumer
   scales the input to) and `metres_per_unit` (the input's declared unit, core
   0.7.0), finite and positive; either `up_axis` (`x`, `y`, `z`, optionally
@@ -266,13 +268,25 @@ unknown extension object.
   fused Classic throughout frees only blocks that never held an observed
   voxel, which the mesher and the codec use nothing from.
   Other profiles reject it.
-- `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its required
-  `source.sync_config` names the rig, of any number of cameras, and `driver`
-  is `orbbec`; `color_codec`, the colour and depth sizes and `fps` are the
-  modes its preset check holds every camera to. Colour must be `mjpeg`, since
-  a capture saves each camera's JPEG. Its required `output.path` is the
-  directory each session's own directory is created in; it has no default,
-  so no session is written beside the scenario unasked. It accepts `window`
+- `CalibRig` (core 0.11.0) is calib_rig's live view and capture. Its
+  `operation` is `calibrate`, which solves the cameras' poses, or, from core
+  0.40.0, `calibrate_intrinsics`, which solves each camera's lens; no other
+  profile takes the latter. `driver` is `orbbec`, the default, or `decklink`
+  (core 0.40.0):
+  - `orbbec`: its required `source.sync_config` names the rig, of any number
+    of cameras; `color_codec`, the colour and depth sizes and `fps` are the
+    modes its preset check holds every camera to. Colour must be `mjpeg`,
+    since a capture saves each camera's JPEG.
+  - `decklink`: one DeckLink pair, with FuseDecklink's `cameras`, `pairs` and
+    modes (above). Its depth size is FFS's, which the pair's rectified row
+    error is measured at. It refuses `sync_config` and `color_codec`, FFS's
+    model and plans, and `max_pair_skew_us`, since a capture waits for a
+    still board.
+
+  `calibration` (core 0.40.0), optional with either driver, names the rig
+  file a session starts from. The required `output.path` is the directory
+  each session's own directory is created in; it has no default, so no
+  session is written beside the scenario unasked. It accepts `window`
   `width`, `height` and `validation`, and refuses `overlay`, since its
   controls and marks are the overlay. It refuses every other field and
   section, `fusion` included: its capture-rule and detection thresholds are

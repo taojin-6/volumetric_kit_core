@@ -38,8 +38,17 @@ enum class Application {
   FuseRealsense,
   FuseDecklink
 };
-/// @brief The work requested by a scenario.
-enum class Operation { Fuse, Stream, Codec, View, Project, Calibrate };
+/// @brief The work requested by a scenario. CalibRig's `Calibrate` solves
+/// the cameras' poses, and its `CalibrateIntrinsics` each camera's lens.
+enum class Operation {
+  Fuse,
+  Stream,
+  Codec,
+  View,
+  Project,
+  Calibrate,
+  CalibrateIntrinsics
+};
 /// @brief The source discriminator; branch-specific fields are checked
 /// centrally.
 enum class SourceKind { None, Dataset, Live, Mesh, Model, Stream };
@@ -86,6 +95,8 @@ struct Source {
   std::string camera_parameters;
   std::string serial;
   std::string sync_config;
+  /// The rig file: lenses, and poses once solved. CalibRig's, optional, is
+  /// the file a session starts from.
   std::string calibration;
   bool preload = false;
   bool apply_sync = false;
@@ -101,7 +112,8 @@ struct Source {
   /// the depth it fuses: the camera's depth mode, 1280x720, or with FFS the
   /// rectified size the model runs at, 960x544. FuseDecklink takes them too
   /// and resolves the cameras' mode to 3840x2160 at 30 fps, its rate 24, 25
-  /// or 30 only, and FFS's size to 960x544.
+  /// or 30 only, and FFS's size to 960x544; so does CalibRig with driver
+  /// `decklink`.
   ColorCodec color_codec = ColorCodec::Hevc;
   std::uint32_t color_width = 3840;
   std::uint32_t color_height = 2160;
@@ -124,8 +136,9 @@ struct Source {
   /// built TensorRT plans are kept in.
   std::string ffs_model;
   std::string ffs_plan_cache;
-  /// FuseDecklink (required there, refused otherwise): its two cameras, on
-  /// two inputs, and the one stereo pair they make.
+  /// FuseDecklink and CalibRig with driver `decklink` (required there,
+  /// refused otherwise): the two cameras, on two inputs, and the one stereo
+  /// pair they make.
   std::vector<LiveCamera> cameras;
   std::vector<StereoPairConfig> pairs;
   /// FuseDecklink: the most a pair's two pictures may lie apart, in

@@ -71,8 +71,9 @@ bool takes_codec(App app) { return is_codec(app) || codes_sets(app); }
 bool is_live_fusion(App app) {
   return is_one_of(app, {App::FuseOrbbec, App::RigViewer});
 }
-// The calibration profiles that open a rig from its sync file: CalibRig's live
-// view and capture, and CalibColor's colour fit.
+// The calibration profiles: CalibRig's live view and capture, of an Orbbec rig
+// from its sync file or of a DeckLink pair, and CalibColor's colour fit, of
+// an Orbbec rig.
 bool is_rig_calibration(App app) {
   return is_one_of(app, {App::CalibRig, App::CalibColor});
 }
@@ -86,6 +87,20 @@ bool is_orbbec(App app) {
 bool takes_camera_modes(App app) {
   return is_orbbec(app) ||
          is_one_of(app, {App::FuseRealsense, App::FuseDecklink});
+}
+// The scenarios that open a DeckLink pair: FuseDecklink's, and CalibRig's
+// with driver decklink.
+bool opens_decklink(const Config& c, App app) {
+  return app == App::FuseDecklink ||
+         (app == App::CalibRig && c.source.driver == "decklink");
+}
+// The driver a CalibRig source key belongs to: the Orbbec rig's sync file and
+// colour coding, or the DeckLink pair's cameras; empty for a key of both.
+std::string_view calib_rig_driver(std::string_view field) {
+  if (field == "source.sync_config" || field == "source.color_codec")
+    return "orbbec";
+  if (field == "source.cameras" || field == "source.pairs") return "decklink";
+  return {};
 }
 // The connectors a DeckLink camera may feed, named as on a four-input card's
 // bracket.
@@ -405,8 +420,8 @@ bool supports(std::string_view field, App app) {
     return is_live_fusion(app) || app == App::FuseRealsense;
   if (field == "source.apply_sync") return is_live_fusion(app);
   if (field == "source.calibration")
-    return is_live_fusion(app) ||
-           is_one_of(app, {App::CalibColor, App::FuseDecklink});
+    return is_live_fusion(app) || is_rig_calibration(app) ||
+           app == App::FuseDecklink;
   if (field_in(field, {"source.sync_config", "source.color_codec"}))
     return is_orbbec(app);
   if (field_in(field,
@@ -421,9 +436,10 @@ bool supports(std::string_view field, App app) {
     return app == App::FuseRealsense;
   if (field_in(field, {"source.ffs_model", "source.ffs_plan_cache"}))
     return is_one_of(app, {App::FuseRealsense, App::FuseDecklink});
-  if (field_in(field,
-               {"source.cameras", "source.pairs", "source.max_pair_skew_us"}))
-    return app == App::FuseDecklink;
+  if (field_in(field, {"source.cameras", "source.pairs"}))
+    return is_one_of(app, {App::FuseDecklink, App::CalibRig});
+  // A capture waits for a still board, so CalibRig takes no skew bound.
+  if (field == "source.max_pair_skew_us") return app == App::FuseDecklink;
   if (field_in(field, {"source.height_m", "source.metres_per_unit",
                        "source.up_axis", "source.up_vector", "source.sdf_mode",
                        "source.shell_voxels", "source.allow_holes"}))
@@ -547,10 +563,21 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   }
   const auto expected = defaults_impl(app);
   if (c.operation != expected.operation &&
-      (app != App::FuseOrbbec || c.operation != Operation::Stream))
+      (app != App::FuseOrbbec || c.operation != Operation::Stream) &&
+      (app != App::CalibRig || c.operation != Operation::CalibrateIntrinsics))
     fail("operation", "is not supported by this application");
   if (c.source.kind != expected.source.kind)
     fail("source.kind", "is not supported by this application");
+  // CalibRig opens an Orbbec rig or a DeckLink pair, each with its own keys.
+  if (app == App::CalibRig) {
+    if (c.source.driver != "orbbec" && c.source.driver != "decklink")
+      fail("source.driver", "only orbbec and decklink are supported");
+    for (const std::string& field : state.fields) {
+      const std::string_view driver = calib_rig_driver(field);
+      if (!driver.empty() && driver != c.source.driver)
+        fail(field, "is not used by source.driver " + c.source.driver);
+    }
+  }
   if (c.operation == Operation::Stream) {
     for (const char* key : {"fusion", "codec", "output", "source.audio"})
       if (has(state, key)) fail(key, "is not used by operation stream");
@@ -568,7 +595,8 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
              is_dataset(app) || app == App::CodecMesh);
   path_check(c.source.camera_parameters, "source.camera_parameters");
   path_check(c.source.sync_config, "source.sync_config",
-             app == App::RigViewer || is_rig_calibration(app));
+             app == App::RigViewer ||
+                 (is_rig_calibration(app) && !opens_decklink(c, app)));
   path_check(c.source.calibration, "source.calibration",
              is_one_of(app, {App::CalibColor, App::FuseDecklink}));
   path_check(c.output.path, "output.path",
@@ -602,11 +630,12 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   }
   if (is_dataset(app) && c.source.format != "replica")
     fail("source.format", "only replica is supported");
-  // FuseRealsense and FuseDecklink refuse the Orbbec fields below as unused,
-  // so they reach only the driver's and the modes' checks.
+  // FuseRealsense, FuseDecklink and CalibRig's DeckLink pair refuse the Orbbec
+  // fields below as unused, so they reach only the driver's and the modes'
+  // checks. CalibRig's driver is checked above.
   if (takes_camera_modes(app)) {
     const std::string& driver = expected.source.driver;
-    if (c.source.driver != driver)
+    if (app != App::CalibRig && c.source.driver != driver)
       fail("source.driver", "only " + driver + " is supported");
     if (!c.source.serial.empty() && !c.source.sync_config.empty())
       fail("source.serial", "cannot be combined with source.sync_config");
@@ -663,11 +692,11 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         fail(name, "is not used when source.depth is camera");
     }
   }
-  if (app == App::FuseDecklink) {
+  if (opens_decklink(c, app)) {
     // Two cameras, each on its own connector, and the one stereo pair they
     // make, named by the calibration's keys.
     // TODO: a second pair, on the other two connectors, adds two cameras and
-    // a pair once the consumer opens more than one.
+    // a pair once a consumer opens more than one.
     const auto& cameras = c.source.cameras;
     const auto camera = [](std::size_t i) {
       return "source.cameras[" + std::to_string(i) + "]";
@@ -701,9 +730,12 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     }
     if (pair.left == pair.right)
       fail("source.pairs[0].right", "must differ from source.pairs[0].left");
-    // The cameras' 2160p rates; the skew bound is half a frame at the rate.
+    // The cameras' 2160p rates.
     if (c.source.fps != 24 && c.source.fps != 25 && c.source.fps != 30)
       fail("source.fps", "must be 24, 25 or 30");
+  }
+  if (app == App::FuseDecklink) {
+    // The skew bound is half a frame at the rate.
     const std::uint32_t half_frame = half_frame_us(c.source.fps);
     if (c.source.max_pair_skew_us < 1 || c.source.max_pair_skew_us > half_frame)
       fail("source.max_pair_skew_us", "must be in [1, " +
@@ -941,6 +973,22 @@ void resolve(Config& c, App app, std::string_view directory,
   if (app == App::FuseDecklink && !has(state, "source.max_pair_skew_us") &&
       c.source.fps > 0)
     c.source.max_pair_skew_us = half_frame_us(c.source.fps);
+  // CalibRig's DeckLink pair takes FuseDecklink's modes unless given: its
+  // cameras' mode, and FFS's size, which a pair's row error is measured at.
+  if (app == App::CalibRig && opens_decklink(c, app)) {
+    const Source pair = defaults_impl(App::FuseDecklink).source;
+    if (!has(state, "source.color_width") &&
+        !has(state, "source.color_height")) {
+      c.source.color_width = pair.color_width;
+      c.source.color_height = pair.color_height;
+    }
+    if (!has(state, "source.depth_width") &&
+        !has(state, "source.depth_height")) {
+      c.source.depth_width = pair.depth_width;
+      c.source.depth_height = pair.depth_height;
+    }
+    if (!has(state, "source.fps")) c.source.fps = pair.fps;
+  }
   const std::filesystem::path base = directory.empty()
                                          ? std::filesystem::current_path()
                                          : std::filesystem::path(directory);
@@ -1112,7 +1160,8 @@ Result<Config> parse(std::string_view text, Application application,
               {"codec", Operation::Codec},
               {"view", Operation::View},
               {"project", Operation::Project},
-              {"calibrate", Operation::Calibrate}});
+              {"calibrate", Operation::Calibrate},
+              {"calibrate_intrinsics", Operation::CalibrateIntrinsics}});
     if (!json.contains("source") &&
         (is_dataset(application) || takes_camera_modes(application) ||
          is_one_of(application, {App::CodecMesh, App::Scanner, App::Player})))

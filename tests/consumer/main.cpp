@@ -147,6 +147,17 @@ vkc::Status run() {
       rig.source.color_width != 3840 || rig.output.path != "/scenario/sessions")
     return vkc::Status::invalid_argument("calib_rig settings were not read");
   VKC_ASSIGN(
+      const auto lenses,
+      vkc::config::parse(
+          R"({"version":1,"operation":"calibrate_intrinsics","source":{"kind":"live","driver":"decklink","cameras":[{"id":"bm-1","input":"SDI 2"},{"id":"bm-2","input":"SDI 1"}],"pairs":[{"left":"bm-1","right":"bm-2"}],"calibration":"lenses.json"},"output":{"path":"sessions"}})",
+          vkc::config::Application::CalibRig, "/scenario"));
+  if (lenses.operation != vkc::config::Operation::CalibrateIntrinsics ||
+      lenses.source.driver != "decklink" || lenses.source.pairs.size() != 1 ||
+      lenses.source.calibration != "/scenario/lenses.json" ||
+      lenses.source.depth_width != 960 || lenses.source.fps != 30)
+    return vkc::Status::invalid_argument(
+        "calib_rig's DeckLink lens settings were not read");
+  VKC_ASSIGN(
       const auto fit,
       vkc::config::parse(
           R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json","calibration":"rig_calibration.json","color_exposure":200,"color_gain":32},"output":{"path":"results"}})",
