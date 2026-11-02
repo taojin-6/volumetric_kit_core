@@ -38,6 +38,36 @@ DeviceRequirements timeline_requirements() {
 
 }  // namespace
 
+namespace detail {
+
+// What TimelineSemaphore::create and create_exported_timeline share: a
+// timeline semaphore at `initial_value` on `device`, which enabled
+// timelineSemaphore, with `next` -- an export, or nothing -- chained after
+// its type.
+struct TimelineExport {
+  static Result<TimelineSemaphore> make(const Device& device,
+                                        std::uint64_t initial_value,
+                                        const void* next) {
+    VkSemaphoreTypeCreateInfo type{};
+    type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    type.pNext = next;
+    type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    type.initialValue = initial_value;
+    VkSemaphoreCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    info.pNext = &type;
+    VkSemaphore handle = VK_NULL_HANDLE;
+    VKC_VK_TRY(vkCreateSemaphore(device.handle(), &info, nullptr, &handle));
+    TimelineSemaphore semaphore;
+    semaphore.handle_ =
+        UniqueHandle<VkSemaphore, vkDestroySemaphore>(device.handle(), handle);
+    semaphore.counters_ = DeviceAccess::counters(device);
+    return semaphore;
+  }
+};
+
+}  // namespace detail
+
 Result<Fence> Fence::create(VkDevice device, bool signaled) try {
   if (device == VK_NULL_HANDLE) {
     return Status::invalid_argument("Fence::create: device is null");
@@ -103,20 +133,7 @@ Result<TimelineSemaphore> TimelineSemaphore::create(
     const Device& device, std::uint64_t initial_value) try {
   VKC_TRY(device.check_enabled(timeline_requirements())
               .with_context("TimelineSemaphore::create"));
-  VkSemaphoreTypeCreateInfo type{};
-  type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-  type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-  type.initialValue = initial_value;
-  VkSemaphoreCreateInfo info{};
-  info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-  info.pNext = &type;
-  VkSemaphore handle = VK_NULL_HANDLE;
-  VKC_VK_TRY(vkCreateSemaphore(device.handle(), &info, nullptr, &handle));
-  TimelineSemaphore semaphore;
-  semaphore.handle_ =
-      UniqueHandle<VkSemaphore, vkDestroySemaphore>(device.handle(), handle);
-  semaphore.counters_ = detail::DeviceAccess::counters(device);
-  return semaphore;
+  return detail::TimelineExport::make(device, initial_value, nullptr);
 } catch (...) {
   return exception_status("TimelineSemaphore::create",
                           Status::Code::InvalidArgument);
@@ -300,6 +317,64 @@ void note_timeline_signals(const std::vector<TimelinePoint>& signal) noexcept {
   for (const TimelinePoint& point : signal) {
     detail::TimelineSubmits::raise(*point.semaphore, point.value);
   }
+}
+
+Result<ExportedTimeline> create_exported_timeline(
+    const Device& device, std::uint64_t initial_value) try {
+  constexpr const char* kCaller = "create_exported_timeline";
+  // A moved-from device first, as TimelineSemaphore::create refuses it, then
+  // the feature.
+  VKC_TRY(device.check_enabled(timeline_requirements()).with_context(kCaller));
+  if (!device.exports_semaphores()) {
+    return Status::unsupported(
+        "create_exported_timeline: the device does not export semaphores "
+        "(VK_KHR_external_semaphore_fd)");
+  }
+  constexpr VkExternalSemaphoreHandleTypeFlagBits kHandle =
+      VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+  // The extension alone does not promise an exportable timeline: the query
+  // names the type, and the semaphore is made only with a handle type the
+  // query calls compatible
+  // (VUID-VkExportSemaphoreCreateInfo-handleTypes-01124).
+  VkSemaphoreTypeCreateInfo timeline{};
+  timeline.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+  timeline.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+  // Zeroed, then set: handleType has no zero enumerator.
+  // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+  VkPhysicalDeviceExternalSemaphoreInfo query{};
+  query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
+  query.pNext = &timeline;
+  query.handleType = kHandle;
+  VkExternalSemaphoreProperties can{};
+  can.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES;
+  vkGetPhysicalDeviceExternalSemaphoreProperties(device.physical_device(),
+                                                 &query, &can);
+  if ((can.externalSemaphoreFeatures &
+       VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) == 0 ||
+      (can.compatibleHandleTypes & kHandle) == 0) {
+    return Status::unsupported(
+        "create_exported_timeline: the device cannot export a timeline "
+        "semaphore as an opaque file descriptor");
+  }
+
+  VkExportSemaphoreCreateInfo exported{};
+  exported.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+  exported.handleTypes = kHandle;
+  VKC_ASSIGN(TimelineSemaphore semaphore,
+             detail::TimelineExport::make(device, initial_value, &exported));
+  int fd = -1;
+  const VkResult got =
+      detail::DeviceAccess::semaphore_fd(device, semaphore.handle(), &fd);
+  if (got != VK_SUCCESS) return vk_error(got, "vkGetSemaphoreFdKHR");
+
+  ExportedTimeline out;
+  out.semaphore = std::move(semaphore);
+  out.fd = UniqueFd(fd);
+  return out;
+} catch (...) {
+  return exception_status("create_exported_timeline",
+                          Status::Code::InvalidArgument);
 }
 
 }  // namespace volumetric_kit::core

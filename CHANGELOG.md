@@ -7,6 +7,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-11-02
+
+### Added
+
+- `create_exported_timeline` and `ExportedTimeline` (`vulkan/sync.hpp`): a
+  timeline semaphore that another API on the same GPU imports and signals,
+  and the opaque file descriptor (`VK_KHR_external_semaphore_fd`) that hands
+  it across, owned as `ExportedBuffer::fd` is. CUDA imports it as
+  `CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD` and sets a value
+  once its writes are done; a batch that reads them waits for that value on
+  the device (`CommandBatch::submit_async`), so neither host waits. Only the
+  importer sets values; the host sets one only to release batches after the
+  importer failed with a signal queued, once it sets nothing more. A
+  device without the extension gives `Unsupported`, naming it; so does one
+  without `timelineSemaphore`, or whose driver exports no such timeline.
+- `Device::exports_semaphores`: whether the device enabled
+  `VK_KHR_external_semaphore_fd`, as `create_exported_timeline` needs.
+- `TimelineSemaphore` in `vulkan/fwd.hpp`, for a header that holds one by
+  pointer.
+
+### Changed
+
+- `create_exported_buffer`'s and `create_exported_image`'s docs: the batch
+  that reads the importer's writes either waits for its value on an
+  exported timeline or is submitted after the host waits for the importer.
+  The TODO for external semaphores is gone.
+
+### Migration
+
+- Nothing to change beyond the pin. To export a timeline, add
+  `VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME` to the device's
+  `optional_extensions`, beside `VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME`.
+
 ## [0.40.0] - 2026-11-01
 
 ### Added

@@ -171,17 +171,17 @@ VKC_VULKAN_API std::optional<std::uint32_t> find_memory_type(
 /// Host bookkeeping failures return `OutOfMemory` and free any partial
 /// buffer and allocation, leaving @p allocator usable for retry.
 ///
-/// The buffer crosses between the APIs twice a frame, and the host orders
-/// both crossings. The importer's writes must be done before the batch that
-/// reads them is submitted -- for CUDA, a `cudaStreamSynchronize` of the
-/// stream that wrote -- as the batch waits on no semaphore. The batch takes
-/// the buffer over from `VK_QUEUE_FAMILY_EXTERNAL` before its kernels read
-/// it and hands it back after them (@ref CommandBatch::acquire,
-/// @ref CommandBatch::release), and the importer may write again once
-/// @ref CommandBatch::submit has returned.
-///
-/// TODO: external semaphores (`VK_KHR_external_semaphore_fd`), so the two
-/// APIs are ordered on the GPU rather than by the host waiting on each.
+/// The buffer crosses between the APIs twice a frame. The importer's writes
+/// must be done before the batch that reads them runs. Either the batch
+/// waits for a value the importer sets on an exported timeline
+/// (@ref create_exported_timeline), so the two are ordered on the GPU, or
+/// the host waits for the importer before it submits; for CUDA that is a
+/// `cudaStreamSynchronize` of the stream that wrote. The batch takes the
+/// buffer over from `VK_QUEUE_FAMILY_EXTERNAL` before its kernels read it
+/// and hands it back after them (@ref CommandBatch::acquire,
+/// @ref CommandBatch::release). The importer may write again once
+/// @ref CommandBatch::submit has returned, or, for a batch submitted with
+/// @ref CommandBatch::submit_async, once its work has finished.
 ///
 /// @code
 /// VKC_ASSIGN(ExportedBuffer frame,

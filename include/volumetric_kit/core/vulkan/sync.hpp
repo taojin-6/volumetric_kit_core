@@ -4,7 +4,8 @@
 #pragma once
 
 /// @file sync.hpp
-/// @brief Fences, binary semaphores and timeline semaphores.
+/// @brief Fences, binary semaphores and timeline semaphores, and a timeline
+///        another API on the same GPU imports and signals.
 
 #include <atomic>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/unique_fd.hpp"  // IWYU pragma: export
 #include "volumetric_kit/core/vulkan/export.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -22,6 +24,7 @@ class Device;
 
 namespace detail {
 struct TimelineSubmits;     // the submits' record of the values they set
+struct TimelineExport;      // makes a timeline, exportable or not (sync.cpp)
 struct DeviceCounterState;  // a Device's counters (device.hpp)
 }  // namespace detail
 
@@ -190,6 +193,7 @@ class VKC_VULKAN_API TimelineSemaphore {
 
  private:
   friend struct detail::TimelineSubmits;
+  friend struct detail::TimelineExport;
 
   UniqueHandle<VkSemaphore, vkDestroySemaphore> handle_;
   // The highest value a submit that reached a queue sets, as
@@ -290,5 +294,81 @@ VKC_VULKAN_API Status check_timeline_points(
 ///                @ref check_timeline_points accepted.
 VKC_VULKAN_API void note_timeline_signals(
     const std::vector<TimelinePoint>& signal) noexcept;
+
+/// @brief A timeline semaphore that another API on the same GPU imports and
+///        signals, and the file descriptor that hands it across. CUDA, for
+///        example, signals it once a hardware decoder's picture is written.
+///
+/// The importer signals a value once its writes are done. A batch that
+/// reads them waits for that value on the device, as a @ref TimelinePoint
+/// among @ref CommandBatch::submit_async's waits, so neither host waits.
+/// Only the importer sets values: no submission here may set one, since
+/// @ref check_timeline_points does not know the importer's values. A
+/// submission here only waits for them (@ref TimelineWaits::Any). The host
+/// reads and waits on the counter as on any timeline
+/// (@ref TimelineSemaphore::value, @ref TimelineSemaphore::wait).
+///
+/// Queue the importer's signal before submitting the batch that waits for
+/// it, as @ref CommandBatch::submit_async asks of any value: until the value
+/// is set, the batch holds every later wait on the queue. A signal that
+/// fails to queue then leaves no batch waiting for it. A value that is never
+/// set holds its batch for good, and destroying its @ref PendingBatch waits
+/// for it with no limit. That happens only when the importer fails after
+/// queuing a signal a batch here waits for (for CUDA, a stream error). Then
+/// first make sure the importer sets nothing more (for CUDA, synchronize its
+/// stream: it returns once the queued work has run or failed). Only then, if
+/// the counter is below the highest value any batch here waits for, set
+/// that value from the host (@ref TimelineSemaphore::signal). Set sooner, it
+/// could release a batch before the importer's writes are done, and the
+/// importer's later signal would not advance the counter, which is
+/// undefined.
+///
+/// @code
+/// VKC_ASSIGN(ExportedTimeline written, create_exported_timeline(device));
+/// CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC handle{};
+/// handle.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD;
+/// handle.handle.fd = written.fd.get();
+/// if (cuImportExternalSemaphore(&semaphore, &handle) == CUDA_SUCCESS) {
+///   written.fd.release();  // CUDA owns it now; a failed import leaves it
+/// }                        // here, closed with the struct
+/// // ... picture n: CUDA writes it, then cuSignalExternalSemaphoresAsync
+/// // sets n on its stream ...
+/// VKC_ASSIGN(PendingBatch read,
+///            batch.submit_async({{&written.semaphore, n}}, {}));
+/// @endcode
+struct ExportedTimeline {
+  /// A timeline semaphore as @ref TimelineSemaphore::create makes one, its
+  /// payload exportable as an opaque file descriptor. It must outlive every
+  /// submission here that names it. The importer's import shares its
+  /// payload, which lives until both it and the import
+  /// (`cuDestroyExternalSemaphore`) are gone, in either order.
+  TimelineSemaphore semaphore;
+  /// An opaque file descriptor for the payload
+  /// (`VK_KHR_external_semaphore_fd`). It is owned as
+  /// @ref ExportedBuffer::fd is: released only to an import that takes it.
+  UniqueFd fd;
+};
+
+/// @brief Make a timeline semaphore that another API on the same GPU
+///        imports.
+///
+/// It takes the @ref Device, as @ref TimelineSemaphore::create does, to
+/// check that the device enabled `timelineSemaphore` and that it exports
+/// semaphores (@ref Device::exports_semaphores). It also asks the physical
+/// device whether a timeline semaphore exports as an opaque descriptor.
+/// Safe from several threads at once.
+/// @param device         A device that exports semaphores: one created or
+///                       adopted with `VK_KHR_external_semaphore_fd` among
+///                       its extensions or optional extensions.
+/// @param initial_value  The counter's starting value.
+/// @return The semaphore and its descriptor. Errors:
+///         - @ref Status::Code::InvalidArgument for a moved-from @p device;
+///         - @ref Status::Code::Unsupported, with a message naming the cause,
+///           where @p device did not enable `timelineSemaphore`, does not
+///           export semaphores, or cannot export a timeline one as an opaque
+///           descriptor;
+///         - a backend @ref Status.
+VKC_VULKAN_API Result<ExportedTimeline> create_exported_timeline(
+    const Device& device, std::uint64_t initial_value = 0);
 
 }  // namespace volumetric_kit::core
