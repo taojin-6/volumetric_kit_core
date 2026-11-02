@@ -2448,12 +2448,23 @@ TEST(Config, MobileSessionIsAFileBesideTheRig) {
   EXPECT_EQ(phone_of(*given).path, "/data/0b.vrst");
   EXPECT_EQ(phone_of(*given).registration,
             "/scenario/sessions/phone/registration.json");
-  // Any value without a scheme is a file, a colon or not.
-  const auto colon = scenario(phone_scenario(R"("mobile":"lab-box:7101")"),
-                              App::FuseOrbbec, "/scenario");
-  ASSERT_TRUE(colon) << colon.status().message();
-  EXPECT_EQ(phone_of(*colon).path, "/scenario/lab-box:7101");
-  EXPECT_TRUE(phone_of(*colon).host.empty());
+  // A value without a scheme is a file, a colon or not, unless it reads as an
+  // address: `tcp:` short of both slashes, or only digits, dots and a colon.
+  for (const char* name : {"lab-box:7101", "1102.1", "runs/tcp:0b.vrst"}) {
+    const auto file =
+        scenario(phone_scenario(std::string(R"("mobile":")") + name + "\""),
+                 App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(file) << name << ": " << file.status().message();
+    EXPECT_EQ(phone_of(*file).path, std::string("/scenario/") + name);
+    EXPECT_TRUE(phone_of(*file).host.empty());
+  }
+  for (const char* address : {"10.8.0.1:7101", "10.8.0.1:", "tcp:",
+                              "tcp:/10.8.0.1:7101", "tcp:10.8.0.1:7101"}) {
+    rejected(phone_scenario(std::string(R"("mobile":")") + address + "\""),
+             App::FuseOrbbec,
+             "source.mobile: reads as an address without tcp://; a live "
+             "session is tcp://ADDRESS:PORT");
+  }
 
   // Omitted is none; the key is never empty, as source.audio is not.
   rejected(phone_scenario(R"("mobile":"")"), App::FuseOrbbec,
@@ -2484,7 +2495,8 @@ TEST(Config, MobileSessionIsAFileBesideTheRig) {
 }
 
 TEST(Config, MobileSessionListensOnOneNumericAddress) {
-  // One of the host's own addresses and a port, with the registration named.
+  // A numeric address and a port, with the registration named. Core checks
+  // the form only; the listen checks the address is this host's.
   const auto live = scenario(
       phone_scenario(
           R"("mobile":"tcp://10.8.0.1:7101","mobile_registration":"sessions/phone/registration.json")"),

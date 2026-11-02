@@ -264,11 +264,13 @@ unknown extension object.
   `source.mobile_registration`, where the session's tracked world sits in
   the rig's. Omitted, the default, there is no phone; the value is never
   empty. A value without `://` is a recorded session's file, config-relative,
-  whose registration defaults to `<file>.registration.json` beside it. A live
-  session is `tcp://ADDRESS:PORT`, which the consumer listens on for the
-  phone to dial in to: the address is one of the host's own IPv4 addresses,
-  four decimal parts from 0 to 255, and the port is from 1 to 65535, each
-  without a leading zero and with nothing after the port. The wildcard
+  whose registration defaults to `<file>.registration.json` beside it; one
+  that reads as an address, starting `tcp:` or only digits, dots and a
+  colon, is refused. A live session is `tcp://ADDRESS:PORT`, which the
+  consumer listens on for the phone to dial in to: the address is numeric
+  IPv4, four decimal parts from 0 to 255, and the port is from 1 to 65535,
+  each without a leading zero and with nothing after the port. Core does
+  not check that the address is the host's own; the listen does. The wildcard
   `0.0.0.0`, a name, IPv6 and any other scheme are refused, and so is
   `output.serve`'s port, which binds every interface of the same host. A
   live session requires `mobile_registration`. `source.mobile` requires

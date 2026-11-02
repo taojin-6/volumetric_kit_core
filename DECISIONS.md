@@ -1816,12 +1816,15 @@ do not see, as `audio` records beside them.
   session's file or a live session's `tcp://ADDRESS:PORT`, so a scenario
   switches between the two by one value. Core parses the address into
   `MobileSession::host` and `port`, the pair Player's `source.host` and
-  `source.port` already are, so no consumer parses it again.
-- **The consumer listens; the phone dials in.** The address is one of the
-  lab host's own numeric IPv4 addresses, the one the phone is told to dial.
-  The wildcard is refused, so the host binds only the network the phone is
-  on, and so is a name, which core does not resolve, and `output.serve`'s
-  port, which binds every interface of the same host.
+  `source.port` already are, so no consumer parses it again. A value that
+  reads as an address with its scheme mistyped or left out is refused, not
+  read as a file that only fails when the consumer opens it.
+- **The consumer listens; the phone dials in.** The address is the lab
+  host's own numeric IPv4 address that the phone is told to dial. Core checks
+  its form; the listen checks it is this host's. The wildcard is refused, so
+  the host binds only the network the phone is on, and so is a name, which
+  core does not resolve, and `output.serve`'s port, which binds every
+  interface of the same host.
 - **FuseOrbbec only.** The phone registers against the lab's real-time
   model, the Orbbec rig's, whose world `source.calibration` holds, so the key
   requires it. FuseRealsense takes no rig file, so it has no world to place

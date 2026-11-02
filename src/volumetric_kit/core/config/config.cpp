@@ -583,9 +583,10 @@ std::uint32_t mobile_decimal(std::string_view text, std::uint32_t min,
   if (value < min) fail(kField, what + range);
   return value;
 }
-// A live phone session's `tcp://ADDRESS:PORT`: one of the lab host's own IPv4
-// addresses, in dotted decimal, which the consumer listens on, and a port.
-// Never the wildcard, a name, which core does not resolve, or IPv6.
+// A live phone session's `tcp://ADDRESS:PORT`: a numeric IPv4 address, in
+// dotted decimal, which the consumer listens on, and a port. Never the
+// wildcard, a name, which core does not resolve, or IPv6. Whether the address
+// is this host's own, the listen checks.
 std::pair<std::string, std::uint16_t> mobile_address(std::string_view value) {
   constexpr std::string_view kField = "source.mobile";
   constexpr std::string_view kScheme = "tcp://";
@@ -623,6 +624,14 @@ std::pair<std::string, std::uint16_t> mobile_address(std::string_view value) {
   return {std::string(address), static_cast<std::uint16_t>(mobile_decimal(
                                     port, 1, 65535, "the port"))};
 }
+// A source.mobile value without `://` that reads as a live address, its
+// scheme mistyped (`tcp:` short of both slashes) or left out (only digits,
+// dots and a colon). No session's file is named so.
+bool reads_as_address(std::string_view value) {
+  return value.rfind("tcp:", 0) == 0 ||
+         (value.find(':') != std::string_view::npos &&
+          value.find_first_not_of("0123456789.:") == std::string_view::npos);
+}
 
 void validate_impl(const Config& c, App app, const ParseState& state) {
   if (c.version != 1) fail("version", "only version 1 is supported");
@@ -649,8 +658,8 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         fail(field, "is not used by source.driver " + c.source.driver);
     }
   }
-  // The phone fills the fused model, so a stream run, which fuses nothing,
-  // refuses it.
+  // A stream run fuses nothing, so it refuses these; the phone too, since it
+  // fills the fused model.
   if (c.operation == Operation::Stream) {
     for (const char* key :
          {"fusion", "codec", "output", "source.audio", "source.mobile"})
@@ -1109,11 +1118,15 @@ void resolve(Config& c, App app, std::string_view directory,
   resolve_path(c.diagnostics.dump_directory, base);
   resolve_path(c.diagnostics.track_log, base);
   // The phone: a value without a scheme is a session's file, config-relative,
-  // with its registration beside it unless given; tcp:// is a live session's
-  // address, never a path.
+  // with its registration beside it unless given, unless it reads as an
+  // address; tcp:// is a live session's address, never a path.
   if (!state.mobile.empty()) {
     MobileSession phone;
     if (state.mobile.find("://") == std::string::npos) {
+      if (reads_as_address(state.mobile))
+        fail("source.mobile",
+             "reads as an address without tcp://; a live session is "
+             "tcp://ADDRESS:PORT");
       phone.path = state.mobile;
       resolve_path(phone.path, base);
     } else {

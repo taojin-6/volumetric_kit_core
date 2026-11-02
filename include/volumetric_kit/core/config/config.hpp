@@ -93,9 +93,9 @@ struct StereoPairConfig {
 struct MobileSession {
   /// The recorded session's file, config-relative; empty for a live one.
   std::string path;
-  /// A live session: one of the lab host's own IPv4 addresses, in dotted
-  /// decimal, which the consumer listens on for one phone at a time (grid's
-  /// networking::Listener). Never a wildcard or a name. Empty for a file.
+  /// A live session: a numeric IPv4 address, in dotted decimal, which the
+  /// consumer listens on for one phone at a time; the listen checks it is
+  /// this host's. Never the wildcard or a name. Empty for a file.
   std::string host;
   /// With `host`: the port it listens on, 1 to 65535. It may not be
   /// `output.serve`'s port, which binds every interface of the same host.
@@ -131,8 +131,9 @@ struct Source {
   /// none; `default` is the system's default input; any other value is an
   /// input device's name as the OS lists it.
   std::string audio;
-  /// FuseOrbbec's fuse run: the phone; empty, the default, for none. It
-  /// requires `calibration`, the world the registration places the phone in.
+  /// FuseOrbbec's fuse run: the phone; unset (`std::nullopt`), the default,
+  /// for none. It requires `calibration`, the world the registration places
+  /// the phone in.
   std::optional<MobileSession> mobile;
   /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG only,
   /// CalibColor's H.265 only. FuseRealsense takes the sizes and rate, not
