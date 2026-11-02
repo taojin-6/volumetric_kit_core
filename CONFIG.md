@@ -280,8 +280,8 @@ unknown extension object.
   - `decklink`: one DeckLink pair, with FuseDecklink's `cameras`, `pairs` and
     modes (above). Its depth size is FFS's, which the pair's rectified row
     error is measured at. It refuses `sync_config` and `color_codec`, FFS's
-    model and plans, and `max_pair_skew_us`, since a capture waits for a
-    still board.
+    model and plans, and `max_pair_skew_us` (a capture waits for a still
+    board).
 
   `calibration` (core 0.40.0), optional with either driver, names the rig
   file a session starts from. The required `output.path` is the directory

@@ -36,8 +36,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 - Nothing to change beyond the pin; existing scenarios load unchanged.
   `Operation` gains a value, which a `switch` over it without a default must
-  handle. A CalibRig consumer refuses what it does not do yet: `driver`
-  `decklink`, `operation` `calibrate_intrinsics` or a `calibration` file.
+  handle. A CalibRig consumer must refuse `driver` `decklink`, `operation`
+  `calibrate_intrinsics` and a `calibration` file until it runs them.
 
 ## [0.39.0] - 2026-11-01
 

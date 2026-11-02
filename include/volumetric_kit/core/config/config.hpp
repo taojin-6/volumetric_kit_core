@@ -113,7 +113,7 @@ struct Source {
   /// rectified size the model runs at, 960x544. FuseDecklink takes them too
   /// and resolves the cameras' mode to 3840x2160 at 30 fps, its rate 24, 25
   /// or 30 only, and FFS's size to 960x544; so does CalibRig with driver
-  /// `decklink`.
+  /// `decklink`, which leaves the codec, the Orbbec rig's only, unused.
   ColorCodec color_codec = ColorCodec::Hevc;
   std::uint32_t color_width = 3840;
   std::uint32_t color_height = 2160;
