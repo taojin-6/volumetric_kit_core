@@ -1231,7 +1231,7 @@ TEST_F(TimelineExportTest, TheDescriptorImportsTheSameTimeline) {
 
 // Sets a timeline from the host on scope exit, unless it is there already,
 // so a batch held for an importer's value never outlives a failed assertion:
-// what ExportedTimeline asks of a caller whose importer cannot set it.
+// what ExportedTimeline asks of a caller whose importer sets nothing more.
 // Declared after the pending batch it releases, so it runs first.
 class SetOnExit {
  public:

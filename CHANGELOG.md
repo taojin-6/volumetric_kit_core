@@ -18,7 +18,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD` and sets a value
   once its writes are done; a batch that reads them waits for that value on
   the device (`CommandBatch::submit_async`), so neither host waits. Only the
-  importer, or the host when the importer's signal fails, sets values. A
+  importer sets values; the host sets one only to release batches after the
+  importer failed with a signal queued, once it sets nothing more. A
   device without the extension gives `Unsupported`, naming it; so does one
   without `timelineSemaphore`, or whose driver exports no such timeline.
 - `Device::exports_semaphores`: whether the device enabled

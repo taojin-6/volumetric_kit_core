@@ -242,8 +242,7 @@ VKC_VULKAN_API Result<ExportedBuffer> create_exported_buffer(
 ///                       VK_IMAGE_LAYOUT_GENERAL));
 /// VKC_TRY(first.submit());
 /// luma.image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
-/// // ... each picture: CUDA writes it, and its stream is synchronized, or
-/// // signals an exported timeline the batch waits for ...
+/// // ... each picture: CUDA writes it, and its stream is synchronized ...
 /// CommandBatch batch(device, allocator);
 /// VKC_TRY(batch.acquire(luma.image, VK_QUEUE_FAMILY_EXTERNAL,
 ///                       VK_IMAGE_LAYOUT_GENERAL));

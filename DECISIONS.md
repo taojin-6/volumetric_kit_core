@@ -1823,10 +1823,15 @@ stream and the batch waits for it on the device, and neither host waits.
 - **Only the importer sets values.** `check_timeline_points` knows the
   values the core's submits set, not the importer's, so it could not keep a
   value set here from failing to advance the counter. Submissions here only
-  wait (`TimelineWaits::Any`). The host sets a value only when the importer
-  was due to set it and cannot: a batch held for a value never set is held
-  for good, and destroying its `PendingBatch` waits with no limit ("Submits
-  that do not wait", above).
+  wait (`TimelineWaits::Any`). The importer's signal is queued before the
+  batch that waits for it, so a signal that fails to queue leaves nothing
+  waiting. A batch held for a value never set is held for good, and
+  destroying its `PendingBatch` waits with no limit ("Submits that do not
+  wait", above): that happens only when the importer fails after queuing a
+  signal a batch waits for. The host then sets the highest value waited
+  for, once the importer sets nothing more (CUDA: its stream synchronized).
+  Set sooner, it could release a batch before the importer's writes are
+  done, and the importer's later signal would not advance the counter.
 - **Checked as the device and driver say.** The device must have enabled
   `timelineSemaphore` and `VK_KHR_external_semaphore_fd`
   (`Device::exports_semaphores`), and the physical device must export a

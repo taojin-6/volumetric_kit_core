@@ -24,7 +24,7 @@ class Device;
 
 namespace detail {
 struct TimelineSubmits;     // the submits' record of the values they set
-struct TimelineExport;      // create_exported_timeline's reach into a new one
+struct TimelineExport;      // makes a timeline, exportable or not (sync.cpp)
 struct DeviceCounterState;  // a Device's counters (device.hpp)
 }  // namespace detail
 
@@ -302,19 +302,26 @@ VKC_VULKAN_API void note_timeline_signals(
 /// The importer signals a value once its writes are done. A batch that
 /// reads them waits for that value on the device, as a @ref TimelinePoint
 /// among @ref CommandBatch::submit_async's waits, so neither host waits.
-/// Only the importer sets values, and the host when the importer cannot: no
-/// submission here may set one, since @ref check_timeline_points does not
-/// know the importer's values. A submission here only waits for them
-/// (@ref TimelineWaits::Any). The host reads and waits on the counter as on
-/// any timeline (@ref TimelineSemaphore::value, @ref TimelineSemaphore::wait).
+/// Only the importer sets values: no submission here may set one, since
+/// @ref check_timeline_points does not know the importer's values. A
+/// submission here only waits for them (@ref TimelineWaits::Any). The host
+/// reads and waits on the counter as on any timeline
+/// (@ref TimelineSemaphore::value, @ref TimelineSemaphore::wait).
 ///
 /// Queue the importer's signal before submitting the batch that waits for
 /// it, as @ref CommandBatch::submit_async asks of any value: until the value
-/// is set, the batch holds every later wait on the queue. A value that is
-/// never set holds the batch for good, and destroying its @ref PendingBatch
-/// waits for it with no limit. So when the importer cannot set a value it
-/// was due to set, because its signal failed, set it from the host
-/// (@ref TimelineSemaphore::signal) before giving up.
+/// is set, the batch holds every later wait on the queue. A signal that
+/// fails to queue then leaves no batch waiting for it. A value that is never
+/// set holds its batch for good, and destroying its @ref PendingBatch waits
+/// for it with no limit. That happens only when the importer fails after
+/// queuing a signal a batch here waits for (for CUDA, a stream error). Then
+/// first make sure the importer sets nothing more (for CUDA, synchronize its
+/// stream: it returns once the queued work has run or failed). Only then, if
+/// the counter is below the highest value any batch here waits for, set
+/// that value from the host (@ref TimelineSemaphore::signal). Set sooner, it
+/// could release a batch before the importer's writes are done, and the
+/// importer's later signal would not advance the counter, which is
+/// undefined.
 ///
 /// @code
 /// VKC_ASSIGN(ExportedTimeline written, create_exported_timeline(device));
