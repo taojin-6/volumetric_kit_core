@@ -19,11 +19,12 @@
 /// @endcode
 
 namespace volumetric_kit::core {
-class Allocator;      // allocator.hpp
-class Buffer;         // buffer.hpp
-class CommandBatch;   // command_batch.hpp
-class Device;         // device.hpp
-class GpuStageScope;  // gpu_timer.hpp
-class Image;          // image.hpp
-class StorageInput;   // compute_util.hpp
+class Allocator;          // allocator.hpp
+class Buffer;             // buffer.hpp
+class CommandBatch;       // command_batch.hpp
+class Device;             // device.hpp
+class GpuStageScope;      // gpu_timer.hpp
+class Image;              // image.hpp
+class StorageInput;       // compute_util.hpp
+class TimelineSemaphore;  // sync.hpp
 }  // namespace volumetric_kit::core

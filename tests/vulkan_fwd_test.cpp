@@ -21,6 +21,7 @@ using Device = volumetric_kit::core::Device;
 using GpuStageScope = volumetric_kit::core::GpuStageScope;
 using Image = volumetric_kit::core::Image;
 using StorageInput = volumetric_kit::core::StorageInput;
+using TimelineSemaphore = volumetric_kit::core::TimelineSemaphore;
 }  // namespace fwd
 
 #include <gtest/gtest.h>
@@ -32,6 +33,7 @@ using StorageInput = volumetric_kit::core::StorageInput;
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 
 namespace {
 
@@ -47,6 +49,7 @@ TEST(VulkanFwd, DeclaresTheClassesTheFullHeadersDefine) {
   static_assert(kComplete<fwd::GpuStageScope>);
   static_assert(kComplete<fwd::Image>);
   static_assert(kComplete<fwd::StorageInput>);
+  static_assert(kComplete<fwd::TimelineSemaphore>);
 }
 
 }  // namespace

@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.41.0 CONFIG)
+vkc_require_core(0.42.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -205,7 +205,7 @@ unknown extension object.
   require a nonempty `path`. `path`, `csv` and `stream` must differ once resolved, and none may
   be `source.sync_config` or `source.calibration` (core 0.13.0),
   `source.ffs_model` (core 0.33.0), or the phone's session file or
-  registration (core 0.41.0).
+  registration (core 0.42.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/FuseDecklink/CalibColor
   limits are positive; FuseOrbbec's counts camera frames, each set adding one
@@ -259,7 +259,7 @@ unknown extension object.
   FuseDecklink ask only for the stream (FuseRealsense from core 0.37.0, when
   it took the two outputs; 0.34.0 refused its audio).
   Other profiles reject it.
-- `FuseOrbbec` accepts `source.mobile` (core 0.41.0), a phone's camera
+- `FuseOrbbec` accepts `source.mobile` (core 0.42.0), a phone's camera
   session whose frames fill what the rig's cameras do not see, and
   `source.mobile_registration`, where the session's tracked world sits in
   the rig's. Omitted, the default, there is no phone; the value is never

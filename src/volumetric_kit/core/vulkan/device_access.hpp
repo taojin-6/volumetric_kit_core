@@ -98,6 +98,19 @@ struct DeviceAccess {
       device.counters_->barriers.fetch_add(barriers, std::memory_order_relaxed);
     }
   }
+  // vkGetSemaphoreFdKHR: an opaque file descriptor for `semaphore`'s payload,
+  // which the caller then owns. VK_ERROR_EXTENSION_NOT_PRESENT without
+  // Device::exports_semaphores.
+  static VkResult semaphore_fd(const Device& device, VkSemaphore semaphore,
+                               int* fd) noexcept {
+    if (device.state_.get_semaphore_fd == nullptr) {
+      return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+    const VkSemaphoreGetFdInfoKHR info{
+        VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, nullptr, semaphore,
+        VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT};
+    return device.state_.get_semaphore_fd(device.state_.device, &info, fd);
+  }
 };
 
 // Reports `ns` blocked: to the scopes open on this thread, and to `counters`

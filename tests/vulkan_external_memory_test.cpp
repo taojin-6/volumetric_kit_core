@@ -9,16 +9,24 @@
 // from, outside Vulkan. Export needs VK_KHR_external_memory_fd; where the
 // device lacks it, the refusal is what is checked. create_imported_host_buffer
 // likewise with VK_EXT_external_memory_host: pages written by the host, as a
-// capture card's DMA would, read by a copy on the device.
+// capture card's DMA would, read by a copy on the device. And
+// create_exported_timeline with VK_KHR_external_semaphore_fd: its descriptor
+// imported into a second device, whose host signals stand in for CUDA's, and
+// a batch here held on the device until the importer sets its value.
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
+#include <fcntl.h>
+
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <ios>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -26,6 +34,7 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
+#include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/testing/write_image.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -35,7 +44,9 @@
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/format.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 
 namespace volumetric_kit::core {
 namespace {
@@ -974,6 +985,331 @@ TEST_F(HostImportTest, RefusesNoBytesAndAnotherDevicesAllocator) {
   EXPECT_EQ(
       create_imported_host_buffer(device(), *foreign, 4096).status().domain(),
       Status::Code::InvalidArgument);
+}
+
+// --- a timeline another API imports ------------------------------------------
+
+// What `physical` can do with a timeline semaphore as an opaque descriptor:
+// export it, import it; nothing where the handle type is not compatible.
+VkExternalSemaphoreFeatureFlags opaque_fd_timeline(VkPhysicalDevice physical) {
+  VkSemaphoreTypeCreateInfo timeline{};
+  timeline.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+  timeline.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+  // Zeroed, then set: handleType has no zero enumerator.
+  // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+  VkPhysicalDeviceExternalSemaphoreInfo query{};
+  query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
+  query.pNext = &timeline;
+  query.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+  VkExternalSemaphoreProperties can{};
+  can.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES;
+  vkGetPhysicalDeviceExternalSemaphoreProperties(physical, &query, &can);
+  if ((can.compatibleHandleTypes &
+       VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT) == 0) {
+    return 0;
+  }
+  return can.externalSemaphoreFeatures;
+}
+
+// Longer than any of these waits should take, so a broken one fails the test
+// rather than hanging it.
+constexpr std::uint64_t kLongWaitNs = 10'000'000'000;
+
+using Timeline = UniqueHandle<VkSemaphore, vkDestroySemaphore>;
+
+// The counter of a semaphore on `device`, or UINT64_MAX where it cannot be
+// read: the importer's side, which has no TimelineSemaphore.
+std::uint64_t counter(VkDevice device, VkSemaphore semaphore) {
+  std::uint64_t value = 0;
+  return vkGetSemaphoreCounterValue(device, semaphore, &value) == VK_SUCCESS
+             ? value
+             : UINT64_MAX;
+}
+
+// A host signal of `value` on a semaphore on `device`.
+VkResult host_signal(VkDevice device, VkSemaphore semaphore,
+                     std::uint64_t value) {
+  VkSemaphoreSignalInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+  info.semaphore = semaphore;
+  info.value = value;
+  return vkSignalSemaphore(device, &info);
+}
+
+// A device asked for semaphore export where the driver offers it. Its
+// refusals run on every device; the tests that export skip where it cannot.
+class TimelineExportTest : public test::VulkanDeviceTest {
+ protected:
+  DeviceRequirements requirements() const override {
+    DeviceRequirements r;
+    r.optional_extensions = {VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME};
+    return r;
+  }
+
+  // Whether the device cannot export a timeline semaphore as an opaque
+  // descriptor: without the extension, or with it where the driver exports
+  // no such semaphore. Then the call must refuse it, not fail.
+  bool cannot_export() {
+    if (device().exports_semaphores() &&
+        (opaque_fd_timeline(physical().handle()) &
+         VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) != 0) {
+      return false;
+    }
+    EXPECT_EQ(create_exported_timeline(device()).status().domain(),
+              Status::Code::Unsupported);
+    return true;
+  }
+
+  // For a host signal of the exported timeline after the host read it. The
+  // validation layer 1.3.275 (Ubuntu 24.04's) records a value read from an
+  // exported timeline as a signal still pending, and reports the next host
+  // signal as not below it (VUID-VkSemaphoreSignalInfo-value-03259), though
+  // nothing is pending; 1.4.341 reports nothing. On an older layer the test's
+  // errors from here on are counted, so everything before stays validated
+  // there, and all of it on a newer layer.
+  void allow_the_old_layers_pending_read() {
+    constexpr std::uint32_t kClean = VK_MAKE_API_VERSION(0, 1, 4, 341);
+    const std::uint32_t layer = test::validation_layer_version();
+    if (layer != 0 && layer < kClean) allow_validation_errors();
+  }
+
+  // Whether the device can import its own timeline's descriptor as well.
+  bool cannot_import() const {
+    return (opaque_fd_timeline(physical().handle()) &
+            VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) == 0;
+  }
+
+  // The importer: `exported`'s descriptor imported for good into a timeline
+  // semaphore made on `other`, as CUDA imports one. A successful import owns
+  // the descriptor; a failed one leaves it with `exported`, which closes it.
+  static Result<Timeline> import_timeline(const Device& other,
+                                          ExportedTimeline& exported) {
+    const auto import = reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
+        vkGetDeviceProcAddr(other.handle(), "vkImportSemaphoreFdKHR"));
+    if (import == nullptr) {
+      return Status::unsupported("no vkImportSemaphoreFdKHR");
+    }
+    // Created as the export's was, a timeline
+    // (VUID-VkImportSemaphoreFdInfoKHR-handleType-03264). Its own payload,
+    // value 0, goes with the import.
+    VkSemaphoreTypeCreateInfo type{};
+    type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    VkSemaphoreCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    info.pNext = &type;
+    VkSemaphore raw = VK_NULL_HANDLE;
+    if (vkCreateSemaphore(other.handle(), &info, nullptr, &raw) != VK_SUCCESS) {
+      return Status::unsupported("vkCreateSemaphore on the importer failed");
+    }
+    Timeline imported(other.handle(), raw);
+    // Zeroed, then set: handleType has no zero enumerator.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+    VkImportSemaphoreFdInfoKHR from{};
+    from.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR;
+    from.semaphore = imported.get();
+    from.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    from.fd = exported.fd.get();
+    if (import(other.handle(), &from) != VK_SUCCESS) {
+      return Status::unsupported("importing the descriptor failed");
+    }
+    exported.fd.release();  // the import owns it now
+    return imported;
+  }
+};
+
+// The fixture's device enables the extension wherever it is offered; one that
+// did not refuses, naming the extension. On every device.
+TEST_F(TimelineExportTest, ADeviceWithoutSemaphoreExportRefusesIt) {
+  Result<Device> made = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  EXPECT_FALSE(made->exports_semaphores());
+  const Status refused = create_exported_timeline(*made).status();
+  EXPECT_EQ(refused.domain(), Status::Code::Unsupported);
+  EXPECT_NE(refused.message().find(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME),
+            std::string::npos)
+      << refused.message();
+}
+
+// What TimelineSemaphore::create refuses, refused first, on every device: a
+// moved-from device, and one without timelineSemaphore even where it asked
+// for semaphore export.
+TEST_F(TimelineExportTest, RefusesWhatTimelineSemaphoreCreateRefuses) {
+  DeviceRequirements without = requirements();
+  without.timeline_semaphore = false;
+  Result<Device> made = Device::create(instance(), physical(), without);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const Status refused = create_exported_timeline(*made).status();
+  EXPECT_EQ(refused.domain(), Status::Code::Unsupported);
+  EXPECT_NE(refused.message().find("timelineSemaphore"), std::string::npos)
+      << refused.message();
+
+  Device first = *std::move(made);
+  const Device second = std::move(first);
+  // Exporting from the moved-from device is the point: it must be refused.
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(create_exported_timeline(first).status().domain(),
+            Status::Code::InvalidArgument);
+}
+
+// A timeline at the value asked, with an open descriptor that closes with
+// it. The host signals, reads and waits on it as on any timeline, and a
+// wait that blocks counts on its device.
+TEST_F(TimelineExportTest, ExportsATimelineAtItsInitialValue) {
+  if (cannot_export()) {
+    GTEST_SKIP() << "the device cannot export a timeline semaphore as an "
+                    "opaque descriptor";
+  }
+  int fd = -1;
+  {
+    Result<ExportedTimeline> made = create_exported_timeline(device(), 5);
+    ASSERT_TRUE(made.ok()) << made.status().message();
+    // Never imported, so its descriptor is still its own, closed with it.
+    ExportedTimeline written = *std::move(made);
+    ASSERT_TRUE(written.semaphore.valid());
+    EXPECT_EQ(written.semaphore.device(), device().handle());
+    const Result<std::uint64_t> start = written.semaphore.value();
+    ASSERT_TRUE(start.ok()) << start.status().message();
+    EXPECT_EQ(*start, 5U);
+    ASSERT_TRUE(written.fd.valid());
+    fd = written.fd.get();
+    EXPECT_NE(fcntl(fd, F_GETFD), -1);
+
+    allow_the_old_layers_pending_read();
+    ASSERT_TRUE(written.semaphore.signal(6).ok());
+    EXPECT_TRUE(written.semaphore.wait(6).ok());
+    const Result<std::uint64_t> raised = written.semaphore.value();
+    ASSERT_TRUE(raised.ok()) << raised.status().message();
+    EXPECT_EQ(*raised, 6U);
+    // 7 is never set: a short wait for it blocks, times out, and counts.
+    const DeviceCounters before = device().counters();
+    EXPECT_TRUE(is_timeout(written.semaphore.wait(7, 1'000'000)));
+    EXPECT_EQ(device().counters().host_waits - before.host_waits, 1U);
+  }
+  errno = 0;
+  EXPECT_EQ(fcntl(fd, F_GETFD), -1);
+  EXPECT_EQ(errno, EBADF);
+}
+
+// The descriptor names the same timeline: imported into a second device on
+// the same GPU -- another context, as CUDA's is -- the importer reads the
+// value set here, and its host's signal is read and waited for here.
+TEST_F(TimelineExportTest, TheDescriptorImportsTheSameTimeline) {
+  if (cannot_export()) {
+    GTEST_SKIP() << "the device cannot export a timeline semaphore as an "
+                    "opaque descriptor";
+  }
+  if (cannot_import()) {
+    GTEST_SKIP() << "the device exports timeline descriptors but cannot "
+                    "import them";
+  }
+  Result<ExportedTimeline> made = create_exported_timeline(device(), 3);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  ExportedTimeline written = *std::move(made);
+
+  Result<Device> other_made =
+      Device::create(instance(), physical(), requirements());
+  ASSERT_TRUE(other_made.ok()) << other_made.status().message();
+  const Device other = *std::move(other_made);
+  // Declared after the device, so it goes first.
+  Result<Timeline> imported_made = import_timeline(other, written);
+  ASSERT_TRUE(imported_made.ok()) << imported_made.status().message();
+  const Timeline imported = *std::move(imported_made);
+  EXPECT_FALSE(written.fd.valid());
+  EXPECT_EQ(counter(other.handle(), imported.get()), 3U);
+
+  ASSERT_EQ(host_signal(other.handle(), imported.get(), 7), VK_SUCCESS);
+  const Result<std::uint64_t> seen = written.semaphore.value();
+  ASSERT_TRUE(seen.ok()) << seen.status().message();
+  EXPECT_EQ(*seen, 7U);
+  EXPECT_TRUE(written.semaphore.wait(7, kLongWaitNs).ok());
+
+  allow_the_old_layers_pending_read();
+  ASSERT_TRUE(written.semaphore.signal(8).ok());
+  EXPECT_EQ(counter(other.handle(), imported.get()), 8U);
+}
+
+// Sets a timeline from the host on scope exit, unless it is there already,
+// so a batch held for an importer's value never outlives a failed assertion:
+// what ExportedTimeline asks of a caller whose importer sets nothing more.
+// Declared after the pending batch it releases, so it runs first.
+class SetOnExit {
+ public:
+  SetOnExit(TimelineSemaphore& timeline, std::uint64_t value)
+      : timeline_(timeline), value_(value) {}
+  SetOnExit(const SetOnExit&) = delete;
+  SetOnExit& operator=(const SetOnExit&) = delete;
+  SetOnExit(SetOnExit&&) = delete;
+  SetOnExit& operator=(SetOnExit&&) = delete;
+  ~SetOnExit() {
+    const Result<std::uint64_t> now = timeline_.value();
+    if (now.ok() && *now < value_) {
+      EXPECT_TRUE(timeline_.signal(value_).ok());
+    }
+  }
+
+ private:
+  TimelineSemaphore& timeline_;
+  std::uint64_t value_;
+};
+
+// The property a decoder's hand-over relies on: a batch that waits for the
+// importer's value is held on the device, with no host wait, until the
+// importer sets it, then runs and sets its own. Submitted before the value
+// is set -- against ExportedTimeline's order, with nothing else on the
+// queue meanwhile -- so the hold is what is seen.
+TEST_F(TimelineExportTest, ABatchWaitsOnTheDeviceForTheImporter) {
+  if (cannot_export()) {
+    GTEST_SKIP() << "the device cannot export a timeline semaphore as an "
+                    "opaque descriptor";
+  }
+  if (cannot_import()) {
+    GTEST_SKIP() << "the device exports timeline descriptors but cannot "
+                    "import them";
+  }
+  Result<ExportedTimeline> made = create_exported_timeline(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  ExportedTimeline written = *std::move(made);
+  Result<Device> other_made =
+      Device::create(instance(), physical(), requirements());
+  ASSERT_TRUE(other_made.ok()) << other_made.status().message();
+  const Device other = *std::move(other_made);
+  Result<Timeline> imported_made = import_timeline(other, written);
+  ASSERT_TRUE(imported_made.ok()) << imported_made.status().message();
+  const Timeline imported = *std::move(imported_made);
+  Result<TimelineSemaphore> done_made = TimelineSemaphore::create(device());
+  ASSERT_TRUE(done_made.ok()) << done_made.status().message();
+  const TimelineSemaphore done = *std::move(done_made);
+
+  constexpr std::uint32_t kWords = 64;
+  constexpr VkDeviceSize kBytes = VkDeviceSize{kWords} * 4;
+  Result<Buffer> buffer_made = device_storage_buffer(allocator(), kBytes);
+  ASSERT_TRUE(buffer_made.ok()) << buffer_made.status().message();
+  const Buffer buffer = *std::move(buffer_made);
+  std::vector<std::uint32_t> words(kWords);
+  for (std::uint32_t i = 0; i < kWords; ++i) words[i] = (i * 2654435761U) + 9;
+  std::vector<std::uint32_t> back(kWords, 0);
+
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(batch.upload(buffer, 0, words.data(), kBytes).ok());
+  ASSERT_TRUE(batch.readback(buffer, 0, kBytes, back.data()).ok());
+  Result<PendingBatch> pending_made =
+      batch.submit_async({{&written.semaphore, 9}}, {{&done, 1}});
+  ASSERT_TRUE(pending_made.ok()) << pending_made.status().message();
+  PendingBatch read = *std::move(pending_made);
+  const SetOnExit release(written.semaphore, 9);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_FALSE(read.ready());
+  const Result<std::uint64_t> held = done.value();
+  ASSERT_TRUE(held.ok()) << held.status().message();
+  EXPECT_EQ(*held, 0U);
+
+  // The importer sets 9 on its own device, and the batch runs.
+  ASSERT_EQ(host_signal(other.handle(), imported.get(), 9), VK_SUCCESS);
+  EXPECT_TRUE(done.wait(1, kLongWaitNs).ok());
+  EXPECT_TRUE(read.wait(kLongWaitNs).ok());
+  EXPECT_EQ(back, words);
 }
 
 }  // namespace
