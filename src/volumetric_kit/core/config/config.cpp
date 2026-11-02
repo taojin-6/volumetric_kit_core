@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -115,6 +116,10 @@ std::uint32_t half_frame_us(std::uint32_t fps) {
 struct ParseState {
   std::vector<std::string> fields;
   std::string up_axis;
+  // source.mobile and source.mobile_registration, as written; resolved into
+  // Source::mobile.
+  std::string mobile;
+  std::string mobile_registration;
 };
 bool has(const ParseState& state, std::string_view field) {
   return std::find(state.fields.begin(), state.fields.end(), field) !=
@@ -266,6 +271,8 @@ void read_source(const Json& json, Config& c, ParseState& state) {
   STR(audio);
   STR(calibration);
   r.string("up_axis", state.up_axis);
+  r.string("mobile", state.mobile);
+  r.string("mobile_registration", state.mobile_registration);
   STR(ffs_model);
   STR(ffs_plan_cache);
   r.objects("cameras", c.source.cameras, [](Reader& q, LiveCamera& camera) {
@@ -432,6 +439,9 @@ bool supports(std::string_view field, App app) {
     return app == App::CalibColor;
   if (field == "source.host_clock") return app == App::FuseOrbbec;
   if (field == "source.audio") return codes_sets(app);
+  // The phone: FuseOrbbec's, whose rig file gives its registration a world.
+  if (field_in(field, {"source.mobile", "source.mobile_registration"}))
+    return app == App::FuseOrbbec;
   if (field_in(field, {"source.depth", "source.emitter"}))
     return app == App::FuseRealsense;
   if (field_in(field, {"source.ffs_model", "source.ffs_plan_cache"}))
@@ -526,7 +536,7 @@ bool supports(std::string_view field, App app) {
     return is_one_of(app, {App::Scanner, App::FuseOrbbec});
   if (field == "diagnostics.measure_stages") return app == App::Scanner;
   if (field_in(field, {"diagnostics.readback", "diagnostics.dump_sets",
-                       "diagnostics.dump_directory"}))
+                       "diagnostics.dump_directory", "diagnostics.track_log"}))
     return app == App::FuseOrbbec;
   return false;
 }
@@ -551,6 +561,67 @@ std::array<double, 3> axis_vector(std::string_view axis) {
   std::array<double, 3> up{};
   up[static_cast<std::size_t>(axis[pos] - 'x')] = sign;
   return up;
+}
+
+// `text`, a part of source.mobile's address that `what` names, as a decimal
+// number in [min, max] written without a leading zero.
+std::uint32_t mobile_decimal(std::string_view text, std::uint32_t min,
+                             std::uint32_t max, const std::string& what) {
+  constexpr std::string_view kField = "source.mobile";
+  if (text.empty() ||
+      text.find_first_not_of("0123456789") != std::string_view::npos)
+    fail(kField, what + " must be a decimal number");
+  if (text.size() > 1 && text.front() == '0')
+    fail(kField, what + " must not have a leading zero");
+  const std::string range =
+      " must be in [" + std::to_string(min) + ", " + std::to_string(max) + "]";
+  std::uint32_t value = 0;
+  for (const char digit : text) {
+    value = (value * 10) + static_cast<std::uint32_t>(digit - '0');
+    if (value > max) fail(kField, what + range);
+  }
+  if (value < min) fail(kField, what + range);
+  return value;
+}
+// A live phone session's `tcp://ADDRESS:PORT`: one of the lab host's own IPv4
+// addresses, in dotted decimal, which the consumer listens on, and a port.
+// Never the wildcard, a name, which core does not resolve, or IPv6.
+std::pair<std::string, std::uint16_t> mobile_address(std::string_view value) {
+  constexpr std::string_view kField = "source.mobile";
+  constexpr std::string_view kScheme = "tcp://";
+  if (value.rfind(kScheme, 0) != 0)
+    fail(kField,
+         "a live session is tcp://ADDRESS:PORT; no other scheme is supported");
+  const std::string_view rest = value.substr(kScheme.size());
+  if (!rest.empty() && rest.front() == '[')
+    fail(kField, "must be an IPv4 address; IPv6 is not supported");
+  const std::size_t colon = rest.find(':');
+  if (colon == std::string_view::npos)
+    fail(kField, "requires a port: tcp://ADDRESS:PORT");
+  const std::string_view address = rest.substr(0, colon);
+  if (address.find_first_not_of("0123456789.") != std::string_view::npos)
+    fail(kField, "must be a numeric IPv4 address; a name is not resolved");
+  if (std::count(address.begin(), address.end(), '.') != 3)
+    fail(kField, "the address must be four dot-separated decimal parts");
+  std::uint32_t any = 0;
+  std::size_t begin = 0;
+  for (int part = 0; part < 4; ++part) {
+    const std::size_t end =
+        part < 3 ? address.find('.', begin) : address.size();
+    any |= mobile_decimal(address.substr(begin, end - begin), 0, 255,
+                          "an address part");
+    begin = end + 1;
+  }
+  if (any == 0)
+    fail(kField,
+         "must not be the wildcard 0.0.0.0; give one of this host's own "
+         "addresses");
+  const std::string_view port = rest.substr(colon + 1);
+  const std::size_t digits = port.find_first_not_of("0123456789");
+  if (digits != std::string_view::npos && digits > 0)
+    fail(kField, "must end at the port: tcp://ADDRESS:PORT");
+  return {std::string(address), static_cast<std::uint16_t>(mobile_decimal(
+                                    port, 1, 65535, "the port"))};
 }
 
 void validate_impl(const Config& c, App app, const ParseState& state) {
@@ -578,8 +649,11 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
         fail(field, "is not used by source.driver " + c.source.driver);
     }
   }
+  // The phone fills the fused model, so a stream run, which fuses nothing,
+  // refuses it.
   if (c.operation == Operation::Stream) {
-    for (const char* key : {"fusion", "codec", "output", "source.audio"})
+    for (const char* key :
+         {"fusion", "codec", "output", "source.audio", "source.mobile"})
       if (has(state, key)) fail(key, "is not used by operation stream");
   }
   // A live fusion program codes only when it writes the codec's rows or
@@ -615,7 +689,9 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     fail("output.stream", "must differ from output.path");
   if (!c.output.path.empty() && c.output.csv == c.output.path)
     fail("output.csv", "must differ from output.path");
-  // A run never overwrites the rig files, or the FFS model, it reads.
+  // A run never overwrites the rig files, the FFS model, or the phone's
+  // session and registration, it reads.
+  const MobileSession phone = c.source.mobile.value_or(MobileSession{});
   for (const auto& [output, output_name] :
        {std::pair{&c.output.path, "output.path"},
         std::pair{&c.output.csv, "output.csv"},
@@ -623,7 +699,9 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     for (const auto& [source, source_name] :
          {std::pair{&c.source.sync_config, "source.sync_config"},
           std::pair{&c.source.calibration, "source.calibration"},
-          std::pair{&c.source.ffs_model, "source.ffs_model"}}) {
+          std::pair{&c.source.ffs_model, "source.ffs_model"},
+          std::pair{&phone.path, "source.mobile"},
+          std::pair{&phone.registration, "source.mobile_registration"}}) {
       if (!output->empty() && *output == *source)
         fail(output_name, std::string("must differ from ") + source_name);
     }
@@ -754,6 +832,28 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
     if (c.output.stream.empty() && c.output.serve == 0)
       fail("source.audio", "requires output.stream or output.serve");
   }
+  // The phone's registration places it in the rig's world, which the rig
+  // file holds. A file's registration defaults to beside it; a live session
+  // has no file to sit beside, so it names one. Its port is not the one
+  // output.serve binds on every interface of the same host.
+  if (has(state, "source.mobile_registration") && !c.source.mobile)
+    fail("source.mobile_registration", "requires source.mobile");
+  if (c.source.mobile) {
+    if (c.source.calibration.empty())
+      fail("source.mobile",
+           "requires source.calibration, the world its registration places "
+           "the phone in");
+    if (phone.registration.empty())
+      fail("source.mobile_registration",
+           "is required for a live source.mobile");
+    if (c.output.serve != 0 && phone.port == c.output.serve)
+      fail("source.mobile", "must not listen on output.serve's port");
+  }
+  path_check(phone.path, "source.mobile");
+  path_check(phone.registration, "source.mobile_registration");
+  if (has(state, "diagnostics.track_log") && !c.source.mobile)
+    fail("diagnostics.track_log", "requires source.mobile");
+  path_check(c.diagnostics.track_log, "diagnostics.track_log");
   if (app == App::Scanner && c.source.driver != "arkit")
     fail("source.driver", "only arkit is supported");
   if (app == App::CodecMesh) {
@@ -1007,6 +1107,24 @@ void resolve(Config& c, App app, std::string_view directory,
   resolve_path(c.output.csv, base);
   resolve_path(c.output.stream, base);
   resolve_path(c.diagnostics.dump_directory, base);
+  resolve_path(c.diagnostics.track_log, base);
+  // The phone: a value without a scheme is a session's file, config-relative,
+  // with its registration beside it unless given; tcp:// is a live session's
+  // address, never a path.
+  if (!state.mobile.empty()) {
+    MobileSession phone;
+    if (state.mobile.find("://") == std::string::npos) {
+      phone.path = state.mobile;
+      resolve_path(phone.path, base);
+    } else {
+      std::tie(phone.host, phone.port) = mobile_address(state.mobile);
+    }
+    phone.registration = state.mobile_registration;
+    resolve_path(phone.registration, base);
+    if (phone.registration.empty() && !phone.path.empty())
+      phone.registration = phone.path + ".registration.json";
+    c.source.mobile = std::move(phone);
+  }
   if (is_dataset(app) && c.source.camera_parameters.empty() &&
       !c.source.path.empty())
     c.source.camera_parameters =
@@ -1196,6 +1314,7 @@ Result<Config> parse(std::string_view text, Application application,
       q.boolean("readback", c.diagnostics.readback);
       q.number("dump_sets", c.diagnostics.dump_sets);
       q.string("dump_directory", c.diagnostics.dump_directory);
+      q.string("track_log", c.diagnostics.track_log);
       q.finish();
     }
     r.finish();

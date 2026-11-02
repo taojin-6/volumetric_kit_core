@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -2397,6 +2398,255 @@ TEST(Config, LiveFusionRecordsAudioOnTheHostClockIntoItsStream) {
       continue;
     rejected(R"({"version":1,"source":{"audio":"default"}})", app,
              "source.audio: is not used by this application");
+  }
+}
+
+// The phone `c` resolved; none fails the test.
+MobileSession phone_of(const Config& c) {
+  if (c.source.mobile.has_value()) return c.source.mobile.value();
+  ADD_FAILURE() << "source.mobile was not resolved";
+  return {};
+}
+// A FuseOrbbec scenario whose source has its rig file and these fields, then
+// these sections, each leading with a comma.
+std::string phone_scenario(const std::string& fields,
+                           const std::string& sections = "") {
+  return R"({"version":1,"source":{"calibration":"rig.json",)" + fields + "}" +
+         sections + "}";
+}
+
+TEST(Config, MobileSessionIsAFileBesideTheRig) {
+  // None by default.
+  EXPECT_FALSE(Source{}.mobile);
+  EXPECT_TRUE(Diagnostics{}.track_log.empty());
+  const auto plain = scenario(R"({"version":1})", App::FuseOrbbec);
+  ASSERT_TRUE(plain) << plain.status().message();
+  EXPECT_FALSE(plain->source.mobile);
+  EXPECT_TRUE(plain->diagnostics.track_log.empty());
+
+  // A session's file, config-relative, with its registration beside it, named
+  // once the file's path is resolved.
+  for (const char* spelling :
+       {"sweeps/0b.vrst", "./sweeps/../sweeps/0b.vrst"}) {
+    const auto file =
+        scenario(phone_scenario(std::string(R"("mobile":")") + spelling + "\""),
+                 App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(file) << file.status().message();
+    EXPECT_EQ(phone_of(*file).path, "/scenario/sweeps/0b.vrst");
+    EXPECT_TRUE(phone_of(*file).host.empty());
+    EXPECT_EQ(phone_of(*file).port, 0U);
+    EXPECT_EQ(phone_of(*file).registration,
+              "/scenario/sweeps/0b.vrst.registration.json");
+    EXPECT_EQ(file->source.calibration, "/scenario/rig.json");
+  }
+  // A registration it is given, config-relative, and an absolute file.
+  const auto given = scenario(
+      phone_scenario(
+          R"("mobile":"/data/0b.vrst","mobile_registration":"sessions/phone/registration.json")"),
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(given) << given.status().message();
+  EXPECT_EQ(phone_of(*given).path, "/data/0b.vrst");
+  EXPECT_EQ(phone_of(*given).registration,
+            "/scenario/sessions/phone/registration.json");
+  // Any value without a scheme is a file, a colon or not.
+  const auto colon = scenario(phone_scenario(R"("mobile":"lab-box:7101")"),
+                              App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(colon) << colon.status().message();
+  EXPECT_EQ(phone_of(*colon).path, "/scenario/lab-box:7101");
+  EXPECT_TRUE(phone_of(*colon).host.empty());
+
+  // Omitted is none; the key is never empty, as source.audio is not.
+  rejected(phone_scenario(R"("mobile":"")"), App::FuseOrbbec,
+           "source.mobile: must not be empty");
+  rejected(phone_scenario(R"("mobile":true)"), App::FuseOrbbec,
+           "source.mobile: expected a string");
+  rejected(phone_scenario(R"("mobile":"a\u0000b")"), App::FuseOrbbec,
+           "source.mobile: embedded NUL");
+
+  // No output overwrites the session or its registration, in two spellings
+  // of one path.
+  for (const char* output : {"path", "csv", "stream"}) {
+    for (const char* spelling : {"./0b.vrst", "/scenario/0b.vrst"}) {
+      rejected(
+          phone_scenario(R"("mobile":"0b.vrst")",
+                         std::string(R"(,"output":{")") + output + R"(":")" +
+                             spelling + R"("})"),
+          App::FuseOrbbec,
+          std::string("output.") + output + ": must differ from source.mobile");
+    }
+    rejected(phone_scenario(R"("mobile":"0b.vrst")",
+                            std::string(R"(,"output":{")") + output +
+                                R"(":"0b.vrst.registration.json"})"),
+             App::FuseOrbbec,
+             std::string("output.") + output +
+                 ": must differ from source.mobile_registration");
+  }
+}
+
+TEST(Config, MobileSessionListensOnOneNumericAddress) {
+  // One of the host's own addresses and a port, with the registration named.
+  const auto live = scenario(
+      phone_scenario(
+          R"("mobile":"tcp://10.8.0.1:7101","mobile_registration":"sessions/phone/registration.json")"),
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(live) << live.status().message();
+  EXPECT_TRUE(phone_of(*live).path.empty());
+  EXPECT_EQ(phone_of(*live).host, "10.8.0.1");
+  EXPECT_EQ(phone_of(*live).port, 7101U);
+  EXPECT_EQ(phone_of(*live).registration,
+            "/scenario/sessions/phone/registration.json");
+  // The bounds of each part.
+  for (const auto& [address, host, port] :
+       {std::tuple{"tcp://127.0.0.1:1", "127.0.0.1", 1U},
+        std::tuple{"tcp://255.255.255.255:65535", "255.255.255.255", 65535U},
+        std::tuple{"tcp://0.0.0.1:7101", "0.0.0.1", 7101U}}) {
+    const auto bound =
+        scenario(phone_scenario(std::string(R"("mobile":")") + address +
+                                R"(","mobile_registration":"reg.json")"),
+                 App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(bound) << address << ": " << bound.status().message();
+    EXPECT_EQ(phone_of(*bound).host, host);
+    EXPECT_EQ(phone_of(*bound).port, port);
+  }
+  // A live session has no file to sit beside, so it names its registration.
+  rejected(phone_scenario(R"("mobile":"tcp://10.8.0.1:7101")"), App::FuseOrbbec,
+           "source.mobile_registration: is required for a live source.mobile");
+
+  // Each malformed address, with its own reason.
+  for (const auto& [address, reason] :
+       {std::pair{"tcp://lab-box:7101",
+                  "must be a numeric IPv4 address; a name is not resolved"},
+        std::pair{"tcp://0.0.0.0:7101",
+                  "must not be the wildcard 0.0.0.0; give one of this "
+                  "host's own addresses"},
+        std::pair{"tcp://10.8.0.1", "requires a port: tcp://ADDRESS:PORT"},
+        std::pair{"tcp://10.8.0.1:", "the port must be a decimal number"},
+        std::pair{"tcp://10.8.0.1:x", "the port must be a decimal number"},
+        std::pair{"tcp://10.8.0.1:0", "the port must be in [1, 65535]"},
+        std::pair{"tcp://10.8.0.1:65536", "the port must be in [1, 65535]"},
+        std::pair{"tcp://10.8.0.1:99999999999",
+                  "the port must be in [1, 65535]"},
+        std::pair{"tcp://10.8.0.1:07101",
+                  "the port must not have a leading zero"},
+        std::pair{"tcp://010.8.0.1:7101",
+                  "an address part must not have a leading zero"},
+        std::pair{"tcp://10.8.0.256:7101",
+                  "an address part must be in [0, 255]"},
+        std::pair{"tcp://10.8.0:7101",
+                  "the address must be four dot-separated decimal parts"},
+        std::pair{"tcp://10.8.0.1.2:7101",
+                  "the address must be four dot-separated decimal parts"},
+        std::pair{"tcp://10..0.1:7101",
+                  "an address part must be a decimal number"},
+        std::pair{"tcp://10.8.0.1:7101/x",
+                  "must end at the port: tcp://ADDRESS:PORT"},
+        std::pair{"tcp://[::1]:7101",
+                  "must be an IPv4 address; IPv6 is not supported"},
+        std::pair{"udp://10.8.0.1:7101",
+                  "a live session is tcp://ADDRESS:PORT; no other scheme "
+                  "is supported"},
+        std::pair{"TCP://10.8.0.1:7101",
+                  "a live session is tcp://ADDRESS:PORT; no other scheme "
+                  "is supported"}}) {
+    rejected(phone_scenario(std::string(R"("mobile":")") + address +
+                            R"(","mobile_registration":"reg.json")"),
+             App::FuseOrbbec, std::string("source.mobile: ") + reason);
+  }
+
+  // Not output.serve's port, which binds every interface of the same host;
+  // any other port serves beside it.
+  const std::string fields =
+      R"("mobile":"tcp://10.8.0.1:7101","mobile_registration":"reg.json")";
+  rejected(phone_scenario(fields, R"(,"output":{"serve":7101})"),
+           App::FuseOrbbec,
+           "source.mobile: must not listen on output.serve's port");
+  const auto beside = scenario(
+      phone_scenario(fields, R"(,"output":{"serve":7102})"), App::FuseOrbbec);
+  ASSERT_TRUE(beside) << beside.status().message();
+  EXPECT_EQ(beside->output.serve, 7102U);
+  EXPECT_EQ(phone_of(*beside).port, 7101U);
+  // A file has no port to collide with.
+  const auto file = scenario(
+      phone_scenario(R"("mobile":"0b.vrst")", R"(,"output":{"serve":7101})"),
+      App::FuseOrbbec);
+  ASSERT_TRUE(file) << file.status().message();
+}
+
+TEST(Config, MobileSessionIsFuseOrbbecsAndNeedsItsWorld) {
+  // The registration places the phone in the rig file's world.
+  for (const char* phone :
+       {R"("mobile":"0b.vrst")",
+        R"("mobile":"tcp://10.8.0.1:7101","mobile_registration":"reg.json")"}) {
+    rejected(std::string(R"({"version":1,"source":{)") + phone + "}}",
+             App::FuseOrbbec,
+             "source.mobile: requires source.calibration, the world its "
+             "registration places the phone in");
+  }
+  // The phone fills the fused model, so a stream run refuses it.
+  rejected(
+      R"({"version":1,"operation":"stream","source":{"calibration":"rig.json","mobile":"0b.vrst"}})",
+      App::FuseOrbbec, "source.mobile: is not used by operation stream");
+  // A registration is the phone's.
+  rejected(phone_scenario(R"("mobile_registration":"reg.json")"),
+           App::FuseOrbbec,
+           "source.mobile_registration: requires source.mobile");
+  rejected(phone_scenario(R"("mobile":"0b.vrst","mobile_registration":"")"),
+           App::FuseOrbbec, "source.mobile_registration: must not be empty");
+
+  // Every other profile refuses both keys.
+  for (const auto app : every_profile()) {
+    if (app == App::FuseOrbbec) continue;
+    for (const char* key : {"mobile", "mobile_registration"}) {
+      rejected(
+          std::string(R"({"version":1,"source":{")") + key + R"(":"0b.vrst"}})",
+          app,
+          std::string("source.") + key + ": is not used by this application");
+    }
+  }
+}
+
+TEST(Config, TrackLogIsAConfigRelativeLaneDiagnostic) {
+  const std::string phone = R"("mobile":"0b.vrst")";
+  const auto without =
+      scenario(phone_scenario(phone), App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(without) << without.status().message();
+  EXPECT_TRUE(without->diagnostics.track_log.empty());
+  const auto with = scenario(
+      phone_scenario(phone, R"(,"diagnostics":{"track_log":"runs/./lane"})"),
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(with) << with.status().message();
+  EXPECT_EQ(with->diagnostics.track_log, "/scenario/runs/lane");
+  const auto absolute = scenario(
+      phone_scenario(phone, R"(,"diagnostics":{"track_log":"/logs/lane"})"),
+      App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(absolute) << absolute.status().message();
+  EXPECT_EQ(absolute->diagnostics.track_log, "/logs/lane");
+  // It changes nothing else that resolves.
+  EXPECT_EQ(phone_of(*with).path, phone_of(*without).path);
+  EXPECT_EQ(phone_of(*with).registration, phone_of(*without).registration);
+  EXPECT_EQ(with->operation, without->operation);
+  EXPECT_EQ(with->source.calibration, without->source.calibration);
+  EXPECT_EQ(with->fusion.dynamic, without->fusion.dynamic);
+  EXPECT_EQ(with->run.frames, without->run.frames);
+  EXPECT_EQ(with->output.path, without->output.path);
+  EXPECT_EQ(with->diagnostics.readback, without->diagnostics.readback);
+  EXPECT_EQ(with->diagnostics.dump_sets, without->diagnostics.dump_sets);
+  EXPECT_EQ(with->diagnostics.dump_directory,
+            without->diagnostics.dump_directory);
+
+  // The lane's: it requires the phone, and is never empty.
+  rejected(R"({"version":1,"diagnostics":{"track_log":"runs/lane"}})",
+           App::FuseOrbbec, "diagnostics.track_log: requires source.mobile");
+  rejected(phone_scenario(phone, R"(,"diagnostics":{"track_log":""})"),
+           App::FuseOrbbec, "diagnostics.track_log: must not be empty");
+  // Every other profile refuses it: Scanner the key, the rest the section.
+  rejected(R"({"version":1,"diagnostics":{"track_log":"runs/lane"}})",
+           App::Scanner,
+           "diagnostics.track_log: is not used by this application");
+  for (const auto app : every_profile()) {
+    if (app == App::FuseOrbbec || app == App::Scanner) continue;
+    rejected(with_sections(app, R"(,"diagnostics":{"track_log":"runs/lane"})"),
+             app, "diagnostics: is not used by this application");
   }
 }
 

@@ -1805,3 +1805,30 @@ one, so it stays one profile with a driver switch.
 - **An optional rig file.** `calibration` names the file a session starts
   from, in either mode: a camera's first lens session has none. The board
   stays entered in the app, with no keys.
+
+## 2026-11-02 — FuseOrbbec's phone: a session file or a live address, in the rig's world
+
+FuseOrbbec gains a phone beside the rig (core 0.41.0; CONFIG.md,
+`source.mobile`): a camera session whose frames fill what the rig's cameras
+do not see, as `audio` records beside them.
+
+- **One key, a file or an address.** `source.mobile` is a recorded
+  session's file or a live session's `tcp://ADDRESS:PORT`, so a scenario
+  switches between the two by one value. Core parses the address into
+  `MobileSession::host` and `port`, the pair Player's `source.host` and
+  `source.port` already are, so no consumer parses it again.
+- **The consumer listens; the phone dials in.** The address is one of the
+  lab host's own numeric IPv4 addresses, the one the phone is told to dial.
+  The wildcard is refused, so the host binds only the network the phone is
+  on, and so is a name, which core does not resolve, and `output.serve`'s
+  port, which binds every interface of the same host.
+- **FuseOrbbec only.** The phone registers against the lab's real-time
+  model, the Orbbec rig's, whose world `source.calibration` holds, so the key
+  requires it. FuseRealsense takes no rig file, so it has no world to place
+  the phone in. Another profile takes the keys in the PR that runs a phone
+  with it.
+- **A file carries its registration beside it; a live session names one.**
+  The default is formed from the resolved file, so a session moved with its
+  registration needs no second key.
+- **The tracking log is a diagnostic.** `diagnostics.track_log` is a
+  directory beside `dump_directory`, and changes nothing that fuses.
