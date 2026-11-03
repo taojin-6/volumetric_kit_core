@@ -7,6 +7,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-11-03
+
+### Added
+
+- `CommandBatch::retain(std::shared_ptr<const void>)`: the batch keeps a
+  caller's owner of inputs it cannot see -- a frame whose buffers a kernel
+  reads, the pictures behind a set's bindings -- alive with its work, by the
+  policy of its own staging: released once `submit` returns OK or a
+  `PendingBatch` wait sees the work complete; after a failed fence wait, or
+  a submit that lost the device, kept by the device until its destruction
+  has waited for the work; dropped as the submit returns when the batch is
+  refused or never reaches the device; left with the batch when
+  `submit_async` refuses its values. Null keeps nothing (DECISIONS.md, the
+  amendment to "A batch records handles, not objects").
+
+### Fixed
+
+- `CommandBatch::retain(Buffer)` out of memory poisons the batch, so its
+  submit returns `OutOfMemory` and runs nothing, where `std::bad_alloc`
+  escaped the call. The new overload does the same; both are `noexcept`.
+- `CommandBatch::submit` and `submit_async` return `OutOfMemory` when host
+  memory runs out, where `std::bad_alloc` escaped -- at the work's
+  `keep_alive` and its recording, before the device took any of it, so none
+  runs. Out of memory settling the tiles of a blocking batch whose work ran
+  leaves those rows unpublished and the work's result standing, as
+  `Device::submit_single_time` does.
+
+### Migration
+
+- Nothing to change beyond the pin. A sibling that holds a batch's inputs by
+  hand past a failed wait -- an owner leaked when `PendingBatch::in_flight`
+  says so, or one reset after the submit whatever its wait returned --
+  should `retain` that owner on the batch before its submit and delete the
+  hand-written hold: sensor's and recon's are the next PRs, stacked on this
+  release.
+- `batch.retain({})` no longer compiles, as `{}` fits both overloads; pass
+  `Buffer{}` or `nullptr`, or drop the call, which keeps nothing either way.
+  No sibling calls it so.
+
 ## [0.44.0] - 2026-11-02
 
 ### Added
