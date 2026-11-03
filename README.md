@@ -201,6 +201,23 @@ after `FetchContent_MakeAvailable`, which refuses an older sibling, or one
 without the umbrella or a listed target
 (`cmake/vkc_require_sibling.cmake`).
 
+`vkc_source_commits` records what a build was built from. Before every build
+of a target it writes a header holding each source's commit, and whether that
+checkout had changes, and rewrites it only when that text changes
+(`cmake/vkc_source_commits.cmake`). The caller formats the values:
+
+```cmake
+vkc_source_commits(your_target HEADER source_commits.h PREFIX YOUR
+                   SOURCES "app=${PROJECT_SOURCE_DIR}"
+                   PACKAGES core=volumetric_kit_core)
+# your sources: #include "source_commits.h" -> YOUR_APP_SHA "<commit>" ("" off a
+# checkout), YOUR_APP_DIRTY 0 or 1, YOUR_CORE_SHA, YOUR_CORE_DIRTY, and
+# YOUR_CORE_OVERRIDE, the FETCHCONTENT_SOURCE_DIR it was given ("" if none)
+```
+
+A tracked change or an untracked file makes a checkout dirty; an ignored file
+never does.
+
 A consumer that links the core into a shared library or framework builds the
 core shared too (`BUILD_SHARED_LIBS=ON`): the log handler is process-global,
 and each binary linking a static core gets its own (DECISIONS.md, "One

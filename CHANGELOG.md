@@ -7,6 +7,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-11-03
+
+### Added
+
+- `vkc_source_commits(<target> HEADER <header> PREFIX <prefix> [SOURCES
+  <name>=<dir>...] [PACKAGES <name>=<package>...])`
+  (`cmake/vkc_source_commits.cmake`, defined by the core's CMakeLists): before
+  every build of `<target>`, not only at configure, writes `<header>` with
+  each source's `<prefix>_<NAME>_SHA` (its checked-out commit, or `""` where
+  the directory is not a git checkout's top) and `<prefix>_<NAME>_DIRTY` (1
+  for a tracked change or an untracked file, never for an ignored one), and
+  for a FetchContent package `<prefix>_<NAME>_OVERRIDE` (its
+  `FETCHCONTENT_SOURCE_DIR_<PACKAGE>`, or `""` where none was set). The header
+  is rewritten only when its text changes, so an unchanged checkout recompiles
+  nothing (DECISIONS.md, the 2026-11-03 provenance entry). Each checkout reads
+  as itself whatever `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` the build
+  inherits, as a build a git hook runs does. It refuses a missing
+  `HEADER` or `PREFIX`, no source, a name or prefix that is not a C
+  identifier, two sources of one upper-cased name, and a package
+  FetchContent has not added.
+
+### Migration
+
+- Nothing to change beyond the pin. A project that records its own and its
+  siblings' commits can call `vkc_source_commits` in place of its own git
+  calls and format the macros as before. Its dirty mark then counts untracked
+  files, which `git describe --dirty` and `git status --untracked-files=no`
+  do not.
+
 ## [0.44.0] - 2026-11-02
 
 ### Added

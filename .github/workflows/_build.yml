@@ -44,13 +44,15 @@ jobs:
       # The bare Ubuntu image runs as root and needs git before checkout. The
       # NVIDIA ICD also needs libXext.so.6 and libEGL.so.1 to create a device.
       # No software ICD is installed: these legs exercise discrete memory.
+      # Ninja is for the cmake-labelled test that builds under it
+      # (vkc_source_commits_rebuild_ninja); the build itself uses make.
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           mkdir -p "$__GL_SHADER_DISK_CACHE_PATH"
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates git \
-            cmake build-essential libvulkan-dev vulkan-tools \
+            cmake build-essential ninja-build libvulkan-dev vulkan-tools \
             vulkan-validationlayers glslc spirv-tools libxext6 libegl1
 
       # Other repositories share the host; leave no token in the checkout.
