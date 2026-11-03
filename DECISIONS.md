@@ -351,7 +351,13 @@ in "Where memory lives"):
   fewest timestamps, the deeper rows not timed. On a GPU layered on Metal a
   mark may snap to an encoder boundary (unverified): the attribution test
   says so there, and an app there tiles at depth 1 (`set_max_depth(1)`), so
-  its sub-stage cells read not timed.
+  its sub-stage cells read not timed. On a GPU time-sliced with another
+  process's work a tile reads long in every run, and the host cannot see
+  why. That lengthens the batch's span and shortens no tile, while a
+  misattribution leaves the span alone, so the attribution test skips, with
+  its numbers, when every tile reads no shorter than its stage alone and
+  longer by no more than the span ran longer than the stages apart. On a
+  quiet GPU every misattribution still fails.
 - **A batch holds a range of its timer's queries from recording until it is
   read.** So one timer times any number of pending batches, each read after
   its own work: a nested submit never reads the outer range, and
@@ -1844,3 +1850,33 @@ stream and the batch waits for it on the device, and neither host waits.
 - **Tested without CUDA.** The core links no CUDA, so a second device on the
   same GPU imports the descriptor and stands in for it: its host's signals
   are read, waited for, and release a batch held on the device here.
+
+## 2026-11-02 — FuseOrbbec's phone: a session file or a live address, in the rig's world
+
+FuseOrbbec gains a phone beside the rig (core 0.42.0; CONFIG.md,
+`source.mobile`): a camera session whose frames fill what the rig's cameras
+do not see, as `audio` records beside them.
+
+- **One key, a file or an address.** `source.mobile` is a recorded
+  session's file or a live session's `tcp://ADDRESS:PORT`, so a scenario
+  switches between the two by one value. Core parses the address into
+  `MobileSession::host` and `port`, the pair Player's `source.host` and
+  `source.port` already are, so no consumer parses it again. A value that
+  reads as an address with its scheme mistyped or left out is refused, not
+  read as a file that only fails when the consumer opens it.
+- **The consumer listens; the phone dials in.** The address is the lab
+  host's own numeric IPv4 address that the phone is told to dial. Core checks
+  its form; the listen checks it is this host's. The wildcard is refused, so
+  the host binds only the network the phone is on, and so is a name, which
+  core does not resolve, and `output.serve`'s port, which binds every
+  interface of the same host.
+- **FuseOrbbec only.** The phone registers against the lab's real-time
+  model, the Orbbec rig's, whose world `source.calibration` holds, so the key
+  requires it. FuseRealsense takes no rig file, so it has no world to place
+  the phone in. Another profile takes the keys in the PR that runs a phone
+  with it.
+- **A file carries its registration beside it; a live session names one.**
+  The default is formed from the resolved file, so a session moved with its
+  registration needs no second key.
+- **The tracking log is a diagnostic.** `diagnostics.track_log` is a
+  directory beside `dump_directory`, and changes nothing that fuses.

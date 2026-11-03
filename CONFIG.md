@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.41.0 CONFIG)
+vkc_require_core(0.42.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -102,7 +102,8 @@ does not override the requested operation or source discriminator.
 The `Config` structs in
 [`config.hpp`](include/volumetric_kit/core/config/config.hpp) describe the
 resolved settings consumed by applications. The JSON fields below generally
-match their member names; mesh `up_axis` is resolved to `up_vector` during
+match their member names; mesh `up_axis` is resolved to `up_vector`, and
+`source.mobile` and `mobile_registration` to `Source::mobile`, during
 decoding. Root sections are
 `source`, `fusion`, `codec`, `window`, `render`, `output`, `run`,
 `calibration`, and `diagnostics`. There is no generic merge/override or
@@ -202,8 +203,9 @@ unknown extension object.
   0.30.0) for FuseOrbbec, FuseRealsense (core 0.37.0) and FuseDecklink. An
   empty string disables each optional output; fusion/export operations
   require a nonempty `path`. `path`, `csv` and `stream` must differ once resolved, and none may
-  be `source.sync_config` or `source.calibration` (core 0.13.0), or
-  `source.ffs_model` (core 0.33.0).
+  be `source.sync_config` or `source.calibration` (core 0.13.0),
+  `source.ffs_model` (core 0.33.0), or the phone's session file or
+  registration (core 0.42.0).
 - Run fields: `frames`, plus `sets` for RigViewer and `first` (core 0.7.0)
   for CodecMesh. Dataset/FuseOrbbec/FuseRealsense/FuseDecklink/CalibColor
   limits are positive; FuseOrbbec's counts camera frames, each set adding one
@@ -257,6 +259,27 @@ unknown extension object.
   FuseDecklink ask only for the stream (FuseRealsense from core 0.37.0, when
   it took the two outputs; 0.34.0 refused its audio).
   Other profiles reject it.
+- `FuseOrbbec` accepts `source.mobile` (core 0.42.0), a phone's camera
+  session whose frames fill what the rig's cameras do not see, and
+  `source.mobile_registration`, where the session's tracked world sits in
+  the rig's. Omitted, the default, there is no phone; the value is never
+  empty. A value without `://` is a recorded session's file, config-relative,
+  whose registration defaults to `<file>.registration.json` beside it; one
+  that reads as an address, starting `tcp:` or only digits, dots and a
+  colon, is refused. A live session is `tcp://ADDRESS:PORT`, which the
+  consumer listens on for the phone to dial in to: the address is numeric
+  IPv4, four decimal parts from 0 to 255, and the port is from 1 to 65535,
+  each without a leading zero and with nothing after the port. Core does
+  not check that the address is the host's own; the listen does. The wildcard
+  `0.0.0.0`, a name, IPv6 and any other scheme are refused, and so is
+  `output.serve`'s port, which binds every interface of the same host. A
+  live session requires `mobile_registration`. `source.mobile` requires
+  `source.calibration`, the world the registration places the phone in, and
+  operation `stream` refuses it, since the phone fills the fused model.
+  `mobile_registration` requires `source.mobile`. `diagnostics.track_log`,
+  config-relative, is the directory the phone's tracking log is written
+  into; it requires `source.mobile`, and changes nothing that fuses. Other
+  profiles reject all three.
 - `FuseOrbbec` (core 0.14.0), `FuseRealsense`, `FuseDecklink` and
   `RigViewer` accept `fusion.free_after`, a nonnegative integer, default 30.
   Every that many fused sets, the consumer runs recon's

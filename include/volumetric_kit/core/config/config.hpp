@@ -81,6 +81,31 @@ struct StereoPairConfig {
   std::string left;
   std::string right;
 };
+/// @brief FuseOrbbec's phone: a camera session whose frames fill what the
+/// rig's cameras do not see, beside them as `audio` is, and where the
+/// session's tracked world sits in the rig's. It is either a recorded
+/// session's file or a live session that the phone dials in to: exactly one
+/// of `path` and `host` is set. In JSON it is `source.mobile`, a file or
+/// `tcp://ADDRESS:PORT`, with `source.mobile_registration`.
+/// @code
+/// /* {"mobile": "tcp://10.8.0.1:7101", "mobile_registration": "reg.json"} */
+/// @endcode
+struct MobileSession {
+  /// The recorded session's file, config-relative; empty for a live one.
+  std::string path;
+  /// A live session: a numeric IPv4 address, in dotted decimal, which the
+  /// consumer listens on for one phone at a time; the listen checks it is
+  /// this host's. Never the wildcard or a name. Empty for a file.
+  std::string host;
+  /// With `host`: the port it listens on, 1 to 65535. It may not be
+  /// `output.serve`'s port, which binds every interface of the same host.
+  /// 0 for a file.
+  std::uint16_t port = 0;
+  /// The session's tracked registration (sensor's tracked_registration
+  /// file), config-relative. For a file it resolves to
+  /// `<path>.registration.json` when not given; a live session requires it.
+  std::string registration;
+};
 
 /// @brief Input description. Paths returned by load/parse are config-relative.
 /// @code /* Obtain resolved settings with load(path, application). */ @endcode
@@ -106,6 +131,10 @@ struct Source {
   /// none; `default` is the system's default input; any other value is an
   /// input device's name as the OS lists it.
   std::string audio;
+  /// FuseOrbbec's fuse run: the phone; unset (`std::nullopt`), the default,
+  /// for none. It requires `calibration`, the world the registration places
+  /// the phone in.
+  std::optional<MobileSession> mobile;
   /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG only,
   /// CalibColor's H.265 only. FuseRealsense takes the sizes and rate, not
   /// the codec, and resolves colour 1280x800 at 30 fps; its depth size is
@@ -283,6 +312,10 @@ struct Diagnostics {
   /// The directory FuseOrbbec's dump writes into, config-relative; empty when
   /// off.
   std::string dump_directory;
+  /// FuseOrbbec with `source.mobile`: the directory the lane's tracking log
+  /// is written into, config-relative. Empty, the default, writes none, and
+  /// the run's summary still prints. It never changes what fuses.
+  std::string track_log;
 };
 /// @brief A validated scenario with all application defaults resolved.
 /// @code

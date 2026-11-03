@@ -7,6 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-02
+
+### Added
+
+- `config::MobileSession` and `Source::mobile`: FuseOrbbec's phone, whose
+  camera session fills what the rig's cameras do not see. In JSON it is
+  `source.mobile`, a recorded session's file (config-relative) or a live
+  session's `tcp://ADDRESS:PORT`, a numeric IPv4 address the consumer
+  listens on and a port other than `output.serve`'s; and
+  `source.mobile_registration`, the session's tracked registration, which
+  defaults to `<file>.registration.json` for a file and is required for a
+  live session. It requires `source.calibration`, and operation `stream`
+  refuses it (CONFIG.md).
+- `Diagnostics::track_log` (`diagnostics.track_log`): with `source.mobile`,
+  the directory the phone's tracking log is written into, config-relative.
+- No output may be the phone's session file or its registration.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged. A
+  FuseOrbbec consumer must refuse `source.mobile` and
+  `diagnostics.track_log` from its first pin at 0.42.0 or later, a re-pin
+  for another reason included, until it runs the phone; otherwise the rig
+  fuses alone with no error.
+
 ## [0.41.0] - 2026-11-02
 
 ### Added
