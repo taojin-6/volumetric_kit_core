@@ -1351,12 +1351,20 @@ TEST_F(BatchTest, AnAcquireFollowsTheWaitThatOrderedItsWriter) {
   // On no stage, synchronization validation reports the writer's write as
   // unordered with the change of layout, or with the copy.
   const VkQueueFlags queues = device().queue_flags();
-  // Each stage the wait holds, and what the queue needs to hold it.
-  const std::array<std::pair<VkPipelineStageFlags, VkQueueFlags>, 4> held{{
-      {VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0},
-      {VK_PIPELINE_STAGE_TRANSFER_BIT, 0},
-      {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_QUEUE_COMPUTE_BIT},
-      {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_QUEUE_GRAPHICS_BIT},
+  // Each stage the wait holds, its name for a failure, and what the queue
+  // needs to hold it.
+  struct Held {
+    VkPipelineStageFlags stage;
+    const char* name;
+    VkQueueFlags queue;
+  };
+  const std::array<Held, 4> held{{
+      {VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, "ALL_COMMANDS", 0},
+      {VK_PIPELINE_STAGE_TRANSFER_BIT, "TRANSFER", 0},
+      {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, "COMPUTE_SHADER",
+       VK_QUEUE_COMPUTE_BIT},
+      {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, "FRAGMENT_SHADER",
+       VK_QUEUE_GRAPHICS_BIT},
   }};
   constexpr VkDeviceSize kSize = 16;  // bytes: a 4x4 R8 image's, or a buffer's
   BufferDesc desc;
@@ -1367,12 +1375,12 @@ TEST_F(BatchTest, AnAcquireFollowsTheWaitThatOrderedItsWriter) {
   Result<Buffer> made = allocator().create_buffer(desc);
   ASSERT_TRUE(made.ok()) << made.status().message();
   const Buffer readback = *std::move(made);
-  for (const auto& wait_stage : held) {
-    if ((queues & wait_stage.second) != wait_stage.second) continue;
-    const VkPipelineStageFlags stage = wait_stage.first;
+  for (const Held& wait_stage : held) {
+    if ((queues & wait_stage.queue) != wait_stage.queue) continue;
+    const VkPipelineStageFlags stage = wait_stage.stage;
     for (const bool image_form : {false, true}) {
       SCOPED_TRACE(std::string(image_form ? "an image" : "a buffer") +
-                   ", the wait holding stages " + std::to_string(stage));
+                   ", the wait holding " + wait_stage.name);
       const Image image = make_image(VK_FORMAT_R8_UNORM, 4, 4,
                                      std::vector<std::uint8_t>(kSize, 3));
       ASSERT_TRUE(image.valid());
