@@ -9,10 +9,11 @@
 ///
 /// The libraries impose no logging framework on consumers: they emit through a
 /// handler the application can install, defaulting to stderr for warnings and
-/// errors. Because every sibling library links this one tier, a single
-/// @ref set_log_handler call routes calib's, recon's and gfx's diagnostics
-/// alike, and each message names the library that emitted it (its `source`),
-/// so a handler can still tell them apart.
+/// errors, and on iOS to the unified log as well, since there stderr reaches
+/// only a console attached at launch. Because every sibling library links
+/// this one tier, a single @ref set_log_handler call routes calib's, recon's
+/// and gfx's diagnostics alike, and each message names the library that
+/// emitted it (its `source`), so a handler can still tell them apart.
 ///
 /// The handler is process-global state, so `core_base` must be linked into a
 /// process exactly once (see DECISIONS.md, "One instance per process").
@@ -27,14 +28,18 @@ namespace volumetric_kit::core {
 /// @brief Severity of a diagnostic passed to a @ref LogHandler.
 ///
 /// The built-in default sink emits @ref LogLevel::Warning and
-/// @ref LogLevel::Error to stderr and drops @ref LogLevel::Debug and
-/// @ref LogLevel::Info; an installed handler receives every level and decides
-/// for itself.
+/// @ref LogLevel::Error to stderr, as `[<source> <level>] <message>`, and
+/// drops @ref LogLevel::Debug and @ref LogLevel::Info; an installed handler
+/// receives every level and decides for itself. On iOS the default sink also
+/// writes each line it emits to the unified log (`os_log`), a warning at the
+/// default type and an error at the error type, as public text, in entries of
+/// at most 1,000 bytes split between UTF-8 characters, with each NUL byte
+/// shown as `?`.
 enum class LogLevel {
   Debug,    ///< Verbose developer tracing; dropped by the default sink.
   Info,     ///< Normal progress information; dropped by the default sink.
-  Warning,  ///< A recoverable problem; emitted to stderr by the default sink.
-  Error,    ///< A failure; emitted to stderr by the default sink.
+  Warning,  ///< A recoverable problem; emitted by the default sink.
+  Error,    ///< A failure; emitted by the default sink.
 };
 
 /// @brief A diagnostic sink: receives each message with its severity and the
@@ -64,7 +69,8 @@ using LogHandler = std::function<void(LogLevel level, std::string_view source,
 /// calling `set_log_handler`, which would be waiting for that handler.
 ///
 /// @param handler  The sink; an empty (default-constructed) handler restores
-///                 the built-in default (warnings and errors to stderr).
+///                 the built-in default (warnings and errors to stderr, and
+///                 on iOS to the unified log).
 VKC_BASE_API void set_log_handler(LogHandler handler);
 
 /// @brief Emit a diagnostic through the current handler, or the default sink.

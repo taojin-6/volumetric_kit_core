@@ -13,6 +13,19 @@
 
 #include "log_internal.hpp"
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>  // IWYU pragma: keep (TARGET_OS_IPHONE)
+#endif
+// The default sink writes to the unified log as well on iOS and Apple's other
+// device platforms. TARGET_OS_IPHONE is 1 for Mac Catalyst too, which is a
+// macOS process and keeps macOS's sink.
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE && !TARGET_OS_MACCATALYST
+#define VKC_DEFAULT_SINK_UNIFIED_LOG
+#include <os/log.h>
+
+#include <algorithm>
+#endif
+
 namespace volumetric_kit::core {
 namespace {
 
@@ -34,7 +47,7 @@ struct LogState {
   // Notified whenever a call to a replaced Slot returns: a setter inside
   // that handler waits for the other threads, not for its own calls.
   std::condition_variable replaced_idle;
-  std::shared_ptr<Slot> slot;  // null => fall back to the default stderr sink
+  std::shared_ptr<Slot> slot;  // null => fall back to the default sink
 };
 
 LogState& state() {
@@ -119,6 +132,22 @@ void default_sink(LogLevel level, std::string_view source,
     line.append(message.data(), message.size());
     line += '\n';
     std::fwrite(line.data(), 1, line.size(), stderr);
+#ifdef VKC_DEFAULT_SINK_UNIFIED_LOG
+    // On iOS, stderr reaches only a console attached at launch (devicectl's
+    // --console); the unified log keeps the line for `log collect` and
+    // Console. %{public}, or the device shows <private>. %.*s stops at a NUL,
+    // so a NUL in the message goes as '?'. One entry per piece: the entry's
+    // cap would truncate the rest.
+    std::replace(line.begin(), line.end(), '\0', '?');
+    const os_log_type_t type =
+        level == LogLevel::Error ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT;
+    for_each_utf8_piece(std::string_view(line.data(), line.size() - 1),
+                        kUnifiedLogEntryBytes, [type](std::string_view piece) {
+                          os_log_with_type(OS_LOG_DEFAULT, type, "%{public}.*s",
+                                           static_cast<int>(piece.size()),
+                                           piece.data());
+                        });
+#endif
   }
 }
 
