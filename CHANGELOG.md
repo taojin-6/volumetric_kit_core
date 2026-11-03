@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-11-03
+
+### Fixed
+
+- `CommandBatch::acquire`'s barrier waits on every stage before it
+  (`ALL_COMMANDS`; was `TOP_OF_PIPE`, no stage), so the ownership transfer,
+  and an image's change of layout, follow the wait for an importer's
+  timeline value, or a barrier, that ordered the writer first (DECISIONS.md,
+  the 2026-11-02 exported-timeline entry's amendment). The commands after an
+  acquire also start only once earlier work on the queue is done.
+
+### Migration
+
+- Nothing to change beyond the pin and a rebuild.
+
 ## [0.44.0] - 2026-11-02
 
 ### Added
