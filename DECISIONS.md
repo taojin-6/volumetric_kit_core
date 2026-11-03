@@ -1759,7 +1759,8 @@ sensor's DeckLink driver (`VS_WITH_DECKLINK`) builds against the DeckLink
 SDK's headers and dispatch source, which no job could fetch: the SDK's
 download sits behind a form, so only the lab compiled the driver's SDK part.
 The core keeps them, and sensor's 24.04 leg checks them out at its core pin
-([tools/ci/decklink-sdk-16.0/README.md](tools/ci/decklink-sdk-16.0/README.md)).
+([tools/ci/decklink-sdk-16.0/README.md](https://github.com/taojin-6/volumetric_kit_core/blob/aa0b4b2/tools/ci/decklink-sdk-16.0/README.md),
+at the last commit that held them).
 
 - **Kept in the core, as shipped.** With nothing a job can fetch, the files
   live in the repository, held to a list of their SHA256s; a newer SDK
@@ -1769,6 +1770,21 @@ The core keeps them, and sensor's 24.04 leg checks them out at its core pin
   (2026-11-01).
 - **Headers only, no run-time library.** A leg compiles and tests the
   driver; the cameras are checked by hand.
+
+**Amended 2026-11-02: the headers live in sensor, beside the driver they
+version with.** The owner reversed "The core keeps them": a camera vendor's
+SDK is a sensor's, not the foundation's (the tiers' rule). In the core the
+files were tied to the wrong repository: a consumer built sensor's driver
+at its sensor pin against headers from its core pin, and an SDK bump took a
+core PR, a core re-pin in each consumer and their checkouts' refs. sensor
+now keeps them, unmodified, in its own `tools/ci/decklink-sdk-16.0` with
+their SHA256 test, and its action `.github/actions/decklink-sdk` checks
+them and exports `DeckLinkSDK_ROOT`, in its CI and, at the sensor pin, in a
+consumer's; an SDK bump is one sensor PR. The core's copy, its test, the
+hooks' exclude and the `.editorconfig` section are gone. A core pin from
+before this keeps the files, so a consumer's checkout of them works until
+it re-pins the core past it; it switches to sensor's action at that re-pin
+at the latest.
 
 ## 2026-11-01 — The prebuilt CI images go: each leg installs what it needs again
 
@@ -1787,6 +1803,9 @@ NVIDIA's CUDA and TensorRT.
   GHCR package is left for the owner to delete.
 - **Kept:** the DeckLink SDK's headers, now in `tools/ci/decklink-sdk-16.0/`
   with their tests (`tools/ci/test_decklink_sdk.py`), which lint runs.
+
+**Amended 2026-11-02: the DeckLink SDK's headers moved to sensor** (the
+DeckLink headers entry's amendment, above).
 
 ## 2026-11-01 — CalibRig calibrates lenses or poses, from Orbbec or DeckLink cameras
 

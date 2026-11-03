@@ -13,10 +13,3 @@ indent_size = 2
 [*.md]
 # A trailing double space is a Markdown line break.
 trim_trailing_whitespace = false
-
-[tools/ci/decklink-sdk-16.0/include/**]
-# The DeckLink SDK's files, kept as shipped (that directory's README.md).
-trim_trailing_whitespace = false
-insert_final_newline = unset
-indent_style = unset
-indent_size = unset
