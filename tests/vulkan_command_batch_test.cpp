@@ -1339,6 +1339,98 @@ TEST_F(BatchTest, RecordsAnImageTransferOnlyWhereThereIsOne) {
   EXPECT_EQ(device().counters().barriers - before.barriers, 2U);
 }
 
+TEST_F(BatchTest, AnAcquireFollowsTheWaitThatOrderedItsWriter) {
+  // An acquire happens after its barrier's first scope alone, so its
+  // transfer -- and an image's change of layout, a write -- follows the wait
+  // that ordered the writer first only through a stage that scope shares
+  // with the wait's. A submit's timeline wait holds every stage, which the
+  // layer takes to cover even an acquire on no stage (TOP_OF_PIPE); so a
+  // barrier stands in for the wait here, the writer's clear or fill made
+  // available, holding one stage at a time. The acquire is recorded as
+  // CommandBatch::record emits it, then a copy reads what the writer left.
+  // On no stage, synchronization validation reports the writer's write as
+  // unordered with the change of layout, or with the copy.
+  const VkQueueFlags queues = device().queue_flags();
+  // Each stage the wait holds, its name for a failure, and what the queue
+  // needs to hold it.
+  struct Held {
+    VkPipelineStageFlags stage;
+    const char* name;
+    VkQueueFlags queue;
+  };
+  const std::array<Held, 4> held{{
+      {VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, "ALL_COMMANDS", 0},
+      {VK_PIPELINE_STAGE_TRANSFER_BIT, "TRANSFER", 0},
+      {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, "COMPUTE_SHADER",
+       VK_QUEUE_COMPUTE_BIT},
+      {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, "FRAGMENT_SHADER",
+       VK_QUEUE_GRAPHICS_BIT},
+  }};
+  constexpr VkDeviceSize kSize = 16;  // bytes: a 4x4 R8 image's, or a buffer's
+  BufferDesc desc;
+  desc.size = kSize;
+  desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  desc.memory = MemoryUsage::Staging;
+  desc.host_access = HostAccess::Random;
+  Result<Buffer> made = allocator().create_buffer(desc);
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  const Buffer readback = *std::move(made);
+  for (const Held& wait_stage : held) {
+    if ((queues & wait_stage.queue) != wait_stage.queue) continue;
+    const VkPipelineStageFlags stage = wait_stage.stage;
+    for (const bool image_form : {false, true}) {
+      SCOPED_TRACE(std::string(image_form ? "an image" : "a buffer") +
+                   ", the wait holding " + wait_stage.name);
+      const Image image = make_image(VK_FORMAT_R8_UNORM, 4, 4,
+                                     std::vector<std::uint8_t>(kSize, 3));
+      ASSERT_TRUE(image.valid());
+      std::memset(readback.mapped(), 0, kSize);
+      const Status ran = device().submit_single_time([&](VkCommandBuffer cmd) {
+        detail::BatchTransfer transfer;
+        transfer.from = VK_QUEUE_FAMILY_EXTERNAL;
+        transfer.to = device().queue_family();
+        if (image_form) {
+          VkClearColorValue nine{};
+          nine.float32[0] = 9.0F / 255.0F;
+          const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
+                                              0, 1};
+          vkCmdClearColorImage(cmd, image.handle(), VK_IMAGE_LAYOUT_GENERAL,
+                               &nine, 1, &range);
+          transfer.image = image.handle();
+          transfer.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+          transfer.old_layout = VK_IMAGE_LAYOUT_GENERAL;
+          transfer.new_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        } else {
+          vkCmdFillBuffer(cmd, a_.handle(), 0, kSize, 0x09090909U);
+          transfer.buffer = a_.handle();
+        }
+        VkMemoryBarrier wait{};
+        wait.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        wait.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, stage, 0, 1,
+                             &wait, 0, nullptr, 0, nullptr);
+        detail::batch_acquire(cmd, detail::batch_commands(queues), transfer);
+        if (image_form) {
+          VkBufferImageCopy region{};
+          region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+          region.imageExtent = {4, 4, 1};
+          vkCmdCopyImageToBuffer(cmd, image.handle(),
+                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                 readback.handle(), 1, &region);
+        } else {
+          const VkBufferCopy region{0, 0, kSize};
+          vkCmdCopyBuffer(cmd, a_.handle(), readback.handle(), 1, &region);
+        }
+        test::host_read_barrier(cmd);
+      });
+      ASSERT_TRUE(ran.ok()) << ran.message();
+      std::vector<std::uint8_t> got(kSize);
+      std::memcpy(got.data(), readback.mapped(), got.size());
+      EXPECT_EQ(got, std::vector<std::uint8_t>(kSize, 9));
+    }
+  }
+}
+
 TEST_F(BatchTest, HandsOverAFreshImageBeforeItsFirstWrite) {
   // An image an importer writes first starts UNDEFINED: a release hands it
   // over from there, and an acquire, whose contents would be lost, is

@@ -143,11 +143,15 @@ inline void batch_transfer_barrier(VkCommandBuffer cmd,
 }
 
 // The acquiring half. The releasing half made the writes available, so this
-// makes them, and an image's new layout, visible to every command after it,
-// and waits on nothing before it.
+// makes them, and an image's new layout, visible to every command after it.
+// An acquire happens after its barrier's first scope alone, so that scope is
+// every stage: the transfer, and an image's change of layout -- a write --
+// then follow what ordered the writer first, whichever stage it holds the
+// batch at: the submit's timeline wait (ALL_COMMANDS, Device::submit_pending)
+// or a barrier. TOP_OF_PIPE there names no stage, and follows nothing.
 inline void batch_acquire(VkCommandBuffer cmd, const BatchScope& commands,
                           const BatchTransfer& transfer) {
-  batch_transfer_barrier(cmd, transfer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+  batch_transfer_barrier(cmd, transfer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
                          commands.stages, commands.access);
 }
 

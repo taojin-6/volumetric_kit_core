@@ -1852,6 +1852,19 @@ stream and the batch waits for it on the device, and neither host waits.
   same GPU imports the descriptor and stands in for it: its host's signals
   are read, waited for, and release a batch held on the device here.
 
+**Amended 2026-11-03 (core 0.44.2): the acquire after the wait waits on
+every stage.** An acquire happens after its barrier's first scope alone, so
+`CommandBatch::acquire`'s barrier follows the wait for the importer's value
+only through a stage that scope shares with the wait's (`ALL_COMMANDS`). Its
+source stage was `TOP_OF_PIPE`, which in a first scope names none: the
+transfer, and an image's change of layout, could start before the value was
+reached. It is `ALL_COMMANDS`, which follows a wait or barrier holding any
+stage; the commands after an acquire then also start only once earlier work
+on the queue is done. No validation layer reported it: synchronization
+validation (1.4.363) counts a wait on every stage as covering even an empty
+first scope. So the test records the acquire behind a barrier standing in
+for the wait, holding one stage at a time, which the layer does check.
+
 ## 2026-11-02 — FuseOrbbec's phone: a session file or a live address, in the rig's world
 
 FuseOrbbec gains a phone beside the rig (core 0.42.0; CONFIG.md,
