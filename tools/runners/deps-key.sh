@@ -8,7 +8,9 @@
 #
 # - KEY, what homebrew-key.sh printed for the leg's formulae, or none;
 # - TOOLCHAIN, 12 hex digits hashed from the machine, the compiler's
-#   --version, on macOS the macOS, Xcode and SDK versions, on Linux the
+#   --version, on macOS the macOS version, the Xcode path xcode-select
+#   names and the SDK version (an Xcode updated in place keeps its path,
+#   and shows only in the compiler's and SDK's versions), on Linux the
 #   versions of the Debian packages named, and the job's container;
 # - WORKSPACE, 12 hex digits hashed from the checkout's path, which
 #   FetchContent writes into the trees it builds.
@@ -22,8 +24,9 @@
 # Debian packages they build against; macOS has none, its formulae being in
 # KEY, so there they are not read. --verbose also prints what it hashes, to
 # stderr. It prints nothing and exits 1 when the compiler, a macOS tool or
-# dpkg-query fails, or a package is not installed. README.md says how CI
-# uses it.
+# dpkg-query fails, or when a package is not installed, naming each: one
+# dpkg does not know, or knows but never installed or removed. README.md
+# says how CI uses it.
 set -euo pipefail
 
 usage() {
@@ -102,11 +105,26 @@ sdk $sdk"
 elif [ $# -gt 0 ]; then
   command -v dpkg-query >/dev/null 2>&1 ||
     fail "dpkg-query is not on PATH, so these packages' versions cannot be read: $*"
+  # A line per package dpkg knows, in any state, ending in that state; it
+  # fails naming each package it does not know.
+  dpkg=0
   # shellcheck disable=SC2016 # dpkg-query's own fields
-  platform="$(read_out dpkg-query -W -f='${Package} ${Version}\n' "$@" | LC_ALL=C sort -u)"
-  # Known to dpkg but not installed: listed with no version.
-  absent="$(printf '%s\n' "$platform" | awk 'NF < 2 { printf " %s", $1 }')"
+  rows="$(dpkg-query -W -f='${Package} ${Version} ${db:Status-Status}\n' "$@" 2>"$tmp/err")" ||
+    dpkg=$?
+  [ "$dpkg" -eq 0 ] || cat "$tmp/err" >&2
+  # Not installed: no line of it says so. That is a package dpkg does not
+  # know, one it knows but never installed, and one removed with its
+  # configuration kept, which keeps its version. A name may give an
+  # architecture; ${Package} has none.
+  absent=""
+  for package in "$@"; do
+    printf '%s\n' "$rows" |
+      awk -v p="${package%%:*}" '$1 == p && $NF == "installed" { found = 1 } END { exit !found }' ||
+      absent="$absent $package"
+  done
   [ -z "$absent" ] || fail "not installed:$absent"
+  [ "$dpkg" -eq 0 ] || fail "dpkg-query -W $* failed"
+  platform="$(printf '%s\n' "$rows" | awk '$NF == "installed" { print $1 " " $2 }' | LC_ALL=C sort -u)"
 fi
 
 listing="arch $arch

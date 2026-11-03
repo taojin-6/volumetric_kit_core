@@ -25,10 +25,13 @@ real_path="$PATH"
 # x86_64). c++ and clang++ print a version from $STUB_CXX and $STUB_CLANG,
 # and c++ fails when STUB_CXX_FAILS is set. sw_vers, xcode-select and xcrun
 # print $STUB_MACOS, $STUB_XCODE and $STUB_SDK; xcrun fails when
-# STUB_XCRUN_FAILS is. dpkg-query answers from $DPKG, a line "name version"
-# per installed package and "name" for one dpkg knows but has not
-# installed: like the real one it lists, in name order, the packages it
-# knows, and fails naming each it does not. Every call is logged to $CALLS.
+# STUB_XCRUN_FAILS is. dpkg-query answers from $DPKG, a line "name version
+# state" per package dpkg knows, written as the real one prints it: a
+# removed package keeps its version, with the state config-files, and one
+# never installed has none, with not-installed. Like the real one it lists,
+# in name order, each line of the packages it knows, an architecture in a
+# name naming none, and fails naming each it does not; it also fails when
+# STUB_DPKG_FAILS is set. Every call is logged to $CALLS.
 stubs="$tmp/stubs"
 mkdir -p "$stubs"
 export CALLS="$tmp/calls.log" DPKG="$tmp/dpkg"
@@ -62,19 +65,20 @@ EOF
 cat >"$stubs/dpkg-query" <<'EOF'
 #!/bin/sh
 echo "dpkg-query $*" >>"$CALLS"
-[ "$1" = -W ] && [ "$2" = '-f=${Package} ${Version}\n' ] || {
+[ "$1" = -W ] && [ "$2" = '-f=${Package} ${Version} ${db:Status-Status}\n' ] || {
   echo "stub dpkg-query: unexpected: $*" >&2
   exit 64
 }
 shift 2
 status=0
 for p in "$@"; do
-  awk -v n="$p" '$1 == n { found = 1 } END { exit !found }' "$DPKG" || {
+  awk -v n="${p%%:*}" '$1 == n { found = 1 } END { exit !found }' "$DPKG" || {
     echo "dpkg-query: no packages found matching $p" >&2
     status=1
   }
 done
-for p in "$@"; do awk -v n="$p" '$1 == n { print $1 " " $2 }' "$DPKG"; done | sort -u
+for p in "$@"; do awk -v n="${p%%:*}" '$1 == n' "$DPKG"; done | sort -u
+[ -z "${STUB_DPKG_FAILS:-}" ] || { echo "dpkg-query: stub failure" >&2; exit 2; }
 exit "$status"
 EOF
 chmod +x "$stubs"/*
@@ -91,11 +95,13 @@ done
 
 # fresh: the default stubs' answers, and these packages.
 fresh() {
-  printf '%s\n' 'cmake 3.31.6-1' 'libc6-dev 2.42-0ubuntu3' 'libvulkan-dev 1.4.321-1' \
-    'libgone' >"$DPKG"
+  printf '%s\n' 'cmake 3.31.6-1 installed' 'libc6-dev 2.42-0ubuntu3 installed' \
+    'libvulkan-dev 1.4.321-1 installed' 'libgone  not-installed' \
+    'libremoved 1.2-1 config-files' 'libmulti 2.0-1 installed' \
+    'libmulti 1.9-1 config-files' >"$DPKG"
   : >"$CALLS"
   unset STUB_OS STUB_ARCH STUB_CXX STUB_CLANG STUB_CXX_FAILS STUB_MACOS STUB_XCODE \
-    STUB_SDK STUB_XCRUN_FAILS
+    STUB_SDK STUB_XCRUN_FAILS STUB_DPKG_FAILS
 }
 
 # key ARG...: runs the script; its output in $out, its stderr in $err and
@@ -205,12 +211,17 @@ container="$out"
 expect "a container changes it" "$(changed "$out")" tc
 key --workspace "$ws" --container '{"image":"ubuntu@sha256:01"}' cmake libc6-dev
 expect "and another container again" "$([ "$out" != "$container" ] && changed "$out")" tc
-printf '%s\n' 'cmake 3.31.6-2' 'libc6-dev 2.42-0ubuntu3' >"$DPKG"
+printf '%s\n' 'cmake 3.31.6-2 installed' 'libc6-dev 2.42-0ubuntu3 installed' >"$DPKG"
 key --workspace "$ws" cmake libc6-dev
 expect "a package's new version changes it" "$(changed "$out")" tc
 fresh
 key --workspace "$ws" cmake libc6-dev libvulkan-dev
 expect "another package changes it" "$(changed "$out")" tc
+key --workspace "$ws" cmake libc6-dev:amd64
+expect "a package named with its architecture is that package" "$status $out" "0 $base"
+key --verbose --workspace "$ws" libmulti
+expect "of a package also removed for another architecture, the installed one is hashed" \
+  "$status $(printf '%s\n' "$err" | grep '^libmulti')" "0 libmulti 2.0-1"
 fresh
 key --workspace "$ws"
 expect "with no packages dpkg-query is not asked" \
@@ -230,11 +241,11 @@ base="$mac"
 STUB_MACOS=26.2 key --workspace "$ws"
 expect "another macOS changes the toolchain part" "$(changed "$out")" tc
 STUB_XCODE=/Applications/Xcode-beta.app/Contents/Developer key --workspace "$ws"
-expect "another Xcode changes it" "$(changed "$out")" tc
+expect "another Xcode path changes it" "$(changed "$out")" tc
 STUB_SDK=26.2 key --workspace "$ws"
 expect "another SDK changes it" "$(changed "$out")" tc
 key --verbose --workspace "$ws"
-expect "on macOS --verbose lists the macOS, Xcode and SDK versions" \
+expect "on macOS --verbose lists the macOS version, the Xcode path and the SDK version" \
   "$(printf '%s\n' "$err" | grep -E '^(macos|xcode|sdk) ')" \
   "macos 26.1
 xcode /Applications/Xcode.app/Contents/Developer
@@ -246,9 +257,18 @@ fresh
 key --workspace "$ws" cmake libgone libvulkan-dev
 expect "a package dpkg knows but has not installed fails it, printing nothing, naming it" \
   "$status|$out|$err" "1||error: not installed: libgone"
-key --workspace "$ws" cmake nosuch libc6-dev
-expect "an unknown package fails it, printing nothing, with dpkg-query's error" \
-  "$status|$out|$(printf '%s\n' "$err" | grep -c 'nosuch')" "1||2"
+key --workspace "$ws" cmake libremoved libvulkan-dev
+expect "so does one removed with its configuration kept, which has a version" \
+  "$status|$out|$err" "1||error: not installed: libremoved"
+key --workspace "$ws" cmake nosuch libc6-dev libgone
+expect "an unknown package fails it, printing nothing, with dpkg-query's error, naming each" \
+  "$status|$out|$err" \
+  "1||dpkg-query: no packages found matching nosuch
+error: not installed: nosuch libgone"
+STUB_DPKG_FAILS=1 key --workspace "$ws" cmake libc6-dev
+expect "dpkg-query failing with every package installed fails it, printing nothing" \
+  "$status|$out|$(printf '%s\n' "$err" | grep '^error: ')" \
+  "1||error: dpkg-query -W cmake libc6-dev failed"
 status=0
 PATH="$nodpkg" "$BASH" "$script" --workspace "$ws" cmake >"$tmp/out" 2>"$tmp/err" || status=$?
 expect "packages without dpkg-query on PATH fail it, printing nothing, naming them" \

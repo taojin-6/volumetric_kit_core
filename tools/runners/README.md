@@ -288,10 +288,12 @@ brew fails.
 The dependency cache's key starts with what `deps-key.sh` prints,
 `brew<key>-tc<toolchain>-ws<workspace>`: the Homebrew key, or `none`; 12 hex
 digits of the toolchain (the machine, the compiler's `--version`, on macOS
-the macOS, Xcode and SDK versions, on Linux the versions of the Debian
-packages named, and the job's container); and 12 of the checkout's path,
-which FetchContent writes into the trees it builds. The leg and the pins'
-hash end the key.
+the macOS version, the Xcode path `xcode-select -p` prints and the SDK
+version, on Linux the versions of the Debian packages named, and the job's
+container); and 12 of the checkout's path, which FetchContent writes into
+the trees it builds. The leg and the pins' hash end the key. It prints no
+prefix, and fails, when a tool fails or a package named is not installed,
+naming each.
 
 A workflow takes both from this repository's actions, at the full SHA of the
 core commit the repository already pins, so it keeps one core pin:
@@ -332,6 +334,11 @@ core commit the repository already pins, so it keeps one core pin:
   the build finds: one left out is covered only as a listed formula's
   dependency. Name the Debian packages the dependencies build against the
   same way; `compiler` names a compiler other than `c++`.
+- Run `deps-key` after the leg installs its compiler and packages, as a
+  container leg does during the job; before, it fails, naming what is
+  missing.
+- A leg whose container image has a floating tag names its packages: the
+  tag's string stays as the image moves.
 - Every family workflow names the layer's library path
   `VKC_LAYER_LIBRARY_PATH`, and a leg without Vulkan sets neither variable.
 - Keep the prefix inside every `restore-keys` prefix, so a fallback never

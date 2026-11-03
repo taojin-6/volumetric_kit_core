@@ -1981,11 +1981,16 @@ built by another compiler, Xcode or set of Debian packages.
 take both over ([tools/runners/README.md](tools/runners/README.md#upgrading-homebrew)).
 
 - **One prefix:** `brew<key>-tc<toolchain>-ws<workspace>`. The toolchain is
-  the player's (the machine, the compiler, on macOS the macOS, Xcode and SDK
-  versions, on Linux the named packages' versions) plus the job's container
-  as the workflow names it, so a container that moves moves the key too.
+  the player's (the machine, the compiler, on macOS the macOS version, the
+  Xcode path and the SDK version, on Linux the named packages' versions)
+  plus the job's container as the workflow names it, so a container whose
+  pin moves moves the key too. An Xcode updated in place keeps its path, so
+  it shows only in its compiler's and SDK's versions; `xcodebuild -version`
+  would name it, but fails on a Mac with only the Command Line Tools. A
+  container named by a floating tag shows only in its packages' versions.
   `compiler` names one other than `c++`, as a clang or sanitizer leg needs.
-  `deps-key.sh` holds the logic, tested beside `homebrew-key.sh`.
+  `deps-key.sh` holds the logic, tested beside `homebrew-key.sh`; it fails,
+  naming each, on a package not installed, a removed one included.
 - **The formula check is the Homebrew key's.** Its script already found the
   formulae not installed and hashed them as such; it now fails, naming each,
   and fails on macOS without `brew` on PATH, where every formula is missing.

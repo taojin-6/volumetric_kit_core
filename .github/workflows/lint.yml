@@ -118,3 +118,28 @@ jobs:
             echo "::error::unexpected dependency key prefix '$DEPS' on $RUNNER_OS"
             exit 1
           fi
+      # Their failure path, as a sibling's step meets it: a formula not
+      # installed (read on macOS alone) and a compiler not on PATH each fail
+      # the step, with no output. Their error annotations are expected.
+      - id: brew-fails
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        uses: ./.github/actions/homebrew-key
+        with:
+          formulae: cmake no-such-formula-vkc
+      - id: deps-fails
+        continue-on-error: true
+        uses: ./.github/actions/deps-key
+        with:
+          compiler: no-such-c++
+      - name: Check that the failing calls failed
+        env:
+          BREW: ${{ steps.brew-fails.outcome }}/${{ steps.brew-fails.outputs.key }}${{ steps.brew-fails.outputs.prefix }}
+          DEPS: ${{ steps.deps-fails.outcome }}/${{ steps.deps-fails.outputs.prefix }}
+        run: |
+          want_brew=failure/
+          [ "$RUNNER_OS" = macOS ] || want_brew=skipped/
+          if [ "$BREW" != "$want_brew" ] || [ "$DEPS" != failure/ ]; then
+            echo "::error::homebrew-key gave '$BREW', not '$want_brew'; deps-key '$DEPS', not 'failure/'"
+            exit 1
+          fi
