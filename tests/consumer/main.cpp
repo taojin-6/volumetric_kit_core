@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// Links volumetric_kit::core and uses each piece of the base tier once -- and
-// of the vulkan tier, when the core has it -- so a broken link or include path
-// fails here rather than in a sibling. Nothing here needs a GPU.
+// Links volumetric_kit::core and uses each piece of the base tier once, a call
+// of the net tier -- and the vulkan tier, when the core has it -- so a broken
+// link or include path fails here rather than in a sibling. Nothing here needs
+// a GPU.
 
 #include <cstdio>
 #include <string>
@@ -13,6 +14,7 @@
 #include "volumetric_kit/core/base/file_io.hpp"
 #include "volumetric_kit/core/base/log.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/net/address.hpp"
 #include "volumetric_kit/core/version.hpp"
 
 #ifdef VKC_CONSUMER_HAS_CONFIG
@@ -178,6 +180,12 @@ vkc::Status run() {
 #endif
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");
+  // The net tier, which every core builds.
+  VKC_ASSIGN(const vkc::net::Endpoint lab,
+             vkc::net::parse_endpoint("10.8.0.1", 7101));
+  if (vkc::net::to_string(lab) != "10.8.0.1:7101") {
+    return vkc::Status::invalid_argument("a net endpoint did not round-trip");
+  }
   if (parse_positive(-1).ok()) return vkc::Status::numerical("accepted -1");
   if (vkc::read_file("").status().domain() !=
       vkc::Status::Code::InvalidArgument) {

@@ -38,6 +38,7 @@ uses (`calib`'s headless solver needs no Vulkan):
 | `base` | — | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics, whole-file I/O, version | now |
 | `config` | `base`, private nlohmann/json | family scenario schema, typed settings, defaults and static validation | 0.3.0 |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
+| `net` | `base` | IPv4 addresses and their checks, TCP socket calls, `dial`, `Listener`; no thread, no third-party dependency, no stream or media format | 0.42.0 (the 2026-11-02 net entry) |
 
 - `vulkan` is seeded from `recon`'s core, which carries the measured memory
   rules and the compute pieces `calib` also needs, then gains what `gfx`
@@ -1844,3 +1845,59 @@ stream and the batch waits for it on the device, and neither host waits.
 - **Tested without CUDA.** The core links no CUDA, so a second device on the
   same GPU imports the descriptor and stands in for it: its host's signals
   are read, waited for, and release a batch held on the device here.
+
+## 2026-11-02 — A net tier: the family's TCP sockets, moved from grid
+
+The owner asked: "can you explore how we can take the networking part out of
+the packages and probably put in core/? I think many parts are reusing it and
+might as well depend on core/ to have all networking related stuff in one
+place?" On the design that answered, which moves the transport and keeps the
+stream format in grid, the owner took its recommendations: "yeah go with
+recommend, start". That overrides grid's rule of 2026-10-21 (its
+DECISIONS.md), "The core gets no TCP helper until a second sibling needs
+one".
+
+- **The transport moves; the stream format stays.** `net` holds IPv4
+  addresses and their checks (`net/address.hpp`), the TCP socket calls with
+  every socket option and platform rule (`net/socket.hpp`), and `dial` and
+  `Listener` (`net/dial.hpp`), moved from grid 0.10.0. grid keeps its live
+  `.vrst` stream: `StreamServer` and `StreamClient`, whose API takes grid's
+  session and record types, their GOP rules and their default port. It
+  moves onto `net` in a release of its own.
+- **Why the core.** The address checks are wanted where grid is not: the
+  core's own config, which reads a live session's address, and the
+  applications' address entries. sensor may not include grid, and its
+  planned remote client needs the same socket rules. `dial` and `Listener`
+  have no user yet, so they move before any is built on them. The socket
+  calls have one sibling caller today, grid; a socket fix now takes a core
+  release, then grid's. That is the price the owner took.
+- **Behaviour and messages unchanged.** The player reads `StreamClient`'s
+  error prefixes, and the moved tests pin every message, so the code moved
+  with its logic as it was. Its form changed in three places: grid's `after`
+  is `deadline_after`; `peer_of` returns the peer rather than filling an
+  out-parameter; and grid's `Address`, a `sockaddr_in`, is `Endpoint`, two
+  host-order integers, so no public header includes a system socket header.
+  Each public call catches what it throws, an allocation for a message, and
+  returns it as a `Status` (`OutOfMemory`), as the core's API does; grid
+  caught it in its callers. The note a Linux sender logs once when it keeps
+  the kernel's congestion control carries source `"net"`.
+- **System sockets only, always built.** `core_net` links `core_base` and
+  the system's BSD sockets: no thread, no third-party library, no GPU API.
+  Every sibling, iOS included, builds it with nothing installed, so it has
+  no option and no `vkc_require_core` flag: the core's version says whether
+  it is there. An option comes only with a build that cannot compile it,
+  such as a WASM one.
+- **A transport on an outside library gets a tier of its own.** If QUIC or
+  a WebSocket client is ever built, on ngtcp2, Network.framework or the
+  like, it goes into an optional core tier of its own, off by default, so
+  `core_net` stays system sockets only and the core still builds with
+  nothing installed. Which tier is decided when that need comes.
+- **One copy of the test sockets.** `core_test_base` gains
+  `net_loopback.hpp`, the raw half of grid's test helpers, in `core::test`.
+  Its listener is `LoopbackListener`, apart from `net::Listener`. The
+  siblings' raw-socket tests can share it.
+- **The tests moved with the code.** grid's socket test and its dial test's
+  `Listener` and `dial` cases are `vkc_net_socket_test` and
+  `vkc_net_dial_test`, still main()s, with include and namespace edits and
+  the ones clang-tidy asked for, which had never run on them. The Mac leg
+  runs them under ThreadSanitizer, as grid's did.

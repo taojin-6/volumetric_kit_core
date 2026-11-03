@@ -99,10 +99,11 @@ _vkc_discover_cpu_tests(vkc_base_result_allocation_test 60)
 
 # core_test_base and core_test_allocation_failure (support/), in tests that are
 # main()s of their own: CHECK (test_check.hpp), the scratch directory
-# (scratch_dir.hpp), and the allocation failure (test_allocation_failure.hpp),
-# whose replacement operator new is this binary's alone. Pure CPU.
+# (scratch_dir.hpp), the loopback sockets (net_loopback.hpp), and the allocation
+# failure (test_allocation_failure.hpp), whose replacement operator new is this
+# binary's alone. Pure CPU.
 find_package(Threads REQUIRED)
-foreach(_vkc_test testing_test_check testing_scratch_dir
+foreach(_vkc_test testing_test_check testing_scratch_dir testing_net_loopback
                   testing_allocation_failure)
   add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
   target_link_libraries(vkc_${_vkc_test}_test
@@ -114,6 +115,26 @@ endforeach()
 target_link_libraries(
   vkc_testing_allocation_failure_test
   PRIVATE volumetric_kit::core_test_allocation_failure Threads::Threads)
+
+# net: the socket calls and dial / Listener, with the tests that came from grid
+# with them, main()s of their own on core_test_base, on 127.0.0.1 (and, for the
+# congestion control on Linux, the host's own address). The socket test's
+# internal cases (the allowed list, loopback, the congestion choice) reach into
+# the source directory. CI runs both again under ThreadSanitizer on macOS
+# (.github/workflows/_build.yml).
+foreach(_vkc_test net_socket net_dial)
+  add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
+  target_link_libraries(
+    vkc_${_vkc_test}_test
+    PRIVATE volumetric_kit::core_net volumetric_kit::core_test_base
+            Threads::Threads)
+  vkc_target_warnings(vkc_${_vkc_test}_test)
+  add_test(NAME vkc_${_vkc_test}_test COMMAND vkc_${_vkc_test}_test)
+  set_tests_properties(vkc_${_vkc_test}_test PROPERTIES TIMEOUT 60)
+endforeach()
+target_include_directories(
+  vkc_net_socket_test
+  PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/net")
 
 # core_test_main (support/test_main.cpp), the main every test here links: on
 # Linux a death test's child dumps no core. Elsewhere it changes nothing.

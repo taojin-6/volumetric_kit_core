@@ -3,6 +3,15 @@
 # tests at run time. Every other check of the root .clang-tidy still applies,
 # and the library keeps the analyzer (src/, and tests/support/, which siblings
 # link).
+#
+# A main() test's CHECK(cond) expands to `if (!(cond))`, so to
+# readability-simplify-boolean-expr a condition joined with &&, as
+# CHECK(a.ok() && *a != 0), is a negated conjunction to rewrite by De Morgan's
+# laws, which the macro's argument cannot take. Its other simplifications
+# still apply.
 InheritParentConfig: true
 Checks: >
   -clang-analyzer-*
+CheckOptions:
+  - key: readability-simplify-boolean-expr.SimplifyDeMorgan
+    value: false

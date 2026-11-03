@@ -26,7 +26,8 @@ buffers zero-copy on one shared device.
 > capture card to write, and the shared device a
 > compute library and a renderer both adopt. Camera
 > models and sensors are not core tiers: they stay in recon and calib
-> ([DECISIONS.md](DECISIONS.md#tiers)).
+> ([DECISIONS.md](DECISIONS.md#tiers)). The `net` tier holds the family's
+> TCP sockets, moved from grid; grid keeps its stream format on top.
 
 [AGENTS.md](AGENTS.md) is the shared working guide for contributors, Codex and
 Claude Code; `CLAUDE.md` imports it.
@@ -38,9 +39,11 @@ Claude Code; `CLAUDE.md` imports it.
 | `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics (busy, blocked and device time), whole-file I/O, version |
 | `config` | `volumetric_kit::core_config` | Optional CPU-only family scenario format, typed settings, defaults and static validation; private nlohmann/json dependency |
 | `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, persistent host rings (`HostRing`), shader build functions, tiled GPU timers and calibrated clocks, external memory and timelines, shared-device bootstrap, forward declarations of its classes |
+| `net` | `volumetric_kit::core_net` | IPv4 addresses and their checks, the TCP socket calls (non-blocking, close-on-exec, no SIGPIPE), `dial` and `Listener`; on the system's sockets alone, always built |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no
-GPU (calib's headless solver) links only the tiers it uses.
+GPU (calib's headless solver) links only the tiers it uses. `base` and `net`
+need nothing installed and are always built.
 
 ## Scenario configuration
 
@@ -126,6 +129,7 @@ Linux with lavapipe; lint and the required gate also stay hosted
 ([tools/runners/README.md](tools/runners/README.md)). The Mac leg also runs
 the `HostRing` tests built with ThreadSanitizer, the one check of a ring
 slot's threading rule (DECISIONS.md, "Where memory lives").
+It runs the net tier's tests there too, as grid ran them before they moved.
 
 `Allocator::memory_stats()` reports each heap's usage against its budget
 (`usage_bytes`, `budget_bytes`) beside this allocator's own share: its
@@ -180,6 +184,15 @@ vkc_embed_shaders(their_target SYMBOL_PREFIX their_
                   INCLUDE_TARGETS your::library SHADERS shaders/kernel.comp)
 ```
 
+For the net tier, require `vkc_require_core(0.42.0)` and link
+`volumetric_kit::core_net`; it needs no option:
+
+```cpp
+#include "volumetric_kit/core/net/dial.hpp"
+// Inside a function returning Status or Result:
+VKC_ASSIGN(vkc::UniqueFd fd, vkc::net::dial("10.8.0.1", 7101, std::chrono::seconds{2}));
+```
+
 A sibling's own floor works as the core's: the sibling sets
 `VKC_PACKAGE_VERSION` on its umbrella target (`volumetric_kit::<name>`) to its
 `project(VERSION)`, and a project that adds it calls
@@ -229,8 +242,9 @@ support, which a sibling gets by setting `VKC_BUILD_TEST_SUPPORT` ON before
   (`volumetric_kit/core/testing/two_family_device.hpp`).
 - A test that is a `main()` of its own, with or without the vulkan tier,
   links `volumetric_kit::core_test_base` for `CHECK`
-  (`volumetric_kit/core/testing/test_check.hpp`) and a scratch directory
-  (`volumetric_kit/core/testing/scratch_dir.hpp`), and one that fails an
+  (`volumetric_kit/core/testing/test_check.hpp`), a scratch directory
+  (`volumetric_kit/core/testing/scratch_dir.hpp`) and raw sockets on
+  127.0.0.1 (`volumetric_kit/core/testing/net_loopback.hpp`), and one that fails an
   allocation on purpose links `volumetric_kit::core_test_allocation_failure`
   (`volumetric_kit/core/testing/test_allocation_failure.hpp`). Without the
   vulkan tier, `VKC_BUILD_TEST_SUPPORT` builds only these and

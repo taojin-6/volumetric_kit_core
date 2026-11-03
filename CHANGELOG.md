@@ -7,6 +7,52 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-02
+
+### Added
+
+- The `net` tier, `volumetric_kit::core_net`: the family's TCP sockets,
+  moved from grid 0.10.0's networking tier with their behaviour and
+  messages (DECISIONS.md, the 2026-11-02 net entry). On `core_base` and the
+  system's sockets alone, so it is always built, with no option.
+  - `net/address.hpp`: `Endpoint`, an IPv4 address and port in host byte
+    order; `parse_ipv4`; `parse_endpoint`, one host's numeric address, never
+    the wildcard, with grid's three refusals; `to_string`; `resolve`, a
+    name's IPv4 addresses for TCP.
+  - `net/socket.hpp`: the calls a sender and a reader are built from, each
+    socket non-blocking and close-on-exec, every call retried on EINTR, no
+    send raising SIGPIPE: `prepare`, `peer_of`, `set_up_sender`
+    (TCP_NODELAY, TCP_NOTSENT_LOWAT, and BBR on Linux off loopback when the
+    kernel allows it), `listen_on`, `bound_port`, `accept_next`,
+    `start_connect`, `finish_connect`, `wait_for`, `send_some`,
+    `unacknowledged`, `receive_some` and its `Received`, `deadline_after`,
+    `kPollSlice` and `kReceiveBuffer`.
+  - `net/dial.hpp`: `dial`, a sender connecting to its reader, and
+    `Listener`, the reader listening on one numeric IPv4 address.
+- `volumetric_kit/core/testing/net_loopback.hpp` in `core_test_base`:
+  blocking raw sockets on 127.0.0.1 for a test to play a sender or a reader
+  with (`bind_loopback` and its `LoopbackListener`, `connect_loopback`,
+  `accept_within`, `closed_port`, `local_port`, `loopback`, `send_bytes`,
+  `read_upto`), the raw half of grid's test helpers.
+
+### Changed
+
+- The umbrella `volumetric_kit::core` links `core_net`.
+- The Mac leg's ThreadSanitizer step runs the net tier's tests beside the
+  `HostRing` ones.
+- clang-tidy: include-cleaner ignores the platform headers the socket
+  constants, `htons` and the chrono literals come from (`.clang-tidy`), and
+  the test files keep De Morgan's rewrite off, which a `CHECK(a && b)`
+  cannot take (`tests/.clang-tidy`).
+
+### Migration
+
+- Nothing to change beyond the pin. Every build of the core now compiles
+  `core_net`'s three files, which need nothing installed. A target that
+  calls `core::net` links `volumetric_kit::core_net`, or the umbrella. grid
+  keeps its own copy until its own release moves it onto this one; the two
+  share no name.
+
 ## [0.41.0] - 2026-11-02
 
 ### Added
