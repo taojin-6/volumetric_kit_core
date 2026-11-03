@@ -698,5 +698,63 @@ TEST_F(DeviceAllocationTest, RetainOutOfMemoryPoisonsTheBatch) {
   }
 }
 
+TEST_F(DeviceAllocationTest, SubmitOutOfMemoryRunsNothing) {
+  // Either submit's first allocation, on an untimed batch with nothing to
+  // stage or read back, is the work's keep_alive: host work before any
+  // driver call. Failing it submits nothing and lets the owner go.
+  Result<Buffer> target = device_storage_buffer(allocator(), 16);
+  ASSERT_TRUE(target.ok()) << target.status().message();
+  for (const bool async : {false, true}) {
+    SCOPED_TRACE(async ? "async" : "blocking");
+    auto owner = std::make_shared<int>(1);
+    const std::weak_ptr<int> watch = owner;
+    CommandBatch batch(device(), allocator());
+    ASSERT_TRUE(batch.fill(*target, 0, 16, 1U).ok());
+    batch.retain(std::move(owner));
+    const DeviceCounters before = device().counters();
+    Status submitted;
+    bool escaped = false;
+    test::AllocationFailure failure(0);
+    try {
+      submitted = async ? batch.submit_async({}, {}).status() : batch.submit();
+    } catch (...) {
+      escaped = true;
+    }
+    const bool failed = failure.stop();
+    ASSERT_TRUE(failed);
+    EXPECT_FALSE(escaped);
+    EXPECT_EQ(submitted.domain(), Status::Code::OutOfMemory);
+    EXPECT_EQ(device().counters().submits, before.submits);
+    EXPECT_TRUE(watch.expired());
+  }
+}
+
+TEST_F(DeviceAllocationTest, BatchTimingOutOfMemoryCannotFailCompletedWork) {
+  // As Device's own: an unavailable timer settles the batch's rows on the
+  // host after the fence reset, the last driver call, and the batch holds
+  // nothing whose release calls the driver.
+  Result<Buffer> target = device_storage_buffer(allocator(), 16);
+  ASSERT_TRUE(target.ok()) << target.status().message();
+  GpuTimer timer;
+  CommandBatch batch(device(), allocator());
+  batch.time(timer);
+  ASSERT_TRUE(batch.fill(*target, 0, 16, 7U).ok());
+  const DeviceCounters before = device().counters();
+  const ResetFailureGuard cleanup;
+  fail_after_reset = true;
+  const Status result = batch.submit();
+  const bool injected = after_reset_failure && after_reset_failure->stop();
+  after_reset_failure.reset();
+  fail_after_reset = false;
+  ASSERT_TRUE(injected);
+  EXPECT_TRUE(result.ok()) << result.message();
+  EXPECT_EQ(device().counters().submits, before.submits + 1);
+  std::uint32_t word = 0;
+  CommandBatch read(device(), allocator());
+  ASSERT_TRUE(read.readback(*target, 0, 4, &word).ok());
+  ASSERT_TRUE(read.submit().ok());
+  EXPECT_EQ(word, 7U);
+}
+
 }  // namespace
 }  // namespace volumetric_kit::core

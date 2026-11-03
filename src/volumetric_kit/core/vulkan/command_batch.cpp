@@ -1095,7 +1095,10 @@ Result<const Buffer*> CommandBatch::place_readbacks(
   return readbacks;
 }
 
-Status CommandBatch::submit() {
+// Out of host memory, the batch fails with OutOfMemory. Before the device
+// takes the work -- its keep_alive, its recording -- none of it ran, and what
+// the batch held goes as this returns.
+Status CommandBatch::submit() try {
   const Status submitted = submit_blocking();
   // Failed before its tiles opened -- refused, or short of staging or a
   // command buffer -- the batch reads as one that failed on the device: the
@@ -1104,6 +1107,9 @@ Status CommandBatch::submit() {
     GpuTiles::refused(*timing_timer(), std::move(keys_)).publish();
   }
   return submitted;
+} catch (...) {
+  return check(
+      exception_status("CommandBatch::submit", Status::Code::OutOfMemory));
 }
 
 Status CommandBatch::submit_blocking() {
@@ -1140,12 +1146,19 @@ Status CommandBatch::submit_blocking() {
       },
       retained, &in_flight);
   if (timer != nullptr) {
-    if (submitted.ok()) {
-      tiles.resolve();
-    } else {
-      tiles.drop(in_flight);
+    // A diagnostic must not fail the work: out of memory settling the rows,
+    // they go unpublished and the submit's own result stands. A range the
+    // work may still write is marked before anything allocates.
+    try {
+      if (submitted.ok()) {
+        tiles.resolve();
+      } else {
+        tiles.drop(in_flight);
+      }
+      tiles.publish();
+      // NOLINTNEXTLINE(bugprone-empty-catch)
+    } catch (...) {
     }
-    tiles.publish();
   }
   VKC_TRY(submitted);
 
@@ -1155,9 +1168,11 @@ Status CommandBatch::submit_blocking() {
   return {};
 }
 
+// Out of host memory, as submit. Nothing allocates once the work is pending,
+// so a batch that fails here runs none of it.
 Result<PendingBatch> CommandBatch::submit_async(
     const std::vector<TimelinePoint>& wait,
-    const std::vector<TimelinePoint>& signal) {
+    const std::vector<TimelinePoint>& signal) try {
   // The values first, before the batch is marked submitted, so a refused one
   // can be corrected and the batch submitted again. Device::submit_pending
   // checks them again, for its own callers.
@@ -1209,6 +1224,9 @@ Result<PendingBatch> CommandBatch::submit_async(
   pending.retained_ = retained;
   if (readbacks != nullptr) pending.readback_memory_ = readbacks->mapped();
   return pending;
+} catch (...) {
+  return check(exception_status("CommandBatch::submit_async",
+                                Status::Code::OutOfMemory));
 }
 
 PendingBatch::PendingBatch(PendingBatch&& other) noexcept
@@ -1283,7 +1301,7 @@ Status PendingBatch::wait(std::uint64_t timeout_ns) {
 
 // Out of memory, the buffer or owner goes as this returns, so the batch is
 // poisoned: nothing recorded on what it holds may run.
-void CommandBatch::retain(Buffer buffer) try {
+void CommandBatch::retain(Buffer buffer) noexcept try {
   if (buffer.valid()) staging_.push_back(std::move(buffer));
 } catch (...) {
   static_cast<void>(check(
@@ -1291,7 +1309,7 @@ void CommandBatch::retain(Buffer buffer) try {
 }
 
 // With the ring slots, so both submits move it into the work's keep_alive.
-void CommandBatch::retain(std::shared_ptr<const void> owner) try {
+void CommandBatch::retain(std::shared_ptr<const void> owner) noexcept try {
   if (owner != nullptr) slots_.push_back(std::move(owner));
 } catch (...) {
   static_cast<void>(check(

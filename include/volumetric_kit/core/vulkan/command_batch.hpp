@@ -40,11 +40,12 @@ struct ComputeKernel;
 /// @brief A @ref CommandBatch submitted without waiting: what
 ///        @ref CommandBatch::submit_async returns.
 ///
-/// Holds the batch's staging and readback memory, and the @ref HostRing slots
-/// it binds, until a @ref wait sees its work complete; that wait fills every
-/// readback destination, once, and frees them. Until then everything the batch
-/// recorded -- buffers, images in their layouts, the dispatched kernels'
-/// pipelines -- and every readback destination must stay alive. So must each
+/// Holds the batch's staging and readback memory, the @ref HostRing slots it
+/// binds and what it retains (@ref CommandBatch::retain), until a @ref wait
+/// sees its work complete; that wait fills every readback destination, once,
+/// and frees them. Until then everything else the batch recorded -- buffers,
+/// images in their layouts, the dispatched kernels' pipelines -- and every
+/// readback destination must stay alive. So must each
 /// dispatched kernel's descriptor set, unwritten and unfreed, until a wait sees
 /// the work complete: that wait refuses the batch if one was rewritten through
 /// any copy, or freed, since the submit. Destroying an unfinished one waits for
@@ -159,8 +160,9 @@ class VKC_VULKAN_API PendingBatch {
 
   GpuTiles tiles_;
   Device::PendingSubmit submit_;
-  // The batch's staging and readback memory, which the submit's keep_alive
-  // shares; readback_memory_ is the mapping inside it.
+  // The batch's staging and readback memory, the ring slots it binds and
+  // what it retains, which the submit's keep_alive shares; readback_memory_
+  // is the mapping inside it.
   std::shared_ptr<void> retained_;
   const void* readback_memory_ = nullptr;
   std::vector<Readback> readbacks_;
@@ -668,7 +670,7 @@ class VKC_VULKAN_API CommandBatch {
   /// VKC_ASSIGN(upload, device_storage_buffer(allocator, bigger));
   /// @endcode
   /// @param buffer  The buffer; may be empty, which keeps nothing.
-  void retain(Buffer buffer);
+  void retain(Buffer buffer) noexcept;
 
   /// @brief Keep @p owner alive with the batch's work, by the policy of the
   ///        batch's own staging: until the work has completed, and after a
@@ -684,8 +686,10 @@ class VKC_VULKAN_API CommandBatch {
   ///   still run, so the device keeps it with the command buffer until it is
   ///   destroyed, waits for the work then, and lets it go before the
   ///   `VkDevice` (@ref Device::submit_single_time), on the thread destroying
-  ///   the device; a holder freed there must not submit to it. Work still
-  ///   unfinished then keeps it until the process exits.
+  ///   the device. A holder freed there must not submit to that device, nor
+  ///   own a @ref PendingBatch or @ref Device::PendingSubmit of it, whose
+  ///   destruction would wait on a fence the device may have destroyed. Work
+  ///   still unfinished then keeps it until the process exits.
   /// - The submit refuses the batch, or fails before the device takes the
   ///   work: nothing ran, and it goes as the submit returns. A refusal of
   ///   @ref submit_async's values leaves it with the unsubmitted batch, for
@@ -701,7 +705,7 @@ class VKC_VULKAN_API CommandBatch {
   /// VKC_ASSIGN(PendingBatch pending, batch.submit_async({}, {{&ready, n}}));
   /// @endcode
   /// @param owner  Any shared owner; null keeps nothing.
-  void retain(std::shared_ptr<const void> owner);
+  void retain(std::shared_ptr<const void> owner) noexcept;
 
   /// @brief Time the batch's tiles in @p timer, even with no tagged command:
   ///        such a batch still has a span (@ref PendingBatch::device_span).
@@ -725,7 +729,11 @@ class VKC_VULKAN_API CommandBatch {
   /// @return OK; the first refusal a recording call returned;
   ///         @ref Status::Code::InvalidArgument for a second submit, a
   ///         moved-from batch, or a set rewritten through any copy, or freed,
-  ///         after its dispatch was recorded; or a staging or Vulkan failure.
+  ///         after its dispatch was recorded; a staging or Vulkan failure; or
+  ///         @ref Status::Code::OutOfMemory when host memory runs out, which
+  ///         before the device takes the work runs none of it. Out of memory
+  ///         settling the tiles of work that ran fails nothing: those rows go
+  ///         unpublished.
   Status submit();
 
   /// @brief Submit everything recorded as one command buffer, after every
@@ -764,10 +772,11 @@ class VKC_VULKAN_API CommandBatch {
   ///                @ref Device::submit_pending allows them.
   /// @return The pending batch; what @ref submit refuses, for the same
   ///         reasons; what @ref Device::submit_pending refuses for the
-  ///         values; or a staging or Vulkan failure. A refusal of the values
-  ///         comes first and leaves the batch unsubmitted, for a submit with
-  ///         corrected ones; any other refusal or failure leaves it
-  ///         submitted. None runs any of it.
+  ///         values; a staging or Vulkan failure; or
+  ///         @ref Status::Code::OutOfMemory when host memory runs out. A
+  ///         refusal of the values comes first and leaves the batch
+  ///         unsubmitted, for a submit with corrected ones; any other refusal
+  ///         or failure leaves it submitted. None runs any of it.
   Result<PendingBatch> submit_async(const std::vector<TimelinePoint>& wait,
                                     const std::vector<TimelinePoint>& signal);
 

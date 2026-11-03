@@ -268,11 +268,11 @@ V3's choices, from the same comparison (gfx has no compute):
   the batch cannot see -- a caller's frame, the pictures behind its
   bindings -- that the caller lets go before the work completes. It joins
   the ring slots in the work's `keep_alive`, so it gets the batch's own
-  policy (the next bullet): released by a wait that sees the work complete,
-  kept by the device after a failed wait until its destruction has waited,
-  dropped by a refused batch. Siblings had held such inputs by hand, each with
-  its own failed-wait rule: leaked for good, or freed while the device might
-  still read them.
+  policy ("After a failed wait the device keeps what the work uses", below):
+  released by a wait that sees the work complete, kept by the device after a
+  failed wait until its destruction has waited, dropped by a refused batch.
+  Siblings had held such inputs by hand, each with its own failed-wait rule:
+  leaked for good, or freed while the device might still read them.
 - **Image copies take the common uncompressed color formats**, 8- to 128-bit
   texels, where recon's took `R8` and `R8G8`. They read the layout
   `Image::layout` records (V2's `set_layout` keeps it current) and refuse a

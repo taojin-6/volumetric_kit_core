@@ -26,7 +26,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 - `CommandBatch::retain(Buffer)` out of memory poisons the batch, so its
   submit returns `OutOfMemory` and runs nothing, where `std::bad_alloc`
-  escaped the call. The new overload does the same.
+  escaped the call. The new overload does the same; both are `noexcept`.
+- `CommandBatch::submit` and `submit_async` return `OutOfMemory` when host
+  memory runs out, where `std::bad_alloc` escaped -- at the work's
+  `keep_alive` and its recording, before the device took any of it, so none
+  runs. Out of memory settling the tiles of a blocking batch whose work ran
+  leaves those rows unpublished and the work's result standing, as
+  `Device::submit_single_time` does.
 
 ### Migration
 
@@ -36,6 +42,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   should `retain` that owner on the batch before its submit and delete the
   hand-written hold: sensor's and recon's are the next PRs, stacked on this
   release.
+- `batch.retain({})` no longer compiles, as `{}` fits both overloads; pass
+  `Buffer{}` or `nullptr`, or drop the call, which keeps nothing either way.
+  No sibling calls it so.
 
 ## [0.44.0] - 2026-11-02
 
