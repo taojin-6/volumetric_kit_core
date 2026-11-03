@@ -1106,7 +1106,8 @@ failed to configure, build or link until it was cleared by hand.
   version-free `opt/` links is not in a build's hands: Homebrew's pkg-config
   files name the Cellar.
 - **A job on the self-hosted Mac installs nothing:** it fails, naming any
-  formula missing. Installing one can upgrade installed dependencies that
+  formula missing, as the key's action does (the 2026-11-03 entry).
+  Installing one can upgrade installed dependencies that
   other legs build against (`HOMEBREW_NO_INSTALL_UPGRADE` spares only the
   named formula), and legs installing at once collide on Homebrew's locks;
   calib decided this first (its DECISIONS.md, 2026-10-16). GitHub-hosted
@@ -1968,3 +1969,38 @@ one too, and calling those IPv6 alone would mislead.
   `parse_ipv4` refuses goes to the system's `getaddrinfo`, which glibc reads
   as octal (8.8.0.1) and Apple as decimal (10.8.0.1). A caller that resolves
   a typed host meets this.
+
+## 2026-11-03 — One dependency-cache key prefix, and the formula check, from the core
+
+Each build workflow copied the four lines that hash the checkout's path into
+its `build/_deps` cache key, and the loop that fails on a Mac formula not
+installed; four carried a TODO asking the core for an action. The player
+alone also hashed the toolchain, so the other build legs restored trees
+built by another compiler, Xcode or set of Debian packages.
+`.github/actions/deps-key` and the extended `.github/actions/homebrew-key`
+take both over ([tools/runners/README.md](tools/runners/README.md#upgrading-homebrew)).
+
+- **One prefix:** `brew<key>-tc<toolchain>-ws<workspace>`. The toolchain is
+  the player's (the machine, the compiler, on macOS the macOS version, the
+  Xcode path and the SDK version, on Linux the named packages' versions)
+  plus the job's container as the workflow names it, so a container whose
+  pin moves moves the key too. An Xcode updated in place keeps its path, so
+  it shows only in its compiler's and SDK's versions; `xcodebuild -version`
+  would name it, but fails on a Mac with only the Command Line Tools. A
+  container named by a floating tag shows only in its packages' versions.
+  `compiler` names one other than `c++`, as a clang or sanitizer leg needs.
+  `deps-key.sh` holds the logic, tested beside `homebrew-key.sh`; it fails,
+  naming each, on a package not installed, a removed one included.
+- **The formula check is the Homebrew key's.** Its script already found the
+  formulae not installed and hashed them as such; it now fails, naming each,
+  and fails on macOS without `brew` on PATH, where every formula is missing.
+  It outputs Homebrew's prefix and nothing about Vulkan: a Vulkan leg exports
+  `VK_LAYER_PATH` and the family's one name for the layer's library path,
+  `VKC_LAYER_LIBRARY_PATH`, from it.
+- **Callers keep their cache step.** Each keeps its own `actions/cache`
+  step, the leg and pins in its key, and its choice of `restore-keys`.
+- **Not taken:** a hosted runner's retried `brew install`, which no family
+  Mac leg runs today; it waits on whether a hosted Mac leg stays an option.
+- **The cost:** each repository adopts the actions at its next core re-pin
+  (an action's ref is the core pin), and its caches miss once. No core
+  version moves: the library is unchanged.

@@ -14,7 +14,8 @@ host side, for the family.
 | `setup-runners.sh [--user <account>] <recon\|gfx\|calib\|player\|owner/repo>` | registers a repository's runners on this host |
 | `teardown-runners.sh [--user <account>] <recon\|gfx\|calib\|player\|owner/repo>` | stops, deregisters and deletes them |
 | `common.sh` | what the two scripts share |
-| `homebrew-key.sh <formula>...` | prints a cache key of their installed Homebrew versions ([Upgrading Homebrew](#upgrading-homebrew)) |
+| `homebrew-key.sh <formula>...` | prints a cache key of their installed Homebrew versions, failing on one not installed ([Upgrading Homebrew](#upgrading-homebrew)) |
+| `deps-key.sh --workspace <path> ...` | prints a dependency cache key's prefix: the Homebrew key, the toolchain and the path ([Upgrading Homebrew](#upgrading-homebrew)) |
 
 Runners on a personal account belong to one repository, so a host serving
 several carries a set for each. Any other repository is named in full, as
@@ -277,43 +278,77 @@ When an upgrade moves `molten-vk`, install MoltenVK's iOS release of the
 same version and re-run step 5 of [Macs](#macs) with its path
 ([DECISIONS.md](../../DECISIONS.md), the 2026-10-19 entry).
 
-A leg's key is what `homebrew-key.sh` prints for the formulae it uses: 16
-hex digits that change whenever the installed version of one of them, or of
-anything they depend on, does, and `none` off macOS or without `brew`. It
-only reads, with Homebrew's auto-update off, and prints no key when brew
-fails. A workflow gets it from this repository's action, at the full SHA of
-the core commit the repository already pins, so it keeps one core pin:
+A leg's Homebrew key is what `homebrew-key.sh` prints for the formulae it
+uses: 16 hex digits that change whenever the installed version of one of
+them, or of anything they depend on, does, and `none` off macOS. It only
+reads, with Homebrew's auto-update off. It prints no key, and fails, when a
+formula is not installed or `brew` is not on PATH, naming each, and when
+brew fails.
+
+The dependency cache's key starts with what `deps-key.sh` prints,
+`brew<key>-tc<toolchain>-ws<workspace>`: the Homebrew key, or `none`; 12 hex
+digits of the toolchain (the machine, the compiler's `--version`, on macOS
+the macOS version, the Xcode path `xcode-select -p` prints and the SDK
+version, on Linux the versions of the Debian packages named, and the job's
+container); and 12 of the checkout's path, which FetchContent writes into
+the trees it builds. The leg and the pins' hash end the key. It prints no
+prefix, and fails, when a tool fails or a package named is not installed,
+naming each.
+
+A workflow takes both from this repository's actions, at the full SHA of the
+core commit the repository already pins, so it keeps one core pin:
 
 ```yaml
-- name: Install or check the Homebrew formulae
-  id: formulae
-  run: |
-    pkgs="cmake glm ffmpeg pkgconf"
-    echo "formulae=$pkgs" >>"$GITHUB_OUTPUT"
-    # ... installs or checks $pkgs, as the last rule below says
 - name: Homebrew key
   id: brew
+  if: runner.os == 'macOS'
   uses: taojin-6/volumetric_kit_core/.github/actions/homebrew-key@<full SHA of the core pin>
   with:
-    formulae: ${{ steps.formulae.outputs.formulae }}
+    formulae: cmake glm molten-vk vulkan-loader vulkan-validationlayers
+# A Vulkan leg's layer manifest names its library without a path; set the
+# search path only on the commands that run Vulkan.
+- name: Validation layer
+  if: runner.os == 'macOS'
+  env:
+    BREW_PREFIX: ${{ steps.brew.outputs.prefix }}
+  run: |
+    echo "VKC_LAYER_LIBRARY_PATH=$BREW_PREFIX/lib" >>"$GITHUB_ENV"
+    echo "VK_LAYER_PATH=$BREW_PREFIX/share/vulkan/explicit_layer.d" >>"$GITHUB_ENV"
+- name: Dependency cache key
+  id: deps
+  uses: taojin-6/volumetric_kit_core/.github/actions/deps-key@<full SHA of the core pin>
+  with:
+    brew: ${{ steps.brew.outputs.key }}
+    container: ${{ inputs.container }}
+    packages: cmake libc6-dev libvulkan-dev
 - name: Cache third-party deps
   uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
   with:
     path: build/_deps
-    key: deps-<leg>-brew${{ steps.brew.outputs.key }}-${{ hashFiles('third_party/CMakeLists.txt') }}
-    restore-keys: deps-<leg>-brew${{ steps.brew.outputs.key }}-
+    key: deps-<leg>-${{ steps.deps.outputs.prefix }}-${{ hashFiles('third_party/CMakeLists.txt') }}
+    restore-keys: deps-<leg>-${{ steps.deps.outputs.prefix }}-
 ```
 
-- Name the leg's formulae once, in the step that installs or checks them,
-  and pass that list to the action. List every formula the build finds: one
-  left out is covered only as a listed formula's dependency.
-- Keep the key inside every `restore-keys` prefix, so a fallback never
-  restores a tree built on other versions.
-- On the self-hosted Mac a job installs nothing: it fails, naming any
-  formula missing, and the owner installs that by hand while CI is idle
+- Name the leg's formulae once, in the action's input, or in the step that
+  installs them where one does and passes its list on. List every formula
+  the build finds: one left out is covered only as a listed formula's
+  dependency. Name the Debian packages the dependencies build against the
+  same way; `compiler` names a compiler other than `c++`.
+- Run `deps-key` after the leg installs its compiler and packages, as a
+  container leg does during the job; before, it fails, naming what is
+  missing.
+- A leg whose container image has a floating tag names its packages: the
+  tag's string stays as the image moves.
+- Every family workflow names the layer's library path
+  `VKC_LAYER_LIBRARY_PATH`, and a leg without Vulkan sets neither variable.
+- Keep the prefix inside every `restore-keys` prefix, so a fallback never
+  restores a tree built on other versions, by another toolchain or at
+  another path. Whether a leg has `restore-keys` at all is its own choice.
+- On the self-hosted Mac a job installs nothing: the action fails, naming
+  any formula missing, and the owner installs that by hand while CI is idle
   ([why](../../DECISIONS.md#a-brew-upgrade-needs-no-cache-clearing)).
   GitHub-hosted runners install what their image lacks, with
-  `HOMEBREW_NO_AUTO_UPDATE` set.
+  `HOMEBREW_NO_AUTO_UPDATE` set, before the action runs.
 
 ## Pausing, moving and removing a host
 

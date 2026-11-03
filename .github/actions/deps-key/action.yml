@@ -1,0 +1,56 @@
+name: Dependency cache key
+description: >-
+  The prefix of a build's dependency-cache key,
+  brew<Homebrew key>-tc<toolchain>-ws<workspace>: what a cached FetchContent
+  tree was built with beyond its pins.
+
+# tools/runners/deps-key.sh computes it, and tools/runners/README.md says how
+# a workflow uses it. Siblings use this action by commit, which brings the
+# script at that commit with it.
+inputs:
+  brew:
+    description: The homebrew-key action's key; empty or "none" where it did not run.
+    default: ''
+  container:
+    description: The job's container as the workflow names it; empty for none.
+    default: ''
+  compiler:
+    description: The C++ compiler the dependencies build with.
+    default: c++
+  packages:
+    description: >-
+      The Debian packages the dependencies build against, separated by spaces
+      or newlines; their versions are hashed on Linux, and not read on macOS.
+    default: ''
+outputs:
+  prefix:
+    description: brew<key or none>-tc<12 hex digits>-ws<12 hex digits>.
+    value: ${{ steps.key.outputs.prefix }}
+runs:
+  using: composite
+  steps:
+    - id: key
+      name: Dependency cache key
+      shell: bash
+      env:
+        BREW_KEY: ${{ inputs.brew }}
+        CONTAINER: ${{ inputs.container }}
+        COMPILER: ${{ inputs.compiler }}
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        err="$(mktemp "${RUNNER_TEMP:-/tmp}/deps-key.XXXXXX")"
+        status=0
+        echo "::group::What the key hashes"
+        # shellcheck disable=SC2086 # one argument per package
+        prefix="$(bash "$GITHUB_ACTION_PATH/../../../tools/runners/deps-key.sh" \
+          --verbose --workspace "$GITHUB_WORKSPACE" --brew "$BREW_KEY" \
+          --container "$CONTAINER" --compiler "$COMPILER" $PACKAGES 2>"$err")" || status=$?
+        cat "$err"
+        echo "::endgroup::"
+        if [ "$status" -ne 0 ]; then
+          grep '^error: ' "$err" | sed 's/^error: /::error::/' ||
+            echo "::error::deps-key.sh failed with status $status"
+          exit "$status"
+        fi
+        echo "Dependency key prefix: $prefix"
+        echo "prefix=$prefix" >>"$GITHUB_OUTPUT"

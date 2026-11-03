@@ -7,6 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- `.github/actions/deps-key` and `tools/runners/deps-key.sh`: the prefix of a
+  build's dependency-cache key, `brew<key>-tc<toolchain>-ws<workspace>`, the
+  toolchain hashed from the machine, the compiler, the macOS version, the
+  Xcode path and the SDK version or the named Debian packages' versions, and
+  the job's container; it fails, naming each, on a package not installed
+  (DECISIONS.md, the 2026-11-03 entry).
+
+### Changed
+
+- `.github/actions/homebrew-key` fails, naming each, on a formula not
+  installed (it hashed it as such) and on macOS without `brew` on PATH (it
+  printed `none`), and outputs Homebrew's `prefix`; `homebrew-key.sh` takes
+  `--print-prefix`.
+
+### Migration
+
+- At its next core re-pin, a sibling's build workflow replaces its formula
+  loop, its workspace hash and any toolchain hash with the two actions at the
+  new pin, and keys its cache on
+  `deps-<leg>-${{ steps.deps.outputs.prefix }}-<pins>`
+  ([tools/runners/README.md](tools/runners/README.md#upgrading-homebrew)).
+  A Vulkan leg sets `VK_LAYER_PATH` and `VKC_LAYER_LIBRARY_PATH` from the
+  `prefix` output, renaming its own layer-path variable. A leg that installs
+  missing formulae, or its compiler and packages, does so before the
+  actions. Every cache misses once.
+
 ## [0.44.0] - 2026-11-02
 
 ### Added
