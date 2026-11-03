@@ -351,7 +351,13 @@ in "Where memory lives"):
   fewest timestamps, the deeper rows not timed. On a GPU layered on Metal a
   mark may snap to an encoder boundary (unverified): the attribution test
   says so there, and an app there tiles at depth 1 (`set_max_depth(1)`), so
-  its sub-stage cells read not timed.
+  its sub-stage cells read not timed. On a GPU time-sliced with another
+  process's work a tile reads long in every run, and the host cannot see
+  why. That lengthens the batch's span and shortens no tile, while a
+  misattribution leaves the span alone, so the attribution test skips, with
+  its numbers, when every tile reads no shorter than its stage alone and
+  longer by no more than the span ran longer than the stages apart. On a
+  quiet GPU every misattribution still fails.
 - **A batch holds a range of its timer's queries from recording until it is
   read.** So one timer times any number of pending batches, each read after
   its own work: a nested submit never reads the outer range, and
