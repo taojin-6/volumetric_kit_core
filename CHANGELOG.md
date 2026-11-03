@@ -42,9 +42,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     port: a number from 1 to 65535, with no leading zero" (was "the port
     must be a decimal number", "… must be in [1, 65535]", "… must not have a
     leading zero" or "must end at the port: tcp://ADDRESS:PORT");
-  - IPv6: "\"<address:port>\" is IPv6, which is not supported" (was "must
-    be an IPv4 address; IPv6 is not supported"), now for a second ':' too;
-  - no host (`tcp://` or `tcp://:7101`): "\"<text>\" names no host".
+  - IPv6, a leading '[' or a second ':': "\"<address:port>\" is IPv6, which
+    is not supported" (was "must be an IPv4 address; IPv6 is not supported"
+    for a '[', and a parts or port reason for a second ':');
+  - no host (`tcp://` or `tcp://:7101`): "\"<text>\" names no host" (was
+    "requires a port: tcp://ADDRESS:PORT" or "the address must be four
+    dot-separated decimal parts").
   The scheme's and the typo catch's reasons are unchanged.
 - `net::parse_ipv4` refuses a part with a leading zero itself, as its
   documentation said, so Apple's `inet_pton`, which reads "010" as 10, no
