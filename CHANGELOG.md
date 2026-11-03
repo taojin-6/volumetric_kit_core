@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
-## [0.44.1] - 2026-11-03
+## [0.44.2] - 2026-11-03
 
 ### Fixed
 
@@ -21,6 +21,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 ### Migration
 
 - Nothing to change beyond the pin and a rebuild.
+
+## [0.44.1] - 2026-11-03
+
+### Changed
+
+- `net::resolve` (`net/address.hpp`) takes a numeric host in dotted decimal
+  alone, as `parse_ipv4` reads it, and never the wildcard (DECISIONS.md, the
+  2026-11-02 net entry's second amendment). Before any lookup it refuses,
+  `InvalidArgument`:
+  - a host the system reads as a number in another form, or of digits and
+    dots that are no address: "<api>: the host is not a numeric IPv4
+    address: four decimal parts from 0 to 255, with no leading zero". Was:
+    `getaddrinfo` read "010.8.0.1" as 8.8.0.1 on glibc and 10.8.0.1 on
+    Apple, and on both "10.1" as 10.0.0.1, "0x7f.0.0.1" as 127.0.0.1 and
+    "0" as 0.0.0.0, while "256.1.1.1" or "10.8.0.1." went to the name
+    lookup (`NotFound`);
+  - a host with a ':' (IPv6), by the same reason. Was: glibc's
+    `getaddrinfo` read an IPv4-mapped address as IPv4 ("::ffff:0.0.0.0",
+    with a "%1" scope too, as 0.0.0.0; "::ffff:7f00:1" as 127.0.0.1) and
+    Apple's found none (`NotFound`); "::1" was `IoError` on glibc and
+    `NotFound` on Apple;
+  - 0.0.0.0: "<api>: 0.0.0.0 is the wildcard, not one host's address"
+    (was 0.0.0.0, which a connect reads as this host);
+  - an empty host: "<api>: the host is empty" (was `NotFound` "<api>:
+    cannot look up the name: …").
+
+  A dotted-decimal host gives its own endpoint without a lookup. A name,
+  numeric labels and all ("10.8.0.1.invalid"), is looked up as before, and
+  its addresses are the resolver's.
+
+### Migration
+
+- Nothing to change beyond the pin; a name and a dotted-decimal host resolve
+  as before. A caller that gave `resolve` a numeric host in another form, or
+  0.0.0.0 or IPv6, gives dotted decimal, or shows the refusal.
+- grid's `StreamClient::connect` takes a host `parse_ipv4` reads (0.0.0.0
+  included) without `resolve`, and looks up any other. From grid's re-pin
+  onto this core, its `next` ends with `InvalidArgument` "StreamClient:
+  <host>:<port>: the host is not a numeric IPv4 address: …" for a host such
+  as "010.8.0.1", "10.1" or "::ffff:10.8.0.1" (was a connect to the
+  system's reading of it), and the player shows that reason as its live
+  error and retries, with `status()` OK, as it does for a peer that sends no
+  stream; its 0.0.0.0 is unchanged. grid's and the player's tests give names (`localhost`,
+  `*.invalid`) and dotted decimal alone, and pass on this core unchanged.
 
 ## [0.44.0] - 2026-11-02
 

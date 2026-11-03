@@ -1852,7 +1852,7 @@ stream and the batch waits for it on the device, and neither host waits.
   same GPU imports the descriptor and stands in for it: its host's signals
   are read, waited for, and release a batch held on the device here.
 
-**Amended 2026-11-03 (core 0.44.1): the acquire after the wait waits on
+**Amended 2026-11-03 (core 0.44.2): the acquire after the wait waits on
 every stage.** An acquire happens after its barrier's first scope alone, so
 `CommandBatch::acquire`'s barrier follows the wait for the importer's value
 only through a stage that scope shares with the wait's (`ALL_COMMANDS`). Its
@@ -1977,7 +1977,38 @@ one too, and calling those IPv6 alone would mislead.
   reads "010" as 10, where `inet_aton` reads it as octal 8. It now checks
   the leading zero itself, so `parse_ipv4`, `parse_endpoint`, `dial` and
   `Listener` read an address the same on every platform, and the config
-  keeps refusing "010.8.0.1" on macOS. `resolve` does not: a text
-  `parse_ipv4` refuses goes to the system's `getaddrinfo`, which glibc reads
-  as octal (8.8.0.1) and Apple as decimal (10.8.0.1). A caller that resolves
-  a typed host meets this.
+  keeps refusing "010.8.0.1" on macOS. `resolve` did not until 0.44.1
+  (below).
+
+**Amended 2026-11-03 (core 0.44.1): `resolve` takes a number in dotted
+decimal alone, and never the wildcard.** `resolve` handed a text
+`parse_ipv4` refuses to the system's `getaddrinfo`, which reads a number by
+`inet_aton`'s rules: glibc read "010.8.0.1" as octal 8.8.0.1 and Apple as
+10.8.0.1, and both read "10.1" as 10.0.0.1, "0x7f.0.0.1" as 127.0.0.1 and "0"
+as 0.0.0.0. glibc's also reads an IPv4-mapped IPv6 address as IPv4, for
+`AF_INET` alone: "::ffff:0.0.0.0" as 0.0.0.0 (a "%1" scope too) and
+"::ffff:7f00:1" as 127.0.0.1, where Apple's finds no address. A typed host a caller resolves, as grid's `StreamClient` does for
+any host `parse_ipv4` refuses, reached another host than the one meant.
+
+- **What is a number.** A host is one when it is digits and dots alone,
+  `inet_aton` takes it (the forms `getaddrinfo` reads by `inet_aton`'s rules
+  on glibc and Apple), or it has a ':'. It is then refused before any lookup
+  unless `parse_ipv4` reads it, and one `parse_ipv4` reads is its own
+  endpoint, with no lookup, so it means one address on every platform.
+  Digits and dots alone are never a name, since a top-level label is never
+  all digits; so "256.1.1.1" or "10.8.0.1." is refused too, not looked up
+  where a search domain could answer it. No name has a ':', so every IPv6
+  text is refused, not only the mapped forms glibc reads: a check that
+  `inet_pton(AF_INET6)` takes the host would miss "::ffff:0.0.0.0%1", which
+  glibc's `getaddrinfo` still reads as 0.0.0.0. A name with numeric labels
+  ("10.8.0.1.invalid") is still looked up.
+- **The wildcard is no host.** 0.0.0.0 is refused with `parse_endpoint`'s
+  reason, as `dial` refuses it: a connect to it reaches this host on Linux
+  and macOS. A name's addresses stay the resolver's: no host a test can
+  give reaches the lookup and is answered 0.0.0.0 (glibc's "::ffff:0.0.0.0"
+  was one, and is now refused before it), and a resolver that answers
+  0.0.0.0 for a blocked name sets the network's rule.
+- **Its reasons name no host.** A caller's `api` already carries the host
+  (grid's reads "StreamClient: <host>:<port>"), so the reasons, "the host is
+  not a numeric IPv4 address: four decimal parts from 0 to 255, with no
+  leading zero" and "the host is empty", do not quote it again.
