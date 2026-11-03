@@ -8,8 +8,9 @@
 // does. Uploads inline, staged and packed by the caller, several readbacks in
 // one batch, transfers left unordered (fills, uploads and copies rising
 // through one buffer among them), image copies, acquires and releases,
-// indirect dispatch, rewritten sets, the refusals, the moves, several
-// threads at once, and submits that do not wait, ordered by timeline values.
+// indirect dispatch, rewritten sets, what it retains, the refusals, the
+// moves, several threads at once, and submits that do not wait, ordered by
+// timeline values.
 
 #include <algorithm>
 #include <array>
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -833,6 +835,55 @@ TEST_F(BatchTest, RetainsABufferItsCommandsUseUntilTheyRun) {
   ASSERT_TRUE(batch.readback(b_, 0, kBytes, got.data()).ok());
   ASSERT_TRUE(batch.submit().ok());
   EXPECT_EQ(got, p);
+}
+
+TEST_F(BatchTest, RetainsAnOwnerUntilTheSubmitHasWaited) {
+  // The caller's last reference to what the commands use goes to the batch,
+  // which lets it go once the work has completed.
+  const std::vector<std::uint32_t> p = pattern(6);
+  std::vector<std::uint32_t> got(kCount, 0);
+  auto owner = std::make_shared<Buffer>(make(true, kBytes));
+  ASSERT_TRUE(owner->valid());
+  const std::weak_ptr<Buffer> watch = owner;
+  CommandBatch batch(device(), allocator());
+  ASSERT_TRUE(batch.upload(*owner, 0, p.data(), kBytes).ok());
+  ASSERT_TRUE(batch.copy(*owner, 0, b_, 0, kBytes).ok());
+  batch.retain(std::move(owner));
+  batch.retain(std::shared_ptr<const void>{});  // nothing to keep
+  ASSERT_FALSE(watch.expired());  // else the submit would use a freed buffer
+  ASSERT_TRUE(batch.readback(b_, 0, kBytes, got.data()).ok());
+  ASSERT_TRUE(batch.submit().ok());
+  EXPECT_TRUE(watch.expired());
+  EXPECT_EQ(got, p);
+}
+
+TEST_F(BatchTest, DropsARetainedOwnerAsARefusedSubmitReturns) {
+  // Nothing ran, so nothing needs it once either submit refuses the batch.
+  for (const bool async : {false, true}) {
+    SCOPED_TRACE(async ? "async" : "blocking");
+    auto owner = std::make_shared<int>(1);
+    const std::weak_ptr<int> watch = owner;
+    CommandBatch batch(device(), allocator());
+    EXPECT_TRUE(is_invalid(batch.fill(a_, 1, 4, 0)));  // misaligned: poisoned
+    batch.retain(std::move(owner));
+    EXPECT_FALSE(watch.expired());
+    EXPECT_TRUE(is_invalid(async ? batch.submit_async({}, {}).status()
+                                 : batch.submit()));
+    EXPECT_TRUE(watch.expired());
+  }
+  // One taken after the submit holds nothing for the work; it goes with the
+  // batch.
+  std::weak_ptr<int> late;
+  {
+    CommandBatch batch(device(), allocator());
+    ASSERT_TRUE(batch.fill(a_, 0, 4, 1U).ok());
+    ASSERT_TRUE(batch.submit().ok());
+    auto owner = std::make_shared<int>(2);
+    late = owner;
+    batch.retain(std::move(owner));
+    EXPECT_FALSE(late.expired());
+  }
+  EXPECT_TRUE(late.expired());
 }
 
 TEST_F(BatchComputeTest, RunsRisingFillsTogetherAndOrdersOneThatGoesBack) {
@@ -1926,6 +1977,34 @@ TEST_F(PendingTest, WritesReadbacksAtTheWait) {
   EXPECT_EQ(word, 0xDEADBEEFU);
   ASSERT_TRUE(made->wait().ok());
   EXPECT_EQ(word, 9U);
+}
+
+TEST_F(PendingTest, HoldsARetainedOwnerUntilAWaitSeesTheWorkComplete) {
+  std::weak_ptr<int> watch;
+  const auto held = [&] {
+    auto owner = std::make_shared<int>(1);
+    watch = owner;
+    CommandBatch batch(device(), allocator());
+    EXPECT_TRUE(batch.fill(a_, 0, kBytes, 3U).ok());
+    batch.retain(std::move(owner));
+    // A refused value leaves it with the unsubmitted batch, for the
+    // corrected submit.
+    EXPECT_TRUE(is_invalid(batch.submit_async({}, {{&timeline_, 0}}).status()));
+    EXPECT_FALSE(watch.expired());
+    Result<PendingBatch> made = batch.submit_async({{&timeline_, 1}}, {});
+    EXPECT_TRUE(made.ok()) << made.status().message();
+    return made.ok() ? *std::move(made) : PendingBatch{};
+  };
+  PendingBatch pending = held();
+  const Release release{this, 1};
+  // The batch is gone, and its work, held back for the host's value, holds
+  // the owner, through a wait that times out too.
+  EXPECT_TRUE(is_timeout(pending.wait(1'000'000)));
+  EXPECT_FALSE(watch.expired());
+  ASSERT_TRUE(timeline_.signal(1).ok());
+  ASSERT_TRUE(pending.wait().ok());
+  EXPECT_TRUE(watch.expired());
+  EXPECT_EQ(read(a_), std::vector<std::uint32_t>(kCount, 3U));
 }
 
 TEST_F(PendingTest, ARefusedSubmitRunsNothing) {

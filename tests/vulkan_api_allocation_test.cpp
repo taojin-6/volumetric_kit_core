@@ -21,7 +21,10 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
+#include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/device_requirements.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
@@ -51,6 +54,17 @@ class ResetFailureGuard {
   ResetFailureGuard& operator=(const ResetFailureGuard&) = delete;
   ResetFailureGuard(ResetFailureGuard&&) = delete;
   ResetFailureGuard& operator=(ResetFailureGuard&&) = delete;
+};
+
+// Clears refuse_wait however a test leaves its scope.
+class RefuseWaitGuard {
+ public:
+  RefuseWaitGuard() = default;
+  ~RefuseWaitGuard() { refuse_wait = false; }
+  RefuseWaitGuard(const RefuseWaitGuard&) = delete;
+  RefuseWaitGuard& operator=(const RefuseWaitGuard&) = delete;
+  RefuseWaitGuard(RefuseWaitGuard&&) = delete;
+  RefuseWaitGuard& operator=(RefuseWaitGuard&&) = delete;
 };
 
 }  // namespace
@@ -596,6 +610,92 @@ TEST_F(DeviceAllocationTest, UnknownCompletionKeepsOwnersDuringPersistentOom) {
         std::_Exit(alive.expired() ? 13 : 0);
       },
       ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(DeviceAllocationTest, FailedWaitLeavesARetainedOwnerToTheDevice) {
+  // The owner holds the buffer the batch fills. After a failed wait the work
+  // may still run, so the device keeps the owner until its destruction has
+  // waited for the work for real (refuse_wait is clear by then).
+  Result<Device> made = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  std::optional<Device> owned(*std::move(made));
+  std::weak_ptr<Buffer> blocking;
+  std::weak_ptr<Buffer> pending;
+  {
+    Result<Allocator> allocator =
+        Allocator::create(instance().handle(), *owned);
+    ASSERT_TRUE(allocator.ok()) << allocator.status().message();
+    const RefuseWaitGuard guard;
+    for (const bool async : {false, true}) {
+      SCOPED_TRACE(async ? "async" : "blocking");
+      Result<Buffer> target = device_storage_buffer(*allocator, 16);
+      ASSERT_TRUE(target.ok()) << target.status().message();
+      auto owner = std::make_shared<Buffer>(*std::move(target));
+      (async ? pending : blocking) = owner;
+      CommandBatch batch(*owned, *allocator);
+      ASSERT_TRUE(batch.fill(*owner, 0, 16, 1U).ok());
+      batch.retain(std::move(owner));
+      ASSERT_FALSE((async ? pending : blocking).expired());
+      if (async) {
+        Result<PendingBatch> submitted = batch.submit_async({}, {});
+        ASSERT_TRUE(submitted.ok()) << submitted.status().message();
+        refuse_wait = true;
+        EXPECT_FALSE(submitted->wait().ok());
+      } else {
+        refuse_wait = true;
+        EXPECT_FALSE(batch.submit().ok());
+      }
+      refuse_wait = false;
+    }
+  }
+  EXPECT_FALSE(blocking.expired());
+  EXPECT_FALSE(pending.expired());
+  owned.reset();
+  EXPECT_TRUE(blocking.expired());
+  EXPECT_TRUE(pending.expired());
+}
+
+TEST_F(DeviceAllocationTest, RetainOutOfMemoryPoisonsTheBatch) {
+  // What it could not keep goes as it returns, so the submit runs nothing.
+  // Only the batch's own list fails: the buffer's destruction calls the
+  // driver, whose allocations stay unaffected.
+  Result<Buffer> scratch = device_storage_buffer(allocator(), 16);
+  ASSERT_TRUE(scratch.ok()) << scratch.status().message();
+  for (const bool owner : {false, true}) {
+    SCOPED_TRACE(owner ? "owner" : "buffer");
+    // The call alone: what it keeps is made before.
+    const auto retain_one = [owner](CommandBatch& batch, Result<Buffer>& kept,
+                                    std::shared_ptr<int>& shared) {
+      if (owner) {
+        batch.retain(std::move(shared));
+      } else {
+        batch.retain(*std::move(kept));
+      }
+    };
+    Result<Buffer> kept = device_storage_buffer(allocator(), 16);
+    ASSERT_TRUE(kept.ok()) << kept.status().message();
+    auto shared = std::make_shared<int>(1);
+    test::AllocationSite site;
+    {
+      CommandBatch probe(device(), allocator());
+      test::record_allocations();
+      retain_one(probe, kept, shared);
+      site = test::finish_allocations();
+    }
+    ASSERT_NE(site.caller, nullptr);
+    kept = device_storage_buffer(allocator(), 16);
+    ASSERT_TRUE(kept.ok()) << kept.status().message();
+    shared = std::make_shared<int>(2);
+    CommandBatch batch(device(), allocator());
+    ASSERT_TRUE(batch.fill(*scratch, 0, 16, 1U).ok());
+    const DeviceCounters before = device().counters();
+    test::AllocationFailure failure(site);
+    retain_one(batch, kept, shared);
+    const bool failed = failure.stop();
+    ASSERT_TRUE(failed);
+    EXPECT_EQ(batch.submit().domain(), Status::Code::OutOfMemory);
+    EXPECT_EQ(device().counters().submits, before.submits);
+  }
 }
 
 }  // namespace

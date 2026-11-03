@@ -36,7 +36,8 @@ namespace volumetric_kit::core {
 namespace {
 
 // What a submit's work uses past the batch: the staging it copies through,
-// the query pools its tiles write, and the ring slots it binds.
+// the query pools its tiles write, and the ring slots it binds with the
+// owners the caller retains.
 struct Retained {
   std::vector<Buffer> staging;
   std::vector<std::shared_ptr<void>> queries;
@@ -1280,8 +1281,21 @@ Status PendingBatch::wait(std::uint64_t timeout_ns) {
   return waited;
 }
 
-void CommandBatch::retain(Buffer buffer) {
+// Out of memory, the buffer or owner goes as this returns, so the batch is
+// poisoned: nothing recorded on what it holds may run.
+void CommandBatch::retain(Buffer buffer) try {
   if (buffer.valid()) staging_.push_back(std::move(buffer));
+} catch (...) {
+  static_cast<void>(check(
+      exception_status("CommandBatch::retain", Status::Code::OutOfMemory)));
+}
+
+// With the ring slots, so both submits move it into the work's keep_alive.
+void CommandBatch::retain(std::shared_ptr<const void> owner) try {
+  if (owner != nullptr) slots_.push_back(std::move(owner));
+} catch (...) {
+  static_cast<void>(check(
+      exception_status("CommandBatch::retain", Status::Code::OutOfMemory)));
 }
 
 }  // namespace volumetric_kit::core

@@ -218,11 +218,12 @@ class VKC_VULKAN_API PendingBatch {
 /// must not change either, and @ref submit_async's @ref PendingBatch checks
 /// that at its wait. A buffer its owner
 /// replaces before then -- a grown upload or scratch buffer -- goes to
-/// @ref retain. If the fence wait fails, the device may still run the batch:
-/// it keeps the batch's staging with its command buffer until it is destroyed
-/// (@ref Device::submit_single_time), and is best treated as lost. The batch
-/// borrows its @ref Device and
-/// @ref Allocator, which must outlive it. A batch belongs to one thread, but
+/// @ref retain, as does a shared owner the caller lets go before then. If the
+/// fence wait fails, the device may still run the batch: it keeps the batch's
+/// staging, and what it retains, with its command buffer until it is
+/// destroyed (@ref Device::submit_single_time), and is best treated as lost.
+/// The batch borrows its @ref Device and @ref Allocator, which must outlive
+/// it. A batch belongs to one thread, but
 /// batches on several threads may share a device and allocator, each
 /// recording its own kernels and buffers.
 ///
@@ -658,7 +659,9 @@ class VKC_VULKAN_API CommandBatch {
   /// @ref submit -- an upload or scratch buffer grown mid-call, as
   /// @ref StorageInput::buffer and @ref ensure_device_scratch do -- which
   /// would otherwise be freed under them. Taken on any batch, a poisoned or
-  /// submitted one included, and freed with it if it never runs.
+  /// submitted one included, and freed with it if it never runs. Failing to
+  /// take it, out of memory, poisons the batch, so nothing recorded on the
+  /// buffer runs.
   ///
   /// @code
   /// batch.retain(std::move(upload));  // the commands so far still read it
@@ -666,6 +669,39 @@ class VKC_VULKAN_API CommandBatch {
   /// @endcode
   /// @param buffer  The buffer; may be empty, which keeps nothing.
   void retain(Buffer buffer);
+
+  /// @brief Keep @p owner alive with the batch's work, by the policy of the
+  ///        batch's own staging: until the work has completed, and after a
+  ///        failed wait until the device has waited for it.
+  ///
+  /// For what the recorded commands read or write that the batch cannot see,
+  /// held by an owner the caller lets go before the work completes -- a frame
+  /// whose buffers a kernel reads, the device pictures behind a set's
+  /// bindings. It goes with the ring slots the batch binds:
+  /// - @ref submit returns OK, or a wait of @ref submit_async's
+  ///   @ref PendingBatch sees the work complete: the batch lets it go there.
+  /// - The fence wait fails, or the submit loses the device: the work may
+  ///   still run, so the device keeps it with the command buffer until it is
+  ///   destroyed, waits for the work then, and lets it go before the
+  ///   `VkDevice` (@ref Device::submit_single_time), on the thread destroying
+  ///   the device; a holder freed there must not submit to it. Work still
+  ///   unfinished then keeps it until the process exits.
+  /// - The submit refuses the batch, or fails before the device takes the
+  ///   work: nothing ran, and it goes as the submit returns. A refusal of
+  ///   @ref submit_async's values leaves it with the unsubmitted batch, for
+  ///   a submit with corrected ones.
+  ///
+  /// Taken before the submit; one taken after it goes with the batch, holding
+  /// nothing for the work. Failing to take it, out of memory, poisons the
+  /// batch, so nothing runs that needs it.
+  ///
+  /// @code
+  /// VKC_TRY(prep.record(batch, *frame));  // binds the frame's buffers
+  /// batch.retain(std::move(frame));       // a std::shared_ptr<const Frame>
+  /// VKC_ASSIGN(PendingBatch pending, batch.submit_async({}, {{&ready, n}}));
+  /// @endcode
+  /// @param owner  Any shared owner; null keeps nothing.
+  void retain(std::shared_ptr<const void> owner);
 
   /// @brief Time the batch's tiles in @p timer, even with no tagged command:
   ///        such a batch still has a span (@ref PendingBatch::device_span).
@@ -852,8 +888,8 @@ class VKC_VULKAN_API CommandBatch {
   const Device* device_;
   Allocator* allocator_;
   std::vector<Op> ops_;
-  // The ring slots bound: moved into the submit's work, which holds them
-  // until it resolves.
+  // The ring slots bound, and the owners retain() keeps: moved into the
+  // submit's work, which holds them until it resolves.
   std::vector<std::shared_ptr<const void>> slots_;
   std::vector<Buffer> staging_;      // and what retain() keeps
   VkBuffer zeros_ = VK_NULL_HANDLE;  // a staged word of zeros, made once

@@ -263,7 +263,16 @@ V3's choices, from the same comparison (gfx has no compute):
   rewritten or freed since its dispatch. A buffer the caller replaces
   mid-batch -- an outgrown `StorageInput` upload or scratch -- goes to
   `CommandBatch::retain`, and an unaligned `zero` edge copies from one staged
-  word of zeros rather than staging each.
+  word of zeros rather than staging each. Amended 2026-11-03 (core 0.45.0):
+  `retain` also takes a `std::shared_ptr<const void>`, the owner of inputs
+  the batch cannot see -- a caller's frame, the pictures behind its
+  bindings -- that the caller lets go before the work completes. It joins
+  the ring slots in the work's `keep_alive`, so it gets the batch's own
+  policy (the next bullet): released by a wait that sees the work complete,
+  kept by the device after a failed wait until its destruction has waited,
+  dropped by a refused batch. Siblings had held such inputs by hand, each with
+  its own failed-wait rule: leaked for good, or freed while the device might
+  still read them.
 - **Image copies take the common uncompressed color formats**, 8- to 128-bit
   texels, where recon's took `R8` and `R8G8`. They read the layout
   `Image::layout` records (V2's `set_layout` keeps it current) and refuse a
@@ -457,9 +466,9 @@ without the wait:
 
 - **A pending handle holds the work until a wait sees it complete.**
   `PendingBatch` and `Device::PendingSubmit` keep the command buffer, the fence
-  and the `keep_alive` -- a batch's staging and readback memory, and the ring
-  slots it binds -- and give the command back to the device once a wait sees
-  the fence signalled. A failed
+  and the `keep_alive` -- a batch's staging and readback memory, the ring
+  slots it binds and what it retains -- and give the command back to the
+  device once a wait sees the fence signalled. A failed
   wait leaves them to the device, as a failed `submit_single_time` wait does.
   Destroying an unfinished handle waits for it, with no limit: what the work
   uses is never freed under it, and a command is not parked with the device
