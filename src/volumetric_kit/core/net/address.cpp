@@ -26,6 +26,27 @@
 
 namespace volumetric_kit::core::net {
 
+namespace {
+
+constexpr std::string_view kWildcard =
+    "0.0.0.0 is the wildcard, not one host's address";
+
+// Whether `host` is a number to the system: digits and dots alone, which no
+// name is (a top-level label is never all digits), or what inet_aton reads,
+// as getaddrinfo reads it on glibc and Apple: a short form ("10.1"), octal
+// ("010.8.0.1") or hex ("0x7f.0.0.1").
+bool numeric(const char* host) {
+  const std::string_view text(host);
+  const auto digit_or_dot = [](char c) {
+    return (c >= '0' && c <= '9') || c == '.';
+  };
+  if (std::all_of(text.begin(), text.end(), digit_or_dot)) return true;
+  in_addr unused{};
+  return ::inet_aton(host, &unused) != 0;
+}
+
+}  // namespace
+
 std::optional<Endpoint> parse_ipv4(std::string_view host, std::uint16_t port) {
   // inet_pton reads a C string: `host` up to its first NUL, as a
   // std::string's c_str() gives it. A dotted quad has at most 15 characters,
@@ -55,8 +76,7 @@ Result<Endpoint> parse_endpoint(std::string_view host, std::uint16_t port) try {
                                     "\" is not a numeric IPv4 address");
   }
   if (endpoint->ipv4 == INADDR_ANY) {
-    return Status::invalid_argument(
-        "0.0.0.0 is the wildcard, not one host's address");
+    return Status::invalid_argument(std::string(kWildcard));
   }
   return *endpoint;
 } catch (...) {
@@ -73,6 +93,25 @@ std::string to_string(const Endpoint& endpoint) {
 Result<std::vector<Endpoint>> resolve(std::string_view api,
                                       const std::string& host,
                                       std::uint16_t port) try {
+  // The host as getaddrinfo reads it: up to its first NUL. A number is one
+  // only in dotted decimal, so the system's other readings never pass.
+  const char* const text = host.c_str();
+  if (*text == '\0') {
+    return Status::invalid_argument(std::string(api) + ": the host is empty");
+  }
+  if (numeric(text)) {
+    const std::optional<Endpoint> endpoint = parse_ipv4(text, port);
+    if (!endpoint) {
+      return Status::invalid_argument(
+          std::string(api) +
+          ": the host is not a numeric IPv4 address: four decimal parts from "
+          "0 to 255, with no leading zero");
+    }
+    if (endpoint->ipv4 == INADDR_ANY) {
+      return Status::invalid_argument(std::string(api) + ": " +
+                                      std::string(kWildcard));
+    }
+  }
   addrinfo hints{};
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
@@ -80,7 +119,7 @@ Result<std::vector<Endpoint>> resolve(std::string_view api,
   hints.ai_flags = AI_NUMERICSERV;
   addrinfo* found = nullptr;
   const int error =
-      ::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &found);
+      ::getaddrinfo(text, std::to_string(port).c_str(), &hints, &found);
   const int system_error = errno;  // before the message's allocations
   const std::unique_ptr<addrinfo, void (*)(addrinfo*)> owned(found,
                                                              ::freeaddrinfo);

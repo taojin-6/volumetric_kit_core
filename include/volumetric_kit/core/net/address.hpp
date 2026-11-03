@@ -66,17 +66,23 @@ VKC_NET_API std::string to_string(const Endpoint& endpoint);
 
 /// @brief Every IPv4 address @p host resolves to for TCP (`getaddrinfo`),
 ///        with @p port. Blocks for as long as the resolver takes; a caller
-///        that must not block calls it from a thread of its own. A
-///        numeric-looking @p host that @ref parse_ipv4 refuses is read by the
-///        system's rules: glibc reads "010.8.0.1" as octal 8.8.0.1, Apple as
-///        10.8.0.1.
+///        that must not block calls it from a thread of its own. A host the
+///        system reads as a number (digits and dots alone, or a form
+///        `inet_aton` takes, as `getaddrinfo` does: "10.1", octal
+///        "010.8.0.1", hex "0x7f.0.0.1") must be dotted decimal as
+///        @ref parse_ipv4 reads it, and not the wildcard; a name's addresses
+///        are the resolver's.
 /// @param api   The caller's name, which starts every message.
 /// @param host  A name, or a numeric address.
 /// @param port  The port each endpoint takes.
-/// @return At least one endpoint, in the resolver's order; `NotFound`
-///         "<api>: cannot look up the name: <the resolver's words>" for a
-///         name that does not resolve, or "…: no IPv4 address for TCP";
-///         `OutOfMemory` for the resolver's memory; `IoError` otherwise.
+/// @return At least one endpoint, in the resolver's order; before any
+///         lookup, `InvalidArgument` "<api>: the host is empty", "<api>: the
+///         host is not a numeric IPv4 address: four decimal parts from 0 to
+///         255, with no leading zero" or "<api>: 0.0.0.0 is the wildcard, not
+///         one host's address"; `NotFound` "<api>: cannot look up the name:
+///         <the resolver's words>" for a name that does not resolve, or
+///         "…: no IPv4 address for TCP"; `OutOfMemory` for the resolver's
+///         memory; `IoError` otherwise.
 VKC_NET_API Result<std::vector<Endpoint>> resolve(std::string_view api,
                                                   const std::string& host,
                                                   std::uint16_t port);

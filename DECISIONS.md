@@ -1964,7 +1964,31 @@ one too, and calling those IPv6 alone would mislead.
   reads "010" as 10, where `inet_aton` reads it as octal 8. It now checks
   the leading zero itself, so `parse_ipv4`, `parse_endpoint`, `dial` and
   `Listener` read an address the same on every platform, and the config
-  keeps refusing "010.8.0.1" on macOS. `resolve` does not: a text
-  `parse_ipv4` refuses goes to the system's `getaddrinfo`, which glibc reads
-  as octal (8.8.0.1) and Apple as decimal (10.8.0.1). A caller that resolves
-  a typed host meets this.
+  keeps refusing "010.8.0.1" on macOS. `resolve` did not until 0.44.1
+  (below).
+
+**Amended 2026-11-03 (core 0.44.1): `resolve` takes a number in dotted
+decimal alone, and never the wildcard.** `resolve` handed a text
+`parse_ipv4` refuses to the system's `getaddrinfo`, which reads a number by
+`inet_aton`'s rules: glibc read "010.8.0.1" as octal 8.8.0.1 and Apple as
+10.8.0.1, and both read "10.1" as 10.0.0.1, "0x7f.0.0.1" as 127.0.0.1 and "0"
+as 0.0.0.0. A typed host a caller resolves, as grid's `StreamClient` does for
+any host `parse_ipv4` refuses, reached another host than the one meant.
+
+- **What is a number.** A host is one when it is digits and dots alone, or
+  `inet_aton` takes it (the forms `getaddrinfo` reads as a number on glibc
+  and Apple). It is then refused before any lookup unless `parse_ipv4` reads
+  it, so it means one address on every platform. Digits and dots alone are
+  never a name, since a top-level label is never all digits; so "256.1.1.1"
+  or "10.8.0.1." is refused too, not looked up where a search domain could
+  answer it. A name with numeric labels ("10.8.0.1.invalid") is still looked
+  up.
+- **The wildcard is no host.** 0.0.0.0 is refused with `parse_endpoint`'s
+  reason, as `dial` refuses it: a connect to it reaches this host on Linux
+  and macOS. A name's addresses stay the resolver's: no test can make a
+  resolver answer 0.0.0.0, and one that does for a blocked name is the
+  network's rule.
+- **Its reasons name no host.** A caller's `api` already carries the host
+  (grid's reads "StreamClient: <host>:<port>"), so the reasons, "the host is
+  not a numeric IPv4 address: four decimal parts from 0 to 255, with no
+  leading zero" and "the host is empty", do not quote it again.

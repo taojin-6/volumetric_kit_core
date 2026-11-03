@@ -9,6 +9,10 @@
 // ':', each by its own reason, is refused before the split at the colon; and
 // one host's numeric address is never empty, a name, a part over 255 or with
 // a leading zero (on Apple too, whose inet_pton takes one), or the wildcard.
+// resolve takes a number in dotted decimal alone, never the wildcard: a
+// short, octal or hex form, which getaddrinfo reads as glibc's or Apple's
+// rules have it, or digits and dots that are no address, are refused before
+// any lookup; a name, numeric labels and all, is still looked up.
 
 #include <cstdint>
 #include <optional>
@@ -16,6 +20,7 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/net/address.hpp"
@@ -155,6 +160,64 @@ int leading_zero_case() {
   return 0;
 }
 
+// The endpoints resolve gives, as "a.b.c.d:port"; empty on an error.
+std::vector<std::string> resolved(const std::string& host) {
+  const vkc::Result<std::vector<net::Endpoint>> found =
+      net::resolve("test", host, 7101);
+  std::vector<std::string> shown;
+  if (found.ok()) {
+    for (const net::Endpoint& endpoint : *found) {
+      shown.push_back(net::to_string(endpoint));
+    }
+  }
+  return shown;
+}
+
+int resolve_case() {
+  // Dotted decimal reads as itself, up to a NUL as getaddrinfo reads it; a
+  // name is looked up.
+  CHECK(resolved("10.8.0.1") == std::vector<std::string>{"10.8.0.1:7101"});
+  CHECK(resolved("255.255.255.255") ==
+        std::vector<std::string>{"255.255.255.255:7101"});
+  CHECK(resolved(std::string("10.8.0.1\0x", 10)) ==
+        std::vector<std::string>{"10.8.0.1:7101"});
+  const std::vector<std::string> localhost = resolved("localhost");
+  CHECK(!localhost.empty());
+  for (const std::string& endpoint : localhost) {
+    CHECK(endpoint == "127.0.0.1:7101");
+  }
+  // Each form both systems' getaddrinfo reads as a number (glibc "010.8.0.1"
+  // as 8.8.0.1, Apple as 10.8.0.1; both "10.1" as 10.0.0.1, "0x7f000001" as
+  // 127.0.0.1, "0" as 0.0.0.0), and digits and dots that are no address.
+  const std::string not_numeric =
+      "test: the host is not a numeric IPv4 address: four decimal parts from "
+      "0 to 255, with no leading zero";
+  for (const char* host :
+       {"010.8.0.1",  "10.08.0.1",  "10.8.0.01",  "00.0.0.0",   "10.1",
+        "127.1",      "10.8.1",     "2130706433", "0",          "0.0",
+        "08",         "0x7f.0.0.1", "0X7F.0.0.1", "0x7f000001", "0xdeadbeef",
+        "10.0x8.0.1", "256.1.1.1",  "10.8.0.256", "1.2.3.4.5",  "10.8.0.1.",
+        ".10.8.0.1",  "10..0.1",    "."}) {
+    CHECK(refusal(net::resolve("test", host, 7101)) == not_numeric);
+  }
+  CHECK(refusal(net::resolve("test", "0.0.0.0", 7101)) ==
+        "test: 0.0.0.0 is the wildcard, not one host's address");
+  for (const std::string& host : {std::string(), std::string("\0", 1)}) {
+    CHECK(refusal(net::resolve("test", host, 7101)) ==
+          "test: the host is empty");
+  }
+  // A name with numeric labels is a name, looked up; .invalid never resolves
+  // (RFC 6761), so the lookup fails, with a network or without one.
+  for (const char* host : {"10.8.0.1.invalid", "0x7f.invalid", "1e3.invalid"}) {
+    const vkc::Result<std::vector<net::Endpoint>> found =
+        net::resolve("test", host, 7101);
+    CHECK(!found.ok() && found.status().domain() != Code::InvalidArgument);
+    CHECK(found.status().message().rfind("test: cannot look up the name: ",
+                                         0) == 0);
+  }
+  return 0;
+}
+
 }  // namespace
 
 // The messages are strings, whose allocation may throw; a test that throws
@@ -165,5 +228,6 @@ int main() {
   if (host_port_case() != 0) return 1;
   if (endpoint_case() != 0) return 1;
   if (leading_zero_case() != 0) return 1;
+  if (resolve_case() != 0) return 1;
   return 0;
 }
