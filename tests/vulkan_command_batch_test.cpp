@@ -1358,9 +1358,9 @@ TEST_F(BatchTest, AnAcquireFollowsTheWaitThatOrderedItsWriter) {
       {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_QUEUE_COMPUTE_BIT},
       {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_QUEUE_GRAPHICS_BIT},
   }};
-  constexpr VkDeviceSize kTexels = 16;
+  constexpr VkDeviceSize kSize = 16;  // bytes: a 4x4 R8 image's, or a buffer's
   BufferDesc desc;
-  desc.size = kTexels;
+  desc.size = kSize;
   desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   desc.memory = MemoryUsage::Staging;
   desc.host_access = HostAccess::Random;
@@ -1374,9 +1374,9 @@ TEST_F(BatchTest, AnAcquireFollowsTheWaitThatOrderedItsWriter) {
       SCOPED_TRACE(std::string(image_form ? "an image" : "a buffer") +
                    ", the wait holding stages " + std::to_string(stage));
       const Image image = make_image(VK_FORMAT_R8_UNORM, 4, 4,
-                                     std::vector<std::uint8_t>(kTexels, 3));
+                                     std::vector<std::uint8_t>(kSize, 3));
       ASSERT_TRUE(image.valid());
-      std::memset(readback.mapped(), 0, kTexels);
+      std::memset(readback.mapped(), 0, kSize);
       const Status ran = device().submit_single_time([&](VkCommandBuffer cmd) {
         detail::BatchTransfer transfer;
         transfer.from = VK_QUEUE_FAMILY_EXTERNAL;
@@ -1393,7 +1393,7 @@ TEST_F(BatchTest, AnAcquireFollowsTheWaitThatOrderedItsWriter) {
           transfer.old_layout = VK_IMAGE_LAYOUT_GENERAL;
           transfer.new_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         } else {
-          vkCmdFillBuffer(cmd, a_.handle(), 0, kTexels, 0x09090909U);
+          vkCmdFillBuffer(cmd, a_.handle(), 0, kSize, 0x09090909U);
           transfer.buffer = a_.handle();
         }
         VkMemoryBarrier wait{};
@@ -1410,15 +1410,15 @@ TEST_F(BatchTest, AnAcquireFollowsTheWaitThatOrderedItsWriter) {
                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                  readback.handle(), 1, &region);
         } else {
-          const VkBufferCopy region{0, 0, kTexels};
+          const VkBufferCopy region{0, 0, kSize};
           vkCmdCopyBuffer(cmd, a_.handle(), readback.handle(), 1, &region);
         }
         test::host_read_barrier(cmd);
       });
       ASSERT_TRUE(ran.ok()) << ran.message();
-      std::vector<std::uint8_t> got(kTexels);
+      std::vector<std::uint8_t> got(kSize);
       std::memcpy(got.data(), readback.mapped(), got.size());
-      EXPECT_EQ(got, std::vector<std::uint8_t>(kTexels, 9));
+      EXPECT_EQ(got, std::vector<std::uint8_t>(kSize, 9));
     }
   }
 }
