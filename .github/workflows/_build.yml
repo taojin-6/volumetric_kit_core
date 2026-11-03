@@ -59,29 +59,27 @@ jobs:
           persist-credentials: false
 
       # Homebrew is shared by the Mac's runners. Install or upgrade its
-      # dependencies by hand while idle, never from a job.
+      # dependencies by hand while idle, never from a job: the action fails,
+      # naming any formula missing. The format reference test needs
+      # vulkan-utility-libraries.
       - name: Check dependencies (macOS)
+        id: brew
         if: runner.os == 'macOS'
+        uses: ./.github/actions/homebrew-key
+        with:
+          formulae: >-
+            cmake molten-vk vulkan-headers vulkan-loader shaderc spirv-tools
+            vulkan-validationlayers vulkan-tools vulkan-utility-libraries
+
+      # The layer's manifest names its library without a path. Set the
+      # library search path only on Vulkan commands below.
+      - name: Validation layer (macOS)
+        if: runner.os == 'macOS'
+        env:
+          BREW_PREFIX: ${{ steps.brew.outputs.prefix }}
         run: |
-          command -v brew >/dev/null || {
-            echo "::error::brew is not on this runner's PATH"
-            exit 1
-          }
-          missing=""
-          # The format reference test needs vulkan-utility-libraries.
-          for pkg in cmake molten-vk vulkan-headers vulkan-loader shaderc \
-              spirv-tools vulkan-validationlayers vulkan-tools \
-              vulkan-utility-libraries; do
-            brew list --formula "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::install by hand on this runner's host, while CI is idle:${missing}"
-            exit 1
-          fi
-          # The layer's manifest names its library without a path. Set the
-          # library search path only on Vulkan commands below.
-          echo "VKC_LAYER_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
-          echo "VK_LAYER_PATH=$(brew --prefix)/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
+          echo "VKC_LAYER_LIBRARY_PATH=$BREW_PREFIX/lib" >> "$GITHUB_ENV"
+          echo "VK_LAYER_PATH=$BREW_PREFIX/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
 
       - name: GPU diagnostic
         run: |

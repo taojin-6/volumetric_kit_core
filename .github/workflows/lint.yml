@@ -2,8 +2,8 @@ name: lint
 
 # Lint gate: the workflows' triggers, the pre-commit hooks (formatting,
 # hygiene, shellcheck), clang-tidy through the build, and the tests of the
-# runner tooling in tools/runners/, of the homebrew-key action, of the tools
-# in tools/github/ and of the DeckLink SDK's files in tools/ci/.
+# runner tooling in tools/runners/, of the homebrew-key and deps-key actions,
+# of the tools in tools/github/ and of the DeckLink SDK's files in tools/ci/.
 # No job pushes, so no checkout keeps a token.
 # The formatters' output is deterministic across operating systems, so they run
 # on Linux alone; the tooling's tests also run on macOS, whose bash (3.2) the
@@ -82,22 +82,39 @@ jobs:
       # Under the system's bash: 3.2 on macOS.
       - run: /bin/bash tools/runners/tests/test_runner_scripts.sh
       - run: /bin/bash tools/runners/tests/test_homebrew_key.sh
+      - run: /bin/bash tools/runners/tests/test_deps_key.sh
       - run: python3 -B -m unittest discover -s tools/github -p 'test_*.py' -v
       - run: python3 -B -m unittest discover -s tools/ci -p 'test_*.py' -v
-      # The action as a sibling uses it: "none" on Linux, and on macOS a key
-      # from the runner's Homebrew.
+      # The actions as a sibling uses them: on Linux no Homebrew key or
+      # prefix, on macOS those of the runner's Homebrew; the packages are
+      # read on Linux alone.
       - id: brew
         uses: ./.github/actions/homebrew-key
         with:
           formulae: cmake pkgconf
-      - name: Check the action's key
+      - id: deps
+        uses: ./.github/actions/deps-key
+        with:
+          brew: ${{ steps.brew.outputs.key }}
+          packages: libc6-dev
+      - name: Check the actions' outputs
         env:
           KEY: ${{ steps.brew.outputs.key }}
+          BREW_PREFIX: ${{ steps.brew.outputs.prefix }}
+          DEPS: ${{ steps.deps.outputs.prefix }}
         run: |
+          hex() { printf '%s\n' "$1" | grep -Eqx "[0-9a-f]{$2}"; }
           case "$RUNNER_OS" in
-            macOS) printf '%s\n' "$KEY" | grep -Eqx '[0-9a-f]{16}' ;;
-            *) [ "$KEY" = none ] ;;
+            macOS) hex "$KEY" 16 && [ "$BREW_PREFIX" = "$(brew --prefix)" ] ;;
+            *) [ "$KEY" = none ] && [ -z "$BREW_PREFIX" ] ;;
           esac || {
-            echo "::error::unexpected Homebrew key '$KEY' on $RUNNER_OS"
+            echo "::error::unexpected Homebrew key '$KEY' or prefix '$BREW_PREFIX' on $RUNNER_OS"
             exit 1
           }
+          tc="${DEPS#"brew$KEY-tc"}"
+          ws="${tc#*-ws}"
+          tc="${tc%-ws*}"
+          if ! { [ "$DEPS" = "brew$KEY-tc$tc-ws$ws" ] && hex "$tc" 12 && hex "$ws" 12; }; then
+            echo "::error::unexpected dependency key prefix '$DEPS' on $RUNNER_OS"
+            exit 1
+          fi

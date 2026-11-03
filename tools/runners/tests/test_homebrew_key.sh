@@ -148,7 +148,8 @@ is_key() {
 # --- Arguments --------------------------------------------------------------
 
 fresh_state
-for args in "" "--verbose" "--bogus glm" "glm --verbose"; do
+for args in "" "--verbose" "--print-prefix --verbose" "--bogus glm" "glm --verbose" \
+  "glm --print-prefix"; do
   # shellcheck disable=SC2086 # the arguments are split on purpose
   key $args
   expect "homebrew-key.sh rejects '$args'" "$status" 2
@@ -162,9 +163,14 @@ fresh_state
 STUB_OS=Linux key opencv
 expect "off macOS it prints none and asks brew nothing" \
   "$status $out $(wc -l <"$CALLS" | tr -d ' ')" "0 none 0"
+STUB_OS=Linux "$BASH" "$script" --print-prefix opencv >"$tmp/out"
+expect "off macOS --print-prefix prints an empty prefix line" \
+  "$(sed -n 1p "$tmp/out")|$(sed -n 2p "$tmp/out")|$(wc -l <"$tmp/out" | tr -d ' ')" "none||2"
 status=0
-out="$(PATH="$nobrew:/usr/bin:/bin" "$BASH" "$script" opencv)" || status=$?
-expect "without brew on PATH it prints none" "$status $out" "0 none"
+PATH="$nobrew:/usr/bin:/bin" "$BASH" "$script" opencv glm >"$tmp/out" 2>"$tmp/err" || status=$?
+expect "on macOS without brew on PATH it fails, with no key, naming the formulae" \
+  "$status $(wc -c <"$tmp/out" | tr -d ' ') $(cat "$tmp/err")" \
+  "1 0 error: brew is not on PATH, so these are not found: opencv glm"
 
 # --- The key ----------------------------------------------------------------
 
@@ -223,6 +229,10 @@ expect "a second installed version changes it, whatever order brew lists them in
 fresh_state
 STUB_PREFIX=/usr/local key opencv glm
 expect "another prefix changes it" "$([ "$out" != "$base" ] && echo changed)" changed
+STUB_PREFIX=/usr/local key --print-prefix --verbose opencv glm
+expect "--print-prefix prints the prefix on a second line, after the same key" \
+  "$status $(printf '%s\n' "$out" | sed -n 1p) $(printf '%s\n' "$out" | sed -n 2p) $(printf '%s\n' "$out" | wc -l | tr -d ' ')" \
+  "0 $(STUB_PREFIX=/usr/local "$BASH" "$script" opencv glm) /usr/local 2"
 
 # brew update makes a dependency outdated without changing what is installed.
 fresh_state
@@ -237,23 +247,21 @@ expect "a dependency's new version changes the key while it is outdated" \
 # --- Formulae not installed, and aliases --------------------------------------
 
 fresh_state
-key --verbose opencv glm hello
-expect "a formula not installed still gives a key" "$status $(is_key "$out")" "0 yes"
-expect "it is hashed as not installed, and the key differs" \
-  "$(printf '%s\n' "$err" | grep -c '^hello (not installed)$') $([ "$out" != "$base" ] && echo changed)" \
-  "1 changed"
-missing="$out"
+key --print-prefix opencv hello glm world hello
+expect "a formula not installed fails it, with no key, naming each one once" \
+  "$status $out $err" \
+  "1  error: not installed: hello world; install by hand while CI is idle"
 installs hello 2.12
-key opencv glm hello
-expect "installing it changes the key again" \
-  "$([ "$out" != "$missing" ] && [ "$out" != "$base" ] && echo changed)" changed
+installs world 1.0
+key opencv glm hello world
+expect "once they are installed it gives a key" "$status $(is_key "$out")" "0 yes"
 
 fresh_state
 key pkgconf
 direct="$out"
-key --verbose pkg-config
+key pkg-config
 expect "an alias gives its formula's key, and is not taken for one not installed" \
-  "$out $(printf '%s\n' "$err" | grep -c 'not installed')" "$direct 0"
+  "$status $out" "0 $direct"
 
 # --- Failures and what brew is asked ----------------------------------------
 
