@@ -11,8 +11,9 @@
 // a leading zero (on Apple too, whose inet_pton takes one), or the wildcard.
 // resolve takes a number in dotted decimal alone, never the wildcard: a
 // short, octal or hex form, which getaddrinfo reads as glibc's or Apple's
-// rules have it, or digits and dots that are no address, are refused before
-// any lookup; a name, numeric labels and all, is still looked up.
+// rules have it, digits and dots that are no address, or IPv6, which glibc's
+// getaddrinfo reads as IPv4 when mapped, are refused before any lookup; a
+// name, numeric labels and all, is still looked up.
 
 #include <cstdint>
 #include <optional>
@@ -198,6 +199,14 @@ int resolve_case() {
         "08",         "0x7f.0.0.1", "0X7F.0.0.1", "0x7f000001", "0xdeadbeef",
         "10.0x8.0.1", "256.1.1.1",  "10.8.0.256", "1.2.3.4.5",  "10.8.0.1.",
         ".10.8.0.1",  "10..0.1",    "."}) {
+    CHECK(refusal(net::resolve("test", host, 7101)) == not_numeric);
+  }
+  // Any ':', which no name has: glibc's getaddrinfo reads an IPv4-mapped
+  // address as IPv4 ("::ffff:0.0.0.0" as 0.0.0.0, with a scope too;
+  // "::ffff:7f00:1" as 127.0.0.1), where Apple's finds none.
+  for (const char* host :
+       {"::ffff:0.0.0.0", "::ffff:0.0.0.0%1", "::FFFF:0:0", "::ffff:7f00:1",
+        "::ffff:10.8.0.1", "::1", "10.8.0.1:7101", ":"}) {
     CHECK(refusal(net::resolve("test", host, 7101)) == not_numeric);
   }
   CHECK(refusal(net::resolve("test", "0.0.0.0", 7101)) ==

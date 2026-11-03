@@ -32,11 +32,15 @@ constexpr std::string_view kWildcard =
     "0.0.0.0 is the wildcard, not one host's address";
 
 // Whether `host` is a number to the system: digits and dots alone, which no
-// name is (a top-level label is never all digits), or what inet_aton reads,
-// as getaddrinfo reads it on glibc and Apple: a short form ("10.1"), octal
-// ("010.8.0.1") or hex ("0x7f.0.0.1").
+// name is (a top-level label is never all digits); what inet_aton reads, as
+// getaddrinfo does on glibc and Apple: a short form ("10.1"), octal
+// ("010.8.0.1") or hex ("0x7f.0.0.1"); or anything with a ':', which no name
+// has: glibc's getaddrinfo reads an IPv4-mapped IPv6 address as IPv4 even
+// for AF_INET alone ("::ffff:0.0.0.0" as 0.0.0.0, "::ffff:7f00:1" as
+// 127.0.0.1, with a "%1" scope too), where Apple's finds no address.
 bool numeric(const char* host) {
   const std::string_view text(host);
+  if (text.find(':') != std::string_view::npos) return true;
   const auto digit_or_dot = [](char c) {
     return (c >= '0' && c <= '9') || c == '.';
   };
@@ -94,7 +98,8 @@ Result<std::vector<Endpoint>> resolve(std::string_view api,
                                       const std::string& host,
                                       std::uint16_t port) try {
   // The host as getaddrinfo reads it: up to its first NUL. A number is one
-  // only in dotted decimal, so the system's other readings never pass.
+  // only in dotted decimal, read here and not by the resolver, so the
+  // system's other readings never pass.
   const char* const text = host.c_str();
   if (*text == '\0') {
     return Status::invalid_argument(std::string(api) + ": the host is empty");
@@ -111,6 +116,7 @@ Result<std::vector<Endpoint>> resolve(std::string_view api,
       return Status::invalid_argument(std::string(api) + ": " +
                                       std::string(kWildcard));
     }
+    return std::vector<Endpoint>{*endpoint};
   }
   addrinfo hints{};
   hints.ai_family = AF_INET;

@@ -67,22 +67,24 @@ VKC_NET_API std::string to_string(const Endpoint& endpoint);
 /// @brief Every IPv4 address @p host resolves to for TCP (`getaddrinfo`),
 ///        with @p port. Blocks for as long as the resolver takes; a caller
 ///        that must not block calls it from a thread of its own. A host the
-///        system reads as a number (digits and dots alone, or a form
-///        `inet_aton` takes, as `getaddrinfo` does: "10.1", octal
-///        "010.8.0.1", hex "0x7f.0.0.1") must be dotted decimal as
-///        @ref parse_ipv4 reads it, and not the wildcard; a name's addresses
-///        are the resolver's.
+///        system may read as a number must be dotted decimal as
+///        @ref parse_ipv4 reads it, and not the wildcard, and is read without
+///        the resolver: digits and dots alone; a form `inet_aton` takes
+///        ("10.1", octal "010.8.0.1", hex "0x7f.0.0.1"); or anything with a
+///        ':', IPv6, which glibc's `getaddrinfo` reads as IPv4 when mapped
+///        ("::ffff:0.0.0.0" as 0.0.0.0). A name's addresses are the
+///        resolver's.
 /// @param api   The caller's name, which starts every message.
-/// @param host  A name, or a numeric address.
+/// @param host  A name, or a numeric IPv4 address.
 /// @param port  The port each endpoint takes.
-/// @return At least one endpoint, in the resolver's order; before any
-///         lookup, `InvalidArgument` "<api>: the host is empty", "<api>: the
-///         host is not a numeric IPv4 address: four decimal parts from 0 to
-///         255, with no leading zero" or "<api>: 0.0.0.0 is the wildcard, not
-///         one host's address"; `NotFound` "<api>: cannot look up the name:
-///         <the resolver's words>" for a name that does not resolve, or
-///         "…: no IPv4 address for TCP"; `OutOfMemory` for the resolver's
-///         memory; `IoError` otherwise.
+/// @return At least one endpoint, in the resolver's order (a numeric host's
+///         own one); before any lookup, `InvalidArgument` "<api>: the host
+///         is empty", "<api>: the host is not a numeric IPv4 address: four
+///         decimal parts from 0 to 255, with no leading zero" or "<api>:
+///         0.0.0.0 is the wildcard, not one host's address"; `NotFound`
+///         "<api>: cannot look up the name: <the resolver's words>" for a
+///         name that does not resolve, or "…: no IPv4 address for TCP";
+///         `OutOfMemory` for the resolver's memory; `IoError` otherwise.
 VKC_NET_API Result<std::vector<Endpoint>> resolve(std::string_view api,
                                                   const std::string& host,
                                                   std::uint16_t port);
