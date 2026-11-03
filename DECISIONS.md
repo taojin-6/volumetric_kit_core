@@ -36,7 +36,7 @@ uses (`calib`'s headless solver needs no Vulkan):
 | Tier | Depends on | Holds | Lands |
 | --- | --- | --- | --- |
 | `base` | — | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics, whole-file I/O, version | now |
-| `config` | `base`, private nlohmann/json | family scenario schema, typed settings, defaults and static validation | 0.3.0 |
+| `config` | `base`; private: `net` (0.44.0, the 2026-11-02 net entry's amendment), nlohmann/json | family scenario schema, typed settings, defaults and static validation | 0.3.0 |
 | `vulkan` | `base` | instance, device create/adopt, allocator, buffers, images, descriptors, shaders, compute pipelines, command batches, external memory, the shared-device bootstrap | in stages from 2026-10-03 (below), before `calib` writes GPU code |
 | `net` | `base` | IPv4 addresses and their checks, TCP socket calls, `dial`, `Listener`; no thread, no third-party dependency, no stream or media format | 0.43.0 (the 2026-11-02 net entry) |
 
@@ -1937,3 +1937,28 @@ one".
   `vkc_net_dial_test`, still main()s, with include and namespace edits and
   the ones clang-tidy asked for, which had never run on them. The Mac leg
   runs them under ThreadSanitizer, as grid's did.
+
+**Amended 2026-11-02 (core 0.44.0): one port and `host:port` parser, which
+the config's live address uses.** Four address parsers had grown: grid's
+host check, the player's `host:port`, the config's hand parser for
+`source.mobile`'s `tcp://ADDRESS:PORT`, and the planned on-screen entry of
+the sender that dials out. `net` now holds the one copy: `parse_port` (1 to
+65535 in decimal digits, no sign, space or leading zero) and
+`parse_host_port` ("host" with the caller's default port, or "host:port";
+the host is checked no further, since a name is looked up when connected
+to). A split at the first ':' alone would read "[::1]:7101" as a bad port and
+"::1" as naming no host, so a leading '[' or a second ':' is refused as IPv6
+first.
+
+- **The config gives net's reasons.** `source.mobile`'s live address goes
+  through `parse_host_port`, then `parse_endpoint`, so one host's numeric
+  address and its port are checked once, in `net`, and the config's refusals
+  read as dial's and an address entry's do. The config keeps its own
+  scheme check and its typo catch (a value without `://` that reads as an
+  address), which are its key's rules, not an address's. `core_config` links
+  `core_net` privately: no config header names it.
+- **A leading zero is refused on every platform.** `parse_ipv4` said it
+  refused a part with a leading zero, as glibc's `inet_pton` does; Apple's
+  reads "010" as 10, where `inet_aton` reads it as octal 8. It now checks
+  the leading zero itself, so an address reads the same on every platform
+  and the config keeps refusing "010.8.0.1" on macOS.

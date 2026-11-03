@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.43.0 CONFIG)
+vkc_require_core(0.44.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -269,7 +269,9 @@ unknown extension object.
   colon, is refused. A live session is `tcp://ADDRESS:PORT`, which the
   consumer listens on for the phone to dial in to: the address is numeric
   IPv4, four decimal parts from 0 to 255, and the port is from 1 to 65535,
-  each without a leading zero and with nothing after the port. Core does
+  each without a leading zero and with nothing after the port. The net
+  tier checks both (`net::parse_host_port`, then `net::parse_endpoint`,
+  from core 0.44.0), and a refusal gives its reason. Core does
   not check that the address is the host's own; the listen does. The wildcard
   `0.0.0.0`, a name, IPv6 and any other scheme are refused, and so is
   `output.serve`'s port, which binds every interface of the same host. A

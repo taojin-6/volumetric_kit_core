@@ -56,7 +56,8 @@ not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 
 ## Architecture
 
-`base` → {`config`, `vulkan`, `net`}. The `net` tier holds the family's TCP
+`base` → {`config`, `vulkan`, `net`}, and `net` → `config`, privately. The
+`net` tier holds the family's TCP
 sockets on the system's sockets alone, always built; a transport on an outside
 library would be an optional tier of its own (DECISIONS.md, the 2026-11-02 net
 entry). The optional CPU-only `config` tier owns the

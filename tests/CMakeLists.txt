@@ -116,13 +116,13 @@ target_link_libraries(
   vkc_testing_allocation_failure_test
   PRIVATE volumetric_kit::core_test_allocation_failure Threads::Threads)
 
-# net: the socket calls and dial / Listener, with the tests that came from grid
-# with them, main()s of their own on core_test_base, on 127.0.0.1 (and, for the
-# congestion control on Linux, the host's own address). The socket test's
-# internal cases (the allowed list, loopback, the congestion choice) reach into
-# the source directory. CI runs both again under ThreadSanitizer on macOS
-# (.github/workflows/_build.yml).
-foreach(_vkc_test net_socket net_dial)
+# net: the address checks, and the socket calls and dial / Listener with the
+# tests that came from grid with them, main()s of their own on core_test_base,
+# on 127.0.0.1 (and, for the congestion control on Linux, the host's own
+# address). The socket test's internal cases (the allowed list, loopback, the
+# congestion choice) reach into the source directory. CI runs all three again
+# under ThreadSanitizer on macOS (.github/workflows/_build.yml).
+foreach(_vkc_test net_address net_socket net_dial)
   add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
   target_link_libraries(
     vkc_${_vkc_test}_test

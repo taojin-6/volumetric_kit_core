@@ -144,7 +144,7 @@ jobs:
             -DFETCHCONTENT_SOURCE_DIR_VULKANMEMORYALLOCATOR="$PWD/build/_deps/vulkanmemoryallocator-src" \
             -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST="$PWD/build/_deps/googletest-src"
           cmake --build build-tsan --target vkc_vulkan_host_ring_test \
-            vkc_net_socket_test vkc_net_dial_test \
+            vkc_net_address_test vkc_net_socket_test vkc_net_dial_test \
             --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
           DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
             ctest --test-dir build-tsan --output-on-failure --no-tests=error \

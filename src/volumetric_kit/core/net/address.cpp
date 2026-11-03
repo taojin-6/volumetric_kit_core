@@ -8,7 +8,9 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -31,6 +33,14 @@ std::optional<Endpoint> parse_ipv4(std::string_view host, std::uint16_t port) {
   host = host.substr(0, host.find('\0'));
   char text[INET_ADDRSTRLEN] = {};
   if (host.size() >= sizeof text) return std::nullopt;
+  // A part with a leading zero is none, as glibc's inet_pton reads it.
+  // Apple's reads "010" as 10, and inet_aton as octal 8.
+  for (std::size_t i = 0; i + 1 < host.size(); ++i) {
+    if (host[i] == '0' && (i == 0 || host[i - 1] == '.') &&
+        host[i + 1] >= '0' && host[i + 1] <= '9') {
+      return std::nullopt;
+    }
+  }
   host.copy(text, host.size());
   in_addr address{};
   if (::inet_pton(AF_INET, text, &address) != 1) return std::nullopt;
@@ -100,6 +110,53 @@ Result<std::vector<Endpoint>> resolve(std::string_view api,
   return addresses;
 } catch (...) {
   return exception_status(api, Status::Code::IoError);
+}
+
+Result<std::uint16_t> parse_port(std::string_view text) try {
+  // Five digits at most, the first not 0: no sign, space, 0 or leading zero
+  // passes, and the sum cannot overflow.
+  const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+  if (!text.empty() && text.size() <= 5 && text.front() != '0' &&
+      std::all_of(text.begin(), text.end(), digit)) {
+    std::uint32_t port = 0;
+    for (const char c : text) {
+      port = (port * 10) + static_cast<std::uint32_t>(c - '0');
+    }
+    if (port <= 65535) return static_cast<std::uint16_t>(port);
+  }
+  return Status::invalid_argument(
+      "\"" + std::string(text) +
+      "\" is not a port: a number from 1 to 65535, with no leading zero");
+} catch (...) {
+  return exception_status("parse_port", Status::Code::IoError);
+}
+
+Result<HostPort> parse_host_port(std::string_view text,
+                                 std::uint16_t default_port) try {
+  const std::string quoted = "\"" + std::string(text) + "\"";
+  const std::size_t colon = text.find(':');
+  // Before the split at the colon, which would read "[::1]:7101" as a bad
+  // port and "::1" as no host.
+  if ((!text.empty() && text.front() == '[') ||
+      (colon != std::string_view::npos &&
+       text.find(':', colon + 1) != std::string_view::npos)) {
+    return Status::invalid_argument(quoted +
+                                    " is IPv6, which is not supported");
+  }
+  HostPort at{std::string(text.substr(0, colon)), default_port};
+  if (at.host.empty()) {
+    return Status::invalid_argument(quoted + " names no host");
+  }
+  if (colon == std::string_view::npos) {
+    if (default_port == 0) {
+      return Status::invalid_argument(quoted + " names no port");
+    }
+    return at;
+  }
+  VKC_ASSIGN(at.port, parse_port(text.substr(colon + 1)));
+  return at;
+} catch (...) {
+  return exception_status("parse_host_port", Status::Code::IoError);
 }
 
 }  // namespace volumetric_kit::core::net

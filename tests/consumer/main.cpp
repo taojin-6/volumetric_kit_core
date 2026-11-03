@@ -192,9 +192,12 @@ vkc::Status run() {
 #endif
   VKC_ASSIGN(const int n, parse_positive(3));
   VKC_CHECK(n == 3, "parsed what it was given");
-  // The net tier, which every core builds.
+  // The net tier, which every core builds: an address as typed, then one
+  // host's.
+  VKC_ASSIGN(const vkc::net::HostPort typed,
+             vkc::net::parse_host_port("10.8.0.1:7101", 0));
   VKC_ASSIGN(const vkc::net::Endpoint lab,
-             vkc::net::parse_endpoint("10.8.0.1", 7101));
+             vkc::net::parse_endpoint(typed.host, typed.port));
   if (vkc::net::to_string(lab) != "10.8.0.1:7101") {
     return vkc::Status::invalid_argument("a net endpoint did not round-trip");
   }

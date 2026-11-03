@@ -2524,42 +2524,43 @@ TEST(Config, MobileSessionListensOnOneNumericAddress) {
   rejected(phone_scenario(R"("mobile":"tcp://10.8.0.1:7101")"), App::FuseOrbbec,
            "source.mobile_registration: is required for a live source.mobile");
 
-  // Each malformed address, with its own reason.
+  // Each malformed address, with its own reason: the net tier's
+  // (net::parse_host_port, then net::parse_endpoint), but for the scheme.
+  constexpr std::string_view kNotAPort =
+      " is not a port: a number from 1 to 65535, with no leading zero";
+  constexpr std::string_view kNotNumeric = " is not a numeric IPv4 address";
+  constexpr std::string_view kOtherScheme =
+      "a live session is tcp://ADDRESS:PORT; no other scheme is supported";
+  const auto quoted = [](std::string_view text, std::string_view reason) {
+    return "\"" + std::string(text) + "\"" + std::string(reason);
+  };
   for (const auto& [address, reason] :
-       {std::pair{"tcp://lab-box:7101",
-                  "must be a numeric IPv4 address; a name is not resolved"},
+       {std::pair{"tcp://lab-box:7101", quoted("lab-box", kNotNumeric)},
         std::pair{"tcp://0.0.0.0:7101",
-                  "must not be the wildcard 0.0.0.0; give one of this "
-                  "host's own addresses"},
-        std::pair{"tcp://10.8.0.1", "requires a port: tcp://ADDRESS:PORT"},
-        std::pair{"tcp://10.8.0.1:", "the port must be a decimal number"},
-        std::pair{"tcp://10.8.0.1:x", "the port must be a decimal number"},
-        std::pair{"tcp://10.8.0.1:0", "the port must be in [1, 65535]"},
-        std::pair{"tcp://10.8.0.1:65536", "the port must be in [1, 65535]"},
+                  std::string("0.0.0.0 is the wildcard, not one host's "
+                              "address")},
+        std::pair{"tcp://10.8.0.1", quoted("10.8.0.1", " names no port")},
+        std::pair{"tcp://", quoted("", " names no host")},
+        std::pair{"tcp://:7101", quoted(":7101", " names no host")},
+        std::pair{"tcp://10.8.0.1:", quoted("", kNotAPort)},
+        std::pair{"tcp://10.8.0.1:x", quoted("x", kNotAPort)},
+        std::pair{"tcp://10.8.0.1:0", quoted("0", kNotAPort)},
+        std::pair{"tcp://10.8.0.1:65536", quoted("65536", kNotAPort)},
         std::pair{"tcp://10.8.0.1:99999999999",
-                  "the port must be in [1, 65535]"},
-        std::pair{"tcp://10.8.0.1:07101",
-                  "the port must not have a leading zero"},
-        std::pair{"tcp://010.8.0.1:7101",
-                  "an address part must not have a leading zero"},
-        std::pair{"tcp://10.8.0.256:7101",
-                  "an address part must be in [0, 255]"},
-        std::pair{"tcp://10.8.0:7101",
-                  "the address must be four dot-separated decimal parts"},
-        std::pair{"tcp://10.8.0.1.2:7101",
-                  "the address must be four dot-separated decimal parts"},
-        std::pair{"tcp://10..0.1:7101",
-                  "an address part must be a decimal number"},
-        std::pair{"tcp://10.8.0.1:7101/x",
-                  "must end at the port: tcp://ADDRESS:PORT"},
+                  quoted("99999999999", kNotAPort)},
+        std::pair{"tcp://10.8.0.1:07101", quoted("07101", kNotAPort)},
+        std::pair{"tcp://010.8.0.1:7101", quoted("010.8.0.1", kNotNumeric)},
+        std::pair{"tcp://10.8.0.256:7101", quoted("10.8.0.256", kNotNumeric)},
+        std::pair{"tcp://10.8.0:7101", quoted("10.8.0", kNotNumeric)},
+        std::pair{"tcp://10.8.0.1.2:7101", quoted("10.8.0.1.2", kNotNumeric)},
+        std::pair{"tcp://10..0.1:7101", quoted("10..0.1", kNotNumeric)},
+        std::pair{"tcp://10.8.0.1:7101/x", quoted("7101/x", kNotAPort)},
         std::pair{"tcp://[::1]:7101",
-                  "must be an IPv4 address; IPv6 is not supported"},
-        std::pair{"udp://10.8.0.1:7101",
-                  "a live session is tcp://ADDRESS:PORT; no other scheme "
-                  "is supported"},
-        std::pair{"TCP://10.8.0.1:7101",
-                  "a live session is tcp://ADDRESS:PORT; no other scheme "
-                  "is supported"}}) {
+                  quoted("[::1]:7101", " is IPv6, which is not supported")},
+        std::pair{"tcp://::1",
+                  quoted("::1", " is IPv6, which is not supported")},
+        std::pair{"udp://10.8.0.1:7101", std::string(kOtherScheme)},
+        std::pair{"TCP://10.8.0.1:7101", std::string(kOtherScheme)}}) {
     rejected(phone_scenario(std::string(R"("mobile":")") + address +
                             R"(","mobile_registration":"reg.json")"),
              App::FuseOrbbec, std::string("source.mobile: ") + reason);

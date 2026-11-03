@@ -7,6 +7,60 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-11-02
+
+### Added
+
+- `net::parse_port` (`net/address.hpp`): a port as typed, 1 to 65535 in
+  decimal digits alone, with no sign, space or leading zero; otherwise
+  `InvalidArgument` "\"<text>\" is not a port: a number from 1 to 65535,
+  with no leading zero".
+- `net::HostPort` and `net::parse_host_port`: "host" with the caller's
+  default port, or "host:port"; the host, a name or a numeric address, is
+  checked no further. Refused, `InvalidArgument`: "\"<text>\" names no
+  host", "\"<text>\" names no port" (with a default of 0), "\"<text>\" is
+  IPv6, which is not supported" (a leading '[' or a second ':'), or the
+  port's reason.
+
+### Changed
+
+- `source.mobile`'s live `tcp://ADDRESS:PORT` is checked by
+  `net::parse_host_port`, then `net::parse_endpoint`, so its refusals give
+  their reasons (DECISIONS.md, the 2026-11-02 net entry's amendment). What
+  it refuses is unchanged; the reasons after `source.mobile: ` change:
+  - a name, a part over 255 or with a leading zero, or not four parts:
+    "\"<address>\" is not a numeric IPv4 address" (was "must be a numeric
+    IPv4 address; a name is not resolved", "an address part must not have a
+    leading zero", "… must be in [0, 255]", "… must be a decimal number" or
+    "the address must be four dot-separated decimal parts");
+  - the wildcard: "0.0.0.0 is the wildcard, not one host's address" (was
+    "must not be the wildcard 0.0.0.0; give one of this host's own
+    addresses");
+  - no port: "\"<address>\" names no port" (was "requires a port:
+    tcp://ADDRESS:PORT");
+  - a bad port, a leading zero or anything after it: "\"<port>\" is not a
+    port: a number from 1 to 65535, with no leading zero" (was "the port
+    must be a decimal number", "… must be in [1, 65535]", "… must not have a
+    leading zero" or "must end at the port: tcp://ADDRESS:PORT");
+  - IPv6: "\"<address:port>\" is IPv6, which is not supported" (was "must
+    be an IPv4 address; IPv6 is not supported"), now for a second ':' too;
+  - no host (`tcp://` or `tcp://:7101`): "\"<text>\" names no host".
+  The scheme's and the typo catch's reasons are unchanged.
+- `net::parse_ipv4` refuses a part with a leading zero itself, as its
+  documentation said, so Apple's `inet_pton`, which reads "010" as 10, no
+  longer takes one: `parse_endpoint`, `dial` and `Listener::create` refuse
+  "010.8.0.1" on macOS and iOS as on Linux.
+- `core_config` links `core_net` privately.
+- The Mac leg's ThreadSanitizer step builds and runs `vkc_net_address_test`
+  with the other net tests.
+
+### Migration
+
+- Nothing to change beyond the pin; every scenario that loaded still loads.
+  A consumer that matched `source.mobile`'s old reasons reads the new ones
+  above. On Apple, a numeric address with a leading zero in a part is no
+  longer one.
+
 ## [0.43.0] - 2026-11-02
 
 ### Added
