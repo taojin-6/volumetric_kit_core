@@ -1170,7 +1170,12 @@ versions.
 
 ## Open decisions
 
-None. "Unified memory" closed with core 0.21.0 ("Where memory lives", the
+- **The provenance stamp's dirty rule** (the 2026-11-03 entry). Until the
+  owner decides, an untracked file counts and an ignored one never does, as
+  recommended. Counting tracked changes alone is `--untracked-files=no` in
+  place of `normal` in `cmake/vkc_source_commits.cmake`.
+
+"Unified memory" closed with core 0.21.0 ("Where memory lives", the
 `HostRing` entry).
 
 ## 2026-10-11 — One family scenario format in the core
@@ -1968,3 +1973,45 @@ one too, and calling those IPv6 alone would mislead.
   `parse_ipv4` refuses goes to the system's `getaddrinfo`, which glibc reads
   as octal (8.8.0.1) and Apple as decimal (10.8.0.1). A caller that resolves
   a typed host meets this.
+
+## 2026-11-03 — One provenance stamp, read at every build
+
+`vkc_source_commits` (core 0.47.0, `cmake/vkc_source_commits.cmake`). The
+player's measurement log and calib's capture sessions name the commits they
+were built from, and each read them with its own copy of the same git calls.
+The player read them at configure, so after an edit or a commit and a build
+that did not reconfigure, its log named the earlier commit, clean, for code
+that was not that. Two siblings need the rule, and the core already holds the
+family's CMake rules (the 2026-10-28 `vkc_require_sibling` entry).
+
+- **At every build, rewritten only on change.** The function adds a target
+  that runs the stamp before each build of the caller's target, and runs it
+  once at configure, so the header exists when the build is generated. The
+  header is written only when its text changes, so an unchanged checkout
+  recompiles nothing; its `BYPRODUCTS` lets Ninja see that.
+- **Facts, not a format.** Per source the header holds the commit, a dirty
+  flag and, for a FetchContent package, its override directory, as macros
+  under the caller's prefix. Macros serve a C++ constant and a preprocessor
+  test alike, and need no core header. Each caller keeps its own text: the
+  player's `<commit>-dirty` and `unknown`, calib's empty commit off a
+  checkout.
+- **A checkout's top, or nothing.** A directory that is not a git checkout's
+  top, such as an unpacked copy or a package folder inside its parent's
+  tree, reads no commit, rather than the commit of the checkout around it,
+  as both callers already did. A build without git reads none either.
+- **Untracked files count; ignored files never do** (open, above). An
+  untracked file can change what builds, as a new source a glob picks up
+  does, so a rule that skips it can name a clean commit for code that was
+  not. Ignored files are build output and editor state. The callers counted
+  tracked changes alone (`git describe --dirty`, `git status
+  --untracked-files=no`). The cost: a build directory inside a checkout that
+  its `.gitignore` does not cover makes that checkout dirty.
+- **No index lock.** The stamp runs `git --no-optional-locks status`, so a
+  build never holds the lock the user's own git command wants.
+- **A package records its override.** A `PACKAGES` source is read from
+  FetchContent's `SOURCE_DIR`, and its `FETCHCONTENT_SOURCE_DIR_<PACKAGE>` is
+  recorded, so a record says when a sibling came from a local checkout
+  rather than its pin.
+- **Adoption rides each sibling's next core re-pin**: the player's
+  `vp_build_info` and calib's `software.cmake` git calls go, and each keeps
+  its own formatting.

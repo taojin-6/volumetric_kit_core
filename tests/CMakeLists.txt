@@ -1078,6 +1078,58 @@ _vkc_call_test(
   "vkc_require_sibling(volumetric_kit::grid): use vkc_require_sibling(<umbrella-target> <min-version> [TARGETS <target>...])"
   -DARGV1=0.1.0)
 
+# vkc_source_commits (cmake/vkc_source_commits.cmake), on source_commits/ in a
+# git checkout of its own with a second checkout as an overridden package
+# (source_commits_rebuild.cmake): build after build with no reconfigure, the
+# program it builds must read each checkout's commit and changes as they stand,
+# an ignored file must change nothing, an untracked file or a tracked edit must
+# read dirty, and an unchanged stamp must rewrite nothing. Misused, a configure
+# of source_commits/ must say how to call it: no PREFIX, two sources of one
+# name, or a package the build never added.
+find_package(Git REQUIRED)
+add_test(
+  NAME vkc_source_commits_rebuild
+  COMMAND
+    "${CMAKE_COMMAND}" "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+    "-DVKC_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/vkc_source_commits_rebuild"
+    "-DVKC_GENERATOR=${CMAKE_GENERATOR}"
+    "-DVKC_CXX_COMPILER=${CMAKE_CXX_COMPILER}" "-DVKC_GIT=${GIT_EXECUTABLE}" -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/source_commits_rebuild.cmake")
+set_tests_properties(vkc_source_commits_rebuild PROPERTIES TIMEOUT 300 LABELS
+                                                           cmake)
+_vkc_message_regex(
+  _vkc_usage
+  "use vkc_source_commits(<target> HEADER <header> PREFIX <prefix> [SOURCES <name>=<dir>...] [PACKAGES <name>=<package>...]), with at least one source, and a prefix and names that are C identifiers"
+)
+foreach(_vkc_case usage name package)
+  set(_vkc_name vkc_source_commits_${_vkc_case})
+  if(_vkc_case STREQUAL "usage")
+    _vkc_message_regex(
+      _vkc_pass
+      "vkc_source_commits(stamp HEADER source_commits.h SOURCES project=.): ")
+    set(_vkc_pass "${_vkc_pass}${_vkc_usage}")
+  elseif(_vkc_case STREQUAL "name")
+    _vkc_message_regex(
+      _vkc_pass
+      "two sources are named PROJECT, which names their macros; give each its own name"
+    )
+  else()
+    _vkc_message_regex(
+      _vkc_pass
+      "no vkc_sc_absent here; call it after FetchContent_MakeAvailable(vkc_sc_absent)"
+    )
+  endif()
+  add_test(
+    NAME ${_vkc_name}
+    COMMAND
+      "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/source_commits" -B
+      "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
+      "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" "-DVKC_SC_CASE=${_vkc_case}")
+  set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
+                                               "${_vkc_pass}" LABELS cmake)
+endforeach()
+
 # Beyond these configure tests, CI builds and runs consumer/ on the core as a
 # subproject, as the sibling repos consume this one.
 

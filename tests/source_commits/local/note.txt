@@ -1,0 +1,3 @@
+A folder inside the project's checkout, added as the package vkc_sc_local: it
+is no checkout's top, so its commit reads empty. source_commits_rebuild.cmake
+edits this tracked file.

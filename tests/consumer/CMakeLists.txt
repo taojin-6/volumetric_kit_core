@@ -15,7 +15,7 @@ project(vkc_consumer LANGUAGES CXX)
 option(VKC_CONSUMER_GTEST "Provide googletest, and a GPU test on the fixtures"
        ON)
 set(VKC_CONSUMER_REQUIRE
-    "0.44.0"
+    "0.47.0"
     CACHE STRING "The oldest volumetric_kit_core this consumer builds with")
 option(VKC_CONSUMER_REQUIRE_CONFIG "Require the config tier" OFF)
 option(VKC_CONSUMER_REQUIRE_VULKAN "Require the core's vulkan tier" OFF)
@@ -55,6 +55,16 @@ target_compile_definitions(
 if(TARGET volumetric_kit::core_config)
   target_compile_definitions(vkc_consumer PRIVATE VKC_CONSUMER_HAS_CONFIG)
 endif()
+# The core's commit as a sibling stamps it, through the function the core's own
+# CMakeLists defines.
+vkc_source_commits(
+  vkc_consumer
+  HEADER
+  source_commits.h
+  PREFIX
+  VKC_CONSUMER
+  SOURCES
+  "core=${VKC_SOURCE_DIR}")
 # The vulkan tier, when the core has it: configured -DVKC_WITH_VULKAN=ON, as
 # recon and gfx do.
 if(TARGET volumetric_kit::core_vulkan)

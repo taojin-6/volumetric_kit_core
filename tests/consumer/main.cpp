@@ -2,14 +2,15 @@
 // Copyright (c) 2026 Tao Jin
 
 // Links volumetric_kit::core and uses each piece of the base tier once, a call
-// of the net tier -- and the vulkan tier, when the core has it -- so a broken
-// link or include path fails here rather than in a sibling. Nothing here needs
-// a GPU.
+// of the net tier, the stamp of the core's commit -- and the vulkan tier, when
+// the core has it -- so a broken link or include path fails here rather than in
+// a sibling. Nothing here needs a GPU.
 
 #include <cstdio>
 #include <string>
 #include <string_view>
 
+#include "source_commits.h"
 #include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/file_io.hpp"
 #include "volumetric_kit/core/base/log.hpp"
@@ -200,6 +201,14 @@ vkc::Status run() {
              vkc::net::parse_endpoint(typed.host, typed.port));
   if (vkc::net::to_string(lab) != "10.8.0.1:7101") {
     return vkc::Status::invalid_argument("a net endpoint did not round-trip");
+  }
+  // The core's commit (CMakeLists.txt): none outside a checkout, else a SHA-1
+  // or SHA-256 in hex.
+  const std::string_view core_sha = VKC_CONSUMER_CORE_SHA;
+  static_assert(VKC_CONSUMER_CORE_DIRTY == 0 || VKC_CONSUMER_CORE_DIRTY == 1,
+                "a dirty flag is 0 or 1");
+  if (core_sha.size() != 0 && core_sha.size() != 40 && core_sha.size() != 64) {
+    return vkc::Status::invalid_argument("the core's commit is no SHA");
   }
   if (parse_positive(-1).ok()) return vkc::Status::numerical("accepted -1");
   if (vkc::read_file("").status().domain() !=
