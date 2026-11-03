@@ -2,15 +2,21 @@
 # Copyright (c) 2026 Tao Jin
 
 # Run by vkc_source_commits_rebuild: cmake -DVKC_SOURCE_DIR=<core>
-# -DVKC_WORK_DIR=<dir> -DVKC_GENERATOR=<generator> -DVKC_CXX_COMPILER=<compiler>
-# -DVKC_GIT=<git> -P <this>. Copies source_commits/ into <dir>/project and makes
-# it a git checkout, makes <dir>/dep a second one, configures once with dep as
-# the package vkc_sc_dep's override, then builds again and again without
-# reconfiguring. After each build, the program must print what git says of each
-# checkout now:
+# -DVKC_WORK_DIR=<dir> -DVKC_GENERATOR=<generator> [-DVKC_MAKE_PROGRAM=<tool>]
+# -DVKC_CXX_COMPILER=<compiler> -DVKC_GIT=<git> -P <this>. Copies
+# source_commits/ into <dir>/project and makes it a git checkout, makes
+# <dir>/dep a second one, configures once with dep as the package vkc_sc_dep's
+# override, then builds again and again without reconfiguring. Every path goes
+# through a symbolic link, as /tmp does on macOS, while git names a checkout's
+# top by its real path. After each build, the program must print what git says
+# of each checkout now:
 #
 # * nothing changed: the same, and the header is not rewritten, so nothing
 #   recompiles;
+# * the build run with a git hook's GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE,
+#   which name the project's checkout: the same, unchanged;
+# * a tracked file touched, its text the same: unchanged, and the project's
+#   index not rewritten either, as git status would to refresh it;
 # * an ignored file: still clean, and not rewritten;
 # * an untracked file: dirty; once it goes, clean again;
 # * an edit to a tracked file in each checkout: both dirty;
@@ -28,13 +34,16 @@ foreach(_var IN ITEMS VKC_SOURCE_DIR VKC_WORK_DIR VKC_GENERATOR
   endif()
 endforeach()
 
-set(_project "${VKC_WORK_DIR}/project")
-set(_dep "${VKC_WORK_DIR}/dep")
-set(_build "${VKC_WORK_DIR}/build")
+set(_link "${VKC_WORK_DIR}/link")
+set(_project "${_link}/project")
+set(_dep "${_link}/dep")
+set(_build "${_link}/build")
 set(_header "${_build}/generated/source_commits.h")
 set(_stamp "${_build}/bin/stamp")
 # A fresh copy each run: the last one edited and committed.
 file(REMOVE_RECURSE "${VKC_WORK_DIR}")
+file(MAKE_DIRECTORY "${VKC_WORK_DIR}/real")
+file(CREATE_LINK "${VKC_WORK_DIR}/real" "${_link}" SYMBOLIC)
 file(COPY "${CMAKE_CURRENT_LIST_DIR}/source_commits/" DESTINATION "${_project}")
 file(WRITE "${_project}/.gitignore" "ignored.txt\n")
 file(WRITE "${_dep}/file.txt" "the package's own file\n")
@@ -68,21 +77,30 @@ foreach(_dir "${_project}" "${_dep}")
   _vkc_git("${_dir}" commit --quiet -m "first")
 endforeach()
 
+set(_make_program)
+if(DEFINED VKC_MAKE_PROGRAM)
+  set(_make_program "-DCMAKE_MAKE_PROGRAM=${VKC_MAKE_PROGRAM}")
+endif()
 execute_process(
   COMMAND
     "${CMAKE_COMMAND}" -S "${_project}" -B "${_build}" -G "${VKC_GENERATOR}"
-    "-DCMAKE_CXX_COMPILER=${VKC_CXX_COMPILER}" -DCMAKE_BUILD_TYPE=Release
-    "-DVKC_SOURCE_DIR=${VKC_SOURCE_DIR}"
+    ${_make_program} "-DCMAKE_CXX_COMPILER=${VKC_CXX_COMPILER}"
+    -DCMAKE_BUILD_TYPE=Release "-DVKC_SOURCE_DIR=${VKC_SOURCE_DIR}"
     "-DFETCHCONTENT_SOURCE_DIR_VKC_SC_DEP=${_dep}" COMMAND_ERROR_IS_FATAL ANY)
 
-# Waits a second, builds without reconfiguring, and checks what the program
-# prints: <project_dirty> and <dep_dirty> with each checkout's HEAD now, and
-# local/ with no commit. Sets _vkc_header_time to the header's time.
+# Waits a second, builds without reconfiguring, with the environment assignments
+# in ARGN on the build alone, and checks what the program prints:
+# <project_dirty> and <dep_dirty> with each checkout's HEAD now, and local/ with
+# no commit. Sets _vkc_header_time to the header's time.
 function(_vkc_build_and_expect step project_dirty dep_dirty)
   execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 1 COMMAND_ERROR_IS_FATAL
                           ANY)
+  set(_env)
+  if(ARGN)
+    set(_env "${CMAKE_COMMAND}" -E env ${ARGN})
+  endif()
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${_build}" --config Release
+    COMMAND ${_env} "${CMAKE_COMMAND}" --build "${_build}" --config Release
     RESULT_VARIABLE _result
     OUTPUT_VARIABLE _output
     ERROR_VARIABLE _output)
@@ -123,6 +141,25 @@ file(TIMESTAMP "${_stamp}" _stamp_time "%s")
 _vkc_build_and_expect("a build with no change" 0 0)
 _vkc_expect_unchanged("a build with no change" "${_header_time}"
                       "${_stamp_time}")
+
+# Only the build carries them: this script's own git calls would follow them.
+set(_hook "a build with a git hook's variables")
+_vkc_build_and_expect(
+  "${_hook}" 0 0 "GIT_DIR=${_project}/.git" "GIT_WORK_TREE=${_project}"
+  "GIT_INDEX_FILE=${VKC_WORK_DIR}/no_such_index")
+_vkc_expect_unchanged("${_hook}" "${_header_time}" "${_stamp_time}")
+
+set(_index "${_project}/.git/index")
+file(TIMESTAMP "${_index}" _index_time "%s")
+file(TOUCH "${_project}/local/note.txt")
+_vkc_build_and_expect("a tracked file touched" 0 0)
+_vkc_expect_unchanged("a tracked file touched" "${_header_time}"
+                      "${_stamp_time}")
+file(TIMESTAMP "${_index}" _time "%s")
+if(NOT _time STREQUAL _index_time)
+  message(FATAL_ERROR "a tracked file touched: the stamp rewrote '${_index}', "
+                      "taking the lock the user's own git command wants")
+endif()
 
 file(WRITE "${_project}/ignored.txt" "ignored\n")
 _vkc_build_and_expect("an ignored file" 0 0)

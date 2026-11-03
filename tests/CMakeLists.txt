@@ -1083,49 +1083,87 @@ _vkc_call_test(
 # (source_commits_rebuild.cmake): build after build with no reconfigure, the
 # program it builds must read each checkout's commit and changes as they stand,
 # an ignored file must change nothing, an untracked file or a tracked edit must
-# read dirty, and an unchanged stamp must rewrite nothing. Misused, a configure
-# of source_commits/ must say how to call it: no PREFIX, two sources of one
-# name, or a package the build never added.
+# read dirty, a git hook's variables must change nothing, and an unchanged stamp
+# must rewrite neither the header nor the index. Under Ninja too, where the
+# build finds it, as CI's cmake leg installs it: Ninja sees an unchanged header
+# only through the stamp's BYPRODUCTS.
 find_package(Git REQUIRED)
+find_program(VKC_TEST_NINJA ninja)
+set(_vkc_rebuild
+    "${CMAKE_COMMAND}" "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+    "-DVKC_CXX_COMPILER=${CMAKE_CXX_COMPILER}" "-DVKC_GIT=${GIT_EXECUTABLE}")
+set(_vkc_rebuild_script
+    "${CMAKE_CURRENT_SOURCE_DIR}/source_commits_rebuild.cmake")
 add_test(
   NAME vkc_source_commits_rebuild
   COMMAND
-    "${CMAKE_COMMAND}" "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+    ${_vkc_rebuild}
     "-DVKC_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/vkc_source_commits_rebuild"
-    "-DVKC_GENERATOR=${CMAKE_GENERATOR}"
-    "-DVKC_CXX_COMPILER=${CMAKE_CXX_COMPILER}" "-DVKC_GIT=${GIT_EXECUTABLE}" -P
-    "${CMAKE_CURRENT_SOURCE_DIR}/source_commits_rebuild.cmake")
+    "-DVKC_GENERATOR=${CMAKE_GENERATOR}" -P "${_vkc_rebuild_script}")
 set_tests_properties(vkc_source_commits_rebuild PROPERTIES TIMEOUT 300 LABELS
                                                            cmake)
-_vkc_message_regex(
-  _vkc_usage
-  "use vkc_source_commits(<target> HEADER <header> PREFIX <prefix> [SOURCES <name>=<dir>...] [PACKAGES <name>=<package>...]), with at least one source, and a prefix and names that are C identifiers"
+if(VKC_TEST_NINJA AND NOT CMAKE_GENERATOR STREQUAL "Ninja")
+  set(_vkc_name vkc_source_commits_rebuild_ninja)
+  add_test(
+    NAME ${_vkc_name}
+    COMMAND
+      ${_vkc_rebuild} "-DVKC_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}"
+      -DVKC_GENERATOR=Ninja "-DVKC_MAKE_PROGRAM=${VKC_TEST_NINJA}" -P
+      "${_vkc_rebuild_script}")
+  set_tests_properties(${_vkc_name} PROPERTIES TIMEOUT 300 LABELS cmake)
+endif()
+
+# Misused, vkc_source_commits(<call>), as source_commits/ makes it with
+# -DVKC_SC_CALL=<call>, must fail the configure and say how to call it: no
+# PREFIX, a prefix or a name that is not a C identifier, no HEADER or no source;
+# or say what is wrong: two sources of one name, or a package the build never
+# added.
+set(_vkc_sc_no_prefix "stamp HEADER source_commits.h SOURCES project=.")
+set(_vkc_sc_bad_prefix
+    "stamp HEADER source_commits.h PREFIX 9 SOURCES project=.")
+set(_vkc_sc_bad_name "stamp HEADER source_commits.h PREFIX VKC_SC SOURCES 1x=.")
+set(_vkc_sc_no_header "stamp PREFIX VKC_SC SOURCES project=.")
+set(_vkc_sc_no_source "stamp HEADER source_commits.h PREFIX VKC_SC")
+set(_vkc_sc_name
+    "stamp HEADER source_commits.h PREFIX VKC_SC SOURCES project=. Project=local"
 )
-foreach(_vkc_case usage name package)
+set(_vkc_sc_package
+    "stamp HEADER source_commits.h PREFIX VKC_SC PACKAGES dep=vkc_sc_absent")
+set(_vkc_sc_usage
+    "use vkc_source_commits(<target> HEADER <header> PREFIX <prefix> [SOURCES <name>=<dir>...] [PACKAGES <name>=<package>...]), with at least one source, and a prefix and names that are C identifiers"
+)
+foreach(
+  _vkc_case
+  no_prefix
+  bad_prefix
+  bad_name
+  no_header
+  no_source
+  name
+  package)
   set(_vkc_name vkc_source_commits_${_vkc_case})
-  if(_vkc_case STREQUAL "usage")
-    _vkc_message_regex(
-      _vkc_pass
-      "vkc_source_commits(stamp HEADER source_commits.h SOURCES project=.): ")
-    set(_vkc_pass "${_vkc_pass}${_vkc_usage}")
-  elseif(_vkc_case STREQUAL "name")
-    _vkc_message_regex(
-      _vkc_pass
-      "two sources are named PROJECT, which names their macros; give each its own name"
+  set(_vkc_call "${_vkc_sc_${_vkc_case}}")
+  if(_vkc_case STREQUAL "name")
+    set(_vkc_why
+        "two sources are named PROJECT, which names their macros; give each its own name"
+    )
+  elseif(_vkc_case STREQUAL "package")
+    set(_vkc_why
+        "no vkc_sc_absent here; call it after FetchContent_MakeAvailable(vkc_sc_absent)"
     )
   else()
-    _vkc_message_regex(
-      _vkc_pass
-      "no vkc_sc_absent here; call it after FetchContent_MakeAvailable(vkc_sc_absent)"
-    )
+    set(_vkc_why "${_vkc_sc_usage}")
   endif()
+  _vkc_message_regex(_vkc_pass "vkc_source_commits(${_vkc_call}): ${_vkc_why}")
+  # One expression: a ';' would split the property into alternatives.
+  string(REPLACE ";" "." _vkc_pass "${_vkc_pass}")
   add_test(
     NAME ${_vkc_name}
     COMMAND
       "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/source_commits" -B
       "${CMAKE_CURRENT_BINARY_DIR}/${_vkc_name}" -G "${CMAKE_GENERATOR}"
       "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" "-DVKC_SC_CASE=${_vkc_case}")
+      "-DVKC_SOURCE_DIR=${PROJECT_SOURCE_DIR}" "-DVKC_SC_CALL=${_vkc_call}")
   set_tests_properties(${_vkc_name} PROPERTIES PASS_REGULAR_EXPRESSION
                                                "${_vkc_pass}" LABELS cmake)
 endforeach()

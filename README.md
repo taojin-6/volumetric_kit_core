@@ -212,7 +212,7 @@ vkc_source_commits(your_target HEADER source_commits.h PREFIX YOUR
                    PACKAGES core=volumetric_kit_core)
 # your sources: #include "source_commits.h" -> YOUR_APP_SHA "<commit>" ("" off a
 # checkout), YOUR_APP_DIRTY 0 or 1, YOUR_CORE_SHA, YOUR_CORE_DIRTY, and
-# YOUR_CORE_OVERRIDE, the FETCHCONTENT_SOURCE_DIR it was built from ("" fetched)
+# YOUR_CORE_OVERRIDE, the FETCHCONTENT_SOURCE_DIR it was given ("" if none)
 ```
 
 A tracked change or an untracked file makes a checkout dirty; an ignored file

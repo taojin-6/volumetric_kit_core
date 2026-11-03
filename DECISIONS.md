@@ -2008,6 +2008,11 @@ family's CMake rules (the 2026-10-28 `vkc_require_sibling` entry).
   its `.gitignore` does not cover makes that checkout dirty.
 - **No index lock.** The stamp runs `git --no-optional-locks status`, so a
   build never holds the lock the user's own git command wants.
+- **A hook's git variables are cleared.** git exports `GIT_DIR`,
+  `GIT_WORK_TREE` and `GIT_INDEX_FILE` to its hooks (githooks(5)), and with
+  them every `git -C` reads the hook's repository: each source would read one
+  checkout's commit, or none. The stamp clears the variables git itself
+  clears to run in a submodule before it reads.
 - **A package records its override.** A `PACKAGES` source is read from
   FetchContent's `SOURCE_DIR`, and its `FETCHCONTENT_SOURCE_DIR_<PACKAGE>` is
   recorded, so a record says when a sibling came from a local checkout

@@ -19,9 +19,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   the directory is not a git checkout's top) and `<prefix>_<NAME>_DIRTY` (1
   for a tracked change or an untracked file, never for an ignored one), and
   for a FetchContent package `<prefix>_<NAME>_OVERRIDE` (its
-  `FETCHCONTENT_SOURCE_DIR_<PACKAGE>`, or `""`). The header is rewritten only
-  when its text changes, so an unchanged checkout recompiles nothing
-  (DECISIONS.md, the 2026-11-03 provenance entry). It refuses a missing
+  `FETCHCONTENT_SOURCE_DIR_<PACKAGE>`, or `""` where none was set). The header
+  is rewritten only when its text changes, so an unchanged checkout recompiles
+  nothing (DECISIONS.md, the 2026-11-03 provenance entry). Each checkout reads
+  as itself whatever `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` the build
+  inherits, as a build a git hook runs does. It refuses a missing
   `HEADER` or `PREFIX`, no source, a name or prefix that is not a C
   identifier, two sources of one upper-cased name, and a package
   FetchContent has not added.

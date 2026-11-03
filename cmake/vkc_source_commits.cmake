@@ -24,7 +24,7 @@
 #   file never counts. It is 0 where SHA is "".
 # * <prefix>_<NAME>_OVERRIDE, for PACKAGES alone: "<dir>", the
 #   FETCHCONTENT_SOURCE_DIR_<PACKAGE> the build was configured with, or "" where
-#   it fetched the package.
+#   none was set.
 #
 # A SOURCES <dir> is relative to the current source directory. A PACKAGES
 # <package> is one FetchContent has added, read from its SOURCE_DIR. Each caller
@@ -192,6 +192,28 @@ if(CMAKE_SCRIPT_MODE_FILE STREQUAL CMAKE_CURRENT_LIST_FILE)
     message(FATAL_ERROR "vkc_source_commits.cmake runs as the target "
                         "vkc_source_commits adds, with its inputs file")
   endif()
+  # A build a git hook runs inherits GIT_DIR, GIT_INDEX_FILE and the like
+  # (githooks(5)), with which git -C would read the hook's repository for every
+  # directory. Cleared as git clears them to run in a submodule: the variables
+  # git rev-parse --local-env-vars lists, but for the command line's settings
+  # (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT), which still apply.
+  foreach(
+    _vkc_var IN
+    ITEMS GIT_ALTERNATE_OBJECT_DIRECTORIES
+          GIT_COMMON_DIR
+          GIT_CONFIG
+          GIT_DIR
+          GIT_GRAFT_FILE
+          GIT_IMPLICIT_WORK_TREE
+          GIT_INDEX_FILE
+          GIT_NO_REPLACE_OBJECTS
+          GIT_OBJECT_DIRECTORY
+          GIT_PREFIX
+          GIT_REPLACE_REF_BASE
+          GIT_SHALLOW_FILE
+          GIT_WORK_TREE)
+    unset(ENV{${_vkc_var}})
+  endforeach()
   string(
     CONCAT _vkc_text
            "// Written by volumetric_kit_core's cmake/vkc_source_commits.cmake "
