@@ -1973,12 +1973,12 @@ one too, and calling those IPv6 alone would mislead.
 ## 2026-11-03 — On iOS the default sink also writes to the unified log
 
 On an iOS device stderr reaches only a console attached at launch
-(`devicectl device process launch --console`), and neither public iOS app
-installs a log handler, so the warnings gfx, grid, sensor and the core send
-through `log_message` were lost on any run without one. The default sink
-now also writes each warning and error to the unified log on iOS
-(`TARGET_OS_IPHONE`), where `log collect` and Console find them afterwards
-(architecture review 2026-11-02, P2-12).
+(`devicectl device process launch --console`), and neither the scanner nor
+the player installs a log handler, so the warnings gfx, grid, sensor and the
+core send through `log_message` were lost on any run without one. The
+default sink now also writes each warning and error to the unified log on
+iOS (`TARGET_OS_IPHONE`, Mac Catalyst excepted), where `log collect` and
+Console find them afterwards (architecture review 2026-11-02, P2-12).
 
 - **The default sink, not a handler in each app.** A handler copied into
   every iOS app is the copy one home prevents, and the base tier owns the
@@ -1987,9 +1987,11 @@ now also writes each warning and error to the unified log on iOS
 - **stderr stays.** `devicectl --console` shows stderr and not the unified
   log, so it still shows each line once. Xcode's console shows both, so
   there a line shows twice.
-- **iOS only.** A macOS run is a terminal's, where stderr is read; a unified
-  log copy there would only double the lines in Xcode's console. Linux and
-  Android are unchanged.
+- **iOS, not macOS.** A macOS run is a terminal's, where stderr is read; a
+  unified log copy there would only double the lines in Xcode's console.
+  Mac Catalyst is a macOS process too, but `TARGET_OS_IPHONE` is 1 there, so
+  the sink also tests `TARGET_OS_MACCATALYST`; visionOS and tvOS, where it is
+  1 as well, follow iOS. Linux and Android are unchanged.
 - **Public text, in pieces under the store's cap.** The line goes as
   `%{public}`, or the device shows `<private>`. A warning is
   `OS_LOG_TYPE_DEFAULT`, an error `OS_LOG_TYPE_ERROR`. `os/log.h` caps an
@@ -1997,4 +1999,6 @@ now also writes each warning and error to the unified log on iOS
   format the store kept 1,009 bytes of the text and cut 1,010 and longer
   (measured on macOS 27.2, whose `libsystem_trace` iOS shares). So a longer
   line goes in entries of at most 1,000 bytes, cut between UTF-8
-  characters; another thread's entry may fall between them.
+  characters; another thread's entry may fall between them. `%.*s` stops
+  at a NUL, which a message may hold, so there a NUL goes as `?`; stderr
+  keeps every byte.

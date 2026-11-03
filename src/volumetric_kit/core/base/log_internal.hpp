@@ -25,6 +25,9 @@ inline constexpr std::string_view kCoreLogSource = "core";
 // store keeps 1,009 bytes of the text (macOS 27.2: 1,010 and longer end in
 // "<…>"). 1,000 stays under it.
 inline constexpr std::size_t kUnifiedLogEntryBytes = 1000;
+// for_each_utf8_piece needs a cap above 0, and one of 4 or more keeps every
+// valid character whole.
+static_assert(kUnifiedLogEntryBytes >= 4);
 
 // Calls `emit(piece)` with consecutive pieces of `text`, none empty and each
 // at most `max_bytes` long, which together are `text`. A piece ends before

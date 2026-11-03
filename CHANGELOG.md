@@ -11,14 +11,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
-- On iOS (`TARGET_OS_IPHONE`), the default log sink also writes each
-  warning and error to the unified log with `os_log_with_type`: a warning
-  at `OS_LOG_TYPE_DEFAULT`, an error at `OS_LOG_TYPE_ERROR`, as public text
-  (`[<source> <level>] <message>`, without the newline), in entries of at
-  most 1,000 bytes cut between UTF-8 characters. The stderr line is
-  unchanged, so `devicectl --console` still shows each line once
-  (DECISIONS.md, the 2026-11-03 entry). macOS, Linux and Android are
-  unchanged, and an installed handler still replaces the default sink.
+- On iOS (`TARGET_OS_IPHONE`, not Mac Catalyst), the default log sink also
+  writes each warning and error to the unified log with `os_log_with_type`:
+  a warning at `OS_LOG_TYPE_DEFAULT`, an error at `OS_LOG_TYPE_ERROR`, as
+  public text (`[<source> <level>] <message>`, without the newline, a NUL
+  byte as `?`), in entries of at most 1,000 bytes cut between UTF-8
+  characters. The stderr line is unchanged, so `devicectl --console` still
+  shows each line once (DECISIONS.md, the 2026-11-03 entry). macOS
+  (Mac Catalyst included), Linux and Android are unchanged, and an
+  installed handler still replaces the default sink.
 
 ### Migration
 

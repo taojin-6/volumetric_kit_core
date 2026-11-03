@@ -33,7 +33,8 @@ namespace volumetric_kit::core {
 /// receives every level and decides for itself. On iOS the default sink also
 /// writes each line it emits to the unified log (`os_log`), a warning at the
 /// default type and an error at the error type, as public text, in entries of
-/// at most 1,000 bytes split between UTF-8 characters.
+/// at most 1,000 bytes split between UTF-8 characters, with each NUL byte
+/// shown as `?`.
 enum class LogLevel {
   Debug,    ///< Verbose developer tracing; dropped by the default sink.
   Info,     ///< Normal progress information; dropped by the default sink.

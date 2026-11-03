@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <future>
 #include <memory>
@@ -286,6 +287,12 @@ TEST_F(LogTest, DefaultSinkPrintsWarningsAndErrorsWithTheirSource) {
 std::vector<std::string> pieces(std::string_view text, std::size_t max_bytes) {
   std::vector<std::string> out;
   detail::for_each_utf8_piece(text, max_bytes, [&](std::string_view piece) {
+    // Every piece is non-empty, so there are at most text.size() of them: a
+    // split that stops advancing fails here at once, not after filling memory.
+    if (piece.empty() || out.size() == text.size()) {
+      std::fputs("for_each_utf8_piece does not advance\n", stderr);
+      std::abort();
+    }
     out.emplace_back(piece);
   });
   return out;
@@ -326,6 +333,10 @@ TEST(LogUnifiedSplit, InvalidUtf8OrAnOverlongCharacterIsCutAtTheCap) {
   // cannot fit whole either. Every piece still makes progress.
   EXPECT_EQ(pieces("a\x80\x80\x80\x80\x80", 4),
             (std::vector<std::string>{"a\x80\x80\x80", "\x80\x80"}));
+  // Three bytes back from the cut is still a continuation byte, and the 'b'
+  // four back is past the longest character: the cut stays at the cap.
+  EXPECT_EQ(pieces("ab\x80\x80\x80\x80", 5),
+            (std::vector<std::string>{"ab\x80\x80\x80", "\x80"}));
   EXPECT_EQ(pieces("\xF0\x9F\x98\x80", 2),
             (std::vector<std::string>{"\xF0\x9F", "\x98\x80"}));
   EXPECT_EQ(pieces("\xC3\xA9", 1), (std::vector<std::string>{"\xC3", "\xA9"}));
