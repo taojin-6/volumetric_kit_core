@@ -11,9 +11,10 @@ target_link_libraries(core_test_main
 vkc_target_warnings(core_test_main)
 
 # For a test that is a main() of its own, needing no test framework and no
-# Vulkan. core_test_base: CHECK and a scratch directory (test_check.hpp,
-# scratch_dir.hpp). core_test_allocation_failure: replaces the binary's global
-# operator new and delete to measure a thread's allocations and fail one
+# Vulkan. core_test_base: CHECK, a scratch directory and raw loopback sockets
+# (test_check.hpp, scratch_dir.hpp, net_loopback.hpp).
+# core_test_allocation_failure: replaces the binary's global operator new and
+# delete to measure a thread's allocations and fail one
 # (test_allocation_failure.hpp), so only a test that does so links it.
 add_library(core_test_base INTERFACE)
 add_library(volumetric_kit::core_test_base ALIAS core_test_base)

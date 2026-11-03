@@ -5,6 +5,7 @@
 # the dependency rule (a tier may depend only on the tiers it names in
 # DECISIONS.md) is expressed by what each links.
 add_subdirectory(volumetric_kit/core/base)
+add_subdirectory(volumetric_kit/core/net)
 if(VKC_WITH_CONFIG)
   add_subdirectory(volumetric_kit/core/config)
 endif()
@@ -18,7 +19,7 @@ endif()
 # shares one target namespace with its consumer.
 add_library(volumetric_kit_core INTERFACE)
 add_library(volumetric_kit::core ALIAS volumetric_kit_core)
-target_link_libraries(volumetric_kit_core INTERFACE core_base)
+target_link_libraries(volumetric_kit_core INTERFACE core_base core_net)
 if(VKC_WITH_CONFIG)
   target_link_libraries(volumetric_kit_core INTERFACE core_config)
 endif()

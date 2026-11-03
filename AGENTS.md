@@ -7,11 +7,12 @@ do not duplicate rules there or create a circular reference.
 ## Project and boundaries
 
 `volumetric_kit_core` is the shared foundation of the `volumetric_kit` family:
-`calib`, `recon`, `gfx` and `ios` all depend on it. Its tiers are listed in
+`calib`, `recon`, `gfx`, `grid`, `sensor`, `player` and `ios` all depend on
+it. Its tiers are listed in
 [README.md](README.md#tiers); why each exists, and why cameras and sensors are
 not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 
-- Everything here is consumed by four repositories. A public API change bumps
+- Everything here is consumed by the sibling repositories. A public API change bumps
   the version and needs a CHANGELOG entry that says how to migrate
   (DECISIONS.md, "Consumers pin, and an application declares the core
   first"); the consumers move by bumping their pin -- never by tracking
@@ -43,7 +44,7 @@ not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 - Headers: `include/volumetric_kit/core/<tier>/…`, e.g.
   `#include "volumetric_kit/core/base/result.hpp"`
 - CMake: `FetchContent_MakeAvailable(volumetric_kit_core)`; targets
-  `volumetric_kit::core_base`, `…_vulkan`; umbrella `volumetric_kit::core`;
+  `volumetric_kit::core_base`, `…_net`, `…_vulkan`; umbrella `volumetric_kit::core`;
   functions `vkc_*` (`vkc_require_core`, `vkc_embed_shaders`).
 - Test support: `volumetric_kit::core_test_policy`, `…_test_support`,
   `…_test_main`, `…_test_base` and `…_test_allocation_failure` in
@@ -55,7 +56,10 @@ not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 
 ## Architecture
 
-`base` → {`config`, `vulkan`}. The optional CPU-only `config` tier owns the
+`base` → {`config`, `vulkan`, `net`}. The `net` tier holds the family's TCP
+sockets on the system's sockets alone, always built; a transport on an outside
+library would be an optional tier of its own (DECISIONS.md, the 2026-11-02 net
+entry). The optional CPU-only `config` tier owns the
 family scenario schema, typed settings, defaults and static validation;
 siblings adapt validated settings, check runtime resources/capabilities and
 keep their libraries' own parameter rules (DECISIONS.md, the 2026-10-11

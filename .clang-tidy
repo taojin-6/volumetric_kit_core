@@ -59,7 +59,15 @@ CheckOptions:
   # includes the POSIX headers that declare them, <sys/types.h> with "IWYU
   # pragma: keep", since on macOS it declares none of them itself. glibc
   # declares POSIX's additions to C headers there (mkdtemp in <stdlib.h>,
-  # SIGPIPE in <signal.h>), but C++ includes <cstdlib> and <csignal>
-  # (modernize-deprecated-headers), which include-cleaner does not credit.
+  # SIGPIPE in <signal.h>, strnlen in <string.h>), but C++ includes <cstdlib>,
+  # <csignal> and <cstring> (modernize-deprecated-headers), which
+  # include-cleaner does not credit. The same for the net tier's sockets: the
+  # macOS SDK defines htons and ntohl in <sys/_endian.h> and FIONREAD in
+  # <sys/filio.h>, and glibc takes SOL_SOCKET, the SO_ options and FIONREAD
+  # from the kernel's <asm-generic/...> headers; the code includes
+  # <arpa/inet.h>, <netinet/in.h>, <sys/socket.h> and <sys/ioctl.h>.
+  # include-cleaner's map of the standard library lacks the chrono literals
+  # (2s, 20ms), so it would ask for the header that defines them, libstdc++'s
+  # <bits/chrono.h> or libc++'s <__chrono/duration.h>, rather than <chrono>.
   - key: misc-include-cleaner.IgnoreHeaders
-    value: 'vulkan/.*;vk_video/.*;sys/_types/.*;sys/fcntl\.h;signal\.h;stdlib\.h'
+    value: 'vulkan/.*;vk_video/.*;sys/_types/.*;sys/fcntl\.h;signal\.h;stdlib\.h;string\.h;sys/_endian\.h;sys/filio\.h;asm-generic/.*;bits/chrono\.h;__chrono/duration\.h'
