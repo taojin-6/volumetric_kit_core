@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <initializer_list>
 #include <limits>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -34,6 +35,7 @@
 #include "volumetric_kit/core/base/file_io.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/unique_fd.hpp"
+#include "volumetric_kit/core/net/address.hpp"
 
 namespace volumetric_kit::core::config {
 namespace {
@@ -563,66 +565,30 @@ std::array<double, 3> axis_vector(std::string_view axis) {
   return up;
 }
 
-// `text`, a part of source.mobile's address that `what` names, as a decimal
-// number in [min, max] written without a leading zero.
-std::uint32_t mobile_decimal(std::string_view text, std::uint32_t min,
-                             std::uint32_t max, const std::string& what) {
-  constexpr std::string_view kField = "source.mobile";
-  if (text.empty() ||
-      text.find_first_not_of("0123456789") != std::string_view::npos)
-    fail(kField, what + " must be a decimal number");
-  if (text.size() > 1 && text.front() == '0')
-    fail(kField, what + " must not have a leading zero");
-  const std::string range =
-      " must be in [" + std::to_string(min) + ", " + std::to_string(max) + "]";
-  std::uint32_t value = 0;
-  for (const char digit : text) {
-    value = (value * 10) + static_cast<std::uint32_t>(digit - '0');
-    if (value > max) fail(kField, what + range);
+// A net check of source.mobile's address: its value, or its refusal as the
+// key's reason. An allocation that failed stays one.
+template <typename T>
+T mobile_checked(Result<T> checked) {
+  if (!checked.ok()) {
+    if (checked.status().domain() == Status::Code::OutOfMemory)
+      throw std::bad_alloc();
+    fail("source.mobile", checked.status().message());
   }
-  if (value < min) fail(kField, what + range);
-  return value;
+  return std::move(checked).value();
 }
-// A live phone session's `tcp://ADDRESS:PORT`: a numeric IPv4 address, in
-// dotted decimal, which the consumer listens on, and a port. Never the
-// wildcard, a name, which core does not resolve, or IPv6. Whether the address
-// is this host's own, the listen checks.
+// A live phone session's `tcp://ADDRESS:PORT`: one host's numeric IPv4
+// address, which the consumer listens on, and a port, in the net tier's
+// words. Never the wildcard, a name, which core does not resolve, or IPv6.
+// Whether the address is this host's own, the listen checks.
 std::pair<std::string, std::uint16_t> mobile_address(std::string_view value) {
-  constexpr std::string_view kField = "source.mobile";
   constexpr std::string_view kScheme = "tcp://";
   if (value.rfind(kScheme, 0) != 0)
-    fail(kField,
+    fail("source.mobile",
          "a live session is tcp://ADDRESS:PORT; no other scheme is supported");
-  const std::string_view rest = value.substr(kScheme.size());
-  if (!rest.empty() && rest.front() == '[')
-    fail(kField, "must be an IPv4 address; IPv6 is not supported");
-  const std::size_t colon = rest.find(':');
-  if (colon == std::string_view::npos)
-    fail(kField, "requires a port: tcp://ADDRESS:PORT");
-  const std::string_view address = rest.substr(0, colon);
-  if (address.find_first_not_of("0123456789.") != std::string_view::npos)
-    fail(kField, "must be a numeric IPv4 address; a name is not resolved");
-  if (std::count(address.begin(), address.end(), '.') != 3)
-    fail(kField, "the address must be four dot-separated decimal parts");
-  std::uint32_t any = 0;
-  std::size_t begin = 0;
-  for (int part = 0; part < 4; ++part) {
-    const std::size_t end =
-        part < 3 ? address.find('.', begin) : address.size();
-    any |= mobile_decimal(address.substr(begin, end - begin), 0, 255,
-                          "an address part");
-    begin = end + 1;
-  }
-  if (any == 0)
-    fail(kField,
-         "must not be the wildcard 0.0.0.0; give one of this host's own "
-         "addresses");
-  const std::string_view port = rest.substr(colon + 1);
-  const std::size_t digits = port.find_first_not_of("0123456789");
-  if (digits != std::string_view::npos && digits > 0)
-    fail(kField, "must end at the port: tcp://ADDRESS:PORT");
-  return {std::string(address), static_cast<std::uint16_t>(mobile_decimal(
-                                    port, 1, 65535, "the port"))};
+  net::HostPort at =
+      mobile_checked(net::parse_host_port(value.substr(kScheme.size()), 0));
+  mobile_checked(net::parse_endpoint(at.host, at.port));
+  return {std::move(at.host), at.port};
 }
 // A source.mobile value without `://` that reads as a live address, its
 // scheme mistyped (`tcp:` short of both slashes) or left out (only digits,

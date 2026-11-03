@@ -56,14 +56,14 @@ not among them, in [DECISIONS.md](DECISIONS.md#tiers).
 
 ## Architecture
 
-`base` → {`config`, `vulkan`, `net`}. The `net` tier holds the family's TCP
-sockets on the system's sockets alone, always built; a transport on an outside
-library would be an optional tier of its own (DECISIONS.md, the 2026-11-02 net
-entry). The optional CPU-only `config` tier owns the
-family scenario schema, typed settings, defaults and static validation;
-siblings adapt validated settings, check runtime resources/capabilities and
-keep their libraries' own parameter rules (DECISIONS.md, the 2026-10-11
-entry's amendments).
+`base` → {`config`, `vulkan`, `net`}, and `net` → `config`, privately. The
+`net` tier holds the family's TCP sockets on the system's sockets alone,
+always built; a transport on an outside library would be an optional tier of
+its own (DECISIONS.md, the 2026-11-02 net entry). The optional CPU-only
+`config` tier owns the family scenario schema, typed settings, defaults and
+static validation; siblings adapt validated settings, check runtime
+resources/capabilities and keep their libraries' own parameter rules
+(DECISIONS.md, the 2026-10-11 entry's amendments).
 Its JSON dependency stays private. A tier depends only on the tiers its row in DECISIONS.md
 names. `base` is pure CPU, so its tests run on every machine.
 

@@ -131,9 +131,10 @@ jobs:
       # "Where memory lives"). Only the ring's tests, Debug, on the sources the
       # build above fetched; the Mac installs nothing. The suppressions cover
       # the layer's and the driver's own lock order, never a race.
-      # The net tier's tests run here too, as grid ran them before they moved
-      # (DECISIONS.md, the 2026-11-02 net entry): a thread of the socket test
-      # signals another through its wait.
+      # The net tier's socket and dial tests run here too, as grid ran them
+      # before they moved (DECISIONS.md, the 2026-11-02 net entry): a thread of
+      # the socket test signals another through its wait. The address test has
+      # no thread.
       - name: HostRing and net under ThreadSanitizer (macOS)
         if: runner.os == 'macOS'
         env:
@@ -148,7 +149,7 @@ jobs:
             --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
           DYLD_LIBRARY_PATH="${VKC_LAYER_LIBRARY_PATH:-}" \
             ctest --test-dir build-tsan --output-on-failure --no-tests=error \
-            -R 'HostRing|^vkc_net_'
+            -R 'HostRing|^vkc_net_(socket|dial)_test$'
 
       - name: Base-only build has no JSON or GPU dependency
         run: |

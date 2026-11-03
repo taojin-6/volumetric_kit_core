@@ -39,7 +39,7 @@ Claude Code; `CLAUDE.md` imports it.
 | `base` | `volumetric_kit::core_base` | `Status`/`Result`, `VKC_CHECK`, `exception_status`, logging, stage metrics (busy, blocked and device time), whole-file I/O, version |
 | `config` | `volumetric_kit::core_config` | Optional CPU-only family scenario format, typed settings, defaults and static validation; private nlohmann/json dependency |
 | `vulkan` | `volumetric_kit::core_vulkan` | instance, device selection, device create/adopt and submission, allocator, buffers, images, descriptors, shaders, sync, command buffers, compute kernels, `CommandBatch`, persistent host rings (`HostRing`), shader build functions, tiled GPU timers and calibrated clocks, external memory and timelines, shared-device bootstrap, forward declarations of its classes |
-| `net` | `volumetric_kit::core_net` | IPv4 addresses and their checks, the TCP socket calls (non-blocking, close-on-exec, no SIGPIPE), `dial` and `Listener`; on the system's sockets alone, always built |
+| `net` | `volumetric_kit::core_net` | IPv4 addresses, ports and `host:port`, and their checks, the TCP socket calls (non-blocking, close-on-exec, no SIGPIPE), `dial` and `Listener`; on the system's sockets alone, always built |
 
 `volumetric_kit::core` links every tier that is built. A consumer that needs no
 GPU (calib's headless solver) links only the tiers it uses. `base` and `net`
@@ -184,7 +184,7 @@ vkc_embed_shaders(their_target SYMBOL_PREFIX their_
                   INCLUDE_TARGETS your::library SHADERS shaders/kernel.comp)
 ```
 
-For the net tier, require `vkc_require_core(0.43.0)` and link
+For the net tier, require `vkc_require_core(0.44.0)` and link
 `volumetric_kit::core_net`; it needs no option:
 
 ```cpp

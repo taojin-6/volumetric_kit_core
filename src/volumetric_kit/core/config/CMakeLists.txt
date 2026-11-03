@@ -28,6 +28,10 @@ target_compile_features(core_config PUBLIC cxx_std_17)
 target_include_directories(core_config PUBLIC "${PROJECT_SOURCE_DIR}/include"
                                               "${_vkc_generated_inc}")
 target_include_directories(core_config SYSTEM PRIVATE "${VKC_JSON_INCLUDE_DIR}")
-target_link_libraries(core_config PUBLIC core_base)
+# net checks source.mobile's live address; no config header names it.
+target_link_libraries(
+  core_config
+  PUBLIC core_base
+  PRIVATE core_net)
 vkc_target_warnings(core_config)
 vkc_propagate_sanitizers(core_config)
