@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Removed
+
+- `tools/ci/decklink-sdk-16.0/` and `tools/ci/test_decklink_sdk.py`, with
+  the hooks' exclude and the `.editorconfig` section for them: the DeckLink
+  SDK 16.0's headers now live in sensor, unmodified, behind its
+  `.github/actions/decklink-sdk` (DECISIONS.md, the 2026-11-01 DeckLink
+  headers entry's amendment). Nothing changes for a build of the library.
+
+### Migration
+
+- A CI leg that checks out the core's `tools/ci/decklink-sdk-16.0` uses
+  `taojin-6/volumetric_kit_sensor/.github/actions/decklink-sdk@<sensor pin>`
+  instead, no later than its first core re-pin past this change; until then
+  its pinned core still holds the files.
+
 ## [0.44.0] - 2026-11-02
 
 ### Added
