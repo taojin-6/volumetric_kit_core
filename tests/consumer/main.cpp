@@ -92,6 +92,18 @@ vkc::Status run() {
       sets.output.path != "/scenario/fuse_orbbec.ply")
     return vkc::Status::invalid_argument("fuse_orbbec coding was not read");
   VKC_ASSIGN(
+      const auto phone,
+      vkc::config::parse(
+          R"({"version":1,"operation":"fuse","source":{"kind":"live","sync_config":"rig.json","calibration":"world.json","mobile":"tcp://10.8.0.1:7101","mobile_registration":"phone/registration.json"},"diagnostics":{"track_log":"runs/lane"}})",
+          vkc::config::Application::FuseOrbbec, "/scenario"));
+  if (!phone.source.mobile || !phone.source.mobile->path.empty() ||
+      phone.source.mobile->host != "10.8.0.1" ||
+      phone.source.mobile->port != 7101 ||
+      phone.source.mobile->registration !=
+          "/scenario/phone/registration.json" ||
+      phone.diagnostics.track_log != "/scenario/runs/lane")
+    return vkc::Status::invalid_argument("fuse_orbbec's phone was not read");
+  VKC_ASSIGN(
       const auto realsense,
       vkc::config::parse(
           R"({"version":1,"operation":"fuse","source":{"kind":"live","driver":"realsense","serial":"123"},"run":{"frames":900}})",

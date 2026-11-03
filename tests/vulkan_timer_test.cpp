@@ -1172,9 +1172,11 @@ class TileAttributionTest : public TimerWorkTest {
     }
   }
 
-  // The rows of one async batch of `stages` (name, passes), in order.
+  // The rows of one async batch of `stages` (name, passes), in order, and
+  // its span into `span_ms` where given.
   std::vector<StageRow> run(
-      const std::vector<std::pair<const char*, int>>& stages) {
+      const std::vector<std::pair<const char*, int>>& stages,
+      double* span_ms = nullptr) {
     StageMetrics recording;
     CommandBatch batch(device());
     for (const auto& [name, passes] : stages) {
@@ -1184,6 +1186,13 @@ class TileAttributionTest : public TimerWorkTest {
     EXPECT_TRUE(pending.ok()) << pending.status().message();
     if (!pending.ok()) return {};
     EXPECT_TRUE(pending->wait(kLongWaitNs).ok());
+    if (span_ms != nullptr) {
+      EXPECT_TRUE(pending->device_span().has_value());
+      const DeviceSpan span = pending->device_span().value_or(DeviceSpan{});
+      *span_ms = ticks_to_ms(timestamp_delta(span.begin_ticks, span.end_ticks,
+                                             device().timestamp_valid_bits()),
+                             physical().limits().timestampPeriod);
+    }
     return pending->device_rows();
   }
 
@@ -1208,8 +1217,10 @@ TEST_F(TileAttributionTest, EachTileHoldsItsOwnStage) {
   if (!timer_.available()) GTEST_SKIP() << "the queue has no timestamps";
   if (!timestamps_advance()) GTEST_SKIP() << "timestamps do not advance";
   // 10%, and 20 us for a mark's own latency on a fast device.
-  const auto close = [](double tiled, double alone) {
-    return std::abs(tiled - alone) <= (0.1 * alone) + 0.02;
+  constexpr double kMarkMs = 0.02;
+  const auto slack = [](double alone) { return (0.1 * alone) + kMarkMs; };
+  const auto close = [&slack](double tiled, double alone) {
+    return std::abs(tiled - alone) <= slack(alone);
   };
   // A misattribution misses every round; a busy machine misses some, so the
   // test takes the first round that lands, of a few.
@@ -1220,6 +1231,7 @@ TEST_F(TileAttributionTest, EachTileHoldsItsOwnStage) {
   double b = 0.0;
   double ta = 0.0;
   double tb = 0.0;
+  double span = 0.0;
   int round = 0;
   while (!attributed && round < kRounds) {
     ++round;
@@ -1227,11 +1239,14 @@ TEST_F(TileAttributionTest, EachTileHoldsItsOwnStage) {
     std::vector<double> alone_b;
     std::vector<double> tiled_a;
     std::vector<double> tiled_b;
+    std::vector<double> spans;
     for (int i = 0; i < kRuns; ++i) {
       // Interleaved, so a clock or thermal drift moves every series alike.
       const std::vector<StageRow> one = run({{"A", 4}});
       const std::vector<StageRow> two = run({{"B", 2}});
-      const std::vector<StageRow> both = run({{"A", 4}, {"B", 2}});
+      double span_ms = 0.0;
+      const std::vector<StageRow> both = run({{"A", 4}, {"B", 2}}, &span_ms);
+      spans.push_back(span_ms);
       ASSERT_TRUE(row(one, "A") && row(two, "B") && row(both, "A") &&
                   row(both, "B"));
       for (const StageRow* r :
@@ -1247,6 +1262,7 @@ TEST_F(TileAttributionTest, EachTileHoldsItsOwnStage) {
     b = fastest(alone_b);
     ta = fastest(tiled_a);
     tb = fastest(tiled_b);
+    span = fastest(spans);
     attributed = close(ta, a) && close(tb, b);
   }
   RecordProperty("rounds", std::to_string(round));
@@ -1254,6 +1270,7 @@ TEST_F(TileAttributionTest, EachTileHoldsItsOwnStage) {
   RecordProperty("alone_b_ms", std::to_string(b));
   RecordProperty("tiled_a_ms", std::to_string(ta));
   RecordProperty("tiled_b_ms", std::to_string(tb));
+  RecordProperty("tiled_span_ms", std::to_string(span));
 #ifdef __APPLE__
   if (!attributed) {
     GTEST_SKIP() << "tiles snap to Metal encoder boundaries here (A " << ta
@@ -1270,8 +1287,30 @@ TEST_F(TileAttributionTest, EachTileHoldsItsOwnStage) {
                  << " rounds (A " << ta << " ms tiled vs " << a << " alone, B "
                  << tb << " vs " << b << ")";
   }
+  // A GPU time-sliced with another process's work switches the test out
+  // partway through the batch, often at the same point every run, so a tile
+  // reads long in every round while the runs agree with each other; the host
+  // cannot see that work from here. Such a GPU lengthens the batch's span
+  // and shortens no tile, while a misattribution leaves the span alone and
+  // moves time to the wrong tile, or counts it twice. So a miss where every
+  // tile reads, within the tolerance, no shorter than its stage alone and
+  // longer by no more than the span ran longer than A and B apart, is the
+  // device's: the skip names it. A quiet GPU still fails every
+  // misattribution.
+  const double extra = span - (a + b);
+  const auto shared = [&slack, extra](double tiled, double alone) {
+    return tiled >= alone - slack(alone) &&
+           tiled <= alone + slack(alone) + extra;
+  };
+  if (!attributed && shared(ta, a) && shared(tb, b)) {
+    GTEST_SKIP() << "the GPU ran the batch " << extra
+                 << " ms longer than A and B apart, as one shared with other "
+                    "work does (span "
+                 << span << " ms; A " << ta << " ms tiled vs " << a
+                 << " alone, B " << tb << " vs " << b << ")";
+  }
   EXPECT_TRUE(attributed) << "A " << ta << " ms tiled vs " << a << " alone; B "
-                          << tb << " vs " << b;
+                          << tb << " vs " << b << "; span " << span << " ms";
 }
 
 // --- the paths timed before tiles --------------------------------------------

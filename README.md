@@ -184,7 +184,7 @@ vkc_embed_shaders(their_target SYMBOL_PREFIX their_
                   INCLUDE_TARGETS your::library SHADERS shaders/kernel.comp)
 ```
 
-For the net tier, require `vkc_require_core(0.42.0)` and link
+For the net tier, require `vkc_require_core(0.43.0)` and link
 `volumetric_kit::core_net`; it needs no option:
 
 ```cpp
