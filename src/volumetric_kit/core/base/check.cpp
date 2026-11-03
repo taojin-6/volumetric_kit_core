@@ -46,7 +46,8 @@ void check_failed(const char* file, int line, const char* expr,
   // A check that fails inside the log handler, or while the handler reports an
   // earlier failure, must not go back through that handler: it would recurse
   // until the stack overflowed, and the crash would never show this message.
-  // Write straight to stderr instead, the earlier failure first.
+  // Write straight through the default sink instead, the earlier failure
+  // first.
   if (t_reporting != nullptr || in_log_handler()) {
     if (t_reporting != nullptr) {
       default_sink(LogLevel::Error, kCoreLogSource, *t_reporting);

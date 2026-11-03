@@ -86,6 +86,11 @@ foreach(
   vkc_target_warnings(vkc_${_vkc_test}_test)
   _vkc_discover_cpu_tests(vkc_${_vkc_test}_test 60)
 endforeach()
+# The default sink's split for iOS's unified log is internal to core_base, so
+# the log test reaches into the source directory for it.
+target_include_directories(
+  vkc_base_log_test
+  PRIVATE "${PROJECT_SOURCE_DIR}/src/volumetric_kit/core/base")
 
 # Isolate replacement allocation functions from the ordinary test binaries.
 add_executable(vkc_base_result_allocation_test base_result_allocation_test.cpp

@@ -13,6 +13,13 @@
 
 #include "log_internal.hpp"
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>  // IWYU pragma: keep (TARGET_OS_IPHONE)
+#endif
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#include <os/log.h>
+#endif
+
 namespace volumetric_kit::core {
 namespace {
 
@@ -34,7 +41,7 @@ struct LogState {
   // Notified whenever a call to a replaced Slot returns: a setter inside
   // that handler waits for the other threads, not for its own calls.
   std::condition_variable replaced_idle;
-  std::shared_ptr<Slot> slot;  // null => fall back to the default stderr sink
+  std::shared_ptr<Slot> slot;  // null => fall back to the default sink
 };
 
 LogState& state() {
@@ -119,6 +126,20 @@ void default_sink(LogLevel level, std::string_view source,
     line.append(message.data(), message.size());
     line += '\n';
     std::fwrite(line.data(), 1, line.size(), stderr);
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    // On iOS, stderr reaches only a console attached at launch (devicectl's
+    // --console); the unified log keeps the line for `log collect` and
+    // Console. %{public}, or the device shows <private>. One entry per piece:
+    // the entry's cap would truncate the rest.
+    const os_log_type_t type =
+        level == LogLevel::Error ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT;
+    for_each_utf8_piece(std::string_view(line.data(), line.size() - 1),
+                        kUnifiedLogEntryBytes, [type](std::string_view piece) {
+                          os_log_with_type(OS_LOG_DEFAULT, type, "%{public}.*s",
+                                           static_cast<int>(piece.size()),
+                                           piece.data());
+                        });
+#endif
   }
 }
 

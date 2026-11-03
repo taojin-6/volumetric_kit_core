@@ -881,8 +881,9 @@ The base tier is the union of `calib`'s, `recon`'s and `gfx`'s:
 - **`VKC_CHECK` logs through the sink, then aborts** (`recon` and `gfx`), so an
   application that routes logs to a crash reporter sees why it stopped.
   `calib`'s check printed to stderr directly. A check that fails inside the
-  handler (or while the handler reports an earlier failure) writes to stderr
-  instead, so a broken handler cannot recurse until the stack overflows.
+  handler (or while the handler reports an earlier failure) writes through
+  the default sink instead, so a broken handler cannot recurse until the
+  stack overflows.
   Misusing a `Result` names the held error, and `value()` its caller's line.
 - **One log handler, with a source.** `recon` and `gfx` each had a handler,
   so an application knew which library a message came from, and their default
@@ -1968,3 +1969,32 @@ one too, and calling those IPv6 alone would mislead.
   `parse_ipv4` refuses goes to the system's `getaddrinfo`, which glibc reads
   as octal (8.8.0.1) and Apple as decimal (10.8.0.1). A caller that resolves
   a typed host meets this.
+
+## 2026-11-03 — On iOS the default sink also writes to the unified log
+
+On an iOS device stderr reaches only a console attached at launch
+(`devicectl device process launch --console`), and neither public iOS app
+installs a log handler, so the warnings gfx, grid, sensor and the core send
+through `log_message` were lost on any run without one. The default sink
+now also writes each warning and error to the unified log on iOS
+(`TARGET_OS_IPHONE`), where `log collect` and Console find them afterwards
+(architecture review 2026-11-02, P2-12).
+
+- **The default sink, not a handler in each app.** A handler copied into
+  every iOS app is the copy one home prevents, and the base tier owns the
+  default. `os/log.h` is in libSystem, so `core_base` still links nothing.
+  An installed handler replaces the default sink, as before.
+- **stderr stays.** `devicectl --console` shows stderr and not the unified
+  log, so it still shows each line once. Xcode's console shows both, so
+  there a line shows twice.
+- **iOS only.** A macOS run is a terminal's, where stderr is read; a unified
+  log copy there would only double the lines in Xcode's console. Linux and
+  Android are unchanged.
+- **Public text, in pieces under the store's cap.** The line goes as
+  `%{public}`, or the device shows `<private>`. A warning is
+  `OS_LOG_TYPE_DEFAULT`, an error `OS_LOG_TYPE_ERROR`. `os/log.h` caps an
+  entry's dynamic content at 1024 bytes, its encoding included: with this
+  format the store kept 1,009 bytes of the text and cut 1,010 and longer
+  (measured on macOS 27.2, whose `libsystem_trace` iOS shares). So a longer
+  line goes in entries of at most 1,000 bytes, cut between UTF-8
+  characters; another thread's entry may fall between them.

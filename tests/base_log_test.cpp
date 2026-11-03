@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <future>
 #include <memory>
@@ -14,6 +15,8 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include "log_internal.hpp"
 
 namespace volumetric_kit::core {
 namespace {
@@ -276,6 +279,87 @@ TEST_F(LogTest, DefaultSinkPrintsWarningsAndErrorsWithTheirSource) {
   EXPECT_EQ(out,
             "[recon warning] loud warning\n"
             "[gfx error] loud error\n");
+}
+
+// The default sink's split for the unified log on iOS (log_internal.hpp),
+// tested here on the host: the pieces it hands each entry.
+std::vector<std::string> pieces(std::string_view text, std::size_t max_bytes) {
+  std::vector<std::string> out;
+  detail::for_each_utf8_piece(text, max_bytes, [&](std::string_view piece) {
+    out.emplace_back(piece);
+  });
+  return out;
+}
+
+TEST(LogUnifiedSplit, ATextWithinTheCapIsOnePieceAndNothingIsNone) {
+  EXPECT_EQ(pieces("abc", 3), std::vector<std::string>{"abc"});
+  EXPECT_EQ(pieces("", 3), std::vector<std::string>{});
+}
+
+TEST(LogUnifiedSplit, AsciiIsCutAtTheCap) {
+  const std::vector<std::string> want = {"abc", "def", "g"};
+  EXPECT_EQ(pieces("abcdefg", 3), want);
+}
+
+TEST(LogUnifiedSplit, ACharacterTheCapWouldSplitStartsTheNextPiece) {
+  // "\xC3\xA9" is e-acute, two bytes; "\xE2\x82\xAC" the euro sign, three;
+  // "\xF0\x9F\x98\x80" an emoji, four. The cut at 4 lands one, two or three
+  // bytes inside the character, which then starts the next piece.
+  EXPECT_EQ(pieces("abc\xC3\xA9", 4),
+            (std::vector<std::string>{"abc", "\xC3\xA9"}));
+  EXPECT_EQ(pieces("ab\xE2\x82\xAC", 4),
+            (std::vector<std::string>{"ab", "\xE2\x82\xAC"}));
+  EXPECT_EQ(pieces("abc\xE2\x82\xAC", 4),
+            (std::vector<std::string>{"abc", "\xE2\x82\xAC"}));
+  EXPECT_EQ(pieces("a\xF0\x9F\x98\x80", 4),
+            (std::vector<std::string>{"a", "\xF0\x9F\x98\x80"}));
+  EXPECT_EQ(pieces("x\xF0\x9F\x98\x80y", 5),
+            (std::vector<std::string>{"x\xF0\x9F\x98\x80", "y"}));
+  // A character ending exactly at the cap stays whole in the first piece.
+  EXPECT_EQ(pieces("\xE2\x82\xAC\xE2\x82\xAC", 3),
+            (std::vector<std::string>{"\xE2\x82\xAC", "\xE2\x82\xAC"}));
+}
+
+TEST(LogUnifiedSplit, InvalidUtf8OrAnOverlongCharacterIsCutAtTheCap) {
+  // Five continuation bytes: no character start within three bytes of the
+  // cut, so it falls at the cap. A four-byte character under a cap of two
+  // cannot fit whole either. Every piece still makes progress.
+  EXPECT_EQ(pieces("a\x80\x80\x80\x80\x80", 4),
+            (std::vector<std::string>{"a\x80\x80\x80", "\x80\x80"}));
+  EXPECT_EQ(pieces("\xF0\x9F\x98\x80", 2),
+            (std::vector<std::string>{"\xF0\x9F", "\x98\x80"}));
+  EXPECT_EQ(pieces("\xC3\xA9", 1), (std::vector<std::string>{"\xC3", "\xA9"}));
+}
+
+TEST(LogUnifiedSplit, ALongLineSplitsIntoEntriesThatKeepEveryByte) {
+  // A line the sink composes, over two of the unified log's entries long and
+  // made of three-byte characters, so the second cut falls inside one.
+  std::string line = "[recon warning] ";
+  while (line.size() < (2 * detail::kUnifiedLogEntryBytes) + 500) {
+    line += "\xE2\x82\xAC";
+  }
+  const std::vector<std::string> got =
+      pieces(line, detail::kUnifiedLogEntryBytes);
+  ASSERT_EQ(got.size(), 3U);
+  std::string joined;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    const std::string& piece = got[i];
+    EXPECT_LE(piece.size(), detail::kUnifiedLogEntryBytes);
+    if (i + 1 < got.size()) {
+      // A full entry gives back at most the two bytes of a split character.
+      EXPECT_GE(piece.size(), detail::kUnifiedLogEntryBytes - 2);
+    }
+    EXPECT_NE(static_cast<unsigned char>(piece.front()) & 0xC0U, 0x80U);
+    joined += piece;
+  }
+  EXPECT_EQ(joined, line);
+}
+
+TEST(LogUnifiedSplit, AnEntryStaysUnderWhatTheStoreKeeps) {
+  // The store keeps 1,009 bytes of a "%{public}.*s" argument, not the 1,024
+  // os/log.h states for the entry (log_internal.hpp): a piece at the header's
+  // figure would lose its tail.
+  EXPECT_LE(detail::kUnifiedLogEntryBytes, 1009U);
 }
 
 }  // namespace
