@@ -66,7 +66,10 @@ VKC_NET_API std::string to_string(const Endpoint& endpoint);
 
 /// @brief Every IPv4 address @p host resolves to for TCP (`getaddrinfo`),
 ///        with @p port. Blocks for as long as the resolver takes; a caller
-///        that must not block calls it from a thread of its own.
+///        that must not block calls it from a thread of its own. A
+///        numeric-looking @p host that @ref parse_ipv4 refuses is read by the
+///        system's rules: glibc reads "010.8.0.1" as octal 8.8.0.1, Apple as
+///        10.8.0.1.
 /// @param api   The caller's name, which starts every message.
 /// @param host  A name, or a numeric address.
 /// @param port  The port each endpoint takes.
@@ -106,8 +109,8 @@ struct HostPort {
 /// @param default_port  The port when @p text names none; 0 requires one.
 /// @return The host and port; `InvalidArgument` "\"<text>\" names no host",
 ///         "\"<text>\" names no port" (with @p default_port 0), "\"<text>\"
-///         is IPv6, which is not supported" (a leading '[' or a second ':'),
-///         or @ref parse_port's reason.
+///         is IPv6, which is not supported" (a leading '['), "\"<text>\" has
+///         a second ':'; IPv6 is not supported", or @ref parse_port's reason.
 VKC_NET_API Result<HostPort> parse_host_port(std::string_view text,
                                              std::uint16_t default_port);
 

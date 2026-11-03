@@ -19,8 +19,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   default port, or "host:port"; the host, a name or a numeric address, is
   checked no further. Refused, `InvalidArgument`: "\"<text>\" names no
   host", "\"<text>\" names no port" (with a default of 0), "\"<text>\" is
-  IPv6, which is not supported" (a leading '[' or a second ':'), or the
-  port's reason.
+  IPv6, which is not supported" (a leading '['), "\"<text>\" has a second
+  ':'; IPv6 is not supported", or the port's reason.
 
 ### Changed
 
@@ -42,20 +42,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
     port: a number from 1 to 65535, with no leading zero" (was "the port
     must be a decimal number", "… must be in [1, 65535]", "… must not have a
     leading zero" or "must end at the port: tcp://ADDRESS:PORT");
-  - IPv6, a leading '[' or a second ':': "\"<address:port>\" is IPv6, which
-    is not supported" (was "must be an IPv4 address; IPv6 is not supported"
-    for a '[', and a parts or port reason for a second ':');
+  - a leading '[': "\"<address:port>\" is IPv6, which is not supported"
+    (was "must be an IPv4 address; IPv6 is not supported");
+  - a second ':': "\"<address:port>\" has a second ':'; IPv6 is not
+    supported" (was an address or port reason, such as "the address must
+    be four dot-separated decimal parts" for `::1` or "must end at the
+    port: tcp://ADDRESS:PORT" for `10.8.0.1:7101:`);
   - no host (`tcp://` or `tcp://:7101`): "\"<text>\" names no host" (was
     "requires a port: tcp://ADDRESS:PORT" or "the address must be four
     dot-separated decimal parts").
-  The scheme's and the typo catch's reasons are unchanged.
+
+  The scheme's and the typo catch's reasons are unchanged. A failed
+  allocation in net's checks stays `OutOfMemory`.
 - `net::parse_ipv4` refuses a part with a leading zero itself, as its
   documentation said, so Apple's `inet_pton`, which reads "010" as 10, no
   longer takes one: `parse_endpoint`, `dial` and `Listener::create` refuse
-  "010.8.0.1" on macOS and iOS as on Linux.
+  "010.8.0.1" on macOS and iOS as on Linux. `net::resolve` still hands such
+  a text to the system's `getaddrinfo`, which glibc reads as octal.
 - `core_config` links `core_net` privately.
-- The Mac leg's ThreadSanitizer step builds and runs `vkc_net_address_test`
-  with the other net tests.
 
 ### Migration
 

@@ -136,12 +136,16 @@ Result<HostPort> parse_host_port(std::string_view text,
   const std::string quoted = "\"" + std::string(text) + "\"";
   const std::size_t colon = text.find(':');
   // Before the split at the colon, which would read "[::1]:7101" as a bad
-  // port and "::1" as no host.
-  if ((!text.empty() && text.front() == '[') ||
-      (colon != std::string_view::npos &&
-       text.find(':', colon + 1) != std::string_view::npos)) {
+  // port and "::1" as no host. A second ':' is named as such: it is as often
+  // a pasted "tcp://host:port" or a port with more after it.
+  if (!text.empty() && text.front() == '[') {
     return Status::invalid_argument(quoted +
                                     " is IPv6, which is not supported");
+  }
+  if (colon != std::string_view::npos &&
+      text.find(':', colon + 1) != std::string_view::npos) {
+    return Status::invalid_argument(quoted +
+                                    " has a second ':'; IPv6 is not supported");
   }
   HostPort at{std::string(text.substr(0, colon)), default_port};
   if (at.host.empty()) {

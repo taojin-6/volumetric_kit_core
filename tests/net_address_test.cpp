@@ -6,9 +6,9 @@
 // in decimal digits alone, with no sign, space or leading zero; "host" takes
 // the caller's default port, or names none when that is 0, "host:port" its
 // own, and the host is checked no further; IPv6, by a leading '[' or a second
-// ':', is refused before the split at the colon; and one host's numeric
-// address is never empty, a name, a part over 255 or with a leading zero (on
-// Apple too, whose inet_pton takes one), or the wildcard.
+// ':', each by its own reason, is refused before the split at the colon; and
+// one host's numeric address is never empty, a name, a part over 255 or with
+// a leading zero (on Apple too, whose inet_pton takes one), or the wildcard.
 
 #include <cstdint>
 #include <optional>
@@ -54,9 +54,12 @@ int port_case() {
     const vkc::Result<std::uint16_t> parsed = net::parse_port(text);
     CHECK(parsed.ok() && *parsed == port);
   }
+  // 4294974397 and 4294967297 wrap a 32-bit sum to 7101 and 1, so only the
+  // five-digit limit refuses them.
   for (const char* text :
-       {"0", "65536", "99999", "100000", "99999999999", "", "+1", "-1", " 1",
-        "1 ", "007", "07101", "00", "1x", "0x1F", "1.5", "1e3"}) {
+       {"0", "65536", "99999", "100000", "99999999999", "4294974397",
+        "4294967297", "", "+1", "-1", " 1", "1 ", "007", "07101", "00", "1x",
+        "0x1F", "1.5", "1e3"}) {
     CHECK(refusal(net::parse_port(text)) == not_a_port(text));
   }
   return 0;
@@ -92,12 +95,21 @@ int host_port_case() {
     CHECK(refusal(net::parse_host_port(
               text, static_cast<std::uint16_t>(default_port))) == reason);
   }
-  // IPv6, before the split at the colon would call it a bad port or no host.
-  for (const char* text : {"[::1]:1", "[::1]", "[", "::1", "::", "a:1:2",
-                           "fe80::1", "lab-box:1:"}) {
+  // IPv6, before the split at the colon would call it a bad port or no host:
+  // a leading '[', or a second ':', named as such since a pasted
+  // "tcp://host:port" or a port with more after it has one too.
+  for (const char* text : {"[::1]:1", "[::1]", "[", "[10.8.0.1]:7101"}) {
     for (const std::uint16_t default_port : {0, 47801}) {
       CHECK(refusal(net::parse_host_port(text, default_port)) ==
             quoted(text, " is IPv6, which is not supported"));
+    }
+  }
+  for (const char* text : {"::1", "::", "a:1:2", "fe80::1",
+                           "lab-box:1:", "10.8.0.1:7101:", "10.8.0.1:7101:7102",
+                           "tcp://10.8.0.1:7101"}) {
+    for (const std::uint16_t default_port : {0, 47801}) {
+      CHECK(refusal(net::parse_host_port(text, default_port)) ==
+            quoted(text, " has a second ':'; IPv6 is not supported"));
     }
   }
   return 0;

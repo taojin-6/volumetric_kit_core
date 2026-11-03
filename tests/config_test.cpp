@@ -2548,6 +2548,7 @@ TEST(Config, MobileSessionListensOnOneNumericAddress) {
         std::pair{"tcp://10.8.0.1:65536", quoted("65536", kNotAPort)},
         std::pair{"tcp://10.8.0.1:99999999999",
                   quoted("99999999999", kNotAPort)},
+        std::pair{"tcp://10.8.0.1:4294974397", quoted("4294974397", kNotAPort)},
         std::pair{"tcp://10.8.0.1:07101", quoted("07101", kNotAPort)},
         std::pair{"tcp://010.8.0.1:7101", quoted("010.8.0.1", kNotNumeric)},
         std::pair{"tcp://10.8.0.256:7101", quoted("10.8.0.256", kNotNumeric)},
@@ -2558,7 +2559,10 @@ TEST(Config, MobileSessionListensOnOneNumericAddress) {
         std::pair{"tcp://[::1]:7101",
                   quoted("[::1]:7101", " is IPv6, which is not supported")},
         std::pair{"tcp://::1",
-                  quoted("::1", " is IPv6, which is not supported")},
+                  quoted("::1", " has a second ':'; IPv6 is not supported")},
+        std::pair{"tcp://10.8.0.1:7101:",
+                  quoted("10.8.0.1:7101:",
+                         " has a second ':'; IPv6 is not supported")},
         std::pair{"udp://10.8.0.1:7101", std::string(kOtherScheme)},
         std::pair{"TCP://10.8.0.1:7101", std::string(kOtherScheme)}}) {
     rejected(phone_scenario(std::string(R"("mobile":")") + address +

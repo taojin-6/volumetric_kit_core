@@ -120,8 +120,9 @@ target_link_libraries(
 # tests that came from grid with them, main()s of their own on core_test_base,
 # on 127.0.0.1 (and, for the congestion control on Linux, the host's own
 # address). The socket test's internal cases (the allowed list, loopback, the
-# congestion choice) reach into the source directory. CI runs all three again
-# under ThreadSanitizer on macOS (.github/workflows/_build.yml).
+# congestion choice) reach into the source directory. CI runs the socket and
+# dial tests again under ThreadSanitizer on macOS
+# (.github/workflows/_build.yml).
 foreach(_vkc_test net_address net_socket net_dial)
   add_executable(vkc_${_vkc_test}_test ${_vkc_test}_test.cpp)
   target_link_libraries(
@@ -1086,4 +1087,17 @@ if(VKC_WITH_CONFIG)
                                                 volumetric_kit::core_test_main)
   vkc_target_warnings(vkc_config_test)
   _vkc_discover_cpu_tests(vkc_config_test 60)
+
+  # A main() of its own on core_test_allocation_failure, whose replacement
+  # operator new is this binary's alone: a live source.mobile whose net checks
+  # run out of memory gives OutOfMemory. Pure CPU.
+  add_executable(vkc_config_allocation_test config_allocation_test.cpp)
+  target_link_libraries(
+    vkc_config_allocation_test
+    PRIVATE volumetric_kit::core_config volumetric_kit::core_net
+            volumetric_kit::core_test_base
+            volumetric_kit::core_test_allocation_failure)
+  vkc_target_warnings(vkc_config_allocation_test)
+  add_test(NAME vkc_config_allocation_test COMMAND vkc_config_allocation_test)
+  set_tests_properties(vkc_config_allocation_test PROPERTIES TIMEOUT 60)
 endif()

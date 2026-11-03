@@ -1948,7 +1948,9 @@ the sender that dials out. `net` now holds the one copy: `parse_port` (1 to
 the host is checked no further, since a name is looked up when connected
 to). A split at the first ':' alone would read "[::1]:7101" as a bad port and
 "::1" as naming no host, so a leading '[' or a second ':' is refused as IPv6
-first.
+first. The second ':' is named in its reason ("has a second ':'; IPv6 is not
+supported"): a pasted `tcp://10.8.0.1:7101` or a port with more after it has
+one too, and calling those IPv6 alone would mislead.
 
 - **The config gives net's reasons.** `source.mobile`'s live address goes
   through `parse_host_port`, then `parse_endpoint`, so one host's numeric
@@ -1960,5 +1962,9 @@ first.
 - **A leading zero is refused on every platform.** `parse_ipv4` said it
   refused a part with a leading zero, as glibc's `inet_pton` does; Apple's
   reads "010" as 10, where `inet_aton` reads it as octal 8. It now checks
-  the leading zero itself, so an address reads the same on every platform
-  and the config keeps refusing "010.8.0.1" on macOS.
+  the leading zero itself, so `parse_ipv4`, `parse_endpoint`, `dial` and
+  `Listener` read an address the same on every platform, and the config
+  keeps refusing "010.8.0.1" on macOS. `resolve` does not: a text
+  `parse_ipv4` refuses goes to the system's `getaddrinfo`, which glibc reads
+  as octal (8.8.0.1) and Apple as decimal (10.8.0.1). A caller that resolves
+  a typed host meets this.
