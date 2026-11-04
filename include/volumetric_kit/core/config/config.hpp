@@ -86,8 +86,8 @@ struct StereoPairConfig {
 /// session's tracked world sits in the rig's. It is either a recorded
 /// session's file or a live session that the phone dials in to: exactly one
 /// of `path` and `host` is set. In JSON it is `source.mobile`, a file or
-/// `tcp://ADDRESS:PORT`, with `source.mobile_registration` when a file
-/// registers the session.
+/// `tcp://ADDRESS:PORT`, and `source.mobile_registration` when a
+/// registration file places the session.
 /// @code
 /// /* {"mobile": "tcp://10.8.0.1:7101", "mobile_registration": "reg.json"} */
 /// /* {"mobile": "tcp://10.8.0.1:7101"}: registered by the consumer */
@@ -105,8 +105,7 @@ struct MobileSession {
   std::uint16_t port = 0;
   /// The session's tracked registration (sensor's tracked_registration
   /// file), config-relative. Empty, for a file or a live session: the
-  /// consumer registers the session itself, from the origin tag in its
-  /// pictures (FuseOrbbec). Never defaulted.
+  /// consumer registers the session itself, or refuses it. Never defaulted.
   std::string registration;
 };
 

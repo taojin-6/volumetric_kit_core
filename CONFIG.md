@@ -274,14 +274,12 @@ unknown extension object.
   not check that the address is the host's own; the listen does. The wildcard
   `0.0.0.0`, a name, IPv6 and any other scheme are refused, and so is
   `output.serve`'s port, which binds every interface of the same host.
-  `mobile_registration`, config-relative and never empty, names the
-  session's registration file, for a recorded session or a live one.
-  Omitted, the consumer registers the session itself (FuseOrbbec: by the
-  origin tag in its pictures), and none is formed beside a file (core
-  0.49.0). `source.mobile` requires `source.calibration`, the world the
-  registration places the phone in, and operation `stream` refuses it,
-  since the phone fills the fused model.
-  `mobile_registration` requires `source.mobile`. `diagnostics.track_log`,
+  `source.mobile` requires `source.calibration`, the world the phone is
+  placed in, and operation `stream` refuses it, since the phone fills the
+  fused model. `mobile_registration`, config-relative and never empty,
+  requires `source.mobile` and names the session's registration file, for
+  a recorded session or a live one. Omitted, the consumer registers the
+  session itself, or refuses it. `diagnostics.track_log`,
   config-relative, is the directory the phone's tracking log is written
   into; it requires `source.mobile`, and changes nothing that fuses. Other
   profiles reject all three.
