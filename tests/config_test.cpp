@@ -2424,8 +2424,8 @@ TEST(Config, MobileSessionIsAFileBesideTheRig) {
   EXPECT_FALSE(plain->source.mobile);
   EXPECT_TRUE(plain->diagnostics.track_log.empty());
 
-  // A session's file, config-relative, with its registration beside it, named
-  // once the file's path is resolved.
+  // A session's file, config-relative. With no registration named, none is
+  // formed beside it: the consumer registers the session itself.
   for (const char* spelling :
        {"sweeps/0b.vrst", "./sweeps/../sweeps/0b.vrst"}) {
     const auto file =
@@ -2435,8 +2435,7 @@ TEST(Config, MobileSessionIsAFileBesideTheRig) {
     EXPECT_EQ(phone_of(*file).path, "/scenario/sweeps/0b.vrst");
     EXPECT_TRUE(phone_of(*file).host.empty());
     EXPECT_EQ(phone_of(*file).port, 0U);
-    EXPECT_EQ(phone_of(*file).registration,
-              "/scenario/sweeps/0b.vrst.registration.json");
+    EXPECT_TRUE(phone_of(*file).registration.empty());
     EXPECT_EQ(file->source.calibration, "/scenario/rig.json");
   }
   // A registration it is given, config-relative, and an absolute file.
@@ -2475,22 +2474,32 @@ TEST(Config, MobileSessionIsAFileBesideTheRig) {
            "source.mobile: embedded NUL");
 
   // No output overwrites the session or its registration, in two spellings
-  // of one path.
+  // of one path. With none named, the file beside the session is no input.
   for (const char* output : {"path", "csv", "stream"}) {
+    const auto output_at = [output](const std::string& path) {
+      return std::string(R"(,"output":{")") + output + R"(":")" + path +
+             R"("})";
+    };
     for (const char* spelling : {"./0b.vrst", "/scenario/0b.vrst"}) {
       rejected(
-          phone_scenario(R"("mobile":"0b.vrst")",
-                         std::string(R"(,"output":{")") + output + R"(":")" +
-                             spelling + R"("})"),
+          phone_scenario(R"("mobile":"0b.vrst")", output_at(spelling)),
           App::FuseOrbbec,
           std::string("output.") + output + ": must differ from source.mobile");
     }
-    rejected(phone_scenario(R"("mobile":"0b.vrst")",
-                            std::string(R"(,"output":{")") + output +
-                                R"(":"0b.vrst.registration.json"})"),
-             App::FuseOrbbec,
-             std::string("output.") + output +
-                 ": must differ from source.mobile_registration");
+    for (const char* spelling : {"./0b.reg.json", "/scenario/0b.reg.json"}) {
+      rejected(phone_scenario(
+                   R"("mobile":"0b.vrst","mobile_registration":"0b.reg.json")",
+                   output_at(spelling)),
+               App::FuseOrbbec,
+               std::string("output.") + output +
+                   ": must differ from source.mobile_registration");
+    }
+    const auto beside =
+        scenario(phone_scenario(R"("mobile":"0b.vrst")",
+                                output_at("0b.vrst.registration.json")),
+                 App::FuseOrbbec, "/scenario");
+    ASSERT_TRUE(beside) << output << ": " << beside.status().message();
+    EXPECT_TRUE(phone_of(*beside).registration.empty());
   }
 }
 
@@ -2520,9 +2529,16 @@ TEST(Config, MobileSessionListensOnOneNumericAddress) {
     EXPECT_EQ(phone_of(*bound).host, host);
     EXPECT_EQ(phone_of(*bound).port, port);
   }
-  // A live session has no file to sit beside, so it names its registration.
-  rejected(phone_scenario(R"("mobile":"tcp://10.8.0.1:7101")"), App::FuseOrbbec,
-           "source.mobile_registration: is required for a live source.mobile");
+  // With no registration named, the consumer registers the session itself:
+  // the address is read as with one, and the registration stays empty.
+  const auto unregistered =
+      scenario(phone_scenario(R"("mobile":"tcp://10.8.0.1:7101")"),
+               App::FuseOrbbec, "/scenario");
+  ASSERT_TRUE(unregistered) << unregistered.status().message();
+  EXPECT_TRUE(phone_of(*unregistered).path.empty());
+  EXPECT_EQ(phone_of(*unregistered).host, "10.8.0.1");
+  EXPECT_EQ(phone_of(*unregistered).port, 7101U);
+  EXPECT_TRUE(phone_of(*unregistered).registration.empty());
 
   // Each malformed address, with its own reason: the net tier's
   // (net::parse_host_port, then net::parse_endpoint), but for the scheme.
@@ -2590,9 +2606,11 @@ TEST(Config, MobileSessionListensOnOneNumericAddress) {
 }
 
 TEST(Config, MobileSessionIsFuseOrbbecsAndNeedsItsWorld) {
-  // The registration places the phone in the rig file's world.
+  // The registration places the phone in the rig file's world, whether a
+  // file names it or the consumer finds it.
   for (const char* phone :
-       {R"("mobile":"0b.vrst")",
+       {R"("mobile":"0b.vrst")", R"("mobile":"tcp://10.8.0.1:7101")",
+        R"("mobile":"0b.vrst","mobile_registration":"reg.json")",
         R"("mobile":"tcp://10.8.0.1:7101","mobile_registration":"reg.json")"}) {
     rejected(std::string(R"({"version":1,"source":{)") + phone + "}}",
              App::FuseOrbbec,

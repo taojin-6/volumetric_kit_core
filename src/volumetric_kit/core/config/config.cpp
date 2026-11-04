@@ -808,8 +808,8 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
       fail("source.audio", "requires output.stream or output.serve");
   }
   // The phone's registration places it in the rig's world, which the rig
-  // file holds. A file's registration defaults to beside it; a live session
-  // has no file to sit beside, so it names one. Its port is not the one
+  // file holds, whether a file names it or the consumer finds it (none
+  // named, for a file or a live session). Its port is not the one
   // output.serve binds on every interface of the same host.
   if (has(state, "source.mobile_registration") && !c.source.mobile)
     fail("source.mobile_registration", "requires source.mobile");
@@ -818,9 +818,6 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
       fail("source.mobile",
            "requires source.calibration, the world its registration places "
            "the phone in");
-    if (phone.registration.empty())
-      fail("source.mobile_registration",
-           "is required for a live source.mobile");
     if (c.output.serve != 0 && phone.port == c.output.serve)
       fail("source.mobile", "must not listen on output.serve's port");
   }
@@ -1084,8 +1081,8 @@ void resolve(Config& c, App app, std::string_view directory,
   resolve_path(c.diagnostics.dump_directory, base);
   resolve_path(c.diagnostics.track_log, base);
   // The phone: a value without a scheme is a session's file, config-relative,
-  // with its registration beside it unless given, unless it reads as an
-  // address; tcp:// is a live session's address, never a path.
+  // unless it reads as an address; tcp:// is a live session's address, never
+  // a path. Its registration, config-relative, is the one given or none.
   if (!state.mobile.empty()) {
     MobileSession phone;
     if (state.mobile.find("://") == std::string::npos) {
@@ -1100,8 +1097,6 @@ void resolve(Config& c, App app, std::string_view directory,
     }
     phone.registration = state.mobile_registration;
     resolve_path(phone.registration, base);
-    if (phone.registration.empty() && !phone.path.empty())
-      phone.registration = phone.path + ".registration.json";
     c.source.mobile = std::move(phone);
   }
   if (is_dataset(app) && c.source.camera_parameters.empty() &&

@@ -7,6 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-11-04
+
+### Changed
+
+- `source.mobile_registration` is optional for a live `source.mobile` too,
+  and is never defaulted: an empty `MobileSession::registration`, for a file
+  or a live session, means the consumer registers the session itself, or
+  refuses it, and an output may then be `<path>.registration.json`. Was: a
+  live session without it was refused ("source.mobile_registration: is
+  required for a live source.mobile"), and a file's resolved to
+  `<path>.registration.json` beside it (DECISIONS.md, the 2026-11-02 phone
+  entry's amendment). A given registration resolves config-relative as
+  before; `"mobile_registration": ""`, the key without `source.mobile` and
+  every other refusal stay.
+
+### Migration
+
+- The struct and the JSON keys are unchanged; existing scenarios that name
+  a registration load as before.
+- A scenario with a recorded `source.mobile` that relied on the file beside
+  it names it: `"mobile_registration": "<file>.registration.json"`.
+- A consumer that reads `MobileSession::registration` for every phone
+  refuses an empty one, or registers the session itself, from its first pin
+  at 0.49.0 or later.
+
 ## [0.48.0] - 2026-11-03
 
 ### Fixed
