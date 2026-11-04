@@ -37,6 +37,18 @@ file(CREATE_LINK ../Cellar/glm/1.0.3/include/glm "${_brew}/include/glm"
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/no_glm")
 list(PREPEND CMAKE_PREFIX_PATH "${_brew}")
 
+# CMake's own compiler checks for generate_export_header, answered as Apple
+# clang answers them: their three try_compiles through xcodebuild are about half
+# of each configure, and none checks the core's logic. An application's
+# configure, the ios repository's, still runs them.
+foreach(_check
+        COMPILER_HAS_HIDDEN_VISIBILITY COMPILER_HAS_HIDDEN_INLINE_VISIBILITY
+        COMPILER_HAS_DEPRECATED_ATTR)
+  set(${_check}
+      1
+      CACHE INTERNAL "Answered by the vkc_ios_* fixture")
+endforeach()
+
 set(VKC_WITH_VULKAN ON)
 add_subdirectory("${VKC_SOURCE_DIR}" volumetric_kit_core)
 message(STATUS "vkc_ios_consumer: the core is added")

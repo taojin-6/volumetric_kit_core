@@ -4,14 +4,18 @@
 // core_test_policy's run_on_gpu (gpu_test.hpp) under the Khronos validation
 // layer: a test the layer reports nothing for passes, one that skips skips,
 // and one that returns 0 fails when the layer reports an error, whether in the
-// test's own calls or for an object the test leaked, which the layer reports
-// as the harness destroys the device; under synchronization validation, a
-// missing barrier fails it too. A ring output no kernel writes reads as the
-// poison. The device meets the requirements given: one asking for a feature
-// enables it, and one no device meets fails without running the test.
-// other_queue_family names a family besides the device's own where the GPU
-// has one. Skips where the layer or a device is missing, unless
+// test's own calls (a missing barrier, under synchronization validation; plain
+// validation reports none) or for an object the test leaked, which the layer
+// reports as the harness destroys the device. A ring output no kernel writes
+// reads as the poison. The device meets the requirements given: one asking
+// for a feature enables it, and one no device meets fails without running the
+// test. other_queue_family names a family besides the device's own where the
+// GPU has one. Skips where the layer or a device is missing, unless
 // VKC_REQUIRE_VULKAN_DEVICE is set.
+//
+// Each run_on_gpu makes an instance and a device, which some drivers take
+// tenths of a second over, so the checks that need no run of their own share
+// the clean test's (passes).
 //
 // With --no-device, run where the loader finds no driver
 // (tests/CMakeLists.txt): run_on_gpu skips without running the test, and
@@ -60,24 +64,7 @@ namespace test = volumetric_kit::core::test;
 
 namespace {
 
-int passes(test::GpuContext& /*gpu*/) { return 0; }
-
 int skips(test::GpuContext& /*gpu*/) { return test::kSkipExitCode; }
-
-// A buffer with no usage, which the layer refuses before the driver sees it.
-int misuses(test::GpuContext& gpu) {
-  VkBufferCreateInfo info{};
-  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  info.size = 256;
-  info.usage = 0;
-  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  VkBuffer buffer = VK_NULL_HANDLE;
-  if (vkCreateBuffer(gpu.device.handle(), &info, nullptr, &buffer) ==
-      VK_SUCCESS) {
-    vkDestroyBuffer(gpu.device.handle(), buffer, nullptr);
-  }
-  return 0;
-}
 
 // A semaphore never destroyed, which the layer reports only as the device is.
 int leaks(test::GpuContext& gpu) {
@@ -148,11 +135,6 @@ int honours_requirements() {
       });
   CHECK(scalar == 0);
   CHECK(ran);
-  // The defaults' device does not have it, so the check above is not
-  // vacuous.
-  CHECK(test::run_on_gpu({}, [](test::GpuContext& gpu) {
-          return gpu.device.check_enabled(scalar_layout()).ok() ? 2 : 0;
-        }) == 0);
   // No device has this extension: the test fails without running.
   vkc::DeviceRequirements unmet;
   unmet.extensions = {"VK_VKC_no_such_extension"};
@@ -179,6 +161,17 @@ int names_other_family(test::GpuContext& gpu) {
   return 0;
 }
 
+// A test the layer reports nothing for, which passes. On the way it reads the
+// poison (poisons), finds scalarBlockLayout off on the defaults' device, so
+// that honours_requirements' check is not vacuous, and checks
+// other_queue_family.
+int passes(test::GpuContext& gpu) {
+  CHECK(poisons(gpu) == 0);
+  CHECK(!gpu.device.check_enabled(scalar_layout()).ok());
+  CHECK(names_other_family(gpu) == 0);
+  return 0;
+}
+
 // Where the loader finds no driver: a skip, with the test never run, and a
 // failure where a device is required.
 int without_a_device() {
@@ -200,6 +193,21 @@ int without_a_device() {
 }
 
 #ifdef VKC_TEST_LSAN
+// A buffer with no usage, which the layer refuses before the driver sees it.
+int misuses(test::GpuContext& gpu) {
+  VkBufferCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  info.size = 256;
+  info.usage = 0;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VkBuffer buffer = VK_NULL_HANDLE;
+  if (vkCreateBuffer(gpu.device.handle(), &info, nullptr, &buffer) ==
+      VK_SUCCESS) {
+    vkDestroyBuffer(gpu.device.handle(), buffer, nullptr);
+  }
+  return 0;
+}
+
 // The block leak_a_block leaks, its address XORed so that LSan's scan of the
 // globals finds no pointer to it.
 constexpr std::uintptr_t kHide =
@@ -250,12 +258,9 @@ int main(int argc, char** argv) {
   const int clean = test::run_on_gpu({}, passes);
   if (clean == test::kSkipExitCode) return clean;  // no device
   CHECK(clean == 0);
-  CHECK(test::run_on_gpu({}, poisons) == 0);
   CHECK(test::run_on_gpu({}, skips) == test::kSkipExitCode);
-  CHECK(test::run_on_gpu({}, misuses) == 1);
   CHECK(test::run_on_gpu({}, leaks) == 1);
   if (honours_requirements() != 0) return 1;
-  CHECK(test::run_on_gpu({}, names_other_family) == 0);
   {
     const test::ScopedEnv plain("VKC_TEST_SYNC_VALIDATION", nullptr);
     CHECK(test::run_on_gpu({}, races) == 0);
