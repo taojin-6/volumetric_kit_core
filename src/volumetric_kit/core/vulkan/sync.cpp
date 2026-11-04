@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -34,6 +35,42 @@ DeviceRequirements timeline_requirements() {
   timeline.queue_flags = 0;
   timeline.timeline_semaphore = true;
   return timeline;
+}
+
+// How the wait on an exported timeline reads its counter (sync.hpp says
+// why): kReadNs apart, kSlowReadNs apart once the wait is kSlowAfterNs old,
+// so a value long unset costs 1,000 reads a second.
+constexpr std::int64_t kReadNs = 50'000;
+constexpr std::int64_t kSlowReadNs = 1'000'000;
+constexpr std::int64_t kSlowAfterNs = 10'000'000;
+
+// The message of an exported timeline's wait that timed out.
+constexpr const char* kCounterShort =
+    "TimelineSemaphore::wait: the counter, read until the timeout, is below "
+    "the value";
+
+// Reads `semaphore`'s counter, found short at `start`, until it reaches
+// `value` (VK_SUCCESS), a read fails (its result), or `timeout_ns` has passed
+// since `start` (VK_TIMEOUT, after a last read at the timeout).
+VkResult read_until(VkDevice device, VkSemaphore semaphore, std::uint64_t value,
+                    std::uint64_t timeout_ns,
+                    std::chrono::steady_clock::time_point start) {
+  for (;;) {
+    const std::int64_t spent = detail::elapsed_ns(start);
+    const std::uint64_t used =
+        spent > 0 ? static_cast<std::uint64_t>(spent) : 0;
+    if (used >= timeout_ns) return VK_TIMEOUT;
+    const auto apart = static_cast<std::uint64_t>(
+        spent < kSlowAfterNs ? kReadNs : kSlowReadNs);
+    // At most kSlowReadNs, so it fits.
+    std::this_thread::sleep_for(std::chrono::nanoseconds(
+        static_cast<std::int64_t>(std::min(apart, timeout_ns - used))));
+    std::uint64_t reached = 0;
+    const VkResult read =
+        vkGetSemaphoreCounterValue(device, semaphore, &reached);
+    if (read != VK_SUCCESS) return read;
+    if (reached >= value) return VK_SUCCESS;
+  }
 }
 
 }  // namespace
@@ -62,6 +99,7 @@ struct TimelineExport {
     semaphore.handle_ =
         UniqueHandle<VkSemaphore, vkDestroySemaphore>(device.handle(), handle);
     semaphore.counters_ = DeviceAccess::counters(device);
+    semaphore.exported_ = next != nullptr;
     return semaphore;
   }
 };
@@ -142,7 +180,8 @@ Result<TimelineSemaphore> TimelineSemaphore::create(
 TimelineSemaphore::TimelineSemaphore(TimelineSemaphore&& other) noexcept
     : handle_(std::move(other.handle_)),
       submitted_(other.submitted_.exchange(0)),
-      counters_(std::move(other.counters_)) {}
+      counters_(std::move(other.counters_)),
+      exported_(std::exchange(other.exported_, false)) {}
 
 TimelineSemaphore& TimelineSemaphore::operator=(
     TimelineSemaphore&& other) noexcept {
@@ -150,6 +189,7 @@ TimelineSemaphore& TimelineSemaphore::operator=(
     handle_ = std::move(other.handle_);
     submitted_ = other.submitted_.exchange(0);
     counters_ = std::move(other.counters_);
+    exported_ = std::exchange(other.exported_, false);
   }
   return *this;
 }
@@ -197,16 +237,32 @@ Status TimelineSemaphore::wait(std::uint64_t value,
         "TimelineSemaphore::wait on an empty semaphore");
   }
   VkSemaphore semaphore = handle_.get();
+  // A poll, or a value already reached, blocks nothing: neither is a wait.
+  std::uint64_t reached = 0;
+  const VkResult read =
+      vkGetSemaphoreCounterValue(handle_.device(), semaphore, &reached);
+  const bool done = read == VK_SUCCESS && reached >= value;
+  if (exported_) {
+    // Another API sets the values, which the driver's wait may see late
+    // (sync.hpp): the counter is read until it gets there.
+    if (read != VK_SUCCESS) return vk_error(read, "vkGetSemaphoreCounterValue");
+    if (done) return {};
+    if (timeout_ns == 0) return vk_error(VK_TIMEOUT, kCounterShort);
+    const auto start = std::chrono::steady_clock::now();
+    const VkResult result =
+        read_until(handle_.device(), semaphore, value, timeout_ns, start);
+    detail::report_blocked(detail::elapsed_ns(start), counters_.get());
+    if (result == VK_TIMEOUT) return vk_error(result, kCounterShort);
+    if (result != VK_SUCCESS) {
+      return vk_error(result, "vkGetSemaphoreCounterValue");
+    }
+    return {};
+  }
   VkSemaphoreWaitInfo info{};
   info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
   info.semaphoreCount = 1;
   info.pSemaphores = &semaphore;
   info.pValues = &value;
-  // A poll, or a value already reached, blocks nothing: neither is a wait.
-  std::uint64_t reached = 0;
-  const bool done = vkGetSemaphoreCounterValue(handle_.device(), semaphore,
-                                               &reached) == VK_SUCCESS &&
-                    reached >= value;
   const bool waits = timeout_ns != 0 && !done;
   const auto start = std::chrono::steady_clock::now();
   const VkResult result = vkWaitSemaphores(handle_.device(), &info, timeout_ns);

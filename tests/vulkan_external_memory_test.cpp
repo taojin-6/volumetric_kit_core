@@ -11,20 +11,23 @@
 // likewise with VK_EXT_external_memory_host: pages written by the host, as a
 // capture card's DMA would, read by a copy on the device. And
 // create_exported_timeline with VK_KHR_external_semaphore_fd: its descriptor
-// imported into a second device, whose host signals stand in for CUDA's, and
-// a batch here held on the device until the importer sets its value.
+// imported into a second device, whose host signals stand in for CUDA's, a
+// host wait here woken at once by them, and a batch here held on the device
+// until the importer sets its value.
 
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
 #include <fcntl.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <ios>
 #include <optional>
+#include <ratio>
 #include <string>
 #include <thread>
 #include <utility>
@@ -33,6 +36,7 @@
 #include <gtest/gtest.h>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/vulkan_fixture.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/testing/write_image.hpp"
@@ -1177,14 +1181,37 @@ TEST_F(TimelineExportTest, ExportsATimelineAtItsInitialValue) {
 
     allow_the_old_layers_pending_read();
     ASSERT_TRUE(written.semaphore.signal(6).ok());
+    // A wait that finds the value reached counts nothing, which the wake
+    // test's count of the waits that blocked relies on.
+    const std::uint64_t waits_at_6 = device().counters().host_waits;
     EXPECT_TRUE(written.semaphore.wait(6).ok());
+    EXPECT_EQ(device().counters().host_waits, waits_at_6);
     const Result<std::uint64_t> raised = written.semaphore.value();
     ASSERT_TRUE(raised.ok()) << raised.status().message();
     EXPECT_EQ(*raised, 6U);
-    // 7 is never set: a short wait for it blocks, times out, and counts.
+    // 7 is never set: a short wait for it reads the counter until its
+    // timeout, no sooner, then times out. It counts once, however many reads
+    // it made, and all of its time is blocked, on the device and in the
+    // scope around it. A zero timeout reads once, and counts nothing.
+    constexpr std::uint64_t kShortNs = 2'000'000;
     const DeviceCounters before = device().counters();
-    EXPECT_TRUE(is_timeout(written.semaphore.wait(7, 1'000'000)));
-    EXPECT_EQ(device().counters().host_waits - before.host_waits, 1U);
+    StageMetrics metrics;
+    const auto began = std::chrono::steady_clock::now();
+    {
+      const StageScope scope(metrics, "wait");
+      EXPECT_TRUE(is_timeout(written.semaphore.wait(7, kShortNs)));
+    }
+    const auto spent_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now() - began)
+                              .count();
+    EXPECT_GE(spent_ns, static_cast<std::int64_t>(kShortNs));
+    const DeviceCounters after = device().counters();
+    EXPECT_EQ(after.host_waits - before.host_waits, 1U);
+    EXPECT_GE(after.blocked_ns - before.blocked_ns, kShortNs);
+    ASSERT_EQ(metrics.rows().size(), 1U);
+    EXPECT_GE(metrics.rows()[0].wait_ms, 2.0);
+    EXPECT_TRUE(is_timeout(written.semaphore.wait(7, 0)));
+    EXPECT_EQ(device().counters().host_waits, after.host_waits);
   }
   errno = 0;
   EXPECT_EQ(fcntl(fd, F_GETFD), -1);
@@ -1227,6 +1254,78 @@ TEST_F(TimelineExportTest, TheDescriptorImportsTheSameTimeline) {
   allow_the_old_layers_pending_read();
   ASSERT_TRUE(written.semaphore.signal(8).ok());
   EXPECT_EQ(counter(other.handle(), imported.get()), 8U);
+}
+
+// An importer's value wakes a host wait here at once. NVIDIA's driver wakes a
+// vkWaitSemaphores on a value set outside its VkDevice -- by CUDA, or by the
+// second device's host here -- only on a tick of its own, 10 ms after the
+// wait began (DECISIONS.md, the 2026-11-03 host-wait entry), so the wait
+// reads the counter. Each wait is blocked before the value is set: held 1 ms,
+// and 12 ms, by when the reads are 1 ms apart. Timed: the median of five
+// blocked waits against 5 ms, which a wait woken on the tick misses by 3 ms
+// or more (the old wait woke 9.0 and 8.1 ms after the value). The bound
+// checks only that the wait is not woken on the tick; how soon the reads see
+// the value is measured in DECISIONS.md.
+TEST_F(TimelineExportTest, AnImportersValueWakesAHostWaitAtOnce) {
+  if (cannot_export()) {
+    GTEST_SKIP() << "the device cannot export a timeline semaphore as an "
+                    "opaque descriptor";
+  }
+  if (cannot_import()) {
+    GTEST_SKIP() << "the device exports timeline descriptors but cannot "
+                    "import them";
+  }
+  Result<ExportedTimeline> made = create_exported_timeline(device());
+  ASSERT_TRUE(made.ok()) << made.status().message();
+  ExportedTimeline written = *std::move(made);
+  Result<Device> other_made =
+      Device::create(instance(), physical(), requirements());
+  ASSERT_TRUE(other_made.ok()) << other_made.status().message();
+  const Device other = *std::move(other_made);
+  Result<Timeline> imported_made = import_timeline(other, written);
+  ASSERT_TRUE(imported_made.ok()) << imported_made.status().message();
+  const Timeline imported = *std::move(imported_made);
+
+  using Clock = std::chrono::steady_clock;
+  std::uint64_t value = 0;
+  for (const std::chrono::milliseconds hold :
+       {std::chrono::milliseconds(1), std::chrono::milliseconds(12)}) {
+    std::vector<double> late_ms;
+    // A trial counts only if its wait blocked, which adds a host wait: a
+    // waiter held up past the hold finds the value set, and is tried again.
+    for (int attempt = 0; attempt < 20 && late_ms.size() < 5; ++attempt) {
+      ++value;
+      const std::uint64_t waits_before = device().counters().host_waits;
+      std::atomic<bool> waiting{false};
+      Status waited;
+      Clock::time_point woke;
+      std::thread waiter([&] {
+        waiting.store(true);
+        waited = written.semaphore.wait(value, kLongWaitNs);
+        woke = Clock::now();
+      });
+      while (!waiting.load()) std::this_thread::yield();
+      std::this_thread::sleep_for(hold);
+      const Clock::time_point set = Clock::now();
+      const VkResult signalled =
+          host_signal(other.handle(), imported.get(), value);
+      // Released from here if the importer failed, so the join returns.
+      if (signalled != VK_SUCCESS) (void)written.semaphore.signal(value);
+      waiter.join();
+      ASSERT_EQ(signalled, VK_SUCCESS);
+      ASSERT_TRUE(waited.ok()) << waited.message();
+      if (device().counters().host_waits == waits_before) continue;
+      late_ms.push_back(
+          std::chrono::duration<double, std::milli>(woke - set).count());
+    }
+    ASSERT_EQ(late_ms.size(), 5U)
+        << "held " << hold.count() << " ms: too few waits blocked";
+    std::string seen;
+    for (const double ms : late_ms) seen += " " + std::to_string(ms);
+    std::sort(late_ms.begin(), late_ms.end());
+    EXPECT_LT(late_ms[2], 5.0) << "held " << hold.count()
+                               << " ms, woken (ms after the value):" << seen;
+  }
 }
 
 // Sets a timeline from the host on scope exit, unless it is there already,
