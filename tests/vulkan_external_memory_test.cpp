@@ -1181,7 +1181,11 @@ TEST_F(TimelineExportTest, ExportsATimelineAtItsInitialValue) {
 
     allow_the_old_layers_pending_read();
     ASSERT_TRUE(written.semaphore.signal(6).ok());
+    // A wait that finds the value reached counts nothing, which the wake
+    // test's count of the waits that blocked relies on.
+    const std::uint64_t waits_at_6 = device().counters().host_waits;
     EXPECT_TRUE(written.semaphore.wait(6).ok());
+    EXPECT_EQ(device().counters().host_waits, waits_at_6);
     const Result<std::uint64_t> raised = written.semaphore.value();
     ASSERT_TRUE(raised.ok()) << raised.status().message();
     EXPECT_EQ(*raised, 6U);
@@ -1259,7 +1263,9 @@ TEST_F(TimelineExportTest, TheDescriptorImportsTheSameTimeline) {
 // reads the counter. Each wait is blocked before the value is set: held 1 ms,
 // and 12 ms, by when the reads are 1 ms apart. Timed: the median of five
 // blocked waits against 5 ms, which a wait woken on the tick misses by 3 ms
-// or more.
+// or more (the old wait woke 9.0 and 8.1 ms after the value). The bound
+// checks only that the wait is not woken on the tick; how soon the reads see
+// the value is measured in DECISIONS.md.
 TEST_F(TimelineExportTest, AnImportersValueWakesAHostWaitAtOnce) {
   if (cannot_export()) {
     GTEST_SKIP() << "the device cannot export a timeline semaphore as an "
