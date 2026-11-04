@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <ios>
 #include <optional>
+#include <ratio>
 #include <string>
 #include <thread>
 #include <utility>
