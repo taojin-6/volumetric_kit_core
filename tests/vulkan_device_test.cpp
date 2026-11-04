@@ -35,6 +35,11 @@ constexpr const char* kPortabilitySubset = "VK_KHR_portability_subset";
 
 class DeviceTest : public test::VulkanTest {};
 
+// The cases that need only a working device with the defaults share the
+// fixture's, one per process, rather than each making its own, which some
+// drivers take tenths of a second over.
+class SharedDefaultDeviceTest : public test::VulkanDeviceTest {};
+
 // A compute-to-compute memory barrier: valid on any compute queue, and enough
 // for a submit to have something to do.
 void record_barrier(VkCommandBuffer cmd) {
@@ -398,35 +403,31 @@ TEST_F(DeviceTest, AMovedFromDeviceChecksNothing) {
 // --- submit
 // ----------------------------------------------------------------------
 
-TEST_F(DeviceTest, SubmitsAndWaits) {
-  const Result<Device> made = Device::create(instance(), physical(), {});
-  ASSERT_TRUE(made.ok()) << made.status().message();
+TEST_F(SharedDefaultDeviceTest, SubmitsAndWaits) {
   int recorded = 0;
   for (int i = 0; i < 3; ++i) {  // the second and third reuse the command
-    const Status s = made->submit_single_time([&](VkCommandBuffer cmd) {
+    const Status s = device().submit_single_time([&](VkCommandBuffer cmd) {
       record_barrier(cmd);
       ++recorded;
     });
     ASSERT_TRUE(s.ok()) << s.message();
   }
   EXPECT_EQ(recorded, 3);
-  EXPECT_TRUE(made->wait_idle().ok());
+  EXPECT_TRUE(device().wait_idle().ok());
 }
 
-TEST_F(DeviceTest, ReleasesWhatTheWorkUsedOnceItCompletes) {
+TEST_F(SharedDefaultDeviceTest, ReleasesWhatTheWorkUsedOnceItCompletes) {
   // Kept only past a failed wait, which a working device does not give: here
   // the device's reference goes before the call returns.
-  const Result<Device> made = Device::create(instance(), physical(), {});
-  ASSERT_TRUE(made.ok()) << made.status().message();
   auto kept = std::make_shared<int>(7);
   const std::weak_ptr<int> watch = kept;
-  ASSERT_TRUE(made->submit_single_time(record_barrier, std::move(kept)).ok());
+  ASSERT_TRUE(
+      device().submit_single_time(record_barrier, std::move(kept)).ok());
   EXPECT_TRUE(watch.expired());
 }
 
-TEST_F(DeviceTest, SubmitsFromManyThreads) {
-  const Result<Device> made = Device::create(instance(), physical(), {});
-  ASSERT_TRUE(made.ok()) << made.status().message();
+TEST_F(SharedDefaultDeviceTest, SubmitsFromManyThreads) {
+  const Device& made = device();
   constexpr int kThreads = 8;
   constexpr int kSubmits = 25;
   std::atomic<int> recorded{0};
@@ -436,7 +437,7 @@ TEST_F(DeviceTest, SubmitsFromManyThreads) {
   for (int t = 0; t < kThreads; ++t) {
     threads.emplace_back([&] {
       for (int i = 0; i < kSubmits; ++i) {
-        const Status s = made->submit_single_time([&](VkCommandBuffer cmd) {
+        const Status s = made.submit_single_time([&](VkCommandBuffer cmd) {
           record_barrier(cmd);
           ++recorded;
         });
@@ -449,12 +450,10 @@ TEST_F(DeviceTest, SubmitsFromManyThreads) {
   EXPECT_EQ(recorded.load(), kThreads * kSubmits);
 }
 
-TEST_F(DeviceTest, RecordMaySubmitOnTheSameDevice) {
-  const Result<Device> made = Device::create(instance(), physical(), {});
-  ASSERT_TRUE(made.ok()) << made.status().message();
+TEST_F(SharedDefaultDeviceTest, RecordMaySubmitOnTheSameDevice) {
   Status inner;
-  const Status outer = made->submit_single_time([&](VkCommandBuffer cmd) {
-    inner = made->submit_single_time(record_barrier);
+  const Status outer = device().submit_single_time([&](VkCommandBuffer cmd) {
+    inner = device().submit_single_time(record_barrier);
     record_barrier(cmd);
   });
   EXPECT_TRUE(outer.ok()) << outer.message();
@@ -462,13 +461,15 @@ TEST_F(DeviceTest, RecordMaySubmitOnTheSameDevice) {
 }
 
 TEST_F(DeviceTest, SubmitsACallersCommandBuffer) {
-  const Result<Device> made = Device::create(instance(), physical(), {});
-  ASSERT_TRUE(made.ok()) << made.status().message();
+  // Its own device: the interleaving below needs a device no submit has used.
+  const Result<Device> made_device = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(made_device.ok()) << made_device.status().message();
+  const Device& made = *made_device;
   VkCommandPoolCreateInfo pool_info{};
   pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-  pool_info.queueFamilyIndex = made->queue_family();
+  pool_info.queueFamilyIndex = made.queue_family();
   VkCommandPool pool = VK_NULL_HANDLE;
-  ASSERT_EQ(vkCreateCommandPool(made->handle(), &pool_info, nullptr, &pool),
+  ASSERT_EQ(vkCreateCommandPool(made.handle(), &pool_info, nullptr, &pool),
             VK_SUCCESS);
   VkCommandBufferAllocateInfo alloc{};
   alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -476,41 +477,40 @@ TEST_F(DeviceTest, SubmitsACallersCommandBuffer) {
   alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   alloc.commandBufferCount = 1;
   VkCommandBuffer cmd = VK_NULL_HANDLE;
-  ASSERT_EQ(vkAllocateCommandBuffers(made->handle(), &alloc, &cmd), VK_SUCCESS);
+  ASSERT_EQ(vkAllocateCommandBuffers(made.handle(), &alloc, &cmd), VK_SUCCESS);
   VkCommandBufferBeginInfo begin{};
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   ASSERT_EQ(vkBeginCommandBuffer(cmd, &begin), VK_SUCCESS);
   record_barrier(cmd);
   ASSERT_EQ(vkEndCommandBuffer(cmd), VK_SUCCESS);
 
-  EXPECT_TRUE(made->submit_and_wait(cmd).ok());
-  EXPECT_TRUE(made->submit_and_wait(cmd).ok());  // not ONE_TIME_SUBMIT
-  EXPECT_EQ(made->submit_and_wait(VK_NULL_HANDLE).domain(),
+  EXPECT_TRUE(made.submit_and_wait(cmd).ok());
+  EXPECT_TRUE(made.submit_and_wait(cmd).ok());  // not ONE_TIME_SUBMIT
+  EXPECT_EQ(made.submit_and_wait(VK_NULL_HANDLE).domain(),
             Status::Code::InvalidArgument);
   // Interleaved: a recording submit reuses the fence submit_and_wait made,
   // giving it a buffer, and submit_and_wait then reuses that command too.
-  EXPECT_TRUE(made->submit_single_time(record_barrier).ok());
-  EXPECT_TRUE(made->submit_and_wait(cmd).ok());
-  EXPECT_TRUE(made->submit_single_time(record_barrier).ok());
-  vkDestroyCommandPool(made->handle(), pool, nullptr);
+  EXPECT_TRUE(made.submit_single_time(record_barrier).ok());
+  EXPECT_TRUE(made.submit_and_wait(cmd).ok());
+  EXPECT_TRUE(made.submit_single_time(record_barrier).ok());
+  vkDestroyCommandPool(made.handle(), pool, nullptr);
 }
 
-TEST_F(DeviceTest, LabelsAndNamesAreSafeWithOrWithoutDebugUtils) {
-  const Result<Device> made = Device::create(instance(), physical(), {});
-  ASSERT_TRUE(made.ok()) << made.status().message();
+TEST_F(SharedDefaultDeviceTest, LabelsAndNamesAreSafeWithOrWithoutDebugUtils) {
+  const Device& made = device();
   if (!instance().debug_utils_enabled()) {
-    EXPECT_FALSE(made->debug_labels_available());
+    EXPECT_FALSE(made.debug_labels_available());
   }
-  made->set_object_name(VK_OBJECT_TYPE_QUEUE,
-                        debug_object_handle(made->queue()), "core queue");
-  made->set_object_name(VK_OBJECT_TYPE_QUEUE,
-                        debug_object_handle(made->queue()), nullptr);
-  const Status s = made->submit_single_time([&](VkCommandBuffer cmd) {
-    made->begin_debug_label(cmd, "outer");
-    made->begin_debug_label(cmd, nullptr);  // opens nothing...
+  made.set_object_name(VK_OBJECT_TYPE_QUEUE, debug_object_handle(made.queue()),
+                       "core queue");
+  made.set_object_name(VK_OBJECT_TYPE_QUEUE, debug_object_handle(made.queue()),
+                       nullptr);
+  const Status s = made.submit_single_time([&](VkCommandBuffer cmd) {
+    made.begin_debug_label(cmd, "outer");
+    made.begin_debug_label(cmd, nullptr);  // opens nothing...
     record_barrier(cmd);
-    made->end_debug_label(cmd, nullptr);  // ...so closes nothing
-    made->end_debug_label(cmd, "outer");
+    made.end_debug_label(cmd, nullptr);  // ...so closes nothing
+    made.end_debug_label(cmd, "outer");
   });
   EXPECT_TRUE(s.ok()) << s.message();
   EXPECT_EQ(debug_object_handle(VK_NULL_HANDLE), 0u);
