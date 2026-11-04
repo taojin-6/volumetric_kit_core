@@ -2044,8 +2044,13 @@ here every host wait on such a timeline, whoever waits, wakes on time.
   last read there decides, so a wait times out (`VK_TIMEOUT`) no sooner
   than its timeout (NVIDIA's `vkWaitSemaphores` returned up to 1 us
   before it); a zero timeout reads once.
-  A failed read returns at once as the wait's failure: Vulkan lists
-  `VK_ERROR_DEVICE_LOST` among `vkGetSemaphoreCounterValue`'s results.
+  A failed read returns at once as the wait's failure. A lost device ends
+  the wait once a read reports it, as it ends `vkWaitSemaphores`: on
+  NVIDIA's driver a device hung by a fault was reported lost only by a
+  fence wait, about 5 s in, after which the reads failed within 1 ms and
+  `vkWaitSemaphores` within 4 ms; with no fence wait, neither wait saw it
+  in 25 s.
+  Where a hung device must end a wait, pass a timeout.
   sensor measured 1 ms `vkWaitSemaphores` slices in place of the reads, on
   box B below: they took more CPU and woke later.
 - **Counted as before.** A wait that blocks counts one host wait on its
@@ -2058,11 +2063,9 @@ here every host wait on such a timeline, whoever waits, wakes on time.
   no timeline, so nothing changes there.
 - **Tested without CUDA.** The export tests' second device, which imports
   the descriptor, stands in for CUDA: its host's signal is a value set
-  outside the waiting device, which the old wait saw on the tick. The test
-  holds five waits 1 ms and five 12 ms before the value is set, and asks
-  each median to be below 5 ms, half the tick: the old wait woke 9.0 and
-  8.1 ms after the value. It runs where the device exports and imports a
-  timeline (the NVIDIA CI legs) and skips elsewhere.
+  outside the waiting device, which the old wait saw on the tick
+  (`AnImportersValueWakesAHostWaitAtOnce`). It runs where the device
+  exports and imports a timeline (the NVIDIA CI legs) and skips elsewhere.
 
 **Measured** (driver 615.71.10; Release; a probe outside the repository).
 A waiter thread blocked `hold` ms before the value is set; ms from the set

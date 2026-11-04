@@ -12,15 +12,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 ### Fixed
 
 - `TimelineSemaphore::wait` on a timeline `create_exported_timeline` made
-  reads the counter until it reaches the value or the timeout passes, and so
-  returns about 0.1 ms after another API sets the value (1 ms once the wait
-  is 10 ms old). Was: `vkWaitSemaphores`, which NVIDIA's driver wakes on a
-  value set outside its `VkDevice` (by CUDA, or by another device that
-  imported the timeline) only on a tick of its own, up to about 10 ms later
-  (DECISIONS.md, the 2026-11-03 host-wait entry). Timeouts, `is_timeout`,
-  failures and what a blocking wait counts (`note_blocked`,
-  `DeviceCounters`) are as before; a failed read (device lost) is returned
-  at once. Any other timeline is waited for as before.
+  reads the counter until it reaches the value or the timeout passes, so a
+  value another API sets wakes it within about 0.1 ms, not up to about
+  10 ms later (DECISIONS.md, the 2026-11-03 host-wait entry). Timeouts,
+  failures and what a blocking wait counts are as before. Any other
+  timeline is waited for as before.
 
 ### Changed
 
