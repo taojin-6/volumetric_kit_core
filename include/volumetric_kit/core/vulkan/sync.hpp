@@ -181,14 +181,25 @@ class VKC_VULKAN_API TimelineSemaphore {
   Status signal(std::uint64_t value);
   /// @brief Wait until the counter reaches @p value, or the timeout passes.
   ///
-  /// A wait that blocks reports its time to the scopes open on this thread
-  /// (@ref note_blocked) and to its device's @ref DeviceCounters; one that
-  /// finds the value reached does not.
+  /// A timeline @ref create_exported_timeline made, whose values another API
+  /// sets, is waited for by reading its counter, 50 us apart and 1 ms apart
+  /// once the wait is 10 ms old: NVIDIA's driver wakes a `vkWaitSemaphores`
+  /// on a value set outside its `VkDevice` (by CUDA, or by another device
+  /// that imported the timeline) only on a tick of its own, up to about
+  /// 10 ms later (DECISIONS.md, the 2026-11-03 host-wait entry). Any other
+  /// timeline is waited for in `vkWaitSemaphores`, which a value its device
+  /// sets wakes at once, and which spends no CPU while it blocks.
+  ///
+  /// A wait that blocks reports its time, once however many reads it made,
+  /// to the scopes open on this thread (@ref note_blocked) and to its
+  /// device's @ref DeviceCounters; one that finds the value reached does
+  /// not.
   /// @param value       The value to wait for.
   /// @param timeout_ns  The longest wait, in nanoseconds.
   /// @return OK once reached; @ref Status::Code::InvalidArgument for an
   ///         empty semaphore; a backend @ref Status carrying `VK_TIMEOUT`
-  ///         (@ref is_timeout) when the timeout passes first, or the failure.
+  ///         (@ref is_timeout) when the timeout passes first, or the failure
+  ///         (device lost; on an exported timeline, the read's).
   Status wait(std::uint64_t value, std::uint64_t timeout_ns = UINT64_MAX) const;
 
  private:
@@ -204,6 +215,9 @@ class VKC_VULKAN_API TimelineSemaphore {
   // The device's counters, which a blocking wait adds to; shared, so a
   // device moved meanwhile still gets them.
   std::shared_ptr<detail::DeviceCounterState> counters_;
+  // Made by create_exported_timeline: another API sets its values, so wait
+  // reads the counter.
+  bool exported_ = false;
 };
 
 /// @brief A value of a @ref TimelineSemaphore: one a submission waits for
@@ -306,7 +320,8 @@ VKC_VULKAN_API void note_timeline_signals(
 /// @ref check_timeline_points does not know the importer's values. A
 /// submission here only waits for them (@ref TimelineWaits::Any). The host
 /// reads and waits on the counter as on any timeline
-/// (@ref TimelineSemaphore::value, @ref TimelineSemaphore::wait).
+/// (@ref TimelineSemaphore::value, @ref TimelineSemaphore::wait, which reads
+/// the counter here and says why).
 ///
 /// Queue the importer's signal before submitting the batch that waits for
 /// it, as @ref CommandBatch::submit_async asks of any value: until the value

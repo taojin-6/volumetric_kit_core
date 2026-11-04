@@ -1865,6 +1865,9 @@ validation (1.4.363) counts a wait on every stage as covering even an empty
 first scope. So the test records the acquire behind a barrier standing in
 for the wait, holding one stage at a time, which the layer does check.
 
+**Amended 2026-11-03 (core 0.48.0): the host's wait reads the counter** of
+an exported timeline (the 2026-11-03 host-wait entry says why).
+
 ## 2026-11-02 — FuseOrbbec's phone: a session file or a live address, in the rig's world
 
 FuseOrbbec gains a phone beside the rig (core 0.42.0; CONFIG.md,
@@ -2012,3 +2015,73 @@ any host `parse_ipv4` refuses, reached another host than the one meant.
   (grid's reads "StreamClient: <host>:<port>"), so the reasons, "the host is
   not a numeric IPv4 address: four decimal parts from 0 to 255, with no
   leading zero" and "the host is empty", do not quote it again.
+
+## 2026-11-03 — A host wait on an exported timeline reads its counter
+
+`TimelineSemaphore::wait` (core 0.48.0) waits for a value of a timeline
+`create_exported_timeline` made by reading the counter, not in
+`vkWaitSemaphores`. NVIDIA's driver (615.71.10, on an RTX 4090 and an RTX
+5090) does not wake a `vkWaitSemaphores` when the value is set outside the
+waiting `VkDevice`, by CUDA or by a second device that imported the
+timeline: the wait returns on a tick of the driver's own, 10 ms after it
+began (then 20, 30), or at its timeout, seeing the value then. A value the
+waiting device sets, on its queue or from its host, wakes it at once,
+exported or not. sensor found this on CUDA's signal and made its decoder's
+own wait read the counter (sensor 0.42.0, its 2026-11-03 host-wait entry);
+here every host wait on such a timeline, whoever waits, wakes on time.
+
+- **Which timelines.** Those `create_exported_timeline` made: a flag set
+  where the export is chained, kept through moves. The core gives no other
+  way for another API to set a timeline's value (no semaphore import, no
+  adopted handle), so any other timeline keeps `vkWaitSemaphores`, which
+  spends no CPU while it blocks. On an exported timeline a value this
+  device sets (the host's, once an importer failed) is seen at the next
+  read rather than at once: about 0.05 ms later in the wait's first 10 ms.
+- **The reads.** 50 us apart, and 1 ms apart once the wait is 10 ms old,
+  sensor's schedule: a value set in the first 10 ms is seen about 0.05-0.1
+  ms later, one set after within about 1 ms, and a value long unset costs
+  1,000 reads a second. A sleep ends at the timeout at the latest, and a
+  last read there decides, so a wait times out (`VK_TIMEOUT`) no sooner
+  than its timeout (NVIDIA's `vkWaitSemaphores` returned up to 1 us
+  before it); a zero timeout reads once.
+  A failed read returns at once as the wait's failure: Vulkan lists
+  `VK_ERROR_DEVICE_LOST` among `vkGetSemaphoreCounterValue`'s results.
+  sensor measured 1 ms `vkWaitSemaphores` slices in place of the reads, on
+  box B below: they took more CPU and woke later.
+- **Counted as before.** A wait that blocks counts one host wait on its
+  device and its whole time, and reports that time to the open scopes,
+  however many reads it made, so `DeviceCounters` and `note_blocked` keep
+  their meaning for the family's readers (upper bounds and logs).
+- **Where it applies.** Only where a timeline exports as an opaque
+  descriptor: Linux on NVIDIA, and any other driver that offers it.
+  MoltenVK has no `VK_KHR_external_semaphore_fd` and lavapipe 25.2 exports
+  no timeline, so nothing changes there.
+- **Tested without CUDA.** The export tests' second device, which imports
+  the descriptor, stands in for CUDA: its host's signal is a value set
+  outside the waiting device, which the old wait saw on the tick. The test
+  holds five waits 1 ms and five 12 ms before the value is set, and asks
+  each median to be below 5 ms, half the tick: the old wait woke 9.0 and
+  8.1 ms after the value. It runs where the device exports and imports a
+  timeline (the NVIDIA CI legs) and skips elsewhere.
+
+**Measured** (driver 615.71.10; Release; a probe outside the repository).
+A waiter thread blocked `hold` ms before the value is set; ms from the set
+to the wake, p50 (p95), the median of three alternating rounds of 30, and
+the waiter thread's CPU time over its wall time:
+
+| hold | set by | before, RTX 4090 A | after, A | before, RTX 4090 B, busy | after, B |
+| --- | --- | --- | --- | --- | --- |
+| 0.3 | CUDA | 9.72 (9.73) | 0.10 (0.12), 10.1% | 9.71 (9.86) | 0.06 (0.07), 2.5% |
+| 2.5 | CUDA | 7.51 (7.53) | 0.04 (0.11), 8.2% | 7.50 (7.60) | 0.06 (0.11), 1.5% |
+| 7 | CUDA | 3.01 (3.03) | 0.07 (0.12), 7.8% | 2.93 (3.04) | 0.06 (0.10), 1.4% |
+| 15 | CUDA | 5.08 (5.11) | 0.31 (0.36), 5.3% | 5.13 (5.31) | 0.25 (0.56), 1.0% |
+| 50 | CUDA | 0.35 (1.16) | 0.42 (0.61), 2.3% | 0.76 (0.92) | 0.83 (1.02), 0.6% |
+| 2.5 | the second device's host | 7.51 (7.53) | 0.04 (0.11) | 7.50 (7.64) | 0.06 (0.09) |
+| 2.5 | this device's host | 0.02 (0.04) | 0.04 (0.11) | 0.03 (0.20) | 0.05 (0.09) |
+
+Before, the waiter's CPU was 0.1-0.3%. At 50 ms the value lands near a
+tick, which the old wait then catches. The reads cost 8-10% of a core
+while 50 us apart on box A, a shared 64-core server, against 1.4-2.5% on
+box B's desktop processor, and 0.4-0.9% once 1 ms apart. A plain
+timeline's wait is unchanged on both and on an M5 Max (MoltenVK): the
+same p50 within 0.05 ms at every hold, and the same CPU.

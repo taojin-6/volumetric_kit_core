@@ -7,6 +7,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-11-03
+
+### Fixed
+
+- `TimelineSemaphore::wait` on a timeline `create_exported_timeline` made
+  reads the counter until it reaches the value or the timeout passes, and so
+  returns about 0.1 ms after another API sets the value (1 ms once the wait
+  is 10 ms old). Was: `vkWaitSemaphores`, which NVIDIA's driver wakes on a
+  value set outside its `VkDevice` (by CUDA, or by another device that
+  imported the timeline) only on a tick of its own, up to about 10 ms later
+  (DECISIONS.md, the 2026-11-03 host-wait entry). Timeouts, `is_timeout`,
+  failures and what a blocking wait counts (`note_blocked`,
+  `DeviceCounters`) are as before; a failed read (device lost) is returned
+  at once. Any other timeline is waited for as before.
+
+### Changed
+
+- `TimelineSemaphore` holds whether it was exported (a private member): the
+  ABI changes.
+
+### Migration
+
+- Nothing to change beyond the pin and a rebuild. A caller that read an
+  exported timeline's counter in a loop of its own to avoid the late wake
+  may call `TimelineSemaphore::wait` instead.
+
 ## [0.44.2] - 2026-11-03
 
 ### Fixed
