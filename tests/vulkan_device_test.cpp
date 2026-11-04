@@ -460,8 +460,11 @@ TEST_F(SharedDefaultDeviceTest, RecordMaySubmitOnTheSameDevice) {
   EXPECT_TRUE(inner.ok()) << inner.message();
 }
 
-TEST_F(SharedDefaultDeviceTest, SubmitsACallersCommandBuffer) {
-  const Device& made = device();
+TEST_F(DeviceTest, SubmitsACallersCommandBuffer) {
+  // Its own device: the interleaving below needs a device no submit has used.
+  const Result<Device> made_device = Device::create(instance(), physical(), {});
+  ASSERT_TRUE(made_device.ok()) << made_device.status().message();
+  const Device& made = *made_device;
   VkCommandPoolCreateInfo pool_info{};
   pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   pool_info.queueFamilyIndex = made.queue_family();
