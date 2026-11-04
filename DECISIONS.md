@@ -1898,6 +1898,26 @@ do not see, as `audio` records beside them.
 - **The tracking log is a diagnostic.** `diagnostics.track_log` is a
   directory beside `dump_directory`, and changes nothing that fuses.
 
+**Amended 2026-11-04 (core 0.49.0): a phone with no registration is
+registered by its consumer, a file's too.** FuseOrbbec registers a live
+phone itself, from the origin tag in its pictures, so the live session's
+required registration goes. The owner agreed (2026-11-04) that the empty
+registration means the same for a file, so the default beside it goes too.
+
+- **One meaning for empty.** `source.mobile_registration` names a
+  registration file; omitted, the consumer registers the session, whether
+  the session is a file or live. A recorded phone file then replays the
+  consumer's own registration, which its tests and replays need; with the
+  default, a file beside it would have been read instead, or its absence
+  refused at open.
+- **Never defaulted.** A file run registered by a file names it, as a live
+  run does: one rule for both, and the scenario says which registration a
+  run uses.
+- **What stays.** A named registration resolves config-relative and no
+  output may be it; the key is never empty and requires `source.mobile`;
+  `source.mobile` requires `source.calibration` either way, the world the
+  consumer places the phone in.
+
 ## 2026-11-02 — A net tier: the family's TCP sockets, moved from grid
 
 The owner asked: "can you explore how we can take the networking part out of
