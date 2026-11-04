@@ -1257,7 +1257,8 @@ TEST_F(TimelineExportTest, TheDescriptorImportsTheSameTimeline) {
 // wait began (DECISIONS.md, the 2026-11-03 host-wait entry), so the wait
 // reads the counter. Each wait is blocked before the value is set: held 1 ms,
 // and 12 ms, by when the reads are 1 ms apart. Timed: the median of five
-// against 5 ms, which a wait woken on the tick misses by 3 ms or more.
+// blocked waits against 5 ms, which a wait woken on the tick misses by 3 ms
+// or more.
 TEST_F(TimelineExportTest, AnImportersValueWakesAHostWaitAtOnce) {
   if (cannot_export()) {
     GTEST_SKIP() << "the device cannot export a timeline semaphore as an "
@@ -1283,8 +1284,11 @@ TEST_F(TimelineExportTest, AnImportersValueWakesAHostWaitAtOnce) {
   for (const std::chrono::milliseconds hold :
        {std::chrono::milliseconds(1), std::chrono::milliseconds(12)}) {
     std::vector<double> late_ms;
-    for (int trial = 0; trial < 5; ++trial) {
+    // A trial counts only if its wait blocked, which adds a host wait: a
+    // waiter held up past the hold finds the value set, and is tried again.
+    for (int attempt = 0; attempt < 20 && late_ms.size() < 5; ++attempt) {
       ++value;
+      const std::uint64_t waits_before = device().counters().host_waits;
       std::atomic<bool> waiting{false};
       Status waited;
       Clock::time_point woke;
@@ -1303,9 +1307,12 @@ TEST_F(TimelineExportTest, AnImportersValueWakesAHostWaitAtOnce) {
       waiter.join();
       ASSERT_EQ(signalled, VK_SUCCESS);
       ASSERT_TRUE(waited.ok()) << waited.message();
+      if (device().counters().host_waits == waits_before) continue;
       late_ms.push_back(
           std::chrono::duration<double, std::milli>(woke - set).count());
     }
+    ASSERT_EQ(late_ms.size(), 5U)
+        << "held " << hold.count() << " ms: too few waits blocked";
     std::string seen;
     for (const double ms : late_ms) seen += " " + std::to_string(ms);
     std::sort(late_ms.begin(), late_ms.end());
