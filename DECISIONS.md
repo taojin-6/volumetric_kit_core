@@ -1915,6 +1915,43 @@ goes too. A consumer that cannot register a phone refuses it.
   run does: one rule for both, and the scenario says which registration a
   run uses.
 
+**Amended 2026-11-07: many phones dial the one address, and the rig never
+waits for one.** The owner: "Orbbec capture should always start running,
+with or without phone. iOS should be optional, when it connects it fills in
+missing regions in the model, but the orbbec should not depend on iOS". That
+reverses the rule this entry's release left. 0.42.0's migration note had a
+FuseOrbbec consumer that did not yet run the phone refuse it, "otherwise the
+rig fuses alone with no error", which recon took as the rig never fusing
+alone in a run that asked for a phone: it waited for a live phone before its
+cameras opened. And `MobileSession::host`'s doc said one phone at a time.
+The owner approved the design below; recon builds it in its own releases.
+No key, type or check changes: the docs say what a consumer does with the
+values, and a scenario that does not load still fails at load, since it
+starts no rig to keep running.
+
+- **An address, not a phone.** `tcp://ADDRESS:PORT` is where the consumer
+  listens; phones dial in to it, each session separate, up to a number the
+  consumer sets. A run outlasts any one session: an app relaunched or
+  another device dials the same address, and is taken.
+- **The rig never depends on a phone.** Live, the consumer runs the rig's
+  capture from the start with no phone, and a phone joining, leaving,
+  failing or never dialling neither stops nor delays it. Nor does an
+  address the listen cannot bind: the consumer warns and retries, and its
+  report says it is not listening. Nor does a phone the consumer cannot
+  take, under the run's settings or at all: it turns each phone away and
+  says why. A file run is as before.
+- **A registration places one session.** Live, `mobile_registration`
+  places the one session whose id it names, since sensor's tracked
+  registration carries that id; the consumer places any other itself, by
+  the origin tag, or turns that session away. The 2026-11-04 amendment's
+  "A consumer that cannot register a phone refuses it" means, live, that
+  phone, not the run. A file's is as before.
+- **One log directory per session.** Live, `diagnostics.track_log` holds a
+  directory per session, beside files of the consumer's own, so sessions
+  that come and go never write over one another's logs; a file's log is as
+  before. It still changes nothing that fuses, and empty still writes
+  nothing.
+
 ## 2026-11-02 — A net tier: the family's TCP sockets, moved from grid
 
 The owner asked: "can you explore how we can take the networking part out of

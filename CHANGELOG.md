@@ -7,6 +7,44 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Changed
+
+- What a FuseOrbbec consumer does with a live `source.mobile`, in the docs
+  alone (`config::MobileSession`, CONFIG.md; DECISIONS.md, the 2026-11-02
+  phone entry's 2026-11-07 amendment):
+  - `tcp://ADDRESS:PORT` is the address the consumer listens on, not one
+    phone: phones dial in to it, each session separate, and sessions join
+    and leave at any time during the run, up to a number the consumer sets,
+    so one that comes after another has left is taken. Was: one phone at a
+    time.
+  - The rig never depends on a phone: the consumer runs the rig's capture
+    from the start, and a phone joining, leaving, failing or never dialling
+    neither stops nor delays it; nor does an address the listen cannot bind
+    (the consumer warns, retries and reports it is not listening), nor a
+    phone the consumer cannot take, under the run's settings or at all (it
+    turns each away and says why). Was: 0.42.0's migration note had a
+    consumer that did not yet run the phone refuse `source.mobile`,
+    "otherwise the rig fuses alone with no error".
+  - `source.mobile_registration` places the one session whose id it names;
+    the consumer registers any other itself, or turns it away. Was: it
+    placed the live session.
+  - `diagnostics.track_log` holds a directory per session, beside files of
+    the consumer's own. It still changes nothing that fuses, and empty
+    still writes nothing. Was: the phone's log was written into the
+    directory itself.
+
+  A file `source.mobile` is as before.
+
+### Migration
+
+- No scenario changes, and no newer pin or floor: the schema, the keys,
+  every check and `config::MobileSession` are unchanged, so every scenario
+  loads, or is refused, as before. A FuseOrbbec consumer changes its run in
+  its own release: it listens for many sessions and starts the rig without
+  waiting for one. Where it refused a live run, because a setting rules
+  phones out or because it does not run phones at all, it runs the rig and
+  turns each phone away, saying why.
+
 ## [0.49.0] - 2026-11-04
 
 ### Changed

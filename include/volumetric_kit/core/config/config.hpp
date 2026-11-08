@@ -81,31 +81,39 @@ struct StereoPairConfig {
   std::string left;
   std::string right;
 };
-/// @brief FuseOrbbec's phone: a camera session whose frames fill what the
-/// rig's cameras do not see, beside them as `audio` is, and where the
+/// @brief FuseOrbbec's phones: camera sessions whose frames fill what the
+/// rig's cameras do not see, beside them as `audio` is, and where each
 /// session's tracked world sits in the rig's. It is either a recorded
-/// session's file or a live session that the phone dials in to: exactly one
-/// of `path` and `host` is set. In JSON it is `source.mobile`, a file or
-/// `tcp://ADDRESS:PORT`, and `source.mobile_registration` when a
-/// registration file places the session.
+/// session's file or a live address that phones dial in to, each session
+/// separate: exactly one of `path` and `host` is set. A live phone neither
+/// stops nor delays the rig, whose capture runs from the start with or
+/// without one; a phone the consumer cannot take is turned away, not the
+/// run. In JSON it is `source.mobile`, a file or `tcp://ADDRESS:PORT`, and
+/// `source.mobile_registration` when a registration file places a session.
 /// @code
 /// /* {"mobile": "tcp://10.8.0.1:7101", "mobile_registration": "reg.json"} */
-/// /* {"mobile": "tcp://10.8.0.1:7101"}: registered by the consumer */
+/// /* {"mobile": "tcp://10.8.0.1:7101"}: each registered by the consumer */
 /// @endcode
 struct MobileSession {
-  /// The recorded session's file, config-relative; empty for a live one.
+  /// The recorded session's file, config-relative; empty when live.
   std::string path;
-  /// A live session: a numeric IPv4 address, in dotted decimal, which the
-  /// consumer listens on for one phone at a time; the listen checks it is
-  /// this host's. Never the wildcard or a name. Empty for a file.
+  /// Live: a numeric IPv4 address, in dotted decimal, which the consumer
+  /// listens on. Phones dial in to it, each session separate; sessions join
+  /// and leave at any time during the run, up to a number the consumer
+  /// sets. The listen checks the address is this host's; if it cannot bind,
+  /// the consumer warns and retries, and the rig runs on. Never the wildcard
+  /// or a name. Empty for a file.
   std::string host;
   /// With `host`: the port it listens on, 1 to 65535. It may not be
   /// `output.serve`'s port, which binds every interface of the same host.
   /// 0 for a file.
   std::uint16_t port = 0;
-  /// The session's tracked registration (sensor's tracked_registration
-  /// file), config-relative. Empty, for a file or a live session: the
-  /// consumer registers the session itself, or refuses it. Never defaulted.
+  /// A tracked registration (sensor's tracked_registration file),
+  /// config-relative. For a file it places the session; empty, the consumer
+  /// registers the session itself, or refuses it. Live, it places the one
+  /// session whose id it names, and the consumer itself registers each
+  /// session no registration names, or turns that session away, not the
+  /// run. Never defaulted.
   std::string registration;
 };
 
@@ -133,9 +141,9 @@ struct Source {
   /// none; `default` is the system's default input; any other value is an
   /// input device's name as the OS lists it.
   std::string audio;
-  /// FuseOrbbec's fuse run: the phone; unset (`std::nullopt`), the default,
-  /// for none. It requires `calibration`, the world the registration places
-  /// the phone in.
+  /// FuseOrbbec's fuse run: the phones; unset (`std::nullopt`), the default,
+  /// for none. It requires `calibration`, the world a registration places a
+  /// phone in.
   std::optional<MobileSession> mobile;
   /// Every Orbbec profile's camera modes; CalibRig's colour is MJPEG only,
   /// CalibColor's H.265 only. FuseRealsense takes the sizes and rate, not
@@ -315,8 +323,10 @@ struct Diagnostics {
   /// off.
   std::string dump_directory;
   /// FuseOrbbec with `source.mobile`: the directory the lane's tracking log
-  /// is written into, config-relative. Empty, the default, writes none, and
-  /// the run's summary still prints. It never changes what fuses.
+  /// is written into, config-relative; live, each session's in a directory
+  /// of its own beneath it, beside files of the consumer's own. Empty, the
+  /// default, writes none, and the run's summary still prints. It never
+  /// changes what fuses.
   std::string track_log;
 };
 /// @brief A validated scenario with all application defaults resolved.
