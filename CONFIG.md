@@ -259,14 +259,14 @@ unknown extension object.
   FuseDecklink ask only for the stream (FuseRealsense from core 0.37.0, when
   it took the two outputs; 0.34.0 refused its audio).
   Other profiles reject it.
-- `FuseOrbbec` accepts `source.mobile` (core 0.42.0), a phone's camera
-  session whose frames fill what the rig's cameras do not see, and
-  `source.mobile_registration`, where the session's tracked world sits in
+- `FuseOrbbec` accepts `source.mobile` (core 0.42.0), phones' camera
+  sessions whose frames fill what the rig's cameras do not see, and
+  `source.mobile_registration`, where a session's tracked world sits in
   the rig's. Omitted, the default, there is no phone; the value is never
   empty. A value without `://` is a recorded session's file, config-relative;
   one that reads as an address, starting `tcp:` or only digits, dots and a
-  colon, is refused. A live session is `tcp://ADDRESS:PORT`, which the
-  consumer listens on for the phone to dial in to: the address is numeric
+  colon, is refused. A live source is `tcp://ADDRESS:PORT`, which the
+  consumer listens on for phones to dial in to: the address is numeric
   IPv4, four decimal parts from 0 to 255, and the port is from 1 to 65535,
   each without a leading zero and with nothing after the port. The net
   tier checks both (`net::parse_host_port`, then `net::parse_endpoint`,
@@ -274,15 +274,31 @@ unknown extension object.
   not check that the address is the host's own; the listen does. The wildcard
   `0.0.0.0`, a name, IPv6 and any other scheme are refused, and so is
   `output.serve`'s port, which binds every interface of the same host.
-  `source.mobile` requires `source.calibration`, the world the phone is
-  placed in, and operation `stream` refuses it, since the phone fills the
+  `source.mobile` requires `source.calibration`, the world a phone is
+  placed in, and operation `stream` refuses it, since the phones fill the
   fused model. `mobile_registration`, config-relative and never empty,
-  requires `source.mobile` and names the session's registration file, for
-  a recorded session or a live one. Omitted, the consumer registers the
-  session itself, or refuses it. `diagnostics.track_log`,
+  requires `source.mobile` and names a registration file: a recorded
+  session's, or, live, that of the one session whose id it names. Omitted
+  for a recorded session, the consumer registers it itself, or refuses it.
+  Live, the consumer itself registers each session no registration names,
+  or turns that session away, never the run. `diagnostics.track_log`,
   config-relative, is the directory the phone's tracking log is written
-  into; it requires `source.mobile`, and changes nothing that fuses. Other
-  profiles reject all three.
+  into; live, each session's goes in a directory of its own beneath it,
+  beside files of the consumer's own. It requires `source.mobile`, and
+  changes nothing that fuses. Other profiles reject all three.
+
+  The address is the consumer's, not one phone's: phones dial in to it,
+  each session separate, and sessions join and leave at any time during
+  the run, up to a number the consumer sets, so one that comes after
+  another has left, an app relaunched or another device, is taken. The rig
+  never depends on a live phone (DECISIONS.md, the 2026-11-02 phone
+  entry's 2026-11-07 amendment). The consumer runs the rig's capture from
+  the start, with no phone, and a phone joining, leaving, failing or never
+  dialling neither stops nor delays it. Nor does an address the listen
+  cannot bind: the consumer warns and retries, and its report says it is
+  not listening. Nor does a phone the consumer cannot take, under the
+  run's settings or at all: it turns each phone away and says why. A
+  scenario the checks above refuse still fails at load.
 - `FuseOrbbec` (core 0.14.0), `FuseRealsense`, `FuseDecklink` and
   `RigViewer` accept `fusion.free_after`, a nonnegative integer, default 30.
   Every that many fused sets, the consumer runs recon's
