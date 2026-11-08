@@ -51,13 +51,10 @@ vkc::Status run() {
   VKC_ASSIGN(
       const auto readback,
       vkc::config::parse(
-          R"({"version":1,"operation":"stream","source":{"kind":"live","color_codec":"mjpeg"},"diagnostics":{"readback":true,"dump_sets":2,"dump_directory":"/dump"}})",
+          R"({"version":1,"operation":"stream","source":{"kind":"live","color_codec":"mjpeg"},"diagnostics":{"readback":true}})",
           vkc::config::Application::FuseOrbbec));
   if (!readback.diagnostics.readback)
     return vkc::Status::invalid_argument("config readback was not enabled");
-  if (readback.diagnostics.dump_sets != 2 ||
-      readback.diagnostics.dump_directory != "/dump")
-    return vkc::Status::invalid_argument("config dump was not enabled");
   VKC_ASSIGN(
       const auto mesh,
       vkc::config::parse(

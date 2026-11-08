@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-11-08
+
 ### Changed
 
 - What a FuseOrbbec consumer does with a live `source.mobile`, in the docs
@@ -35,15 +37,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
   A file `source.mobile` is as before.
 
+### Removed
+
+- `config::Diagnostics::dump_sets` and `dump_directory`, and their scenario
+  keys `diagnostics.dump_sets` and `diagnostics.dump_directory`
+  (FuseOrbbec's, added in 0.5.0): the dump of a run's first sets' camera
+  JPEGs, and with `readback` their luma, a one-off check of the MJPEG decode
+  (DECISIONS.md, the 2026-10-11 entry's 0.50.0 amendment). A scenario that
+  still sets either, to any value, 0 included, now fails to load, naming the
+  first in key order: `diagnostics.dump_directory: unknown field` for one
+  that sets both, as a dump did, and `diagnostics.dump_sets: unknown field`
+  for one that sets the count alone. `config::Diagnostics` loses the two
+  members, so the ABI changes.
+
 ### Migration
 
-- No scenario changes, and no newer pin or floor: the schema, the keys,
-  every check and `config::MobileSession` are unchanged, so every scenario
-  loads, or is refused, as before. A FuseOrbbec consumer changes its run in
-  its own release: it listens for many sessions and starts the rig without
-  waiting for one. Where it refused a live run, because a setting rules
-  phones out or because it does not run phones at all, it runs the rig and
-  turns each phone away, saying why.
+- The phone change asks for no scenario change, and no newer pin or floor:
+  the phone's keys, their every check and `config::MobileSession` are
+  unchanged, so every phone scenario loads, or is refused, as before. A
+  FuseOrbbec consumer changes its run in its own release: it listens for
+  many sessions and starts the rig without waiting for one. Where it refused
+  a live run, because a setting rules phones out or because it does not run
+  phones at all, it runs the rig and turns each phone away, saying why.
+- Delete `diagnostics.dump_sets` and `diagnostics.dump_directory` from every
+  FuseOrbbec scenario, and code that reads `config::Diagnostics::dump_sets`
+  or `dump_directory`. A FuseOrbbec consumer that wrote the dump retires it
+  and requires core 0.50.0, so that a scenario still carrying either key is
+  refused rather than ignored where an older core's pin wins (recon:
+  fuse_orbbec's `SetDump`, `examples/common/set_dump.hpp`,
+  `config/examples/dump_orbbec.json`). A camera's JPEGs, byte for byte, come
+  from CalibRig's capture (calib's session writer); `diagnostics.readback`
+  still measures the MJPEG decode-and-readback stage.
 
 ## [0.49.0] - 2026-11-04
 

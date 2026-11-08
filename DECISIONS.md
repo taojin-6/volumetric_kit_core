@@ -1250,6 +1250,22 @@ codings for FuseOrbbec and RigViewer, and calib_rig requests it from each
 camera along with the sizes and rate, so its scenario states the coding a
 capture saves. A key with one answer in every profile still goes.
 
+**Amended 2026-11-08 (core 0.50.0): `diagnostics.dump_sets` and
+`dump_directory` go.** The dump (core 0.5.0) wrote FuseOrbbec's first sets'
+camera JPEGs, and with `readback` their luma, so that the device's MJPEG
+decode could be checked off line: a one-off check. It took MJPEG alone,
+where colour is H.265 by default. recon retires its `SetDump`, the one
+consumer. A camera's JPEG, byte for byte, still comes from CalibRig's
+capture (calib's session writer), and `diagnostics.readback` still measures
+the decode-and-readback stage on MJPEG. Core removes both keys and their
+fields rather than keep settings whose one consumer retires them. The
+schema stays closed, so a scenario that still sets either, to any value, 0
+included, fails to load with `unknown field`, as one that sets
+`codec.entropy` does. The message names the key, not the release that
+dropped it: core keeps no list of retired keys, and `fusion.accumulate`
+(0.14.0) and `fusion.depth_within_color` (0.32.0) went the same way. The
+CHANGELOG's migration says what replaces the dump.
+
 ## 2026-10-16 — calib's runners, and each repository's own share of a host
 
 `calib` runs every job on self-hosted runners, registered with this
@@ -1439,7 +1455,9 @@ reconstruction, MJPEG for calibration captures.
   (the SDK sets a JPEG quality but no H.265 rate), so a capture keeps the
   least distorted image a board is detected in.
 - MJPEG stays selectable on FuseOrbbec and RigViewer for diagnostics, such
-  as `diagnostics.dump_sets`, which requires it.
+  as FuseOrbbec's `diagnostics.readback`, which measures the MJPEG
+  decode-and-readback stage (`diagnostics.dump_sets`, which required MJPEG,
+  went in 0.50.0).
 
 **Measured on the rig at these defaults** (four cameras at 3840x2160 H.265
 and 25 fps with depth, fusion and the geometry stream on, 180 s a run;
@@ -1630,9 +1648,9 @@ than a second program or profile (core 0.37.0; CONFIG.md, the coding
 bullet): the `codec` section, `output.stream`, `output.csv`, `output.serve`
 and `output.max_viewers`, with FuseOrbbec's checks, one rule for both live
 fusion profiles. It still refuses what only the rig has: the rig's source
-fields, and diagnostics, whose picture dump keeps the rig's own coded
-pictures. With a stream or a port it takes `source.audio` (core 0.34.0),
-which waited on these outputs.
+fields, and diagnostics, which read the rig's own pictures back (and, until
+0.50.0, dumped its coded ones). With a stream or a port it takes
+`source.audio` (core 0.34.0), which waited on these outputs.
 
 ## 2026-10-30 — A transient attachment takes lazily allocated memory
 
@@ -1896,7 +1914,7 @@ do not see, as `audio` records beside them.
   The default is formed from the resolved file, so a session moved with its
   registration needs no second key.
 - **The tracking log is a diagnostic.** `diagnostics.track_log` is a
-  directory beside `dump_directory`, and changes nothing that fuses.
+  directory, and changes nothing that fuses.
 
 **Amended 2026-11-04 (core 0.49.0): a phone with no registration is
 registered by its consumer, a file's too.** FuseOrbbec is to register a
