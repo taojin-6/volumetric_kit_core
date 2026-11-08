@@ -9,7 +9,7 @@ runtime. JSON and GPU types do not appear in the public config API.
 ```cmake
 set(VKC_WITH_CONFIG ON)
 # Declare/fetch the pinned core before its siblings.
-vkc_require_core(0.49.0 CONFIG)
+vkc_require_core(0.50.0 CONFIG)
 target_link_libraries(my_app PRIVATE volumetric_kit::core_config)
 ```
 
@@ -226,15 +226,6 @@ unknown extension object.
 - `FuseOrbbec` accepts the boolean `diagnostics.readback` (core 0.4.0),
   default false. When true, its stream or fuse run reads each set's luma back
   to the host as a separate stage. Other profiles reject this field.
-- `FuseOrbbec` accepts the integer `diagnostics.dump_sets` (core 0.5.0),
-  default 0 (off), and `diagnostics.dump_directory`. A positive count makes
-  its stream or fuse run write the first that many sets' camera JPEGs, and
-  with `readback` their luma, into the directory. The directory is a
-  `diagnostics` field so that a stream run, which refuses `output`, can use
-  it. A positive count requires the directory and `source.color_codec`
-  `mjpeg`, since an H.265 frame is not self-contained, and must not exceed
-  `run.frames`; a directory requires a positive count. Other profiles reject
-  both fields.
 - `FuseOrbbec`, `FuseRealsense` (core 0.37.0) and `FuseDecklink` code their
   fused sets, one frame per set, when `output.stream` or `output.csv` names a
   file (core 0.13.0) or `output.serve` a port (core 0.16.0); each still

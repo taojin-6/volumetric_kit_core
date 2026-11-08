@@ -537,8 +537,7 @@ bool supports(std::string_view field, App app) {
   if (field == "diagnostics")
     return is_one_of(app, {App::Scanner, App::FuseOrbbec});
   if (field == "diagnostics.measure_stages") return app == App::Scanner;
-  if (field_in(field, {"diagnostics.readback", "diagnostics.dump_sets",
-                       "diagnostics.dump_directory", "diagnostics.track_log"}))
+  if (field_in(field, {"diagnostics.readback", "diagnostics.track_log"}))
     return app == App::FuseOrbbec;
   return false;
 }
@@ -953,23 +952,6 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
   if (app == App::Player && has(state, "run.frames") && c.run.frames < 1)
     fail("run.frames", "must be positive");
   nonnegative(c.run.sets, "run.sets");
-  nonnegative(c.diagnostics.dump_sets, "diagnostics.dump_sets");
-  path_check(c.diagnostics.dump_directory, "diagnostics.dump_directory");
-  if (c.diagnostics.dump_sets > 0) {
-    if (c.diagnostics.dump_directory.empty())
-      fail("diagnostics.dump_directory",
-           "is required when diagnostics.dump_sets is positive");
-    // An H.265 frame is not self-contained, so only MJPEG can be written out.
-    if (c.source.color_codec != ColorCodec::Mjpeg)
-      fail("diagnostics.dump_sets", "requires source.color_codec mjpeg");
-    // FuseOrbbec's run.frames counts camera frames, at least one per set, so
-    // a larger count of sets is never met.
-    if (c.diagnostics.dump_sets > c.run.frames)
-      fail("diagnostics.dump_sets", "must not exceed run.frames");
-  } else if (!c.diagnostics.dump_directory.empty()) {
-    fail("diagnostics.dump_directory",
-         "is not used when diagnostics.dump_sets is 0");
-  }
   if (app == App::GfxModel && !c.output.screenshot.empty()) {
     if (has(state, "run.frames"))
       fail("run.frames", "is not used when output.screenshot is requested");
@@ -1078,7 +1060,6 @@ void resolve(Config& c, App app, std::string_view directory,
   resolve_path(c.output.screenshot, base);
   resolve_path(c.output.csv, base);
   resolve_path(c.output.stream, base);
-  resolve_path(c.diagnostics.dump_directory, base);
   resolve_path(c.diagnostics.track_log, base);
   // The phone: a value without a scheme is a session's file, config-relative,
   // unless it reads as an address; tcp:// is a live session's address, never
@@ -1286,8 +1267,6 @@ Result<Config> parse(std::string_view text, Application application,
       Reader q(*v, "diagnostics", state);
       q.boolean("measure_stages", c.diagnostics.measure_stages);
       q.boolean("readback", c.diagnostics.readback);
-      q.number("dump_sets", c.diagnostics.dump_sets);
-      q.string("dump_directory", c.diagnostics.dump_directory);
       q.string("track_log", c.diagnostics.track_log);
       q.finish();
     }

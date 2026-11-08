@@ -316,12 +316,6 @@ struct Diagnostics {
   bool measure_stages = true;
   /// Read each live set's luma to the host in FuseOrbbec's stream or fuse run.
   bool readback = false;
-  /// FuseOrbbec writes the first dump_sets sets' camera JPEGs, and with
-  /// readback their luma, into dump_directory; 0 writes none.
-  int dump_sets = 0;
-  /// The directory FuseOrbbec's dump writes into, config-relative; empty when
-  /// off.
-  std::string dump_directory;
   /// FuseOrbbec with `source.mobile`: the directory the lane's tracking log
   /// is written into, config-relative; live, each session's in a directory
   /// of its own beneath it, beside files of the consumer's own. Empty, the
