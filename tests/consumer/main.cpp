@@ -169,6 +169,17 @@ vkc::Status run() {
     return vkc::Status::invalid_argument(
         "calib_rig's DeckLink lens settings were not read");
   VKC_ASSIGN(
+      const auto stills,
+      vkc::config::parse(
+          R"({"version":1,"operation":"scan","source":{"kind":"live","driver":"decklink","cameras":[{"id":"bm-1","input":"SDI 2"},{"id":"bm-2","input":"SDI 1"}],"pairs":[{"left":"bm-1","right":"bm-2"}]},"output":{"path":"scans"}})",
+          vkc::config::Application::CalibRig, "/scenario"));
+  if (stills.operation != vkc::config::Operation::Scan ||
+      stills.source.driver != "decklink" || stills.source.pairs.size() != 1 ||
+      !stills.source.calibration.empty() || stills.source.color_width != 3840 ||
+      stills.source.fps != 30 || stills.output.path != "/scenario/scans")
+    return vkc::Status::invalid_argument(
+        "calib_rig's DeckLink scan settings were not read");
+  VKC_ASSIGN(
       const auto fit,
       vkc::config::parse(
           R"({"version":1,"operation":"calibrate","source":{"kind":"live","sync_config":"rig.json","calibration":"rig_calibration.json","color_exposure":200,"color_gain":32},"output":{"path":"results"}})",

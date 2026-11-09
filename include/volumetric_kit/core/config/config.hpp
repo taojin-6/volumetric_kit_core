@@ -39,7 +39,9 @@ enum class Application {
   FuseDecklink
 };
 /// @brief The work requested by a scenario. CalibRig's `Calibrate` solves
-/// the cameras' poses, and its `CalibrateIntrinsics` each camera's lens.
+/// the cameras' poses, its `CalibrateIntrinsics` each camera's lens, and its
+/// `Scan` solves nothing: it saves every camera's picture at a key press,
+/// e.g. colour stills from a DeckLink pair for photogrammetry or NeRF.
 enum class Operation {
   Fuse,
   Stream,
@@ -47,7 +49,8 @@ enum class Operation {
   View,
   Project,
   Calibrate,
-  CalibrateIntrinsics
+  CalibrateIntrinsics,
+  Scan
 };
 /// @brief The source discriminator; branch-specific fields are checked
 /// centrally.

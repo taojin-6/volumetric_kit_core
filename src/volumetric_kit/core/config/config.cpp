@@ -607,9 +607,12 @@ void validate_impl(const Config& c, App app, const ParseState& state) {
       fail(field, "is not used when codec.inspect_only is enabled");
   }
   const auto expected = defaults_impl(app);
+  // A profile's own operation; besides it, FuseOrbbec streams, and CalibRig
+  // calibrates lenses and scans, each under its pose calibration's rules.
   if (c.operation != expected.operation &&
       (app != App::FuseOrbbec || c.operation != Operation::Stream) &&
-      (app != App::CalibRig || c.operation != Operation::CalibrateIntrinsics))
+      (app != App::CalibRig || (c.operation != Operation::CalibrateIntrinsics &&
+                                c.operation != Operation::Scan)))
     fail("operation", "is not supported by this application");
   if (c.source.kind != expected.source.kind)
     fail("source.kind", "is not supported by this application");
@@ -1234,7 +1237,8 @@ Result<Config> parse(std::string_view text, Application application,
               {"view", Operation::View},
               {"project", Operation::Project},
               {"calibrate", Operation::Calibrate},
-              {"calibrate_intrinsics", Operation::CalibrateIntrinsics}});
+              {"calibrate_intrinsics", Operation::CalibrateIntrinsics},
+              {"scan", Operation::Scan}});
     if (!json.contains("source") &&
         (is_dataset(application) || takes_camera_modes(application) ||
          is_one_of(application, {App::CodecMesh, App::Scanner, App::Player})))

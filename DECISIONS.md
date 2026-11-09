@@ -1831,6 +1831,30 @@ one, so it stays one profile with a driver switch.
   from, in either mode: a camera's first lens session has none. The board
   stays entered in the app, with no keys.
 
+**Amended 2026-11-09 (core 0.51.0): a third mode, `scan`, saves stills.**
+calib_rig gains a mode that solves nothing: at a key press it saves every
+camera's picture as it is, e.g. colour stills from a DeckLink pair for
+photogrammetry or NeRF. The owner chose the simplest flow: no board, no
+wait for stillness, no averaging and no checks, all of which are calib's
+to leave out; the scenario holds only the mode.
+
+- **A mode, so an `operation`.** `scan` is a third value of CalibRig's
+  `operation`, as the lens solve was a second, not a profile: one program
+  opens the same cameras at the same modes in every mode. No other profile
+  takes it, and `calibrate` and `calibrate_intrinsics` load unchanged.
+  `Operation::Scan` comes after `CalibrateIntrinsics`, so no value's number
+  changes.
+- **The calibrations' keys, rules and defaults, and none of its own.**
+  Either driver, under its rules: the Orbbec rig's sync file and MJPEG
+  colour, the DeckLink pair's two cameras and one pair at FuseDecklink's
+  modes; `calibration` optional, `output.path` required, the 1280x720
+  window. So a scenario loads under `scan` exactly when it loads under
+  `calibrate_intrinsics`, to the same settings, and a scenario moves
+  between the modes by its `operation` alone. Still no skew bound: the
+  driver pairs the pictures at its own, as for a calibration. What a still
+  is saved as, and any key a scan comes to need, are added with the
+  consumer that needs them.
+
 ## 2026-11-02 — An exported timeline orders another API's writes on the GPU
 
 A decoder hands each picture from CUDA to a Vulkan batch. Until now the host
