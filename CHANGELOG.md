@@ -7,6 +7,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-11-09
+
+### Added
+
+- `config::Operation::Scan` (`scan`): CalibRig's third mode, which solves
+  nothing and saves every camera's picture at a key press, e.g. colour
+  stills from a DeckLink pair for photogrammetry or NeRF (CONFIG.md,
+  `CalibRig`; DECISIONS.md, the 2026-11-01 CalibRig entry's 2026-11-09
+  amendment). It takes `calibrate_intrinsics`'s keys, rules and defaults,
+  and none of its own: `driver` `orbbec`, its `sync_config` required and its
+  colour MJPEG, or `decklink`, its two `cameras` and one pair required at
+  FuseDecklink's modes; `source.calibration` optional; `output.path`
+  required; the 1280x720 window. A scenario loads under `scan` exactly when
+  it loads under `calibrate_intrinsics`, to the same settings, and is
+  otherwise refused for the same reason. No other profile takes it: each
+  refuses it with `operation: is not supported by this application`.
+
+### Migration
+
+- Nothing to change beyond the pin; existing scenarios load unchanged.
+  `Operation` gains a value, after `CalibrateIntrinsics`, so the others keep
+  their numbers; a `switch` over it without a default must handle it (no
+  sibling has one today). A CalibRig consumer must refuse `operation` `scan`
+  until it runs it, and one that runs it requires core 0.51.0, since an
+  older core refuses the word (`operation: unknown choice 'scan'`). calib's
+  calib_rig refuses it already once it pins this core: its `check_scenario`
+  refuses an operation other than the two calibrations by its number,
+  `operation: 7 is not one calib_rig runs (calibrate,
+  calibrate_intrinsics)`, before anything opens.
+
 ## [0.50.0] - 2026-11-08
 
 ### Changed
